@@ -7,13 +7,13 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg'],
+      includeAssets: ['tomify-logo-192.png', 'apple-touch-icon-180.png'],
       manifest: {
         name: 'Tomify', short_name: 'Tomify', description: 'Your family music library.',
         theme_color: '#0d0f0e', background_color: '#0d0f0e', display: 'standalone',
         orientation: 'any', start_url: '/', scope: '/',
         icons: [
-          { src: '/favicon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' },
+          { src: '/tomify-logo-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
         ],
       },
       workbox: {

@@ -17,8 +17,8 @@ export function AppShell() {
   }
 
   return <div className="app-shell">
-    <aside className="sidebar"><NavLink className="logo" to="/"><img className="brand-logo small" src="/favicon.svg" alt=""/><strong>Tomify</strong></NavLink><nav>{primary.map((item) => <NavItem {...item} key={item.to}/>)}</nav><div className="nav-section"><span>Your library</span>{library.map((item) => <NavItem {...item} key={item.to}/>)}</div><NavLink className="settings-link" to="/settings"><Settings/>Settings</NavLink><div className="sidebar-user"><CircleUserRound/><span><strong>Listening as</strong><small>Your Navidrome account</small></span></div></aside>
-    <div className="mobile-topbar">{canGoBack ? <button type="button" className="mobile-back" onClick={goBack} aria-label="Go back"><ArrowLeft/></button> : <img className="brand-logo mobile-topbar-logo" src="/favicon.svg" alt=""/>}<strong>Tomify</strong></div>
+    <aside className="sidebar"><NavLink className="logo" to="/"><img className="brand-logo small" src="/tomify-logo-192.png" alt=""/><strong>Tomify</strong></NavLink><nav>{primary.map((item) => <NavItem {...item} key={item.to}/>)}</nav><div className="nav-section"><span>Your library</span>{library.map((item) => <NavItem {...item} key={item.to}/>)}</div><NavLink className="settings-link" to="/settings"><Settings/>Settings</NavLink><div className="sidebar-user"><CircleUserRound/><span><strong>Listening as</strong><small>Your Navidrome account</small></span></div></aside>
+    <div className="mobile-topbar">{canGoBack ? <button type="button" className="mobile-back" onClick={goBack} aria-label="Go back"><ArrowLeft/></button> : <img className="brand-logo mobile-topbar-logo" src="/tomify-logo-192.png" alt=""/>}<strong>Tomify</strong></div>
     <main className="content" key={location.pathname}><Outlet/></main>
     <nav className="mobile-nav">{mobile.map((item) => <NavItem {...item} key={item.to}/>)}</nav>
     <PlayerRuntime/><PlayerBar/>
