@@ -6,7 +6,19 @@ interface SubsonicEnvelope { 'subsonic-response': Record<string, unknown> & { st
 
 export class NavidromeError extends Error { constructor(message: string, readonly code?: number) { super(message); this.name = 'NavidromeError' } }
 
-export function normaliseServerUrl(value: string) { return value.trim().replace(/\/+$/, '') }
+export const DEFAULT_NAVIDROME_SERVER = 'https://tomify.tomdixon.uk'
+
+export function normaliseServerUrl(value: string) {
+  const normalised = value.trim().replace(/\/+$/, '')
+  if (typeof window !== 'undefined' && normalised === `${window.location.origin}/navidrome`) return DEFAULT_NAVIDROME_SERVER
+  return normalised
+}
+
+function requestServerUrl(serverUrl: string) {
+  const normalised = normaliseServerUrl(serverUrl)
+  if (typeof window !== 'undefined' && normalised === DEFAULT_NAVIDROME_SERVER) return `${window.location.origin}/navidrome`
+  return normalised
+}
 export function createAuthSession(serverUrl: string, username: string, password: string): AuthSession {
   const salt = Array.from(crypto.getRandomValues(new Uint8Array(6)), (byte) => byte.toString(16).padStart(2, '0')).join('')
   return { serverUrl: normaliseServerUrl(serverUrl), username: username.trim(), salt, token: SparkMD5.hash(password + salt) }
@@ -16,7 +28,7 @@ export class NavidromeClient {
   constructor(readonly session: AuthSession, private readonly fetcher: typeof fetch = window.fetch.bind(window)) {}
 
   url(endpoint: string, params: Record<string, string | number | undefined> = {}) {
-    const url = new URL(`${this.session.serverUrl}/rest/${endpoint}.view`)
+    const url = new URL(`${requestServerUrl(this.session.serverUrl)}/rest/${endpoint}.view`)
     const base = { u: this.session.username, t: this.session.token, s: this.session.salt, v: '1.16.1', c: 'Tomify', f: 'json' }
     Object.entries({ ...base, ...params }).forEach(([key, value]) => value !== undefined && url.searchParams.set(key, String(value)))
     return url
