@@ -52,9 +52,9 @@ export default {
     let pathname = decodeURIComponent(url.pathname)
 
     if (pathname === '/navidrome' || pathname.startsWith('/navidrome/')) {
-      const upstream = new URL(request.url)
-      upstream.hostname = 'tomify.tomdixon.uk'
-      upstream.pathname = pathname.slice('/navidrome'.length) || '/'
+      const upstreamPath = pathname.slice('/navidrome'.length) || '/'
+      const upstream = new URL(`https://tomify.tomdixon.uk${upstreamPath}`)
+      upstream.search = url.search
       const headers = new Headers(request.headers)
       headers.delete('host')
       headers.delete('origin')
