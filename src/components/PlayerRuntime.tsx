@@ -3,14 +3,115 @@ import { useApi } from '../lib/api-context'
 import { StreamFirstSourceResolver } from '../lib/sourceResolver'
 import { bindPlayerRuntime, usePlayer } from '../stores/player'
 import { setMediaMetadata } from '../lib/mediaSession'
+import type { Track } from '../types'
 
 export function PlayerRuntime() {
-  const audio = useRef<HTMLAudioElement>(null); const api = useApi(); const queue = usePlayer((s) => s.queue); const currentIndex = usePlayer((s) => s.currentIndex); const playing = usePlayer((s) => s.playing); const volume = usePlayer((s) => s.volume); const muted = usePlayer((s) => s.muted); const track = queue[currentIndex]
-  useEffect(() => bindPlayerRuntime({ seek: (value) => { if (audio.current) audio.current.currentTime = value }, volume: (value, isMuted) => { if (audio.current) { audio.current.volume = value; audio.current.muted = isMuted } } }), [])
-  useEffect(() => { const element = audio.current; if (!element || !track) return; let cancelled = false; let release: (() => void) | undefined; new StreamFirstSourceResolver(api).resolve(track).then((source) => { if (cancelled) { source.revoke?.(); return } release = source.revoke; element.src = source.url; element.load(); if (usePlayer.getState().playing) element.play().catch(() => usePlayer.getState().setPlaying(false)) }); return () => { cancelled = true; release?.() } }, [api, track?.id]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { const element = audio.current; if (!element || !track) return; if (playing) element.play().catch(() => usePlayer.getState().setPlaying(false)); else element.pause() }, [playing, track])
-  useEffect(() => { if (audio.current) { audio.current.volume = volume; audio.current.muted = muted } }, [volume, muted])
-  useEffect(() => { if (!track || !('mediaSession' in navigator)) return; setMediaMetadata(track, api); const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [['play', () => usePlayer.getState().setPlaying(true)], ['pause', () => usePlayer.getState().setPlaying(false)], ['previoustrack', () => usePlayer.getState().previous()], ['nexttrack', () => usePlayer.getState().next()], ['seekbackward', (d) => usePlayer.getState().seekTo(Math.max(0, (audio.current?.currentTime ?? 0) - (d.seekOffset ?? 10)))], ['seekforward', (d) => usePlayer.getState().seekTo(Math.min(audio.current?.duration ?? Infinity, (audio.current?.currentTime ?? 0) + (d.seekOffset ?? 10)))], ['seekto', (d) => d.seekTime !== undefined && usePlayer.getState().seekTo(d.seekTime)]]; handlers.forEach(([action, handler]) => { try { navigator.mediaSession.setActionHandler(action, handler) } catch { /* unsupported action on this browser */ } }); return () => handlers.forEach(([action]) => { try { navigator.mediaSession.setActionHandler(action, null) } catch { /* unsupported action */ } }) }, [api, track])
-  useEffect(() => { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused' }, [playing])
-  return <audio ref={audio} preload="metadata" onTimeUpdate={(e) => { const el = e.currentTarget; usePlayer.getState().setProgress(el.currentTime, Number.isFinite(el.duration) ? el.duration : track?.duration ?? 0); if ('mediaSession' in navigator && Number.isFinite(el.duration) && el.duration > 0) { try { navigator.mediaSession.setPositionState({ duration: el.duration, playbackRate: el.playbackRate, position: Math.min(el.currentTime, el.duration) }) } catch { /* browser rejected position update */ } } }} onLoadedMetadata={(e) => usePlayer.getState().setProgress(e.currentTarget.currentTime, e.currentTarget.duration)} onEnded={(e) => { if (usePlayer.getState().repeat === 'one') { e.currentTarget.currentTime = 0; void e.currentTarget.play() } else usePlayer.getState().next() }} onError={() => usePlayer.getState().setPlaying(false)} />
+  const audio = useRef<HTMLAudioElement>(null)
+  const api = useApi()
+  const queue = usePlayer((s) => s.queue)
+  const currentIndex = usePlayer((s) => s.currentIndex)
+  const playing = usePlayer((s) => s.playing)
+  const volume = usePlayer((s) => s.volume)
+  const muted = usePlayer((s) => s.muted)
+  const track = queue[currentIndex]
+
+  useEffect(() => bindPlayerRuntime({
+    seek: (value) => { if (audio.current) audio.current.currentTime = value },
+    volume: (value, isMuted) => { if (audio.current) { audio.current.volume = value; audio.current.muted = isMuted } },
+    start: (nextTrack: Track) => {
+      const element = audio.current
+      if (!element) return
+      const url = api.streamUrl(nextTrack.id)
+      if (element.src !== url) {
+        element.src = url
+        element.load()
+      }
+      const attempt = element.play()
+      if (attempt) void attempt.catch(() => usePlayer.getState().setPlaying(false))
+    },
+  }), [api])
+
+  useEffect(() => {
+    const element = audio.current
+    if (!element || !track) return
+    let cancelled = false
+    let release: (() => void) | undefined
+
+    new StreamFirstSourceResolver(api).resolve(track).then((source) => {
+      if (cancelled) { source.revoke?.(); return }
+      release = source.revoke
+      if (element.src !== source.url) {
+        element.src = source.url
+        element.load()
+      }
+      if (usePlayer.getState().playing && element.paused) {
+        void element.play().catch(() => usePlayer.getState().setPlaying(false))
+      }
+    })
+
+    return () => {
+      cancelled = true
+      release?.()
+    }
+  }, [api, track?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const element = audio.current
+    if (!element || !track) return
+    if (playing) {
+      if (element.paused) void element.play().catch(() => usePlayer.getState().setPlaying(false))
+    } else {
+      element.pause()
+    }
+  }, [playing, track])
+
+  useEffect(() => {
+    if (audio.current) {
+      audio.current.volume = volume
+      audio.current.muted = muted
+    }
+  }, [volume, muted])
+
+  useEffect(() => {
+    if (!track || !('mediaSession' in navigator)) return
+    setMediaMetadata(track, api)
+    const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
+      ['play', () => usePlayer.getState().setPlaying(true)],
+      ['pause', () => usePlayer.getState().setPlaying(false)],
+      ['previoustrack', () => usePlayer.getState().previous()],
+      ['nexttrack', () => usePlayer.getState().next()],
+      ['seekbackward', (d) => usePlayer.getState().seekTo(Math.max(0, (audio.current?.currentTime ?? 0) - (d.seekOffset ?? 10)))],
+      ['seekforward', (d) => usePlayer.getState().seekTo(Math.min(audio.current?.duration ?? Infinity, (audio.current?.currentTime ?? 0) + (d.seekOffset ?? 10)))],
+      ['seekto', (d) => d.seekTime !== undefined && usePlayer.getState().seekTo(d.seekTime)],
+    ]
+    handlers.forEach(([action, handler]) => { try { navigator.mediaSession.setActionHandler(action, handler) } catch { /* unsupported action on this browser */ } })
+    return () => handlers.forEach(([action]) => { try { navigator.mediaSession.setActionHandler(action, null) } catch { /* unsupported action */ } })
+  }, [api, track])
+
+  useEffect(() => {
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
+  }, [playing])
+
+  return <audio
+    ref={audio}
+    preload="metadata"
+    playsInline
+    onTimeUpdate={(e) => {
+      const el = e.currentTarget
+      usePlayer.getState().setProgress(el.currentTime, Number.isFinite(el.duration) ? el.duration : track?.duration ?? 0)
+      if ('mediaSession' in navigator && Number.isFinite(el.duration) && el.duration > 0) {
+        try { navigator.mediaSession.setPositionState({ duration: el.duration, playbackRate: el.playbackRate, position: Math.min(el.currentTime, el.duration) }) } catch { /* browser rejected position update */ }
+      }
+    }}
+    onLoadedMetadata={(e) => usePlayer.getState().setProgress(e.currentTarget.currentTime, e.currentTarget.duration)}
+    onPlay={() => usePlayer.getState().playing || usePlayer.getState().setPlaying(true)}
+    onPause={() => usePlayer.getState().playing && usePlayer.setState({ playing: false })}
+    onEnded={(e) => {
+      if (usePlayer.getState().repeat === 'one') {
+        e.currentTarget.currentTime = 0
+        void e.currentTarget.play()
+      } else usePlayer.getState().next()
+    }}
+    onError={() => usePlayer.getState().setPlaying(false)}
+  />
 }
