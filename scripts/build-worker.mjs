@@ -53,7 +53,7 @@ export default {
 
     if (pathname === '/navidrome' || pathname.startsWith('/navidrome/')) {
       const upstreamPath = pathname.slice('/navidrome'.length) || '/'
-      const upstream = new URL(`https://tomify.tomdixon.uk${upstreamPath}`)
+      const upstream = new URL('https://tomify.tomdixon.uk' + upstreamPath)
       upstream.search = url.search
       const headers = new Headers(request.headers)
       headers.delete('host')
