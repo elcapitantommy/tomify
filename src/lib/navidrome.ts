@@ -8,7 +8,7 @@ export class NavidromeError extends Error { constructor(message: string, readonl
 
 export function normaliseServerUrl(value: string) { return value.trim().replace(/\/+$/, '') }
 export function createAuthSession(serverUrl: string, username: string, password: string): AuthSession {
-  const salt = crypto.randomUUID().replaceAll('-', '').slice(0, 12)
+  const salt = Array.from(crypto.getRandomValues(new Uint8Array(6)), (byte) => byte.toString(16).padStart(2, '0')).join('')
   return { serverUrl: normaliseServerUrl(serverUrl), username: username.trim(), salt, token: SparkMD5.hash(password + salt) }
 }
 
