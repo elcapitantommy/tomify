@@ -1,0 +1,5 @@
+name = "tomify"
+main = "dist/server/index.js"
+compatibility_date = "2026-10-11"
+
+workers_dev = true
