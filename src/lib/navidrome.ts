@@ -13,7 +13,7 @@ export function createAuthSession(serverUrl: string, username: string, password:
 }
 
 export class NavidromeClient {
-  constructor(readonly session: AuthSession, private readonly fetcher: typeof fetch = fetch) {}
+  constructor(readonly session: AuthSession, private readonly fetcher: typeof fetch = window.fetch.bind(window)) {}
 
   url(endpoint: string, params: Record<string, string | number | undefined> = {}) {
     const url = new URL(`${this.session.serverUrl}/rest/${endpoint}.view`)
