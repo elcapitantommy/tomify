@@ -21,6 +21,7 @@ export default defineConfig({
       workbox: {
         navigateFallback: '/index.html',
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+        globIgnores: ['server/**'],
         runtimeCaching: [{
           urlPattern: ({ request }) => request.destination === 'image',
           handler: 'CacheFirst',
