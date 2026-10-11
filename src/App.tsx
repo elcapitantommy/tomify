@@ -1,0 +1,21 @@
+import { useEffect } from 'react'
+import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { ApiProvider } from './lib/api-context'
+import { useAuth } from './stores/auth'
+import { Login } from './components/Login'
+import { AppShell } from './components/AppShell'
+import { Home } from './pages/Home'
+import { Artists } from './pages/Artists'
+import { ArtistDetail } from './pages/ArtistDetail'
+import { Albums } from './pages/Albums'
+import { AlbumDetail } from './pages/AlbumDetail'
+import { Search } from './pages/Search'
+import { Playlists } from './pages/Playlists'
+import { PlaylistDetail } from './pages/PlaylistDetail'
+import { Favourites } from './pages/Favourites'
+import { Downloads } from './pages/Downloads'
+import { Settings } from './pages/Settings'
+import { NotFound } from './pages/NotFound'
+
+export default function App() { const session = useAuth((s) => s.session); const validate = useAuth((s) => s.validate); useEffect(() => { if (session) void validate() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  if (!session) return <Login/>; return <ApiProvider><BrowserRouter><Routes><Route element={<AppShell/>}><Route index element={<Home/>}/><Route path="artists" element={<Artists/>}/><Route path="artists/:id" element={<ArtistDetail/>}/><Route path="albums" element={<Albums/>}/><Route path="albums/:id" element={<AlbumDetail/>}/><Route path="search" element={<Search/>}/><Route path="playlists" element={<Playlists/>}/><Route path="playlists/:id" element={<PlaylistDetail/>}/><Route path="favourites" element={<Favourites/>}/><Route path="downloads" element={<Downloads/>}/><Route path="settings" element={<Settings/>}/><Route path="*" element={<NotFound/>}/></Route></Routes></BrowserRouter></ApiProvider> }

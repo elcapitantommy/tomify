@@ -99,6 +99,8 @@ The PWA installs and can authenticate and browse the live library.
 
 ## Phase 4 — Streaming player
 
+> The initial custom PWA implements the Phase 3 shell and the main Phase 4 playback surface. Physical iPhone lock-screen acceptance testing and recovered-stream retry remain operational checks before these phases are considered complete.
+
 **Goal:** make Tomify a credible everyday player.
 
 - [ ] Track playback.
