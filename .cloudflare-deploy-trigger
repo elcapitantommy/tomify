@@ -1,0 +1,3 @@
+Cloudflare production deployment trigger.
+
+This file exists only to force a fresh build after switching the production branch to feat/phase-1-pwa.
