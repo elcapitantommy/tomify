@@ -24,8 +24,18 @@ export class NavidromeClient {
 
   private async get<T>(endpoint: string, params?: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<T> {
     let response: Response
-    try { response = await this.fetcher(this.url(endpoint, params), { signal, credentials: 'omit' }) }
-    catch (error) { if (error instanceof DOMException && error.name === 'AbortError') throw error; throw new NavidromeError('Tomify cannot reach the music server.') }
+    try {
+      response = await this.fetcher(this.url(endpoint, params), { signal, credentials: 'omit' })
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') throw error
+      console.error('Navidrome request failed', {
+        endpoint,
+        serverUrl: this.session.serverUrl,
+        errorName: error instanceof Error ? error.name : typeof error,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      })
+      throw new NavidromeError('Tomify cannot reach the music server.')
+    }
     if (!response.ok) throw new NavidromeError(`The music server returned ${response.status}.`, response.status)
     const body = await response.json() as SubsonicEnvelope
     const data = body['subsonic-response']
