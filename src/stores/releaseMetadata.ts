@@ -10,7 +10,7 @@ interface ReleaseMetadataState {
   cloudStatus: CloudStatus
   load(): Promise<void>
   save(albumId: string, patch: { releaseType?: ReleaseType; releaseDate?: string | null }): Promise<boolean>
-  enrich(album: Album, force?: boolean): Promise<boolean>
+  enrich(album: Album, force?: boolean, replaceManual?: boolean): Promise<boolean>
   enrichMany(albums: Album[], limit?: number): Promise<void>
 }
 
@@ -94,10 +94,10 @@ export const useReleaseMetadata = create<ReleaseMetadataState>((set, get) => ({
     }
   },
 
-  enrich: async (album, force = false) => {
+  enrich: async (album, force = false, replaceManual = false) => {
     const existing = get().overrides[album.id]
     if (!force && (existing || attemptedThisSession.has(album.id))) return false
-    if (force && existing?.source === 'manual') return false
+    if (force && existing?.source === 'manual' && !replaceManual) return false
     const headers = authHeaders()
     if (!headers || get().cloudStatus !== 'cloud') return false
     attemptedThisSession.add(album.id)
@@ -113,6 +113,7 @@ export const useReleaseMetadata = create<ReleaseMetadataState>((set, get) => ({
           musicBrainzId: album.musicBrainzId,
           year: album.year,
           force,
+          replaceManual,
         }),
       })
       if (!response.ok) {
