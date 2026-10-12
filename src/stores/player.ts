@@ -1,6 +1,46 @@
 import { create } from 'zustand'
 import type { RepeatMode, Track } from '../types'
 
+const PLAYER_STORAGE_KEY = 'tomify-player-v1'
+
+interface PersistedPlayerState {
+  queue: Track[]
+  currentIndex: number
+  currentTime: number
+  duration: number
+  volume: number
+  muted: boolean
+  shuffle: boolean
+  repeat: RepeatMode
+}
+
+function loadPersistedPlayer(): PersistedPlayerState | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(PLAYER_STORAGE_KEY)
+    if (!raw) return null
+    const value = JSON.parse(raw) as Partial<PersistedPlayerState>
+    if (!Array.isArray(value.queue)) return null
+    const currentIndex = Number.isInteger(value.currentIndex) ? Number(value.currentIndex) : -1
+    const safeIndex = value.queue.length ? Math.min(Math.max(currentIndex, 0), value.queue.length - 1) : -1
+    const repeat: RepeatMode = value.repeat === 'all' || value.repeat === 'one' ? value.repeat : 'off'
+    return {
+      queue: value.queue,
+      currentIndex: safeIndex,
+      currentTime: Number.isFinite(value.currentTime) ? Math.max(0, Number(value.currentTime)) : 0,
+      duration: Number.isFinite(value.duration) ? Math.max(0, Number(value.duration)) : 0,
+      volume: Number.isFinite(value.volume) ? Math.max(0, Math.min(1, Number(value.volume))) : 0.8,
+      muted: value.muted === true,
+      shuffle: value.shuffle === true,
+      repeat,
+    }
+  } catch {
+    return null
+  }
+}
+
+const restoredPlayer = loadPersistedPlayer()
+
 export interface PlayerState {
   queue: Track[]; currentIndex: number; playing: boolean; shuffle: boolean; repeat: RepeatMode; currentTime: number; duration: number; volume: number; muted: boolean; queueOpen: boolean; nowPlayingOpen: boolean; activitySerial: number;
   playTracks(tracks: Track[], startIndex?: number): void; playNow(track: Track): void; addToQueue(track: Track): void; removeFromQueue(index: number): void; moveInQueue(from: number, to: number): void; clearQueue(): void; next(): void; previous(): void; setPlaying(value: boolean): void; setProgress(currentTime: number, duration: number): void; seekTo(value: number): void; setVolume(value: number): void; toggleMuted(): void; toggleShuffle(): void; cycleRepeat(): void; setQueueOpen(value: boolean): void; setNowPlayingOpen(value: boolean): void;
@@ -26,7 +66,7 @@ export const bindPlayerRuntime = (handlers: {
 }
 
 export const usePlayer = create<PlayerState>((set, get) => ({
-  queue: [], currentIndex: -1, playing: false, shuffle: false, repeat: 'off', currentTime: 0, duration: 0, volume: 0.8, muted: false, queueOpen: false, nowPlayingOpen: false, activitySerial: 0,
+  queue: restoredPlayer?.queue ?? [], currentIndex: restoredPlayer?.currentIndex ?? -1, playing: false, shuffle: restoredPlayer?.shuffle ?? false, repeat: restoredPlayer?.repeat ?? 'off', currentTime: restoredPlayer?.currentTime ?? 0, duration: restoredPlayer?.duration ?? 0, volume: restoredPlayer?.volume ?? 0.8, muted: restoredPlayer?.muted ?? false, queueOpen: false, nowPlayingOpen: false, activitySerial: 0,
 
   playTracks: (tracks, startIndex = 0) => {
     const safeIndex = tracks.length ? Math.min(Math.max(startIndex, 0), tracks.length - 1) : -1
@@ -99,3 +139,28 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   setQueueOpen: (queueOpen) => set({ queueOpen }),
   setNowPlayingOpen: (nowPlayingOpen) => set({ nowPlayingOpen }),
 }))
+
+
+if (typeof window !== 'undefined') {
+  let persistTimer: number | undefined
+  const persist = () => {
+    const state = usePlayer.getState()
+    const snapshot: PersistedPlayerState = {
+      queue: state.queue,
+      currentIndex: state.currentIndex,
+      currentTime: state.currentTime,
+      duration: state.duration,
+      volume: state.volume,
+      muted: state.muted,
+      shuffle: state.shuffle,
+      repeat: state.repeat,
+    }
+    try { window.localStorage.setItem(PLAYER_STORAGE_KEY, JSON.stringify(snapshot)) } catch { /* storage unavailable */ }
+  }
+
+  usePlayer.subscribe(() => {
+    if (persistTimer !== undefined) window.clearTimeout(persistTimer)
+    persistTimer = window.setTimeout(persist, 250)
+  })
+  window.addEventListener('pagehide', persist)
+}
