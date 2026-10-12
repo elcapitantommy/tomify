@@ -49,7 +49,7 @@ export function ArtistDetail() {
     ]
   }, [albums, overrides])
   const counts = {
-    all: albums.length,
+    all: groupedAlbums.length,
     album: sections.find((section) => section.key === 'album')?.items.length ?? 0,
     'single-ep': sections.find((section) => section.key === 'single-ep')?.items.length ?? 0,
     compilation: sections.find((section) => section.key === 'compilation')?.items.length ?? 0,
@@ -63,7 +63,7 @@ export function ArtistDetail() {
   if (!data) return null
 
   return <div className="page detail-page">
-    <header className="detail-hero artist-hero"><Artwork id={data.artist.coverArt ?? data.artist.id} alt={data.artist.name} round size={1000}/><div><span className="eyebrow">Artist</span><h1>{data.artist.name}</h1><p>{albums.length} releases in your library</p><div className="hero-actions"><button className="button primary" onClick={() => void playAll()}><Play fill="currentColor"/>Play</button><button className="button secondary" onClick={() => void playAll(true)}><Shuffle/>Shuffle</button></div></div></header>
+    <header className="detail-hero artist-hero"><Artwork id={data.artist.coverArt ?? data.artist.id} alt={data.artist.name} round size={1000}/><div><span className="eyebrow">Artist</span><h1>{data.artist.name}</h1><p>{groupedAlbums.length} releases · {albums.length} versions in your library</p><div className="hero-actions"><button className="button primary" onClick={() => void playAll()}><Play fill="currentColor"/>Play</button><button className="button secondary" onClick={() => void playAll(true)}><Shuffle/>Shuffle</button></div></div></header>
     <div className="release-toolbar artist-release-toolbar"><div className="release-tabs" role="tablist" aria-label="Artist release type">{artistFilters.map((item) => <button key={item.value} className={filter === item.value ? 'release-tab active' : 'release-tab'} onClick={() => setFilter(item.value)}>{item.label}<span>{counts[item.value]}</span></button>)}</div></div>
     {visibleSections.filter((section) => section.items.length > 0).map((section) => <section key={section.key} className="discography-section"><div className="section-title"><div><span className="eyebrow">{section.items.length} {section.items.length === 1 ? 'release' : 'releases'}</span><h2>{section.title}</h2></div></div><div className="card-grid">{section.items.map((family) => <AlbumCard album={family.representative} key={family.key} displayTitle={releaseFamilyTitle(family.representative)} variantCount={family.variants.length} dateLabel={releaseYearLabel(family.representative, overrides[family.representative.id])}/>)}</div></section>)}
   </div>
