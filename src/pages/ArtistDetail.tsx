@@ -11,10 +11,10 @@ import { usePlayer } from '../stores/player'
 import { useReleaseMetadata } from '../stores/releaseMetadata'
 
 const artistFilters: Array<{ value: ReleaseFilter; label: string }> = [
-  { value: 'all', label: 'All' },
   { value: 'album', label: 'Albums' },
   { value: 'single-ep', label: 'Singles & EPs' },
   { value: 'compilation', label: 'Compilations' },
+  { value: 'all', label: 'All' },
 ]
 
 export function ArtistDetail() {
@@ -23,7 +23,7 @@ export function ArtistDetail() {
   const overrides = useReleaseMetadata((state) => state.overrides)
   const enrichMany = useReleaseMetadata((state) => state.enrichMany)
   const cloudStatus = useReleaseMetadata((state) => state.cloudStatus)
-  const [filter, setFilter] = useState<ReleaseFilter>('all')
+  const [filter, setFilter] = useState<ReleaseFilter>('album')
   const { data, loading, error, retry } = useLoad((signal) => api.artist(id, signal), [api, id])
   const albums = useMemo(() => data?.artist.album ?? [], [data])
 
