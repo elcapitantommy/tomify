@@ -113,16 +113,22 @@ function normaliseVariantText(value: string) {
 }
 
 export function releaseFamilyTitle(album: Album): string {
-  let title = (album.name || album.title || '').trim()
-  title = title.replace(/\s*\((?:[^)]*(?:edition|version|remaster(?:ed)?|deluxe|expanded|anniversary|japan(?:ese)?|australi(?:a|an)|uk|us|european|cd\s*\d+|disc\s*\d+|single|e\.?p\.?)\s*[^)]*)\)\s*$/i, '')
-  title = title.replace(/\s*[\[(](?:cd|disc)\s*\d+[\])]?\s*$/i, '')
-  return title.trim() || (album.name || album.title || '').trim()
+  const original = (album.name || album.title || '').trim()
+  let title = original
+  let previous = ''
+  while (title && title !== previous) {
+    previous = title
+    title = title
+      .replace(/\s*[\[(](?:[^\])]*(?:edition|version|remaster(?:ed)?|deluxe|expanded|anniversary|special|limited|japan(?:ese)?|australi(?:a|an)|uk|us|usa|european|cd\s*\d+|disc\s*\d+|single|e\.?p\.?|bonus|vinyl|digital|lossless|flac|hi[- ]?res|\d+\s*bit|\d+(?:\.\d+)?\s*k?hz)[^\])]*)[\])]\s*$/i, '')
+      .replace(/\s*[\[(](?:cd|disc)\s*\d+[\])]?\s*$/i, '')
+      .trim()
+  }
+  return title || original
 }
 
 export function releaseFamilyKey(album: Album, override?: ReleaseOverride): string {
   const type = releaseBucket(resolvedReleaseType(album, override))
   const artist = normaliseVariantText(album.artist || '')
-  if (override?.musicBrainzId) return `${artist}::${type}::mb:${override.musicBrainzId}`
   return `${artist}::${type}::title:${normaliseVariantText(releaseFamilyTitle(album))}`
 }
 
@@ -133,15 +139,49 @@ export interface ReleaseFamily {
 }
 
 export function collapseReleaseVariants(albums: Album[], overrides: Record<string, ReleaseOverride>): ReleaseFamily[] {
-  const families = new Map<string, Album[]>()
-  for (const album of albums) {
-    const key = releaseFamilyKey(album, overrides[album.id])
-    const family = families.get(key) ?? []
-    family.push(album)
-    families.set(key, family)
+  const parent = new Map<string, string>()
+  const find = (id: string): string => {
+    const current = parent.get(id) ?? id
+    if (current === id) return id
+    const root = find(current)
+    parent.set(id, root)
+    return root
+  }
+  const union = (a: string, b: string) => {
+    const rootA = find(a)
+    const rootB = find(b)
+    if (rootA !== rootB) parent.set(rootB, rootA)
   }
 
-  return [...families.entries()].map(([key, variants]) => {
+  for (const album of albums) parent.set(album.id, album.id)
+
+  const titleOwner = new Map<string, string>()
+  const mbidOwner = new Map<string, string>()
+
+  for (const album of albums) {
+    const override = overrides[album.id]
+    const titleKey = releaseFamilyKey(album, override)
+    const existingTitle = titleOwner.get(titleKey)
+    if (existingTitle) union(album.id, existingTitle)
+    else titleOwner.set(titleKey, album.id)
+
+    if (override?.musicBrainzId) {
+      const mbidKey = `${normaliseVariantText(album.artist || '')}::${releaseBucket(resolvedReleaseType(album, override))}::${override.musicBrainzId}`
+      const existingMbid = mbidOwner.get(mbidKey)
+      if (existingMbid) union(album.id, existingMbid)
+      else mbidOwner.set(mbidKey, album.id)
+    }
+  }
+
+  const families = new Map<string, Album[]>()
+  for (const album of albums) {
+    const root = find(album.id)
+    const family = families.get(root) ?? []
+    family.push(album)
+    families.set(root, family)
+  }
+
+  return [...families.values()].map((variants) => {
     const representative = [...variants].sort((a, b) => {
       const aBase = releaseFamilyTitle(a)
       const bBase = releaseFamilyTitle(b)
@@ -150,6 +190,10 @@ export function collapseReleaseVariants(albums: Album[], overrides: Record<strin
       if (aExact !== bExact) return aExact - bExact
       return a.name.length - b.name.length || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
     })[0]
-    return { key, representative, variants: [...variants].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })) }
+    return {
+      key: releaseFamilyKey(representative, overrides[representative.id]),
+      representative,
+      variants: [...variants].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
+    }
   })
 }
