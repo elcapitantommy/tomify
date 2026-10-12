@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      registerType: 'prompt',
       includeAssets: ['tomify-logo-192.png', 'apple-touch-icon-180.png'],
       manifest: {
         name: 'Tomify', short_name: 'Tomify', description: 'Your family music library.',
@@ -19,8 +19,8 @@ export default defineConfig({
       workbox: {
         navigateFallback: '/index.html',
         cleanupOutdatedCaches: true,
-        clientsClaim: true,
-        skipWaiting: true,
+        clientsClaim: false,
+        skipWaiting: false,
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
         globIgnores: ['server/**'],
         runtimeCaching: [{
