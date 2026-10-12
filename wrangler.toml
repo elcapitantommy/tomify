@@ -3,3 +3,8 @@ main = "dist/server/index.js"
 compatibility_date = "2026-10-11"
 
 workers_dev = true
+
+[[d1_databases]]
+binding = "TOMIFY_DB"
+database_name = "tomify-metadata"
+database_id = "5147af2c-ce21-4e41-9ad7-09c3b36e7145"
