@@ -28,11 +28,13 @@ export function Albums() {
     if (data?.length && cloudStatus === 'cloud') void enrichMany(data, 24)
   }, [cloudStatus, data, enrichMany])
 
+  const allFamilies = useMemo(() => collapseReleaseVariants(data ?? [], overrides), [data, overrides])
+
   const counts = useMemo(() => {
-    const result = { all: data?.length ?? 0, album: 0, 'single-ep': 0, compilation: 0 }
-    for (const album of data ?? []) result[releaseBucket(resolvedReleaseType(album, overrides[album.id]))] += 1
+    const result = { all: allFamilies.length, album: 0, 'single-ep': 0, compilation: 0 }
+    for (const family of allFamilies) result[releaseBucket(resolvedReleaseType(family.representative, overrides[family.representative.id]))] += 1
     return result
-  }, [data, overrides])
+  }, [allFamilies, overrides])
 
   const visible = useMemo(() => {
     const filtered = (data ?? []).filter((album) => filter === 'all' || releaseBucket(resolvedReleaseType(album, overrides[album.id])) === filter)
@@ -43,7 +45,7 @@ export function Albums() {
   }, [data, filter, overrides, sort])
 
   return <div className="page">
-    <header className="page-header"><span className="eyebrow">The collection</span><h1>Albums</h1><p>{data ? `${grouped.length} releases · ${data.length} versions` : 'Browse every release on your shelves.'}</p></header>
+    <header className="page-header"><span className="eyebrow">The collection</span><h1>Albums</h1><p>{data ? `${allFamilies.length} releases · ${data.length} versions` : 'Browse every release on your shelves.'}</p></header>
     <div className="release-toolbar">
       <div className="release-tabs" role="tablist" aria-label="Release type">
         {filters.map((item) => <button key={item.value} className={filter === item.value ? 'release-tab active' : 'release-tab'} onClick={() => setFilter(item.value)}>{item.label}<span>{counts[item.value]}</span></button>)}
