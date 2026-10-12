@@ -12,6 +12,7 @@ export function PlayerRuntime() {
   const audioB = useRef<HTMLAudioElement>(null)
   const activeSlot = useRef<AudioSlot>(0)
   const loadedTrackIds = useRef<[string | undefined, string | undefined]>([undefined, undefined])
+  const submittedTrackId = useRef<string | undefined>(undefined)
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
@@ -21,6 +22,11 @@ export function PlayerRuntime() {
   const shuffle = usePlayer((s) => s.shuffle)
   const repeat = usePlayer((s) => s.repeat)
   const track = queue[currentIndex]
+
+  useEffect(() => {
+    submittedTrackId.current = undefined
+    if (track) void api.scrobble(track.id, false).catch(() => undefined)
+  }, [api, track?.id])
 
   const getAudio = (slot: AudioSlot) => slot === 0 ? audioA.current : audioB.current
   const currentAudio = () => getAudio(activeSlot.current)
@@ -170,7 +176,12 @@ export function PlayerRuntime() {
     onTimeUpdate: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       if (activeSlot.current !== slot) return
       const element = event.currentTarget
-      usePlayer.getState().setProgress(element.currentTime, Number.isFinite(element.duration) ? element.duration : track?.duration ?? 0)
+      const duration = Number.isFinite(element.duration) ? element.duration : track?.duration ?? 0
+      usePlayer.getState().setProgress(element.currentTime, duration)
+      if (track && duration > 0 && element.currentTime >= Math.min(duration / 2, 240) && submittedTrackId.current !== track.id) {
+        submittedTrackId.current = track.id
+        void api.scrobble(track.id, true).catch(() => { if (submittedTrackId.current === track.id) submittedTrackId.current = undefined })
+      }
       if ('mediaSession' in navigator && Number.isFinite(element.duration) && element.duration > 0) {
         try { navigator.mediaSession.setPositionState({ duration: element.duration, playbackRate: element.playbackRate, position: Math.min(element.currentTime, element.duration) }) } catch { /* browser rejected position update */ }
       }
@@ -186,7 +197,13 @@ export function PlayerRuntime() {
     },
     onEnded: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       if (activeSlot.current !== slot) return
+      if (track && submittedTrackId.current !== track.id) {
+        submittedTrackId.current = track.id
+        void api.scrobble(track.id, true).catch(() => undefined)
+      }
       if (usePlayer.getState().repeat === 'one') {
+        submittedTrackId.current = undefined
+        if (track) void api.scrobble(track.id, false).catch(() => undefined)
         event.currentTarget.currentTime = 0
         void event.currentTarget.play()
       } else {
