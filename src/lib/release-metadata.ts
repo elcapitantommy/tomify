@@ -9,6 +9,9 @@ export interface ReleaseOverride {
   releaseType?: ReleaseType
   releaseDate?: string | null
   updatedAt?: string
+  source?: 'manual' | 'musicbrainz'
+  musicBrainzId?: string | null
+  matchScore?: number | null
 }
 
 interface DateParts { year: number; month?: number; day?: number }
