@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { inferReleaseType, releaseBucket, releaseDateSortValue, releaseTitleHint, resolvedReleaseType, sortReleases } from './release-metadata'
+import { canonicalReleaseTitle, groupReleaseVariants, inferReleaseType, releaseBucket, releaseDateSortValue, releaseTitleHint, resolvedReleaseType, sortReleases } from './release-metadata'
 import type { Album } from '../types'
 
 const album = (id: string, name: string, year?: number): Album => ({ id, name, artist: 'Test Artist', year })
@@ -27,5 +27,33 @@ describe('release metadata', () => {
     const releases = [album('old', 'Old', 1999), album('new', 'New', 2020)]
     expect(sortReleases(releases, {}, 'newest').map((item) => item.id)).toEqual(['new', 'old'])
     expect(releaseDateSortValue(releases[1])).toBe(20200000)
+  })
+})
+
+
+describe('release variant grouping', () => {
+  it('collapses obvious edition variants into one logical release', () => {
+    const variants = [
+      album('1', 'Echo Park'),
+      album('2', 'Echo Park (Japan Edition)'),
+      album('3', 'Echo Park (UK Edition)'),
+    ]
+    const groups = groupReleaseVariants(variants, {})
+    expect(groups).toHaveLength(1)
+    expect(groups[0].title).toBe('Echo Park')
+    expect(groups[0].variants).toHaveLength(3)
+  })
+
+  it('uses a shared MusicBrainz release-group id even when titles differ', () => {
+    const variants = [album('1', 'Album'), album('2', 'Album Deluxe')]
+    const groups = groupReleaseVariants(variants, {
+      '1': { releaseType: 'album', source: 'musicbrainz', musicBrainzId: 'same-group' },
+      '2': { releaseType: 'album', source: 'musicbrainz', musicBrainzId: 'same-group' },
+    })
+    expect(groups).toHaveLength(1)
+  })
+
+  it('removes edition suffixes from the displayed canonical title', () => {
+    expect(canonicalReleaseTitle(album('1', 'Absolution (24-bit 96kHz)'))).toBe('Absolution')
   })
 })
