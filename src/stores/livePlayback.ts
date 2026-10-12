@@ -96,13 +96,13 @@ export async function fetchLivePlayback(): Promise<{ state: LivePlaybackSnapshot
   return response.json() as Promise<{ state: LivePlaybackSnapshot | null; command: LivePlaybackCommand | null }>
 }
 
-export async function publishLivePlayback(snapshot: Omit<LivePlaybackSnapshot, 'updatedAt' | 'revision'>): Promise<LivePlaybackSnapshot> {
+export async function publishLivePlayback(snapshot: Omit<LivePlaybackSnapshot, 'updatedAt' | 'revision'>, takeover = false): Promise<LivePlaybackSnapshot> {
   const headers = authHeaders()
   if (!headers) throw new Error('Not signed in')
   const response = await window.fetch('/api/live-playback', {
     method: 'POST',
     headers: { ...headers, 'content-type': 'application/json' },
-    body: JSON.stringify(snapshot),
+    body: JSON.stringify({ ...snapshot, takeover }),
   })
   if (!response.ok) throw new Error('Could not publish live playback')
   const body = await response.json() as { state: LivePlaybackSnapshot }
