@@ -35,6 +35,15 @@ function parsePartialDate(value?: PartialDate | null): DateParts | undefined {
   return { year: Number(value.year), month: value.month ? Number(value.month) : undefined, day: value.day ? Number(value.day) : undefined }
 }
 
+export function releaseTitleHint(album: Album): ReleaseType | undefined {
+  const title = (album.name || album.title || '').trim()
+  if (!title) return undefined
+  if (/\((?:cd|disc)?\s*\d*\s*single(?:\s*version)?\)\s*$/i.test(title) || /\b(?:cd|disc)?\s*\d*\s*single\b/i.test(title)) return 'single'
+  if (/\((?:cd|disc)?\s*\d*\s*e\.?p\.?\)\s*$/i.test(title) || /\be\.?p\.?\b/i.test(title)) return 'ep'
+  if (/\(compilation\)\s*$/i.test(title)) return 'compilation'
+  return undefined
+}
+
 export function inferReleaseType(album: Album): ReleaseType {
   const releaseTypes = (album.releaseTypes ?? []).map((value) => value.toLowerCase())
   if (album.isCompilation || releaseTypes.some((value) => value.includes('compilation'))) return 'compilation'
@@ -42,14 +51,13 @@ export function inferReleaseType(album: Album): ReleaseType {
   if (releaseTypes.some((value) => value.includes('single'))) return 'single'
   if (releaseTypes.some((value) => value.includes('album'))) return 'album'
 
-  const title = album.name || album.title || ''
-  if (/\((?:single|single version)\)\s*$/i.test(title)) return 'single'
-  if (/\(ep\)\s*$/i.test(title)) return 'ep'
-  if (/\(compilation\)\s*$/i.test(title)) return 'compilation'
-  return 'album'
+  return releaseTitleHint(album) ?? 'album'
 }
 
 export function resolvedReleaseType(album: Album, override?: ReleaseOverride): ReleaseType {
+  if (override?.source === 'manual' && override.releaseType) return override.releaseType
+  const titleHint = releaseTitleHint(album)
+  if (titleHint && (!override?.releaseType || override.releaseType === 'album' || override.releaseType === 'other')) return titleHint
   return override?.releaseType ?? inferReleaseType(album)
 }
 
