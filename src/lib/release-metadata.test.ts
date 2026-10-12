@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { inferReleaseType, releaseBucket, releaseDateSortValue, resolvedReleaseType, sortReleases } from './release-metadata'
+import { inferReleaseType, releaseBucket, releaseDateSortValue, releaseTitleHint, resolvedReleaseType, sortReleases } from './release-metadata'
 import type { Album } from '../types'
 
 const album = (id: string, name: string, year?: number): Album => ({ id, name, artist: 'Test Artist', year })
@@ -10,13 +10,16 @@ describe('release metadata', () => {
     expect(inferReleaseType({ ...album('2', 'Something'), isCompilation: true })).toBe('compilation')
   })
 
-  it('uses a narrow title fallback only when metadata is missing', () => {
-    expect(inferReleaseType(album('1', 'Track Name (Single)'))).toBe('single')
-    expect(inferReleaseType(album('2', 'Normal Album'))).toBe('album')
+  it('recognises common single and EP edition labels', () => {
+    expect(releaseTitleHint(album('1', 'Suffocate (CD1 Single)'))).toBe('single')
+    expect(releaseTitleHint(album('2', 'High (CD2 Single)'))).toBe('single')
+    expect(releaseTitleHint(album('3', 'The Older E.P.'))).toBe('ep')
+    expect(inferReleaseType(album('4', 'Normal Album'))).toBe('album')
   })
 
-  it('lets a Tomify override win', () => {
-    expect(resolvedReleaseType(album('1', 'Track Name (Single)'), { releaseType: 'album' })).toBe('album')
+  it('keeps manual overrides authoritative but lets strong title hints beat weak automatic album defaults', () => {
+    expect(resolvedReleaseType(album('1', 'Track Name (Single)'), { releaseType: 'album', source: 'manual' })).toBe('album')
+    expect(resolvedReleaseType(album('2', 'High (CD1 Single)'), { releaseType: 'album', source: 'musicbrainz' })).toBe('single')
     expect(releaseBucket('ep')).toBe('single-ep')
   })
 
