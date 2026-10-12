@@ -71,7 +71,7 @@ async function authenticate(request) {
 }
 
 async function ensureReleaseTable(db) {
-  await db.prepare('CREATE TABLE IF NOT EXISTS release_metadata (album_id TEXT PRIMARY KEY, release_type TEXT NOT NULL, release_date TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by TEXT, source TEXT NOT NULL DEFAULT \'manual\', musicbrainz_id TEXT, match_score INTEGER)').run()
+  await db.prepare("CREATE TABLE IF NOT EXISTS release_metadata (album_id TEXT PRIMARY KEY, release_type TEXT NOT NULL, release_date TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by TEXT, source TEXT NOT NULL DEFAULT 'manual', musicbrainz_id TEXT, match_score INTEGER)").run()
   for (const statement of [
     "ALTER TABLE release_metadata ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
     'ALTER TABLE release_metadata ADD COLUMN musicbrainz_id TEXT',
