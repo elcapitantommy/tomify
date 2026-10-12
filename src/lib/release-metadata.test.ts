@@ -62,6 +62,20 @@ describe('release variant grouping', () => {
     expect(groups[0].variants).toHaveLength(2)
   })
 
+  it('merges long-form variants even when automatic metadata disagrees between album and compilation', () => {
+    const variants = [album('1', 'Songs From The Last Century', 1999), album('2', 'Songs From The Last Century', 1999)]
+    const groups = collapseReleaseVariants(variants, {
+      '1': { releaseType: 'album', source: 'musicbrainz', musicBrainzId: 'album-group' },
+      '2': { releaseType: 'compilation', source: 'musicbrainz', musicBrainzId: 'comp-group' },
+    })
+    expect(groups).toHaveLength(1)
+  })
+
+  it('uses a loose trailing edition suffix for grouping when the edition label is unfamiliar', () => {
+    const variants = [album('1', 'Songs From The Last Century'), album('2', 'Songs From The Last Century (UK 1234)')]
+    expect(collapseReleaseVariants(variants, {})).toHaveLength(1)
+  })
+
   it('removes edition suffixes from the displayed canonical title', () => {
     expect(releaseFamilyTitle(album('1', 'Absolution (24-bit 96kHz)'))).toBe('Absolution')
     expect(releaseFamilyTitle(album('2', 'Absolution (2009 version)'))).toBe('Absolution')
