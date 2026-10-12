@@ -6,7 +6,7 @@ import { AlbumCard } from '../components/MediaCards'
 import { ErrorState, SkeletonGrid } from '../components/States'
 import { useLoad } from '../hooks/useLoad'
 import { useApi } from '../lib/api-context'
-import { releaseBucket, releaseYearLabel, resolvedReleaseType, sortReleases, type ReleaseFilter } from '../lib/release-metadata'
+import { collapseReleaseVariants, releaseBucket, releaseFamilyTitle, releaseYearLabel, resolvedReleaseType, sortReleases, type ReleaseFilter } from '../lib/release-metadata'
 import { usePlayer } from '../stores/player'
 import { useReleaseMetadata } from '../stores/releaseMetadata'
 
@@ -36,10 +36,16 @@ export function ArtistDetail() {
       'single-ep': albums.filter((album) => releaseBucket(resolvedReleaseType(album, overrides[album.id])) === 'single-ep'),
       compilation: albums.filter((album) => releaseBucket(resolvedReleaseType(album, overrides[album.id])) === 'compilation'),
     }
+    const familyItems = (items: typeof albums) => {
+      const families = collapseReleaseVariants(items, overrides)
+      const representatives = sortReleases(families.map((family) => family.representative), overrides, 'newest')
+      const byId = new Map(families.map((family) => [family.representative.id, family]))
+      return representatives.map((album) => byId.get(album.id)!).filter(Boolean)
+    }
     return [
-      { key: 'album' as const, title: 'Albums', items: sortReleases(groups.album, overrides, 'newest') },
-      { key: 'single-ep' as const, title: 'Singles & EPs', items: sortReleases(groups['single-ep'], overrides, 'newest') },
-      { key: 'compilation' as const, title: 'Compilations', items: sortReleases(groups.compilation, overrides, 'newest') },
+      { key: 'album' as const, title: 'Albums', items: familyItems(groups.album) },
+      { key: 'single-ep' as const, title: 'Singles & EPs', items: familyItems(groups['single-ep']) },
+      { key: 'compilation' as const, title: 'Compilations', items: familyItems(groups.compilation) },
     ]
   }, [albums, overrides])
   const counts = {
@@ -59,6 +65,6 @@ export function ArtistDetail() {
   return <div className="page detail-page">
     <header className="detail-hero artist-hero"><Artwork id={data.artist.coverArt ?? data.artist.id} alt={data.artist.name} round size={1000}/><div><span className="eyebrow">Artist</span><h1>{data.artist.name}</h1><p>{albums.length} releases in your library</p><div className="hero-actions"><button className="button primary" onClick={() => void playAll()}><Play fill="currentColor"/>Play</button><button className="button secondary" onClick={() => void playAll(true)}><Shuffle/>Shuffle</button></div></div></header>
     <div className="release-toolbar artist-release-toolbar"><div className="release-tabs" role="tablist" aria-label="Artist release type">{artistFilters.map((item) => <button key={item.value} className={filter === item.value ? 'release-tab active' : 'release-tab'} onClick={() => setFilter(item.value)}>{item.label}<span>{counts[item.value]}</span></button>)}</div></div>
-    {visibleSections.filter((section) => section.items.length > 0).map((section) => <section key={section.key} className="discography-section"><div className="section-title"><div><span className="eyebrow">{section.items.length} {section.items.length === 1 ? 'release' : 'releases'}</span><h2>{section.title}</h2></div></div><div className="card-grid">{section.items.map((album) => <AlbumCard album={album} key={album.id} dateLabel={releaseYearLabel(album, overrides[album.id])}/>)}</div></section>)}
+    {visibleSections.filter((section) => section.items.length > 0).map((section) => <section key={section.key} className="discography-section"><div className="section-title"><div><span className="eyebrow">{section.items.length} {section.items.length === 1 ? 'release' : 'releases'}</span><h2>{section.title}</h2></div></div><div className="card-grid">{section.items.map((family) => <AlbumCard album={family.representative} key={family.key} displayTitle={releaseFamilyTitle(family.representative)} variantCount={family.variants.length} dateLabel={releaseYearLabel(family.representative, overrides[family.representative.id])}/>)}</div></section>)}
   </div>
 }
