@@ -33,18 +33,18 @@ export function AlbumDetail() {
 
   const { data: versions, loading: versionsLoading } = useLoad(async (signal) => {
     if (!album) return []
+    const metadataSnapshot = useReleaseMetadata.getState().overrides
     const summaries = album.artistId
       ? (await api.artist(album.artistId, signal)).artist.album ?? []
       : await api.albums('alphabeticalByName', 500, signal)
-    const group = collapseReleaseVariants(summaries, overrides).find((item) => item.variants.some((variant) => variant.id === album.id))
-    const variantSummaries = group?.variants ?? [album]
-    return Promise.all(variantSummaries.map((variant) => api.album(variant.id, signal)))
-  }, [api, album?.id, album?.artistId, overrides])
+    const group = collapseReleaseVariants(summaries, metadataSnapshot).find((item) => item.variants.some((variant) => variant.id === album.id))
+    const otherVariants = (group?.variants ?? []).filter((variant) => variant.id !== album.id)
+    if (!otherVariants.length) return [album]
+    const others = await Promise.all(otherVariants.map((variant) => api.album(variant.id, signal)))
+    return [album, ...others]
+  }, [api, album?.id, album?.artistId])
 
-  const fullVersions = useMemo(() => {
-    if (versions?.length) return versions
-    return album ? [album] : []
-  }, [album, versions])
+  const fullVersions = useMemo(() => versions?.length ? versions : album ? [album] : [], [album, versions])
 
   const groupTitle = album ? releaseFamilyTitle(album) : ''
   const allTracks = fullVersions.flatMap((version) => version.song ?? [])
@@ -86,7 +86,7 @@ export function AlbumDetail() {
       <div className="release-editor-actions"><button className="button secondary" disabled={refreshingMetadata || savingMetadata} onClick={() => void refreshMetadata()}>{refreshingMetadata ? 'Checking MusicBrainz…' : override?.source === 'manual' ? 'Replace with MusicBrainz' : 'Refresh from MusicBrainz'}</button></div>
     </section>}
 
-    {versionsLoading && <SkeletonGrid rows={4}/>}
+    {versionsLoading && album && <><TrackList tracks={album.song ?? []} discAware/><p className="variant-loading">Checking for other editions…</p></>}
     {!versionsLoading && fullVersions.length === 1 && <TrackList tracks={fullVersions[0].song ?? []} discAware/>}
     {!versionsLoading && fullVersions.length > 1 && <div className="release-variants">{fullVersions.map((version, index) => {
       const tracks = version.song ?? []
