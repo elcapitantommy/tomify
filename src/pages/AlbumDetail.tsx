@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Check, Pencil, Play, Shuffle, X } from 'lucide-react'
 import { useParams } from 'react-router-dom'
 import { Artwork } from '../components/Artwork'
@@ -7,7 +7,7 @@ import { TrackList } from '../components/TrackList'
 import { useLoad } from '../hooks/useLoad'
 import { useApi } from '../lib/api-context'
 import { formatHours } from '../lib/format'
-import { releaseDateInputValue, releaseDateLabel, releaseTypeLabels, resolvedReleaseType, type ReleaseType } from '../lib/release-metadata'
+import { releaseDateInputValue, releaseDateLabel, releaseFamilyKey, releaseFamilyTitle, releaseTypeLabels, resolvedReleaseType, type ReleaseType } from '../lib/release-metadata'
 import { usePlayer } from '../stores/player'
 import { useReleaseMetadata } from '../stores/releaseMetadata'
 
@@ -22,11 +22,24 @@ export function AlbumDetail() {
   const [savingMetadata, setSavingMetadata] = useState(false)
   const [refreshingMetadata, setRefreshingMetadata] = useState(false)
   const { data: album, loading, error, retry } = useLoad((signal) => api.album(id, signal), [api, id])
+  const { data: artistData } = useLoad((signal) => album?.artistId ? api.artist(album.artistId, signal) : Promise.resolve(undefined), [api, album?.artistId])
   const tracks = album?.song ?? []
   const override = overrides[id]
   const releaseType = album ? resolvedReleaseType(album, override) : 'album'
   const releaseDate = album ? releaseDateLabel(album, override) : undefined
   const play = (shuffle = false) => usePlayer.getState().playTracks(shuffle ? [...tracks].sort(() => Math.random() - .5) : tracks)
+
+  const variants = useMemo(() => {
+    if (!album) return []
+    const familyKey = releaseFamilyKey(album, overrides[album.id])
+    const siblings = artistData?.artist.album ?? [album]
+    const grouped = siblings.filter((candidate) => releaseFamilyKey(candidate, overrides[candidate.id]) === familyKey)
+    return grouped.length ? grouped : [album]
+  }, [album, artistData, overrides])
+  const { data: variantAlbums } = useLoad(async (signal) => {
+    if (!variants.length) return []
+    return Promise.all(variants.map((variant) => api.album(variant.id, signal)))
+  }, [api, variants.map((variant) => variant.id).join('|')])
 
   useEffect(() => {
     if (album && cloudStatus === 'cloud' && !overrides[album.id]) void enrichRelease(album)
@@ -59,7 +72,7 @@ export function AlbumDetail() {
   if (!album) return null
 
   return <div className="page detail-page">
-    <header className="detail-hero"><Artwork id={album.coverArt ?? album.id} alt={album.name} size={1000}/><div><span className="eyebrow">{releaseTypeLabels[releaseType]}</span><h1>{album.name}</h1><p className="detail-artist">{album.artist}</p><p>{releaseDate && `${releaseDate} · `}{tracks.length} songs · {formatHours(tracks.reduce((sum, t) => sum + (t.duration ?? 0), 0))}</p>{override?.source === 'musicbrainz' && <p className="metadata-source">MusicBrainz classified · {override.musicBrainzId ?? 'matched release'}</p>}<div className="hero-actions"><button className="button primary" onClick={() => play()}><Play fill="currentColor"/>Play</button><button className="button secondary" onClick={() => play(true)}><Shuffle/>Shuffle</button>{cloudStatus === 'cloud' && <button className="button secondary" onClick={() => setEditingMetadata((value) => !value)}>{editingMetadata ? <X/> : <Pencil/>}{editingMetadata ? 'Close metadata' : 'Edit metadata'}</button>}</div></div></header>
+    <header className="detail-hero"><Artwork id={album.coverArt ?? album.id} alt={album.name} size={1000}/><div><span className="eyebrow">{releaseTypeLabels[releaseType]}</span><h1>{releaseFamilyTitle(album)}</h1><p className="detail-artist">{album.artist}</p><p>{releaseDate && `${releaseDate} · `}{tracks.length} songs · {formatHours(tracks.reduce((sum, t) => sum + (t.duration ?? 0), 0))}</p>{override?.source === 'musicbrainz' && <p className="metadata-source">MusicBrainz classified · {override.musicBrainzId ?? 'matched release'}</p>}<div className="hero-actions"><button className="button primary" onClick={() => play()}><Play fill="currentColor"/>Play</button><button className="button secondary" onClick={() => play(true)}><Shuffle/>Shuffle</button>{cloudStatus === 'cloud' && <button className="button secondary" onClick={() => setEditingMetadata((value) => !value)}>{editingMetadata ? <X/> : <Pencil/>}{editingMetadata ? 'Close metadata' : 'Edit metadata'}</button>}</div></div></header>
 
     {editingMetadata && cloudStatus === 'cloud' && <section className="release-editor cloud-only" aria-label="Release metadata">
       <div className="release-editor-title"><Check/><div><strong>Release metadata</strong><small>{override?.source === 'musicbrainz' ? 'Automatically matched from MusicBrainz and saved to Tomify.' : override?.source === 'manual' ? 'Manual override saved to Tomify.' : 'No cloud classification yet.'}</small></div></div>
@@ -68,6 +81,6 @@ export function AlbumDetail() {
     <div className="release-editor-actions"><button className="button secondary" disabled={refreshingMetadata || savingMetadata} onClick={() => void refreshMetadata()}>{refreshingMetadata ? 'Checking MusicBrainz…' : override?.source === 'manual' ? 'Replace with MusicBrainz' : 'Refresh from MusicBrainz'}</button></div>
     </section>}
 
-    <TrackList tracks={tracks} discAware/>
+    {(variantAlbums?.length ?? 0) > 1 ? <div className="release-variants">{variantAlbums!.map((variant, index) => <section className="release-variant" key={variant.id}><div className="release-variant-heading"><div><span className="eyebrow">Edition {index + 1} of {variantAlbums!.length}</span><h2>{variant.name}</h2><p>{releaseDateLabel(variant, overrides[variant.id]) ?? variant.year ?? ''}{variant.song?.length ? ` · ${variant.song.length} songs` : ''}</p></div><button className="button secondary" onClick={() => usePlayer.getState().playTracks(variant.song ?? [])}><Play fill="currentColor"/>Play edition</button></div><TrackList tracks={variant.song ?? []} discAware/></section>)}</div> : <TrackList tracks={tracks} discAware/>}
   </div>
 }
