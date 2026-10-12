@@ -98,6 +98,17 @@ function normalise(value) {
   return String(value || '').toLocaleLowerCase('en').replace(/[^a-z0-9]+/g, ' ').trim()
 }
 
+function releaseTitleHint(title) {
+  const value = String(title || '').trim()
+  if (/\((?:cd|disc)?\s*\d*\s*single(?:\s*version)?\)\s*$/i.test(value) || /\b(?:cd|disc)?\s*\d*\s*single\b/i.test(value)) return 'single'
+  if (/\((?:cd|disc)?\s*\d*\s*e\.?p\.?\)\s*$/i.test(value) || /\be\.?p\.?\b/i.test(value)) return 'ep'
+  return null
+}
+
+function cleanReleaseTitle(title) {
+  return String(title || '').replace(/\s*\((?:cd|disc)?\s*\d*\s*(?:single(?:\s*version)?|e\.?p\.?)\)\s*$/i, '').trim()
+}
+
 function musicBrainzType(group) {
   const secondary = (group['secondary-types'] || []).map((value) => String(value).toLowerCase())
   if (secondary.includes('compilation')) return 'compilation'
@@ -148,12 +159,15 @@ async function lookupMusicBrainzReleaseGroup(album) {
     if (group?.id) return { group, score: 100 }
   }
 
-  const title = String(album.name || '').replace(/"/g, '').trim()
+  const originalTitle = String(album.name || '').replace(/"/g, '').trim()
+  const title = cleanReleaseTitle(originalTitle)
   const artist = String(album.artist || '').replace(/"/g, '').trim()
   if (!title || !artist) return null
 
   const searchUrl = new URL('https://musicbrainz.org/ws/2/release-group/')
-  searchUrl.searchParams.set('query', 'releasegroup:"' + title + '" AND artist:"' + artist + '"')
+  const hintedType = releaseTitleHint(originalTitle)
+  const typeQuery = hintedType === 'single' ? ' AND primarytype:single' : hintedType === 'ep' ? ' AND primarytype:ep' : ''
+  searchUrl.searchParams.set('query', 'releasegroup:"' + title + '" AND artist:"' + artist + '"' + typeQuery)
   searchUrl.searchParams.set('limit', '5')
   searchUrl.searchParams.set('fmt', 'json')
   const search = await musicBrainzJson(searchUrl)
