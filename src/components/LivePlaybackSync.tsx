@@ -57,6 +57,7 @@ export function LivePlaybackSync() {
   const setSnapshot = useLivePlayback((state) => state.setSnapshot)
   const setConnected = useLivePlayback((state) => state.setConnected)
   const lastCommandRevision = useRef(0)
+  const commandInitialised = useRef(false)
   const lastActivitySerial = useRef(activitySerial)
   const publishing = useRef(false)
 
@@ -93,7 +94,10 @@ export function LivePlaybackSync() {
         setSnapshot(result.state)
 
         const command = result.command
-        if (command && command.targetDeviceId === localPlaybackDeviceId && command.revision > lastCommandRevision.current) {
+        if (!commandInitialised.current) {
+          lastCommandRevision.current = command?.revision ?? 0
+          commandInitialised.current = true
+        } else if (command && command.targetDeviceId === localPlaybackDeviceId && command.revision > lastCommandRevision.current) {
           lastCommandRevision.current = command.revision
           applyCommand(command)
           window.setTimeout(() => { if (!stopped) void publish() }, 100)
