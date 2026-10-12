@@ -8,10 +8,10 @@ import { collapseReleaseVariants, releaseBucket, releaseFamilyTitle, releaseYear
 import { useReleaseMetadata } from '../stores/releaseMetadata'
 
 const filters: Array<{ value: ReleaseFilter; label: string }> = [
-  { value: 'all', label: 'All' },
   { value: 'album', label: 'Albums' },
   { value: 'single-ep', label: 'Singles & EPs' },
   { value: 'compilation', label: 'Compilations' },
+  { value: 'all', label: 'All' },
 ]
 
 export function Albums() {
@@ -19,7 +19,7 @@ export function Albums() {
   const overrides = useReleaseMetadata((state) => state.overrides)
   const enrichMany = useReleaseMetadata((state) => state.enrichMany)
   const cloudStatus = useReleaseMetadata((state) => state.cloudStatus)
-  const [filter, setFilter] = useState<ReleaseFilter>('all')
+  const [filter, setFilter] = useState<ReleaseFilter>('album')
   const [sort, setSort] = useState<ReleaseSort>('newest')
   const { data, error, loading, retry } = useLoad((signal) => api.albums('alphabeticalByName', 500, signal), [api])
   const play = async (id: string) => usePlayer.getState().playTracks((await api.album(id)).song ?? [])
