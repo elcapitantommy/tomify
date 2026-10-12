@@ -7,7 +7,7 @@ import { TrackList } from '../components/TrackList'
 import { useLoad } from '../hooks/useLoad'
 import { useApi } from '../lib/api-context'
 import { formatHours } from '../lib/format'
-import { canonicalReleaseTitle, groupReleaseVariants, releaseDateInputValue, releaseDateLabel, releaseTypeLabels, resolvedReleaseType, type ReleaseType } from '../lib/release-metadata'
+import { collapseReleaseVariants, releaseDateInputValue, releaseDateLabel, releaseFamilyTitle, releaseTypeLabels, resolvedReleaseType, type ReleaseType } from '../lib/release-metadata'
 import { usePlayer } from '../stores/player'
 import { useReleaseMetadata } from '../stores/releaseMetadata'
 
@@ -36,7 +36,7 @@ export function AlbumDetail() {
     const summaries = album.artistId
       ? (await api.artist(album.artistId, signal)).artist.album ?? []
       : await api.albums('alphabeticalByName', 500, signal)
-    const group = groupReleaseVariants(summaries, overrides).find((item) => item.variants.some((variant) => variant.id === album.id))
+    const group = collapseReleaseVariants(summaries, overrides).find((item) => item.variants.some((variant) => variant.id === album.id))
     const variantSummaries = group?.variants ?? [album]
     return Promise.all(variantSummaries.map((variant) => api.album(variant.id, signal)))
   }, [api, album?.id, album?.artistId, overrides])
@@ -46,7 +46,7 @@ export function AlbumDetail() {
     return album ? [album] : []
   }, [album, versions])
 
-  const groupTitle = album ? canonicalReleaseTitle(album) : ''
+  const groupTitle = album ? releaseFamilyTitle(album) : ''
   const allTracks = fullVersions.flatMap((version) => version.song ?? [])
   const playAllVersions = (shuffle = false) => usePlayer.getState().playTracks(shuffle ? [...allTracks].sort(() => Math.random() - .5) : allTracks)
 
@@ -88,10 +88,10 @@ export function AlbumDetail() {
 
     {versionsLoading && <SkeletonGrid rows={4}/>}
     {!versionsLoading && fullVersions.length === 1 && <TrackList tracks={fullVersions[0].song ?? []} discAware/>}
-    {!versionsLoading && fullVersions.length > 1 && <div className="album-versions">{fullVersions.map((version, index) => {
+    {!versionsLoading && fullVersions.length > 1 && <div className="release-variants">{fullVersions.map((version, index) => {
       const tracks = version.song ?? []
-      return <section className="album-version" key={version.id}>
-        <div className="album-version-heading"><div><span className="eyebrow">Version {index + 1}</span><h2>{version.name}</h2><p>{version.year ? `${version.year} · ` : ''}{tracks.length} songs · {formatHours(tracks.reduce((sum, t) => sum + (t.duration ?? 0), 0))}</p></div><div className="album-version-actions"><button className="button secondary" onClick={() => usePlayer.getState().playTracks(tracks)}><Play fill="currentColor"/>Play this version</button></div></div>
+      return <section className="release-variant" key={version.id}>
+        <div className="release-variant-heading"><div><span className="eyebrow">Version {index + 1}</span><h2>{version.name}</h2><p>{version.year ? `${version.year} · ` : ''}{tracks.length} songs · {formatHours(tracks.reduce((sum, t) => sum + (t.duration ?? 0), 0))}</p></div><div className="release-variant-actions"><button className="button secondary" onClick={() => usePlayer.getState().playTracks(tracks)}><Play fill="currentColor"/>Play this version</button></div></div>
         <TrackList tracks={tracks} discAware/>
       </section>
     })}</div>}
