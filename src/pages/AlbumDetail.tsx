@@ -22,7 +22,11 @@ export function AlbumDetail() {
   const [savingMetadata, setSavingMetadata] = useState(false)
   const [refreshingMetadata, setRefreshingMetadata] = useState(false)
 
-  const { data: album, loading, error, retry } = useLoad((signal) => api.album(id, signal), [api, id])
+  const { data: album, loading, error, retry } = useLoad(
+    (signal) => api.album(id, signal),
+    [api, id],
+    `album:${api.session.username}:${id}`,
+  )
   const override = overrides[id]
   const releaseType = album ? resolvedReleaseType(album, override) : 'album'
   const releaseDate = album ? releaseDateLabel(album, override) : undefined
