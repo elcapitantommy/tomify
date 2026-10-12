@@ -4,7 +4,7 @@ import { useLoad } from '../hooks/useLoad'
 import { AlbumCard } from '../components/MediaCards'
 import { EmptyState, ErrorState, SkeletonGrid } from '../components/States'
 import { usePlayer } from '../stores/player'
-import { releaseBucket, releaseYearLabel, resolvedReleaseType, sortReleases, type ReleaseFilter, type ReleaseSort } from '../lib/release-metadata'
+import { collapseReleaseVariants, releaseBucket, releaseFamilyTitle, releaseYearLabel, resolvedReleaseType, sortReleases, type ReleaseFilter, type ReleaseSort } from '../lib/release-metadata'
 import { useReleaseMetadata } from '../stores/releaseMetadata'
 
 const filters: Array<{ value: ReleaseFilter; label: string }> = [
@@ -36,7 +36,10 @@ export function Albums() {
 
   const visible = useMemo(() => {
     const filtered = (data ?? []).filter((album) => filter === 'all' || releaseBucket(resolvedReleaseType(album, overrides[album.id])) === filter)
-    return sortReleases(filtered, overrides, sort)
+    const families = collapseReleaseVariants(filtered, overrides)
+    const representatives = sortReleases(families.map((family) => family.representative), overrides, sort)
+    const byId = new Map(families.map((family) => [family.representative.id, family]))
+    return representatives.map((album) => byId.get(album.id)!).filter(Boolean)
   }, [data, filter, overrides, sort])
 
   return <div className="page">
@@ -50,6 +53,6 @@ export function Albums() {
     {loading && <SkeletonGrid rows={10}/>} {error && <ErrorState message={error} retry={retry}/>}
     {data && !data.length && <EmptyState title="No albums yet" message="Add music to Navidrome and it will appear here."/>}
     {data && data.length > 0 && !visible.length && <EmptyState title="Nothing in this section yet" message="Classify a release and it will appear here."/>}
-    <div className="card-grid">{visible.map((album) => <AlbumCard album={album} key={album.id} dateLabel={releaseYearLabel(album, overrides[album.id])} onPlay={() => void play(album.id)}/>)}</div>
+    <div className="card-grid">{visible.map((family) => <AlbumCard album={family.representative} key={family.key} displayTitle={releaseFamilyTitle(family.representative)} variantCount={family.variants.length} dateLabel={releaseYearLabel(family.representative, overrides[family.representative.id])} onPlay={() => void play(family.representative.id)}/>)}</div>
   </div>
 }
