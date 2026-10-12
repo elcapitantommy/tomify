@@ -27,8 +27,6 @@ function snapshotFromPlayer() {
 }
 
 async function publishCurrent() {
-  const state = usePlayer.getState()
-  if (!state.queue[state.currentIndex]) return null
   return publishLivePlayback(snapshotFromPlayer())
 }
 
