@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalReleaseTitle, groupReleaseVariants, inferReleaseType, releaseBucket, releaseDateSortValue, releaseTitleHint, resolvedReleaseType, sortReleases } from './release-metadata'
+import { collapseReleaseVariants, inferReleaseType, releaseBucket, releaseDateSortValue, releaseFamilyTitle, releaseTitleHint, resolvedReleaseType, sortReleases } from './release-metadata'
 import type { Album } from '../types'
 
 const album = (id: string, name: string, year?: number): Album => ({ id, name, artist: 'Test Artist', year })
@@ -38,15 +38,15 @@ describe('release variant grouping', () => {
       album('2', 'Echo Park (Japan Edition)'),
       album('3', 'Echo Park (UK Edition)'),
     ]
-    const groups = groupReleaseVariants(variants, {})
+    const groups = collapseReleaseVariants(variants, {})
     expect(groups).toHaveLength(1)
-    expect(groups[0].title).toBe('Echo Park')
+    expect(releaseFamilyTitle(groups[0].representative)).toBe('Echo Park')
     expect(groups[0].variants).toHaveLength(3)
   })
 
   it('uses a shared MusicBrainz release-group id even when titles differ', () => {
     const variants = [album('1', 'Album'), album('2', 'Album Deluxe')]
-    const groups = groupReleaseVariants(variants, {
+    const groups = collapseReleaseVariants(variants, {
       '1': { releaseType: 'album', source: 'musicbrainz', musicBrainzId: 'same-group' },
       '2': { releaseType: 'album', source: 'musicbrainz', musicBrainzId: 'same-group' },
     })
@@ -54,6 +54,6 @@ describe('release variant grouping', () => {
   })
 
   it('removes edition suffixes from the displayed canonical title', () => {
-    expect(canonicalReleaseTitle(album('1', 'Absolution (24-bit 96kHz)'))).toBe('Absolution')
+    expect(releaseFamilyTitle(album('1', 'Absolution (24-bit 96kHz)'))).toBe('Absolution')
   })
 })
