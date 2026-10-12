@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-export function useLoad<T>(loader: (signal: AbortSignal) => Promise<T>, deps: React.DependencyList = []) {
-  const [data, setData] = useState<T | null>(null)
+const loadCache = new Map<string, unknown>()
+
+export function useLoad<T>(loader: (signal: AbortSignal) => Promise<T>, deps: React.DependencyList = [], cacheKey?: string) {
+  const cached = cacheKey ? loadCache.get(cacheKey) as T | undefined : undefined
+  const [data, setData] = useState<T | null>(cached ?? null)
   const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(cached === undefined)
   const [nonce, setNonce] = useState(0)
   const silentNext = useRef(false)
 
@@ -19,14 +22,17 @@ export function useLoad<T>(loader: (signal: AbortSignal) => Promise<T>, deps: Re
 
   useEffect(() => {
     const controller = new AbortController()
-    const silent = silentNext.current && data !== null
+    const silent = data !== null && (silentNext.current || Boolean(cacheKey))
     silentNext.current = false
 
     if (!silent) setLoading(true)
     setError(null)
 
     loader(controller.signal)
-      .then(setData)
+      .then((value) => {
+        if (cacheKey) loadCache.set(cacheKey, value)
+        setData(value)
+      })
       .catch((reason) => {
         if (reason?.name !== 'AbortError') setError(reason instanceof Error ? reason.message : 'Something went wrong.')
       })
