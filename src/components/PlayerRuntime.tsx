@@ -61,16 +61,15 @@ export function PlayerRuntime() {
       if (!element) return
 
       const url = api.streamUrl(nextTrack.id)
-      if (loadedTrackIds.current[target] !== nextTrack.id || element.src !== url) {
+      const trackChanged = loadedTrackIds.current[target] !== nextTrack.id
+      if (trackChanged || element.src !== url) {
         element.src = url
         element.preload = 'auto'
         element.load()
         loadedTrackIds.current[target] = nextTrack.id
       }
 
-      if (element.ended || element.currentTime > 0 && loadedTrackIds.current[target] === nextTrack.id && nextTrack.id !== track?.id) {
-        element.currentTime = 0
-      }
+      if (element.ended) element.currentTime = 0
 
       const attempt = element.play()
       if (attempt) void attempt.catch(() => usePlayer.getState().setPlaying(false))
