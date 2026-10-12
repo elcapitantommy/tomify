@@ -63,7 +63,7 @@ export function Home() {
   const username = useAuth((state) => state.session?.username)
   const [greeting, setGreeting] = useState(() => greetingForDate(new Date()))
   const [homeMessage] = useState(() => homeMessages[Math.floor(Math.random() * homeMessages.length)])
-  const { data, error, loading, retry, refresh } = useLoad(async (signal) => {
+  const { data, error, loading, retry } = useLoad(async (signal) => {
     const [recent, newest, starred] = await Promise.all([
       api.albums('recent', 8, signal),
       api.albums('newest', 8, signal),
@@ -74,19 +74,10 @@ export function Home() {
   const playAlbum = async (id: string) => usePlayer.getState().playTracks((await api.album(id)).song ?? [])
 
   useEffect(() => {
-    const refreshHome = () => {
-      setGreeting(greetingForDate(new Date()))
-      if (!document.hidden) refresh()
-    }
-    const interval = window.setInterval(refreshHome, 60_000)
-    document.addEventListener('visibilitychange', refreshHome)
-    window.addEventListener('focus', refreshHome)
-    return () => {
-      window.clearInterval(interval)
-      document.removeEventListener('visibilitychange', refreshHome)
-      window.removeEventListener('focus', refreshHome)
-    }
-  }, [refresh])
+    const updateGreeting = () => setGreeting(greetingForDate(new Date()))
+    const interval = window.setInterval(updateGreeting, 60_000)
+    return () => window.clearInterval(interval)
+  }, [])
 
   return <div className="page home-page"><header className="page-header hero"><div><span className="eyebrow"><Sparkles size={14}/> Your library</span><h1>{greeting.replace('.', '')}{username ? `, ${username}` : ''}.</h1><p>{homeMessage}</p></div>{data?.recent[0] && <button className="button primary" onClick={() => void playAlbum(data.recent[0].id)}><Play fill="currentColor"/>Play something</button>}</header>{loading && <><SectionTitle title="Recently played"/><SkeletonGrid/><SectionTitle title="Fresh from the shelves"/><SkeletonGrid rows={4}/></>}{error && <ErrorState message={error} retry={retry}/>} {data && !loading && <>{data.recent.length ? <LibrarySection title="Recently played" icon={<Clock3/>} albums={data.recent} onPlay={playAlbum}/> : <EmptyState title="Nothing played yet" message="Your listening history will appear here."/>}<LibrarySection title="Fresh from the shelves" subtitle="Recently added" albums={data.newest} onPlay={playAlbum}/>{data.starred.length > 0 && <LibrarySection title="Made for you" subtitle="Your favourite albums" albums={data.starred} onPlay={playAlbum}/>}</>}</div>
 }
