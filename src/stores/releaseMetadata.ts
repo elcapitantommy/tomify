@@ -10,7 +10,7 @@ interface ReleaseMetadataState {
   cloudStatus: CloudStatus
   load(): Promise<void>
   save(albumId: string, patch: { releaseType?: ReleaseType; releaseDate?: string | null }): Promise<boolean>
-  enrich(album: Album): Promise<boolean>
+  enrich(album: Album, force?: boolean): Promise<boolean>
   enrichMany(albums: Album[], limit?: number): Promise<void>
 }
 
@@ -94,8 +94,10 @@ export const useReleaseMetadata = create<ReleaseMetadataState>((set, get) => ({
     }
   },
 
-  enrich: async (album) => {
-    if (get().overrides[album.id] || attemptedThisSession.has(album.id)) return false
+  enrich: async (album, force = false) => {
+    const existing = get().overrides[album.id]
+    if (!force && (existing || attemptedThisSession.has(album.id))) return false
+    if (force && existing?.source === 'manual') return false
     const headers = authHeaders()
     if (!headers || get().cloudStatus !== 'cloud') return false
     attemptedThisSession.add(album.id)
@@ -110,14 +112,22 @@ export const useReleaseMetadata = create<ReleaseMetadataState>((set, get) => ({
           artist: album.artist,
           musicBrainzId: album.musicBrainzId,
           year: album.year,
+          force,
         }),
       })
-      if (!response.ok) return false
+      if (!response.ok) {
+        attemptedThisSession.delete(album.id)
+        return false
+      }
       const body = await response.json() as { item?: ReleaseOverride & { albumId?: string } }
-      if (!body.item?.releaseType) return false
+      if (!body.item?.releaseType) {
+        attemptedThisSession.delete(album.id)
+        return false
+      }
       set((state) => ({ overrides: { ...state.overrides, [album.id]: body.item! } }))
       return true
     } catch {
+      attemptedThisSession.delete(album.id)
       return false
     }
   },
