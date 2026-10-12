@@ -13,6 +13,7 @@ export function PlayerRuntime() {
   const activeSlot = useRef<AudioSlot>(0)
   const loadedTrackIds = useRef<[string | undefined, string | undefined]>([undefined, undefined])
   const submittedTrackId = useRef<string | undefined>(undefined)
+  const restoredPositionTrackId = useRef<string | undefined>(undefined)
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
@@ -81,6 +82,12 @@ export function PlayerRuntime() {
     const slot = activeSlot.current
     const element = getAudio(slot)
     if (!element) return
+    if (loadedTrackIds.current[slot] !== track.id) {
+      element.src = api.streamUrl(track.id)
+      element.preload = 'auto'
+      element.load()
+      loadedTrackIds.current[slot] = track.id
+    }
     let cancelled = false
     let release: (() => void) | undefined
 
@@ -186,7 +193,15 @@ export function PlayerRuntime() {
       }
     },
     onLoadedMetadata: (event: React.SyntheticEvent<HTMLAudioElement>) => {
-      if (activeSlot.current === slot) usePlayer.getState().setProgress(event.currentTarget.currentTime, event.currentTarget.duration)
+      if (activeSlot.current !== slot) return
+      const element = event.currentTarget
+      const player = usePlayer.getState()
+      const wantedPosition = player.currentTime
+      if (track && restoredPositionTrackId.current !== track.id && wantedPosition > 0 && Number.isFinite(element.duration)) {
+        element.currentTime = Math.min(wantedPosition, Math.max(0, element.duration - 0.05))
+        restoredPositionTrackId.current = track.id
+      }
+      usePlayer.getState().setProgress(element.currentTime, element.duration)
     },
     onPlay: () => {
       if (activeSlot.current === slot && !usePlayer.getState().playing) usePlayer.setState({ playing: true })
