@@ -93,6 +93,11 @@ export function LivePlaybackSync() {
         setConnected(true)
         setSnapshot(result.state)
 
+        if (result.state && result.state.deviceId !== localPlaybackDeviceId && Date.now() - result.state.updatedAt < 10000) {
+          const localPlayer = usePlayer.getState()
+          if (localPlayer.playing) usePlayer.setState({ playing: false })
+        }
+
         const command = result.command
         if (!commandInitialised.current) {
           lastCommandRevision.current = command?.revision ?? 0
