@@ -203,7 +203,8 @@ export default {
       await ensureReleaseTable(env.TOMIFY_DB)
       const existing = await selectRelease(env.TOMIFY_DB, album.albumId)
       const force = album.force === true
-      if (existing && (!force || existing.source === 'manual')) return json({ item: existing, cached: true })
+      const replaceManual = album.replaceManual === true
+      if (existing && (!force || (existing.source === 'manual' && !replaceManual))) return json({ item: existing, cached: true })
 
       const match = await lookupMusicBrainzReleaseGroup(album)
       if (!match?.group) return json({ error: 'musicbrainz-no-match' }, 404)
@@ -212,7 +213,7 @@ export default {
       const releaseDate = typeof match.group['first-release-date'] === 'string' && /^\\d{4}(?:-\\d{2})?(?:-\\d{2})?$/.test(match.group['first-release-date']) ? match.group['first-release-date'] : null
       const groupId = typeof match.group.id === 'string' ? match.group.id : null
 
-      await env.TOMIFY_DB.prepare("INSERT INTO release_metadata (album_id, release_type, release_date, updated_at, updated_by, source, musicbrainz_id, match_score) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, 'musicbrainz', ?, ?) ON CONFLICT(album_id) DO UPDATE SET release_type = CASE WHEN release_metadata.source = 'manual' THEN release_metadata.release_type ELSE excluded.release_type END, release_date = CASE WHEN release_metadata.source = 'manual' THEN release_metadata.release_date ELSE excluded.release_date END, updated_at = CASE WHEN release_metadata.source = 'manual' THEN release_metadata.updated_at ELSE CURRENT_TIMESTAMP END, updated_by = CASE WHEN release_metadata.source = 'manual' THEN release_metadata.updated_by ELSE excluded.updated_by END, source = CASE WHEN release_metadata.source = 'manual' THEN release_metadata.source ELSE 'musicbrainz' END, musicbrainz_id = CASE WHEN release_metadata.source = 'manual' THEN release_metadata.musicbrainz_id ELSE excluded.musicbrainz_id END, match_score = CASE WHEN release_metadata.source = 'manual' THEN release_metadata.match_score ELSE excluded.match_score END")
+      await env.TOMIFY_DB.prepare("INSERT INTO release_metadata (album_id, release_type, release_date, updated_at, updated_by, source, musicbrainz_id, match_score) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, 'musicbrainz', ?, ?) ON CONFLICT(album_id) DO UPDATE SET release_type = excluded.release_type, release_date = excluded.release_date, updated_at = CURRENT_TIMESTAMP, updated_by = excluded.updated_by, source = 'musicbrainz', musicbrainz_id = excluded.musicbrainz_id, match_score = excluded.match_score")
         .bind(album.albumId, releaseType, releaseDate, username, groupId, match.score).run()
 
       const item = await selectRelease(env.TOMIFY_DB, album.albumId)
