@@ -243,7 +243,11 @@ export default {
       if (!body || typeof body.deviceId !== 'string' || !Array.isArray(body.queue) || !Number.isInteger(body.currentIndex)) return json({ error: 'invalid-live-playback-state' }, 400)
 
       await ensureLivePlaybackTable(env.TOMIFY_DB)
-      const previous = await env.TOMIFY_DB.prepare('SELECT revision FROM live_playback WHERE username = ?').bind(username).first()
+      const previous = await env.TOMIFY_DB.prepare('SELECT device_id AS deviceId, revision FROM live_playback WHERE username = ?').bind(username).first()
+      const takeover = body.takeover === true
+      if (previous?.deviceId && previous.deviceId !== body.deviceId && !takeover) {
+        return json({ error: 'playback-owned-by-another-device', deviceId: previous.deviceId }, 409)
+      }
       const revision = Number(previous?.revision || 0) + 1
       const updatedAt = Date.now()
       const state = {
