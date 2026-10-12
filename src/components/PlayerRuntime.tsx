@@ -5,43 +5,87 @@ import { bindPlayerRuntime, usePlayer } from '../stores/player'
 import { setMediaMetadata } from '../lib/mediaSession'
 import type { Track } from '../types'
 
+type AudioSlot = 0 | 1
+
 export function PlayerRuntime() {
-  const audio = useRef<HTMLAudioElement>(null)
+  const audioA = useRef<HTMLAudioElement>(null)
+  const audioB = useRef<HTMLAudioElement>(null)
+  const activeSlot = useRef<AudioSlot>(0)
+  const loadedTrackIds = useRef<[string | undefined, string | undefined]>([undefined, undefined])
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
   const playing = usePlayer((s) => s.playing)
   const volume = usePlayer((s) => s.volume)
   const muted = usePlayer((s) => s.muted)
+  const shuffle = usePlayer((s) => s.shuffle)
+  const repeat = usePlayer((s) => s.repeat)
   const track = queue[currentIndex]
 
+  const getAudio = (slot: AudioSlot) => slot === 0 ? audioA.current : audioB.current
+  const currentAudio = () => getAudio(activeSlot.current)
+
   useEffect(() => bindPlayerRuntime({
-    seek: (value) => { if (audio.current) audio.current.currentTime = value },
-    volume: (value, isMuted) => { if (audio.current) { audio.current.volume = value; audio.current.muted = isMuted } },
-    start: (nextTrack: Track) => {
-      const element = audio.current
-      if (!element) return
-      const url = api.streamUrl(nextTrack.id)
-      if (element.src !== url) {
-        element.src = url
-        element.load()
+    seek: (value) => {
+      const element = currentAudio()
+      if (element) element.currentTime = value
+    },
+    volume: (value, isMuted) => {
+      for (const slot of [0, 1] as const) {
+        const element = getAudio(slot)
+        if (element) {
+          element.volume = value
+          element.muted = isMuted
+        }
       }
+    },
+    start: (nextTrack: Track) => {
+      const current = activeSlot.current
+      const standby = (current === 0 ? 1 : 0) as AudioSlot
+      let target = current
+
+      if (loadedTrackIds.current[current] !== nextTrack.id && loadedTrackIds.current[standby] === nextTrack.id) {
+        activeSlot.current = standby
+        target = standby
+        const oldElement = getAudio(current)
+        if (oldElement && !oldElement.paused) oldElement.pause()
+      }
+
+      const element = getAudio(target)
+      if (!element) return
+
+      const url = api.streamUrl(nextTrack.id)
+      if (loadedTrackIds.current[target] !== nextTrack.id || element.src !== url) {
+        element.src = url
+        element.preload = 'auto'
+        element.load()
+        loadedTrackIds.current[target] = nextTrack.id
+      }
+
+      if (element.ended || element.currentTime > 0 && loadedTrackIds.current[target] === nextTrack.id && nextTrack.id !== track?.id) {
+        element.currentTime = 0
+      }
+
       const attempt = element.play()
       if (attempt) void attempt.catch(() => usePlayer.getState().setPlaying(false))
     },
-  }), [api])
+  }), [api]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const element = audio.current
-    if (!element || !track) return
+    if (!track) return
+    const slot = activeSlot.current
+    const element = getAudio(slot)
+    if (!element) return
     let cancelled = false
     let release: (() => void) | undefined
 
     new StreamFirstSourceResolver(api).resolve(track).then((source) => {
       if (cancelled) { source.revoke?.(); return }
       release = source.revoke
+      if (activeSlot.current !== slot || loadedTrackIds.current[slot] !== track.id) return
       if (element.src !== source.url) {
         element.src = source.url
+        element.preload = 'auto'
         element.load()
       }
       if (usePlayer.getState().playing && element.paused) {
@@ -55,8 +99,35 @@ export function PlayerRuntime() {
     }
   }, [api, track?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Keep one complete track primed ahead. The current element can then hand off
+  // to an already-buffering decoder instead of loading the next URL after ended.
   useEffect(() => {
-    const element = audio.current
+    if (!track || shuffle || repeat === 'one' || queue.length < 2) return
+
+    let nextIndex = currentIndex + 1
+    if (nextIndex >= queue.length) {
+      if (repeat !== 'all') return
+      nextIndex = 0
+    }
+
+    const nextTrack = queue[nextIndex]
+    if (!nextTrack || nextTrack.id === track.id) return
+
+    const slot = (activeSlot.current === 0 ? 1 : 0) as AudioSlot
+    const element = getAudio(slot)
+    if (!element || loadedTrackIds.current[slot] === nextTrack.id) return
+
+    if (!element.paused) element.pause()
+    element.src = api.streamUrl(nextTrack.id)
+    element.preload = 'auto'
+    element.load()
+    element.volume = volume
+    element.muted = muted
+    loadedTrackIds.current[slot] = nextTrack.id
+  }, [api, currentIndex, muted, queue, repeat, shuffle, track?.id, volume]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const element = currentAudio()
     if (!element || !track) return
     if (playing) {
       if (element.paused) void element.play().catch(() => usePlayer.getState().setPlaying(false))
@@ -66,9 +137,12 @@ export function PlayerRuntime() {
   }, [playing, track])
 
   useEffect(() => {
-    if (audio.current) {
-      audio.current.volume = volume
-      audio.current.muted = muted
+    for (const slot of [0, 1] as const) {
+      const element = getAudio(slot)
+      if (element) {
+        element.volume = volume
+        element.muted = muted
+      }
     }
   }, [volume, muted])
 
@@ -80,8 +154,8 @@ export function PlayerRuntime() {
       ['pause', () => usePlayer.getState().setPlaying(false)],
       ['previoustrack', () => usePlayer.getState().previous()],
       ['nexttrack', () => usePlayer.getState().next()],
-      ['seekbackward', (d) => usePlayer.getState().seekTo(Math.max(0, (audio.current?.currentTime ?? 0) - (d.seekOffset ?? 10)))],
-      ['seekforward', (d) => usePlayer.getState().seekTo(Math.min(audio.current?.duration ?? Infinity, (audio.current?.currentTime ?? 0) + (d.seekOffset ?? 10)))],
+      ['seekbackward', (d) => usePlayer.getState().seekTo(Math.max(0, (currentAudio()?.currentTime ?? 0) - (d.seekOffset ?? 10)))],
+      ['seekforward', (d) => usePlayer.getState().seekTo(Math.min(currentAudio()?.duration ?? Infinity, (currentAudio()?.currentTime ?? 0) + (d.seekOffset ?? 10)))],
       ['seekto', (d) => d.seekTime !== undefined && usePlayer.getState().seekTo(d.seekTime)],
     ]
     handlers.forEach(([action, handler]) => { try { navigator.mediaSession.setActionHandler(action, handler) } catch { /* unsupported action on this browser */ } })
@@ -92,26 +166,40 @@ export function PlayerRuntime() {
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
   }, [playing])
 
-  return <audio
-    ref={audio}
-    preload="metadata"
-    playsInline
-    onTimeUpdate={(e) => {
-      const el = e.currentTarget
-      usePlayer.getState().setProgress(el.currentTime, Number.isFinite(el.duration) ? el.duration : track?.duration ?? 0)
-      if ('mediaSession' in navigator && Number.isFinite(el.duration) && el.duration > 0) {
-        try { navigator.mediaSession.setPositionState({ duration: el.duration, playbackRate: el.playbackRate, position: Math.min(el.currentTime, el.duration) }) } catch { /* browser rejected position update */ }
+  const events = (slot: AudioSlot) => ({
+    onTimeUpdate: (event: React.SyntheticEvent<HTMLAudioElement>) => {
+      if (activeSlot.current !== slot) return
+      const element = event.currentTarget
+      usePlayer.getState().setProgress(element.currentTime, Number.isFinite(element.duration) ? element.duration : track?.duration ?? 0)
+      if ('mediaSession' in navigator && Number.isFinite(element.duration) && element.duration > 0) {
+        try { navigator.mediaSession.setPositionState({ duration: element.duration, playbackRate: element.playbackRate, position: Math.min(element.currentTime, element.duration) }) } catch { /* browser rejected position update */ }
       }
-    }}
-    onLoadedMetadata={(e) => usePlayer.getState().setProgress(e.currentTarget.currentTime, e.currentTarget.duration)}
-    onPlay={() => usePlayer.getState().playing || usePlayer.getState().setPlaying(true)}
-    onPause={() => usePlayer.getState().playing && usePlayer.setState({ playing: false })}
-    onEnded={(e) => {
+    },
+    onLoadedMetadata: (event: React.SyntheticEvent<HTMLAudioElement>) => {
+      if (activeSlot.current === slot) usePlayer.getState().setProgress(event.currentTarget.currentTime, event.currentTarget.duration)
+    },
+    onPlay: () => {
+      if (activeSlot.current === slot && !usePlayer.getState().playing) usePlayer.setState({ playing: true })
+    },
+    onPause: () => {
+      if (activeSlot.current === slot && usePlayer.getState().playing) usePlayer.setState({ playing: false })
+    },
+    onEnded: (event: React.SyntheticEvent<HTMLAudioElement>) => {
+      if (activeSlot.current !== slot) return
       if (usePlayer.getState().repeat === 'one') {
-        e.currentTarget.currentTime = 0
-        void e.currentTarget.play()
-      } else usePlayer.getState().next()
-    }}
-    onError={() => usePlayer.getState().setPlaying(false)}
-  />
+        event.currentTarget.currentTime = 0
+        void event.currentTarget.play()
+      } else {
+        usePlayer.getState().next()
+      }
+    },
+    onError: () => {
+      if (activeSlot.current === slot) usePlayer.getState().setPlaying(false)
+    },
+  })
+
+  return <>
+    <audio ref={audioA} preload="auto" playsInline {...events(0)}/>
+    <audio ref={audioB} preload="auto" playsInline {...events(1)}/>
+  </>
 }
