@@ -14,6 +14,7 @@ export function PlayerRuntime() {
   const loadedTrackIds = useRef<[string | undefined, string | undefined]>([undefined, undefined])
   const submittedTrackId = useRef<string | undefined>(undefined)
   const restoredPositionTrackId = useRef<string | undefined>(undefined)
+  const initialRestore = useRef<{ trackId?: string; position: number } | null>(null)
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
@@ -23,6 +24,14 @@ export function PlayerRuntime() {
   const shuffle = usePlayer((s) => s.shuffle)
   const repeat = usePlayer((s) => s.repeat)
   const track = queue[currentIndex]
+
+  if (initialRestore.current === null) {
+    const state = usePlayer.getState()
+    initialRestore.current = {
+      trackId: state.queue[state.currentIndex]?.id,
+      position: state.currentTime,
+    }
+  }
 
   useEffect(() => {
     submittedTrackId.current = undefined
@@ -183,6 +192,8 @@ export function PlayerRuntime() {
       if (activeSlot.current !== slot) return
       const element = event.currentTarget
       const duration = Number.isFinite(element.duration) ? element.duration : track?.duration ?? 0
+      const pending = initialRestore.current
+      if (track && pending?.trackId === track.id && pending.position > 0 && restoredPositionTrackId.current !== track.id) return
       usePlayer.getState().setProgress(element.currentTime, duration)
       if (track && duration > 0 && element.currentTime >= Math.min(duration / 2, 240) && submittedTrackId.current !== track.id) {
         submittedTrackId.current = track.id
@@ -196,10 +207,12 @@ export function PlayerRuntime() {
       if (activeSlot.current !== slot) return
       const element = event.currentTarget
       const player = usePlayer.getState()
-      const wantedPosition = player.currentTime
+      const pending = initialRestore.current
+      const wantedPosition = track && pending?.trackId === track.id ? pending.position : player.currentTime
       if (track && restoredPositionTrackId.current !== track.id && wantedPosition > 0 && Number.isFinite(element.duration)) {
         element.currentTime = Math.min(wantedPosition, Math.max(0, element.duration - 0.05))
         restoredPositionTrackId.current = track.id
+        initialRestore.current = null
       }
       usePlayer.getState().setProgress(element.currentTime, element.duration)
     },
