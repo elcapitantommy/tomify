@@ -48,11 +48,16 @@ function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } })
 }
 
+const authCache = new Map()
+
 async function authenticate(request) {
   const username = request.headers.get('x-tomify-user')
   const token = request.headers.get('x-tomify-token')
   const salt = request.headers.get('x-tomify-salt')
   if (!username || !token || !salt) return null
+  const cacheKey = username + ':' + token + ':' + salt
+  const cachedAt = authCache.get(cacheKey)
+  if (cachedAt && Date.now() - cachedAt < 30000) return username
   try {
     const ping = new URL('https://tomify.tomdixon.uk/rest/ping.view')
     ping.searchParams.set('u', username)
@@ -64,10 +69,18 @@ async function authenticate(request) {
     const response = await fetch(ping, { headers: { accept: 'application/json' } })
     if (!response.ok) return null
     const body = await response.json()
-    return body && body['subsonic-response'] && body['subsonic-response'].status === 'ok' ? username : null
+    if (body && body['subsonic-response'] && body['subsonic-response'].status === 'ok') {
+      authCache.set(cacheKey, Date.now())
+      return username
+    }
+    return null
   } catch {
     return null
   }
+}
+
+async function ensureLivePlaybackTable(db) {
+  await db.prepare("CREATE TABLE IF NOT EXISTS live_playback (username TEXT PRIMARY KEY, device_id TEXT NOT NULL, device_name TEXT NOT NULL, state_json TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, command_json TEXT, command_revision INTEGER NOT NULL DEFAULT 0, command_target_device TEXT, command_updated_at INTEGER)").run()
 }
 
 async function ensureReleaseTable(db) {
@@ -197,6 +210,84 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url)
     let pathname = decodeURIComponent(url.pathname)
+
+
+    if (pathname === '/api/live-playback' && request.method === 'GET') {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'live-playback-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      await ensureLivePlaybackTable(env.TOMIFY_DB)
+      const row = await env.TOMIFY_DB.prepare('SELECT device_id AS deviceId, device_name AS deviceName, state_json AS stateJson, revision, updated_at AS updatedAt, command_json AS commandJson, command_revision AS commandRevision, command_target_device AS commandTargetDevice, command_updated_at AS commandUpdatedAt FROM live_playback WHERE username = ?').bind(username).first()
+      if (!row) return json({ state: null, command: null })
+
+      let state = null
+      let command = null
+      try {
+        state = { ...JSON.parse(row.stateJson), deviceId: row.deviceId, deviceName: row.deviceName, revision: Number(row.revision || 0), updatedAt: Number(row.updatedAt || 0) }
+      } catch { state = null }
+
+      if (row.commandJson && row.commandTargetDevice) {
+        try {
+          command = { ...JSON.parse(row.commandJson), revision: Number(row.commandRevision || 0), targetDeviceId: row.commandTargetDevice, updatedAt: Number(row.commandUpdatedAt || 0) }
+        } catch { command = null }
+      }
+
+      return json({ state, command })
+    }
+
+    if (pathname === '/api/live-playback' && request.method === 'POST') {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'live-playback-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      const body = await request.json()
+      if (!body || typeof body.deviceId !== 'string' || !Array.isArray(body.queue) || !Number.isInteger(body.currentIndex)) return json({ error: 'invalid-live-playback-state' }, 400)
+
+      await ensureLivePlaybackTable(env.TOMIFY_DB)
+      const previous = await env.TOMIFY_DB.prepare('SELECT revision FROM live_playback WHERE username = ?').bind(username).first()
+      const revision = Number(previous?.revision || 0) + 1
+      const updatedAt = Date.now()
+      const state = {
+        queue: body.queue,
+        currentIndex: body.currentIndex,
+        playing: body.playing === true,
+        currentTime: Number(body.currentTime || 0),
+        duration: Number(body.duration || 0),
+        volume: Math.max(0, Math.min(1, Number(body.volume ?? 0.8))),
+        muted: body.muted === true,
+        shuffle: body.shuffle === true,
+        repeat: ['off', 'all', 'one'].includes(body.repeat) ? body.repeat : 'off',
+      }
+      const deviceName = typeof body.deviceName === 'string' && body.deviceName ? body.deviceName.slice(0, 64) : 'Web'
+
+      await env.TOMIFY_DB.prepare('INSERT INTO live_playback (username, device_id, device_name, state_json, revision, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(username) DO UPDATE SET device_id = excluded.device_id, device_name = excluded.device_name, state_json = excluded.state_json, revision = excluded.revision, updated_at = excluded.updated_at')
+        .bind(username, body.deviceId, deviceName, JSON.stringify(state), revision, updatedAt).run()
+
+      return json({ state: { ...state, deviceId: body.deviceId, deviceName, revision, updatedAt } })
+    }
+
+    if (pathname === '/api/live-playback/command' && request.method === 'POST') {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'live-playback-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      const body = await request.json()
+      const allowed = ['play', 'pause', 'next', 'previous', 'seek', 'toggle-shuffle', 'cycle-repeat', 'play-index', 'remove-index', 'clear-queue', 'toggle-muted', 'set-volume']
+      if (!body || typeof body.targetDeviceId !== 'string' || !allowed.includes(body.action)) return json({ error: 'invalid-command' }, 400)
+
+      await ensureLivePlaybackTable(env.TOMIFY_DB)
+      const row = await env.TOMIFY_DB.prepare('SELECT device_id AS deviceId, command_revision AS commandRevision FROM live_playback WHERE username = ?').bind(username).first()
+      if (!row) return json({ error: 'no-active-playback' }, 404)
+      if (row.deviceId !== body.targetDeviceId) return json({ error: 'playback-device-changed' }, 409)
+
+      const revision = Number(row.commandRevision || 0) + 1
+      const updatedAt = Date.now()
+      const command = { action: body.action }
+      if (typeof body.value === 'number' && Number.isFinite(body.value)) command.value = body.value
+
+      await env.TOMIFY_DB.prepare('UPDATE live_playback SET command_json = ?, command_revision = ?, command_target_device = ?, command_updated_at = ? WHERE username = ?')
+        .bind(JSON.stringify(command), revision, body.targetDeviceId, updatedAt, username).run()
+
+      return json({ command: { ...command, revision, targetDeviceId: body.targetDeviceId, updatedAt } })
+    }
 
     if (pathname === '/api/release-meta' && request.method === 'GET') {
       if (!env || !env.TOMIFY_DB) return json({ error: 'metadata-store-unavailable' }, 503)
