@@ -88,9 +88,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   },
 
   setPlaying: (playing) => {
-    const track = get().queue[get().currentIndex]
     set((s) => ({ playing, activitySerial: s.activitySerial + 1 }))
-    if (playing && track) startHandler?.(track)
   },
   setProgress: (currentTime, duration) => set({ currentTime, duration }),
   seekTo: (value) => { seekHandler?.(value); set((s) => ({ currentTime: value, activitySerial: s.activitySerial + 1 })) },
