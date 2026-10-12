@@ -45,7 +45,7 @@ describe('release variant grouping', () => {
   })
 
   it('uses a shared MusicBrainz release-group id even when titles differ', () => {
-    const variants = [album('1', 'Album'), album('2', 'Album Deluxe')]
+    const variants = [album('1', 'Album'), album('2', 'Completely Different Edition Title')]
     const groups = collapseReleaseVariants(variants, {
       '1': { releaseType: 'album', source: 'musicbrainz', musicBrainzId: 'same-group' },
       '2': { releaseType: 'album', source: 'musicbrainz', musicBrainzId: 'same-group' },
@@ -53,7 +53,17 @@ describe('release variant grouping', () => {
     expect(groups).toHaveLength(1)
   })
 
+  it('does not split enriched and unenriched copies of the same edition family', () => {
+    const variants = [album('1', 'Comfort in Sound'), album('2', 'Comfort in Sound (Japan Edition)')]
+    const groups = collapseReleaseVariants(variants, {
+      '1': { releaseType: 'album', source: 'musicbrainz', musicBrainzId: 'group-id' },
+    })
+    expect(groups).toHaveLength(1)
+    expect(groups[0].variants).toHaveLength(2)
+  })
+
   it('removes edition suffixes from the displayed canonical title', () => {
     expect(releaseFamilyTitle(album('1', 'Absolution (24-bit 96kHz)'))).toBe('Absolution')
+    expect(releaseFamilyTitle(album('2', 'Absolution (2009 version)'))).toBe('Absolution')
   })
 })
