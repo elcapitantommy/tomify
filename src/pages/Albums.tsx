@@ -21,7 +21,11 @@ export function Albums() {
   const cloudStatus = useReleaseMetadata((state) => state.cloudStatus)
   const [filter, setFilter] = useState<ReleaseFilter>('album')
   const [sort, setSort] = useState<ReleaseSort>('newest')
-  const { data, error, loading, retry } = useLoad((signal) => api.albums('alphabeticalByName', 500, signal), [api])
+  const { data, error, loading, retry } = useLoad(
+    (signal) => api.albums('alphabeticalByName', 500, signal),
+    [api],
+    `albums:${api.session.username}`,
+  )
   const play = async (id: string) => usePlayer.getState().playTracks((await api.album(id)).song ?? [])
 
   useEffect(() => {
