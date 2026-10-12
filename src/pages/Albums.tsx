@@ -43,7 +43,7 @@ export function Albums() {
   }, [data, filter, overrides, sort])
 
   return <div className="page">
-    <header className="page-header"><span className="eyebrow">The collection</span><h1>Albums</h1><p>{data ? `${data.length} releases, organised your way` : 'Browse every release on your shelves.'}</p></header>
+    <header className="page-header"><span className="eyebrow">The collection</span><h1>Albums</h1><p>{data ? `${grouped.length} releases · ${data.length} versions` : 'Browse every release on your shelves.'}</p></header>
     <div className="release-toolbar">
       <div className="release-tabs" role="tablist" aria-label="Release type">
         {filters.map((item) => <button key={item.value} className={filter === item.value ? 'release-tab active' : 'release-tab'} onClick={() => setFilter(item.value)}>{item.label}<span>{counts[item.value]}</span></button>)}
