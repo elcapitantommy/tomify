@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { Album } from '../types'
 import type { ReleaseOverride, ReleaseType } from '../lib/release-metadata'
 import { useAuth } from './auth'
 
@@ -9,6 +10,8 @@ interface ReleaseMetadataState {
   cloudStatus: CloudStatus
   load(): Promise<void>
   save(albumId: string, patch: { releaseType?: ReleaseType; releaseDate?: string | null }): Promise<boolean>
+  enrich(album: Album): Promise<boolean>
+  enrichMany(albums: Album[], limit?: number): Promise<void>
 }
 
 function authHeaders(): HeadersInit | undefined {
@@ -24,6 +27,9 @@ function authHeaders(): HeadersInit | undefined {
 if (typeof window !== 'undefined') {
   window.localStorage.removeItem('tomify-release-metadata')
 }
+
+const attemptedThisSession = new Set<string>()
+const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
 export const useReleaseMetadata = create<ReleaseMetadataState>((set, get) => ({
   overrides: {},
@@ -44,11 +50,14 @@ export const useReleaseMetadata = create<ReleaseMetadataState>((set, get) => ({
         return
       }
 
-      const body = await response.json() as { items?: Array<{ albumId: string; releaseType: ReleaseType; releaseDate?: string | null; updatedAt?: string }> }
+      const body = await response.json() as { items?: Array<{ albumId: string; releaseType: ReleaseType; releaseDate?: string | null; updatedAt?: string; source?: 'manual' | 'musicbrainz'; musicBrainzId?: string | null; matchScore?: number | null }> }
       const remote = Object.fromEntries((body.items ?? []).map((item) => [item.albumId, {
         releaseType: item.releaseType,
         releaseDate: item.releaseDate ?? null,
         updatedAt: item.updatedAt,
+        source: item.source,
+        musicBrainzId: item.musicBrainzId ?? null,
+        matchScore: item.matchScore ?? null,
       }]))
       set({ overrides: remote, cloudStatus: 'cloud' })
     } catch {
@@ -73,14 +82,51 @@ export const useReleaseMetadata = create<ReleaseMetadataState>((set, get) => ({
         return false
       }
 
+      const body = await response.json() as { item?: ReleaseOverride }
       set((state) => ({
-        overrides: { ...state.overrides, [albumId]: { ...state.overrides[albumId], ...patch, releaseType } },
+        overrides: { ...state.overrides, [albumId]: body.item ?? { ...state.overrides[albumId], ...patch, releaseType, source: 'manual' } },
         cloudStatus: 'cloud',
       }))
       return true
     } catch {
       set({ cloudStatus: 'unavailable' })
       return false
+    }
+  },
+
+  enrich: async (album) => {
+    if (get().overrides[album.id] || attemptedThisSession.has(album.id)) return false
+    const headers = authHeaders()
+    if (!headers || get().cloudStatus !== 'cloud') return false
+    attemptedThisSession.add(album.id)
+
+    try {
+      const response = await window.fetch('/api/release-meta/enrich', {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          albumId: album.id,
+          name: album.name,
+          artist: album.artist,
+          musicBrainzId: album.musicBrainzId,
+          year: album.year,
+        }),
+      })
+      if (!response.ok) return false
+      const body = await response.json() as { item?: ReleaseOverride & { albumId?: string } }
+      if (!body.item?.releaseType) return false
+      set((state) => ({ overrides: { ...state.overrides, [album.id]: body.item! } }))
+      return true
+    } catch {
+      return false
+    }
+  },
+
+  enrichMany: async (albums, limit = 24) => {
+    const candidates = albums.filter((album) => !get().overrides[album.id] && !attemptedThisSession.has(album.id)).slice(0, limit)
+    for (const album of candidates) {
+      await get().enrich(album)
+      await wait(1100)
     }
   },
 }))
