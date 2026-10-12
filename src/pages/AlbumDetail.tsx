@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Check, Pencil, Play, Shuffle, X } from 'lucide-react'
 import { useParams } from 'react-router-dom'
 import { Artwork } from '../components/Artwork'
@@ -16,6 +16,7 @@ export function AlbumDetail() {
   const api = useApi()
   const overrides = useReleaseMetadata((state) => state.overrides)
   const saveRelease = useReleaseMetadata((state) => state.save)
+  const enrichRelease = useReleaseMetadata((state) => state.enrich)
   const cloudStatus = useReleaseMetadata((state) => state.cloudStatus)
   const [editingMetadata, setEditingMetadata] = useState(false)
   const [savingMetadata, setSavingMetadata] = useState(false)
@@ -25,6 +26,10 @@ export function AlbumDetail() {
   const releaseType = album ? resolvedReleaseType(album, override) : 'album'
   const releaseDate = album ? releaseDateLabel(album, override) : undefined
   const play = (shuffle = false) => usePlayer.getState().playTracks(shuffle ? [...tracks].sort(() => Math.random() - .5) : tracks)
+
+  useEffect(() => {
+    if (album && cloudStatus === 'cloud' && !overrides[album.id]) void enrichRelease(album)
+  }, [album, cloudStatus, enrichRelease, overrides])
 
   const saveType = async (nextType: ReleaseType) => {
     if (!album) return
