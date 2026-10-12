@@ -143,7 +143,13 @@ export const usePlayer = create<PlayerState>((set, get) => ({
 
 if (typeof window !== 'undefined') {
   let persistTimer: number | undefined
+  let lastPersistedAt = 0
+
   const persist = () => {
+    if (persistTimer !== undefined) {
+      window.clearTimeout(persistTimer)
+      persistTimer = undefined
+    }
     const state = usePlayer.getState()
     const snapshot: PersistedPlayerState = {
       queue: state.queue,
@@ -155,12 +161,21 @@ if (typeof window !== 'undefined') {
       shuffle: state.shuffle,
       repeat: state.repeat,
     }
-    try { window.localStorage.setItem(PLAYER_STORAGE_KEY, JSON.stringify(snapshot)) } catch { /* storage unavailable */ }
+    try {
+      window.localStorage.setItem(PLAYER_STORAGE_KEY, JSON.stringify(snapshot))
+      lastPersistedAt = Date.now()
+    } catch { /* storage unavailable */ }
   }
 
   usePlayer.subscribe(() => {
-    if (persistTimer !== undefined) window.clearTimeout(persistTimer)
-    persistTimer = window.setTimeout(persist, 250)
+    const elapsed = Date.now() - lastPersistedAt
+    if (elapsed >= 1000) {
+      persist()
+      return
+    }
+    if (persistTimer === undefined) persistTimer = window.setTimeout(persist, Math.max(50, 1000 - elapsed))
   })
+
   window.addEventListener('pagehide', persist)
+  document.addEventListener('visibilitychange', () => { if (document.hidden) persist() })
 }
