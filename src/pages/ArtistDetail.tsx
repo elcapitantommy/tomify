@@ -1,5 +1,5 @@
 import { Play, Shuffle } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Artwork } from '../components/Artwork'
 import { AlbumCard } from '../components/MediaCards'
@@ -21,9 +21,15 @@ export function ArtistDetail() {
   const { id = '' } = useParams()
   const api = useApi()
   const overrides = useReleaseMetadata((state) => state.overrides)
+  const enrichMany = useReleaseMetadata((state) => state.enrichMany)
+  const cloudStatus = useReleaseMetadata((state) => state.cloudStatus)
   const [filter, setFilter] = useState<ReleaseFilter>('all')
   const { data, loading, error, retry } = useLoad((signal) => api.artist(id, signal), [api, id])
   const albums = useMemo(() => data?.artist.album ?? [], [data])
+
+  useEffect(() => {
+    if (albums.length && cloudStatus === 'cloud') void enrichMany(albums, 60)
+  }, [albums, cloudStatus, enrichMany])
   const sections = useMemo(() => {
     const groups = {
       album: albums.filter((album) => releaseBucket(resolvedReleaseType(album, overrides[album.id])) === 'album'),
