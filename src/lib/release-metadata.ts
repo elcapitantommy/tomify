@@ -126,10 +126,21 @@ export function releaseFamilyTitle(album: Album): string {
   return title || original
 }
 
+function releaseFamilyKind(album: Album, override?: ReleaseOverride): 'single-ep' | 'longform' {
+  const type = resolvedReleaseType(album, override)
+  return type === 'single' || type === 'ep' ? 'single-ep' : 'longform'
+}
+
+function releaseFamilyGroupingTitle(album: Album): string {
+  const canonical = releaseFamilyTitle(album)
+  const loose = canonical.replace(/\s*[\[(][^\])]+[\])]\s*$/i, '').trim()
+  return loose || canonical
+}
+
 export function releaseFamilyKey(album: Album, override?: ReleaseOverride): string {
-  const type = releaseBucket(resolvedReleaseType(album, override))
+  const kind = releaseFamilyKind(album, override)
   const artist = normaliseVariantText(album.artist || '')
-  return `${artist}::${type}::title:${normaliseVariantText(releaseFamilyTitle(album))}`
+  return `${artist}::${kind}::title:${normaliseVariantText(releaseFamilyGroupingTitle(album))}`
 }
 
 export interface ReleaseFamily {
@@ -166,7 +177,7 @@ export function collapseReleaseVariants(albums: Album[], overrides: Record<strin
     else titleOwner.set(titleKey, album.id)
 
     if (override?.musicBrainzId) {
-      const mbidKey = `${normaliseVariantText(album.artist || '')}::${releaseBucket(resolvedReleaseType(album, override))}::${override.musicBrainzId}`
+      const mbidKey = `${normaliseVariantText(album.artist || '')}::${releaseFamilyKind(album, override)}::${override.musicBrainzId}`
       const existingMbid = mbidOwner.get(mbidKey)
       if (existingMbid) union(album.id, existingMbid)
       else mbidOwner.set(mbidKey, album.id)
