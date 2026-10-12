@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useApi } from '../lib/api-context'
 import { useLoad } from '../hooks/useLoad'
 import { AlbumCard } from '../components/MediaCards'
@@ -17,10 +17,16 @@ const filters: Array<{ value: ReleaseFilter; label: string }> = [
 export function Albums() {
   const api = useApi()
   const overrides = useReleaseMetadata((state) => state.overrides)
+  const enrichMany = useReleaseMetadata((state) => state.enrichMany)
+  const cloudStatus = useReleaseMetadata((state) => state.cloudStatus)
   const [filter, setFilter] = useState<ReleaseFilter>('all')
   const [sort, setSort] = useState<ReleaseSort>('newest')
   const { data, error, loading, retry } = useLoad((signal) => api.albums('alphabeticalByName', 500, signal), [api])
   const play = async (id: string) => usePlayer.getState().playTracks((await api.album(id)).song ?? [])
+
+  useEffect(() => {
+    if (data?.length && cloudStatus === 'cloud') void enrichMany(data, 24)
+  }, [cloudStatus, data, enrichMany])
 
   const counts = useMemo(() => {
     const result = { all: data?.length ?? 0, album: 0, 'single-ep': 0, compilation: 0 }
