@@ -26,8 +26,8 @@ function snapshotFromPlayer() {
   }
 }
 
-async function publishCurrent() {
-  return publishLivePlayback(snapshotFromPlayer())
+async function publishCurrent(takeover = false) {
+  return publishLivePlayback(snapshotFromPlayer(), takeover)
 }
 
 function applyCommand(command: LivePlaybackCommand) {
@@ -58,18 +58,21 @@ export function LivePlaybackSync() {
   const commandInitialised = useRef(false)
   const lastActivitySerial = useRef(activitySerial)
   const publishing = useRef(false)
+  const takeoverUntil = useRef(0)
 
-  const publish = async () => {
+  const publish = async (takeover = false) => {
     if (publishing.current) return
     publishing.current = true
     try {
-      const state = await publishCurrent()
+      const state = await publishCurrent(takeover)
       if (state) {
         setSnapshot(state)
         setConnected(true)
       }
     } catch {
-      setConnected(false)
+      // A stale device heartbeat may be rejected after another device takes over.
+      // Polling will immediately converge on the current owner, so don't mark the
+      // live connection as broken for an ownership conflict.
     } finally {
       publishing.current = false
     }
@@ -78,7 +81,16 @@ export function LivePlaybackSync() {
   useEffect(() => {
     if (activitySerial === lastActivitySerial.current) return
     lastActivitySerial.current = activitySerial
-    void publish()
+
+    const optimistic = {
+      ...snapshotFromPlayer(),
+      updatedAt: Date.now(),
+      revision: (useLivePlayback.getState().snapshot?.revision ?? 0) + 1,
+    }
+    takeoverUntil.current = Date.now() + 5000
+    setSnapshot(optimistic)
+    setConnected(true)
+    void publish(true)
   }, [activitySerial]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -89,11 +101,17 @@ export function LivePlaybackSync() {
         const result = await fetchLivePlayback()
         if (stopped) return
         setConnected(true)
-        setSnapshot(result.state)
+        const remoteDuringTakeover = result.state &&
+          result.state.deviceId !== localPlaybackDeviceId &&
+          Date.now() < takeoverUntil.current
 
-        if (result.state && result.state.deviceId !== localPlaybackDeviceId && Date.now() - result.state.updatedAt < 10000) {
-          const localPlayer = usePlayer.getState()
-          if (localPlayer.playing) usePlayer.setState({ playing: false })
+        if (!remoteDuringTakeover) {
+          setSnapshot(result.state)
+
+          if (result.state && result.state.deviceId !== localPlaybackDeviceId && Date.now() - result.state.updatedAt < 10000) {
+            const localPlayer = usePlayer.getState()
+            if (localPlayer.playing) usePlayer.setState({ playing: false })
+          }
         }
 
         const command = result.command
@@ -103,7 +121,7 @@ export function LivePlaybackSync() {
         } else if (command && command.targetDeviceId === localPlaybackDeviceId && command.revision > lastCommandRevision.current) {
           lastCommandRevision.current = command.revision
           applyCommand(command)
-          window.setTimeout(() => { if (!stopped) void publish() }, 100)
+          window.setTimeout(() => { if (!stopped) void publish(false) }, 100)
         }
       } catch {
         if (!stopped) setConnected(false)
@@ -115,7 +133,7 @@ export function LivePlaybackSync() {
     const publishTimer = window.setInterval(() => {
       const live = useLivePlayback.getState().snapshot
       const player = usePlayer.getState()
-      if (live?.deviceId === localPlaybackDeviceId && player.queue[player.currentIndex]) void publish()
+      if (live?.deviceId === localPlaybackDeviceId && player.queue[player.currentIndex]) void publish(false)
     }, 3000)
 
     const onFocus = () => void poll()
