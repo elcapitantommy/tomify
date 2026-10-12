@@ -106,3 +106,50 @@ export function sortReleases(albums: Album[], overrides: Record<string, ReleaseO
     return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
   })
 }
+
+
+function normaliseVariantText(value: string) {
+  return value.toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+export function releaseFamilyTitle(album: Album): string {
+  let title = (album.name || album.title || '').trim()
+  title = title.replace(/\s*\((?:[^)]*(?:edition|version|remaster(?:ed)?|deluxe|expanded|anniversary|japan(?:ese)?|australi(?:a|an)|uk|us|european|cd\s*\d+|disc\s*\d+|single|e\.?p\.?)\s*[^)]*)\)\s*$/i, '')
+  title = title.replace(/\s*[\[(](?:cd|disc)\s*\d+[\])]?\s*$/i, '')
+  return title.trim() || (album.name || album.title || '').trim()
+}
+
+export function releaseFamilyKey(album: Album, override?: ReleaseOverride): string {
+  const type = releaseBucket(resolvedReleaseType(album, override))
+  const artist = normaliseVariantText(album.artist || '')
+  if (override?.musicBrainzId) return `${artist}::${type}::mb:${override.musicBrainzId}`
+  return `${artist}::${type}::title:${normaliseVariantText(releaseFamilyTitle(album))}`
+}
+
+export interface ReleaseFamily {
+  key: string
+  representative: Album
+  variants: Album[]
+}
+
+export function collapseReleaseVariants(albums: Album[], overrides: Record<string, ReleaseOverride>): ReleaseFamily[] {
+  const families = new Map<string, Album[]>()
+  for (const album of albums) {
+    const key = releaseFamilyKey(album, overrides[album.id])
+    const family = families.get(key) ?? []
+    family.push(album)
+    families.set(key, family)
+  }
+
+  return [...families.entries()].map(([key, variants]) => {
+    const representative = [...variants].sort((a, b) => {
+      const aBase = releaseFamilyTitle(a)
+      const bBase = releaseFamilyTitle(b)
+      const aExact = a.name.trim().toLocaleLowerCase('en') === aBase.toLocaleLowerCase('en') ? 0 : 1
+      const bExact = b.name.trim().toLocaleLowerCase('en') === bBase.toLocaleLowerCase('en') ? 0 : 1
+      if (aExact !== bExact) return aExact - bExact
+      return a.name.length - b.name.length || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    })[0]
+    return { key, representative, variants: [...variants].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })) }
+  })
+}
