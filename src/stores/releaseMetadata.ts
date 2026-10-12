@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { Album } from '../types'
-import type { ReleaseOverride, ReleaseType } from '../lib/release-metadata'
+import { releaseTitleHint, type ReleaseOverride, type ReleaseType } from '../lib/release-metadata'
 import { useAuth } from './auth'
 
 type CloudStatus = 'checking' | 'cloud' | 'unavailable'
@@ -134,7 +134,7 @@ export const useReleaseMetadata = create<ReleaseMetadataState>((set, get) => ({
   },
 
   enrichMany: async (albums, limit = 24) => {
-    const candidates = albums.filter((album) => !get().overrides[album.id] && !attemptedThisSession.has(album.id)).slice(0, limit)
+    const candidates = albums.filter((album) => !get().overrides[album.id] && !attemptedThisSession.has(album.id)).sort((a, b) => Number(Boolean(releaseTitleHint(b))) - Number(Boolean(releaseTitleHint(a)))).slice(0, limit)
     for (const album of candidates) {
       await get().enrich(album)
       await wait(1100)
