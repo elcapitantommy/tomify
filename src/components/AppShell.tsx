@@ -4,6 +4,8 @@ import { Album, ArrowLeft, CircleUserRound, Download, Heart, Home, ListMusic, Se
 import { PlayerBar } from './Player'
 import { PlayerRuntime } from './PlayerRuntime'
 import { LivePlaybackSync } from './LivePlaybackSync'
+import { usePlayer } from '../stores/player'
+import { localPlaybackDeviceId, useLivePlayback } from '../stores/livePlayback'
 
 const primary = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }]
 const library = [{ to: '/playlists', label: 'Playlists', icon: ListMusic }, { to: '/favourites', label: 'Favourites', icon: Heart }, { to: '/downloads', label: 'Downloads', icon: Download }]
@@ -15,6 +17,23 @@ export function AppShell() {
   const canGoBack = location.pathname !== '/'
   const [topbarHidden, setTopbarHidden] = useState(false)
   const lastScrollY = useRef(0)
+  const localQueue = usePlayer((state) => state.queue)
+  const localCurrentIndex = usePlayer((state) => state.currentIndex)
+  const live = useLivePlayback((state) => state.snapshot)
+  const localTrack = localQueue[localCurrentIndex]
+  const remoteTrack = live &&
+    live.deviceId !== localPlaybackDeviceId &&
+    Date.now() - live.updatedAt < 10_000
+      ? live.queue[live.currentIndex]
+      : undefined
+  const titleTrack = remoteTrack ?? localTrack
+
+  useEffect(() => {
+    document.title = titleTrack
+      ? `Tomify · ${titleTrack.title}${titleTrack.artist ? ` — ${titleTrack.artist}` : ''}`
+      : 'Tomify'
+    return () => { document.title = 'Tomify' }
+  }, [titleTrack?.id, titleTrack?.title, titleTrack?.artist])
 
   useEffect(() => {
     lastScrollY.current = window.scrollY
