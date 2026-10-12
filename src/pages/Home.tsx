@@ -30,16 +30,19 @@ export function Home() {
   const playAlbum = async (id: string) => usePlayer.getState().playTracks((await api.album(id)).song ?? [])
 
   useEffect(() => {
-    const updateGreeting = () => setGreeting(greetingForDate(new Date()))
-    const interval = window.setInterval(updateGreeting, 60_000)
-    document.addEventListener('visibilitychange', updateGreeting)
-    window.addEventListener('focus', updateGreeting)
+    const refreshHome = () => {
+      setGreeting(greetingForDate(new Date()))
+      if (!document.hidden) retry()
+    }
+    const interval = window.setInterval(refreshHome, 60_000)
+    document.addEventListener('visibilitychange', refreshHome)
+    window.addEventListener('focus', refreshHome)
     return () => {
       window.clearInterval(interval)
-      document.removeEventListener('visibilitychange', updateGreeting)
-      window.removeEventListener('focus', updateGreeting)
+      document.removeEventListener('visibilitychange', refreshHome)
+      window.removeEventListener('focus', refreshHome)
     }
-  }, [])
+  }, [retry])
 
   return <div className="page home-page"><header className="page-header hero"><div><span className="eyebrow"><Sparkles size={14}/> Your library</span><h1>{greeting.replace('.', '')}{username ? `, ${username}` : ''}.</h1><p>Pick up where you left off, or find something new in the collection.</p></div>{data?.recent[0] && <button className="button primary" onClick={() => void playAlbum(data.recent[0].id)}><Play fill="currentColor"/>Play something</button>}</header>{loading && <><SectionTitle title="Recently played"/><SkeletonGrid/><SectionTitle title="Fresh from the shelves"/><SkeletonGrid rows={4}/></>}{error && <ErrorState message={error} retry={retry}/>} {data && !loading && <>{data.recent.length ? <LibrarySection title="Recently played" icon={<Clock3/>} albums={data.recent} onPlay={playAlbum}/> : <EmptyState title="Nothing played yet" message="Your listening history will appear here."/>}<LibrarySection title="Fresh from the shelves" subtitle="Recently added" albums={data.newest} onPlay={playAlbum}/>{data.starred.length > 0 && <LibrarySection title="Made for you" subtitle="Your favourite albums" albums={data.starred} onPlay={playAlbum}/>}</>}</div>
 }
