@@ -1,13 +1,14 @@
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
-import { access, copyFile, mkdir, mkdtemp, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { access, copyFile, mkdir, mkdtemp, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { timingSafeEqual } from 'node:crypto'
 import { audioFormatSummary, sanitizeToolError, selectBestAudioFormat } from './youtube.mjs'
 import { deleteRecoveryArtifacts } from './deletion.mjs'
 import { ffmpegMetadataArguments } from './metadata.mjs'
+import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
 
 const host = process.env.TOMIFY_RECOVERY_HOST || '127.0.0.1'
 const port = Number(process.env.TOMIFY_RECOVERY_PORT || 8788)
@@ -136,6 +137,47 @@ async function probe(path) {
   return { codec: audio.codec_name || null, container: value.format?.format_name || extname(path).slice(1) || null, bitrate: Number(audio.bit_rate || value.format?.bit_rate) || null, sampleRate: Number(audio.sample_rate) || null, channels: Number(audio.channels) || null, duration: Number(value.format?.duration) || null }
 }
 
+async function probeImage(path) {
+  const { stdout } = await run(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name,width,height', '-of', 'json', path])
+  const stream = JSON.parse(stdout).streams?.[0] || {}
+  return { codec: stream.codec_name || null, width: Number(stream.width) || 0, height: Number(stream.height) || 0 }
+}
+
+async function fetchArtwork(url) {
+  let currentUrl = validateArtworkUrl(url)
+  for (let redirects = 0; redirects <= 5; redirects += 1) {
+    const response = await fetch(currentUrl, { redirect: 'manual', signal: AbortSignal.timeout(30_000), headers: { accept: 'image/jpeg,image/png,image/webp' } })
+    if (response.status < 300 || response.status >= 400) return { response, finalUrl: currentUrl }
+    const location = response.headers.get('location')
+    if (!location) throw new Error('Artwork provider returned an invalid redirect.')
+    if (redirects === 5) throw new Error('Artwork provider returned too many redirects.')
+    await response.body?.cancel()
+    currentUrl = validateArtworkUrl(new URL(location, currentUrl).toString())
+  }
+  throw new Error('Artwork download failed.')
+}
+
+async function prepareArtwork(candidate, temporaryRoot) {
+  if (!candidate) return null
+  const sourceUrl = validateArtworkUrl(candidate.url)
+  const { response, finalUrl } = await fetchArtwork(sourceUrl)
+  if (!response.ok) throw new Error(`Artwork provider returned HTTP ${response.status}.`)
+  const declaredLength = Number(response.headers.get('content-length') || 0)
+  if (declaredLength > 25 * 1024 * 1024) throw new Error('Artwork file is too large.')
+  const buffer = await response.arrayBuffer()
+  if (buffer.byteLength > 25 * 1024 * 1024) throw new Error('Artwork file is too large.')
+  const mimeType = detectImageMime(buffer, response.headers.get('content-type'))
+  const rawExtension = mimeType === 'image/png' ? '.png' : mimeType === 'image/webp' ? '.webp' : '.jpg'
+  const rawPath = join(temporaryRoot, `artwork-source${rawExtension}`)
+  await writeFile(rawPath, Buffer.from(buffer), { flag: 'wx' })
+  const fetched = await probeImage(rawPath)
+  const target = coverDimensions(fetched.width, fetched.height)
+  const coverPath = join(temporaryRoot, 'cover.jpg')
+  await run(ffmpeg, ['-v', 'error', '-nostdin', '-y', '-i', rawPath, '-frames:v', '1', '-vf', target.filter, '-q:v', '2', coverPath], 2 * 60_000)
+  const final = await probeImage(coverPath)
+  return { coverPath, provider: candidate.provider, providerLabel: candidate.providerLabel || candidate.provider, providerId: candidate.providerId || null, originalUrl: sourceUrl, fetchedUrl: finalUrl, fetchedDimensions: { width: fetched.width, height: fetched.height }, finalDimensions: { width: final.width, height: final.height }, sourceMimeType: mimeType, finalMimeType: 'image/jpeg', acquiredAt: new Date().toISOString() }
+}
+
 async function inspectAndDownload(sourceUrl, temporaryRoot) {
   return withAnonymousFallback(async (authenticated) => {
     const authArgs = cookieArguments(authenticated)
@@ -177,15 +219,29 @@ async function acquireYouTube(body) {
     }
 
     const sourceQuality = await probe(sourcePath)
+    const artwork = await prepareArtwork(body.artwork, temporaryRoot)
     const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${extension}`)
+    const stagedCoverPath = join(finalDirectory, `.${crypto.randomUUID()}.cover.jpg`)
+    const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
+    if (!inside(releaseCoverPath, recoveryRoot)) throw new Error('Unsafe recovery artwork destination.')
     const comment = `Tomify lossy recovery copy; source=${sourceUrl}; authorisation=${body.authorisation.basis}`
     const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment)
+    const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
+    let originalCommitted = false
+    let derivativeCommitted = false
     try {
-      await run(ffmpeg, ['-v', 'error', '-nostdin', '-n', '-i', sourcePath, '-map', '0:a:0', '-map_metadata', '-1', '-c:a', 'copy', ...tags, taggedPath], 5 * 60_000)
+      await run(ffmpeg, derivativePlan.args, 5 * 60_000)
       const derivativeQuality = await probe(taggedPath)
       await copyFile(sourcePath, originalPath, fsConstants.COPYFILE_EXCL)
-      try { await copyFile(taggedPath, finalPath, fsConstants.COPYFILE_EXCL) } catch (error) { await unlink(originalPath).catch(() => {}); throw error }
+      originalCommitted = true
+      await copyFile(taggedPath, finalPath, fsConstants.COPYFILE_EXCL)
+      derivativeCommitted = true
+      if (artwork) {
+        await copyFile(artwork.coverPath, stagedCoverPath, fsConstants.COPYFILE_EXCL)
+        await rename(stagedCoverPath, releaseCoverPath)
+      }
       const importedAt = new Date().toISOString()
+      const artworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
       const provenance = {
         source: 'youtube', sourceUrl, videoId: String(metadata.id || body.candidate.externalId || ''), sourceTitle: String(metadata.title || body.candidate.title || ''),
         sourceChannel: String(metadata.channel || metadata.uploader || body.candidate.channel || ''), acquisitionMode: acquisition.authenticatedAccessUsed ? 'authenticated-youtube-session' : 'anonymous-youtube',
@@ -193,13 +249,20 @@ async function acquireYouTube(body) {
         availableAudioFormats: formats.map(audioFormatSummary), acquiredAt: importedAt, rightsBasis: body.authorisation.basis,
         confirmedBy: body.authorisation.confirmedBy || null, confirmedAt: body.authorisation.confirmedAt || null, archiveStatus: 'lossy-recovery-copy',
         wantedMetadata: body.wantedMetadata || null, resolvedMetadata: track, metadataResolution: body.metadataResolution || null,
+        artwork: artworkProvenance,
         sourceAudio: { path: originalPath, quality: sourceQuality, preservedOriginal: true },
-        derivative: { path: finalPath, createdByTomify: true, operation: 'ffmpeg-stream-copy-tagging', transcoded: false, quality: derivativeQuality },
+        derivative: { path: finalPath, createdByTomify: true, operation: derivativePlan.embedded ? 'ffmpeg-stream-copy-tagging-with-attached-artwork' : 'ffmpeg-stream-copy-tagging', audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
       }
       await writeFile(`${finalPath}.tomify.json`, JSON.stringify(provenance, null, 2), { encoding: 'utf8', flag: 'wx' })
-      return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, provenance }
+      return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
+    } catch (error) {
+      await unlink(`${finalPath}.tomify.json`).catch(() => {})
+      if (derivativeCommitted) await unlink(finalPath).catch(() => {})
+      if (originalCommitted) await unlink(originalPath).catch(() => {})
+      throw error
     } finally {
       await unlink(taggedPath).catch(() => {})
+      await unlink(stagedCoverPath).catch(() => {})
     }
   } finally {
     const resolvedTemporaryRoot = resolve(temporaryRoot)

@@ -1,6 +1,7 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises'
 import { extname, join, relative, sep } from 'node:path'
 import { recoveryMetadataWorkerSource } from './recovery-metadata.mjs'
+import { recoveryArtworkWorkerSource } from './recovery-artwork.mjs'
 
 const outputDirectory = new URL('../dist/', import.meta.url)
 const workerPath = new URL('../dist/server/index.js', import.meta.url)
@@ -39,6 +40,8 @@ const assets = Object.fromEntries(
 const worker = `const assets = ${JSON.stringify(assets)}
 
 ${recoveryMetadataWorkerSource}
+
+${recoveryArtworkWorkerSource}
 
 function decode(value) {
   const binary = atob(value)
@@ -99,12 +102,13 @@ async function ensureReleaseTable(db) {
 
 async function ensureRecoveryTables(db) {
   await db.batch([
-    db.prepare("CREATE TABLE IF NOT EXISTS recovery_items (id TEXT PRIMARY KEY, username TEXT NOT NULL, artist TEXT NOT NULL, title TEXT NOT NULL, album TEXT, duration REAL, track_number INTEGER, disc_number INTEGER, musicbrainz_id TEXT, metadata_resolution_json TEXT, status TEXT NOT NULL DEFAULT 'missing', notes TEXT, error TEXT, selected_candidate_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS recovery_items (id TEXT PRIMARY KEY, username TEXT NOT NULL, artist TEXT NOT NULL, title TEXT NOT NULL, album TEXT, duration REAL, track_number INTEGER, disc_number INTEGER, musicbrainz_id TEXT, metadata_resolution_json TEXT, artwork_resolution_json TEXT, status TEXT NOT NULL DEFAULT 'missing', notes TEXT, error TEXT, selected_candidate_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS recovery_candidates (id TEXT PRIMARY KEY, recovery_id TEXT NOT NULL, backend TEXT NOT NULL, external_id TEXT NOT NULL, url TEXT NOT NULL, title TEXT NOT NULL, channel TEXT NOT NULL, channel_id TEXT, duration REAL, official INTEGER NOT NULL DEFAULT 0, match_score INTEGER NOT NULL DEFAULT 0, thumbnail TEXT, codec TEXT, container TEXT, bitrate INTEGER, sample_rate INTEGER, channels INTEGER, imported_path TEXT, provenance_json TEXT, rights_basis TEXT, selected INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_recovery_items_username_status ON recovery_items(username, status)'),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_recovery_candidates_recovery ON recovery_candidates(recovery_id, match_score DESC)'),
   ])
   try { await db.prepare('ALTER TABLE recovery_items ADD COLUMN metadata_resolution_json TEXT').run() } catch { /* column already exists */ }
+  try { await db.prepare('ALTER TABLE recovery_items ADD COLUMN artwork_resolution_json TEXT').run() } catch { /* column already exists */ }
 }
 
 function recoveryCandidateRow(row) {
@@ -120,13 +124,15 @@ function recoveryCandidateRow(row) {
 }
 
 async function recoveryItem(db, username, id) {
-  const row = await db.prepare('SELECT id, artist, title, album, duration, track_number AS trackNumber, disc_number AS discNumber, musicbrainz_id AS musicBrainzId, metadata_resolution_json AS metadataResolutionJson, status, notes, error, created_at AS createdAt, updated_at AS updatedAt FROM recovery_items WHERE username = ? AND id = ?').bind(username, id).first()
+  const row = await db.prepare('SELECT id, artist, title, album, duration, track_number AS trackNumber, disc_number AS discNumber, musicbrainz_id AS musicBrainzId, metadata_resolution_json AS metadataResolutionJson, artwork_resolution_json AS artworkResolutionJson, status, notes, error, created_at AS createdAt, updated_at AS updatedAt FROM recovery_items WHERE username = ? AND id = ?').bind(username, id).first()
   if (!row) return null
   const candidates = await db.prepare('SELECT id, backend, external_id AS externalId, url, title, channel, channel_id AS channelId, duration, official, match_score AS matchScore, thumbnail, codec, container, bitrate, sample_rate AS sampleRate, channels, imported_path AS importedPath, provenance_json AS provenanceJson, selected FROM recovery_candidates WHERE recovery_id = ? ORDER BY selected DESC, match_score DESC, created_at DESC').bind(id).all()
   let metadataResolution = null
+  let artworkResolution = null
   try { metadataResolution = row.metadataResolutionJson ? JSON.parse(row.metadataResolutionJson) : null } catch { metadataResolution = null }
-  const { metadataResolutionJson, ...item } = row
-  return { ...item, metadataResolution, duration: row.duration == null ? null : Number(row.duration), trackNumber: row.trackNumber == null ? null : Number(row.trackNumber), discNumber: row.discNumber == null ? null : Number(row.discNumber), candidates: (candidates.results || []).map(recoveryCandidateRow) }
+  try { artworkResolution = row.artworkResolutionJson ? JSON.parse(row.artworkResolutionJson) : null } catch { artworkResolution = null }
+  const { metadataResolutionJson, artworkResolutionJson, ...item } = row
+  return { ...item, metadataResolution, artworkResolution, duration: row.duration == null ? null : Number(row.duration), trackNumber: row.trackNumber == null ? null : Number(row.trackNumber), discNumber: row.discNumber == null ? null : Number(row.discNumber), candidates: (candidates.results || []).map(recoveryCandidateRow) }
 }
 
 function recoveryTokens(value) {
@@ -234,6 +240,110 @@ async function resolveMusicBrainzRecovery(item, candidateId) {
   const result = await musicBrainzJson(url)
   if (!result) return { authority: 'musicbrainz', status: 'unavailable', confidence: 0, strong: false, metadata: null, candidateId, resolvedAt: new Date().toISOString() }
   return { authority: 'musicbrainz', ...resolveRecoveryMetadata({ artist: item.artist, title: item.title, album: item.album, duration: item.duration || item.candidates.find((value) => value.id === candidateId)?.duration || null }, result.recordings), candidateId, resolvedAt: new Date().toISOString() }
+}
+
+function artworkYearScore(expectedDate, actualDate) {
+  const expected = String(expectedDate || '').slice(0, 4)
+  const actual = String(actualDate || '').slice(0, 4)
+  if (!expected || !actual) return 0.5
+  const difference = Math.abs(Number(expected) - Number(actual))
+  return difference === 0 ? 1 : difference === 1 ? 0.6 : 0
+}
+
+async function appleArtworkCandidates(env, metadata) {
+  const url = new URL('https://itunes.apple.com/search')
+  url.searchParams.set('term', [metadata.artist, metadata.album || metadata.title].filter(Boolean).join(' '))
+  url.searchParams.set('media', 'music')
+  url.searchParams.set('entity', metadata.album ? 'album' : 'song')
+  url.searchParams.set('limit', '20')
+  url.searchParams.set('country', String(env.APPLE_CATALOGUE_COUNTRY || 'GB').slice(0, 2).toUpperCase())
+  const response = await fetch(url, { headers: { accept: 'application/json' } })
+  if (!response.ok) return []
+  const body = await response.json()
+  const enabled = String(env.APPLE_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true'
+  const results = Array.isArray(body.results) ? body.results : []
+  return results.map((result) => {
+    const artistSimilarity = metadataTextSimilarity(metadata.artist, result.artistName)
+    const albumSimilarity = metadata.album ? metadataTextSimilarity(metadata.album, result.collectionName) : 1
+    const titleSimilarity = metadata.album ? 1 : metadataTextSimilarity(metadata.title, result.trackName)
+    const confidence = Math.round((metadata.album ? artistSimilarity * 45 + albumSimilarity * 45 : artistSimilarity * 55 + titleSimilarity * 35) + artworkYearScore(metadata.releaseDate, result.releaseDate) * 10)
+    if (artistSimilarity < 0.82 || (metadata.album && albumSimilarity < 0.72) || (!metadata.album && titleSimilarity < 0.78) || !result.artworkUrl100) return null
+    const providerId = String(result.collectionId || result.trackId || '')
+    return { id: 'apple:' + providerId, provider: 'apple', providerLabel: 'Apple catalogue', providerId, url: appleArtworkUrl(result.artworkUrl100, 1200), previewUrl: appleArtworkUrl(result.artworkUrl100, 300), width: 1200, height: 1200, confidence, artist: result.artistName || null, album: result.collectionName || null, releaseDate: result.releaseDate || null, storeUrl: result.collectionViewUrl || result.trackViewUrl || null, selectable: enabled, unavailableReason: enabled ? null : 'Apple artwork acquisition requires explicit server-side enablement after confirming applicable usage rights.' }
+  }).filter(Boolean)
+}
+
+let spotifyTokenCache = null
+async function spotifyAccessToken(env) {
+  if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) return null
+  if (spotifyTokenCache && spotifyTokenCache.expiresAt > Date.now() + 60_000) return spotifyTokenCache.token
+  const response = await fetch('https://accounts.spotify.com/api/token', { method: 'POST', headers: { authorization: 'Basic ' + btoa(String(env.SPOTIFY_CLIENT_ID) + ':' + String(env.SPOTIFY_CLIENT_SECRET)), 'content-type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials' })
+  if (!response.ok) return null
+  const body = await response.json()
+  if (!body.access_token) return null
+  spotifyTokenCache = { token: body.access_token, expiresAt: Date.now() + Number(body.expires_in || 3600) * 1000 }
+  return spotifyTokenCache.token
+}
+
+async function spotifyArtworkCandidates(env, metadata) {
+  const token = await spotifyAccessToken(env)
+  if (!token) return []
+  const url = new URL('https://api.spotify.com/v1/search')
+  url.searchParams.set('q', metadata.album ? 'album:' + metadata.album + ' artist:' + metadata.artist : 'track:' + metadata.title + ' artist:' + metadata.artist)
+  url.searchParams.set('type', metadata.album ? 'album' : 'track')
+  url.searchParams.set('limit', '10')
+  url.searchParams.set('market', String(env.SPOTIFY_MARKET || 'GB').slice(0, 2).toUpperCase())
+  const response = await fetch(url, { headers: { authorization: 'Bearer ' + token, accept: 'application/json' } })
+  if (!response.ok) return []
+  const body = await response.json()
+  const enabled = String(env.SPOTIFY_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true'
+  const raw = metadata.album ? body.albums?.items : (body.tracks?.items || []).map((track) => track.album)
+  return (Array.isArray(raw) ? raw : []).map((album) => {
+    const artistName = (album.artists || []).map((artist) => artist.name).join(' ')
+    const artistSimilarity = metadataTextSimilarity(metadata.artist, artistName)
+    const albumSimilarity = metadata.album ? metadataTextSimilarity(metadata.album, album.name) : 1
+    if (artistSimilarity < 0.82 || (metadata.album && albumSimilarity < 0.72)) return null
+    const image = (album.images || []).slice().sort((left, right) => Number(right.width || 0) - Number(left.width || 0))[0]
+    if (!image?.url) return null
+    const confidence = Math.round(artistSimilarity * 50 + albumSimilarity * 40 + artworkYearScore(metadata.releaseDate, album.release_date) * 10)
+    return { id: 'spotify:' + album.id, provider: 'spotify', providerLabel: 'Spotify', providerId: album.id, url: image.url, previewUrl: image.url, width: image.width || null, height: image.height || null, confidence, artist: artistName || null, album: album.name || null, releaseDate: album.release_date || null, storeUrl: album.external_urls?.spotify || null, selectable: enabled, unavailableReason: enabled ? null : 'Spotify artwork acquisition requires explicit server-side enablement after confirming applicable usage rights.' }
+  }).filter(Boolean)
+}
+
+async function coverArtArchiveCandidates(metadata) {
+  if (!metadata.releaseId) return []
+  const response = await fetch('https://coverartarchive.org/release/' + encodeURIComponent(metadata.releaseId), { headers: { accept: 'application/json', 'user-agent': 'Tomify/0.1 (https://app.tomify.tomdixon.uk)' } })
+  if (!response.ok) return []
+  const body = await response.json()
+  return (Array.isArray(body.images) ? body.images : []).filter((image) => image?.front === true || (image?.types || []).includes('Front')).slice(0, 4).map((image) => {
+    const url = image.thumbnails?.['1200'] || image.thumbnails?.['500'] || image.image
+    const size = image.thumbnails?.['1200'] ? 1200 : image.thumbnails?.['500'] ? 500 : null
+    const physicalHint = /booklet|case|tray|disc|vinyl|spine|scan/i.test(String(image.comment || ''))
+    return { id: 'cover-art-archive:' + image.id, provider: 'cover-art-archive', providerLabel: 'Cover Art Archive', providerId: String(image.id), url: String(url || '').replace(/^http:/, 'https:'), previewUrl: String(image.thumbnails?.['500'] || url || '').replace(/^http:/, 'https:'), width: size, height: size, confidence: Math.max(0, Number(metadata.matchConfidence || 85) - (physicalHint ? 25 : 0)), artist: metadata.artist || null, album: metadata.album || null, releaseDate: metadata.releaseDate || null, selectable: Boolean(url), unavailableReason: null, physicalMediaHint: physicalHint }
+  })
+}
+
+function youtubeArtworkCandidates(sourceCandidate) {
+  if (!sourceCandidate?.thumbnail) return []
+  return [{ id: 'youtube:' + sourceCandidate.externalId, provider: 'youtube', providerLabel: 'YouTube thumbnail', providerId: sourceCandidate.externalId, url: sourceCandidate.thumbnail, previewUrl: sourceCandidate.thumbnail, width: null, height: null, confidence: Math.min(50, Number(sourceCandidate.matchScore || 0)), artist: null, album: null, releaseDate: null, selectable: true, unavailableReason: null }]
+}
+
+function artworkConfigurationKey(env) {
+  return [
+    String(env.APPLE_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true',
+    String(env.APPLE_CATALOGUE_COUNTRY || 'GB').toUpperCase(),
+    Boolean(env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET),
+    String(env.SPOTIFY_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true',
+    String(env.SPOTIFY_MARKET || 'GB').toUpperCase(),
+  ].join(':')
+}
+
+async function resolveRecoveryArtwork(env, metadataResolution, item, sourceCandidate) {
+  const matched = metadataResolution?.strong ? metadataResolution.metadata : null
+  const metadata = { artist: matched?.artist || item.artist, title: matched?.title || item.title, album: matched?.album || item.album || null, releaseDate: matched?.releaseDate || null, releaseId: matched?.releaseId || null, matchConfidence: metadataResolution?.confidence || 0 }
+  const results = await Promise.allSettled([appleArtworkCandidates(env, metadata), spotifyArtworkCandidates(env, metadata), coverArtArchiveCandidates(metadata)])
+  const candidates = rankArtworkCandidates([...results.flatMap((result) => result.status === 'fulfilled' ? result.value : []), ...youtubeArtworkCandidates(sourceCandidate)]).slice(0, 10)
+  return { candidates, selectedCandidateId: candidates.find((candidate) => candidate.selectable)?.id || null, resolvedAt: new Date().toISOString(), candidateId: sourceCandidate.id, configurationKey: artworkConfigurationKey(env), providers: { apple: { available: true, acquisitionEnabled: String(env.APPLE_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true' }, spotify: { available: Boolean(env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET), acquisitionEnabled: String(env.SPOTIFY_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true' }, coverArtArchive: { available: Boolean(metadata.releaseId) }, youtube: { available: Boolean(sourceCandidate.thumbnail) } } }
 }
 
 async function lookupMusicBrainzReleaseGroup(album) {
@@ -384,7 +494,7 @@ export default {
             .bind(crypto.randomUUID(), item.id, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || 'Unknown channel').slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend: 'youtube', raw: candidate.provenance || null }))
         })
         if (inserts.length) await env.TOMIFY_DB.batch(inserts)
-        await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = ?, selected_candidate_id = NULL, metadata_resolution_json = NULL, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(inserts.length ? 'candidate-found' : 'missing', item.id, username).run()
+        await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = ?, selected_candidate_id = NULL, metadata_resolution_json = NULL, artwork_resolution_json = NULL, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(inserts.length ? 'candidate-found' : 'missing', item.id, username).run()
         return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Candidate search failed.'
@@ -406,7 +516,11 @@ export default {
       const cachedResolution = item.metadataResolution?.candidateId === candidate.id && Date.now() - Date.parse(item.metadataResolution.resolvedAt || '') < 30 * 24 * 60 * 60 * 1000 && item.metadataResolution.status !== 'unavailable' ? item.metadataResolution : null
       try { metadataResolution = cachedResolution || await resolveMusicBrainzRecovery(item, candidate.id) }
       catch { metadataResolution = { authority: 'musicbrainz', status: 'unavailable', confidence: 0, strong: false, metadata: null, candidateId: candidate.id, resolvedAt: new Date().toISOString() } }
-      await env.TOMIFY_DB.batch([env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 0 WHERE recovery_id = ?').bind(recoveryMatch[1]), env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(body.candidateId), env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, metadata_resolution_json = ?, status = 'candidate-found', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(body.candidateId, JSON.stringify(metadataResolution), recoveryMatch[1], username)])
+      let artworkResolution
+      const cachedArtwork = item.artworkResolution?.candidateId === candidate.id && item.artworkResolution?.configurationKey === artworkConfigurationKey(env) && Date.now() - Date.parse(item.artworkResolution.resolvedAt || '') < 30 * 24 * 60 * 60 * 1000 ? item.artworkResolution : null
+      try { artworkResolution = cachedArtwork || await resolveRecoveryArtwork(env, metadataResolution, item, candidate) }
+      catch { artworkResolution = { candidates: rankArtworkCandidates(youtubeArtworkCandidates(candidate)), selectedCandidateId: candidate.thumbnail ? 'youtube:' + candidate.externalId : null, candidateId: candidate.id, configurationKey: artworkConfigurationKey(env), resolvedAt: new Date().toISOString(), providers: {} } }
+      await env.TOMIFY_DB.batch([env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 0 WHERE recovery_id = ?').bind(recoveryMatch[1]), env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(body.candidateId), env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, metadata_resolution_json = ?, artwork_resolution_json = ?, status = 'candidate-found', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(body.candidateId, JSON.stringify(metadataResolution), JSON.stringify(artworkResolution), recoveryMatch[1], username)])
       return json({ item: await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1]) })
     }
 
@@ -422,12 +536,15 @@ export default {
       const candidate = item?.candidates.find((value) => value.id === body.candidateId)
       if (!item || !candidate) return json({ error: 'recovery-candidate-not-found' }, 404)
       if (item.metadataResolution?.candidateId !== candidate.id) return json({ error: 'recovery-metadata-review-required', message: 'Select this candidate again to resolve and review its metadata before importing.' }, 409)
+      if (item.artworkResolution?.candidateId !== candidate.id) return json({ error: 'recovery-artwork-review-required', message: 'Select this candidate again to resolve and review its artwork before importing.' }, 409)
       const metadataChoices = body.metadataChoices && typeof body.metadataChoices === 'object' ? body.metadataChoices : {}
       const wantedMetadata = { artist: item.artist, title: item.title, album: item.album || null, releaseDate: null, trackNumber: item.trackNumber || null, discNumber: item.discNumber || null, duration: item.duration || null, recordingId: item.musicBrainzId || null }
       const resolvedMetadata = applyRecoveryMetadataChoices(wantedMetadata, item.metadataResolution, metadataChoices)
+      const artwork = body.artworkCandidateId == null ? null : item.artworkResolution.candidates.find((value) => value.id === body.artworkCandidateId && value.selectable === true)
+      if (body.artworkCandidateId != null && !artwork) return json({ error: 'invalid-recovery-artwork', message: 'The selected artwork is unavailable or is not approved for acquisition.' }, 400)
       await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'importing', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(item.id, username).run()
       try {
-        const result = await callRecoveryAgent(env, '/v1/acquire', { backend: 'youtube', candidate: { externalId: candidate.externalId, url: candidate.url, title: candidate.title, channel: candidate.channel }, track: resolvedMetadata, wantedMetadata, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, authorisation: { confirmed: true, basis: body.rightsBasis, confirmedBy: username, confirmedAt: new Date().toISOString() } })
+        const result = await callRecoveryAgent(env, '/v1/acquire', { backend: 'youtube', candidate: { externalId: candidate.externalId, url: candidate.url, title: candidate.title, channel: candidate.channel }, track: resolvedMetadata, wantedMetadata, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, artwork: artwork ? { id: artwork.id, provider: artwork.provider, providerLabel: artwork.providerLabel, providerId: artwork.providerId, url: artwork.url, expectedWidth: artwork.width || null, expectedHeight: artwork.height || null, confidence: artwork.confidence } : null, authorisation: { confirmed: true, basis: body.rightsBasis, confirmedBy: username, confirmedAt: new Date().toISOString() } })
         const quality = result.quality || {}
         const provenance = { ...(result.provenance || {}), source: 'youtube', sourceUrl: candidate.url, rightsBasis: body.rightsBasis, archiveStatus: 'lossy-recovery-copy', importedAt: new Date().toISOString(), wantedMetadata, resolvedMetadata, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices } }
         await env.TOMIFY_DB.batch([

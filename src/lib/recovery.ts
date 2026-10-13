@@ -53,6 +53,37 @@ export interface RecoveryMetadataChoices {
   trackNumbers: boolean
 }
 
+export type RecoveryArtworkProvider = 'apple' | 'spotify' | 'cover-art-archive' | 'youtube'
+
+export interface RecoveryArtworkCandidate {
+  id: string
+  provider: RecoveryArtworkProvider
+  providerLabel: string
+  providerId: string
+  url: string
+  previewUrl: string
+  width?: number | null
+  height?: number | null
+  confidence: number
+  quality: 'high' | 'preferred' | 'fallback'
+  square: boolean
+  selectable: boolean
+  unavailableReason?: string | null
+  artist?: string | null
+  album?: string | null
+  releaseDate?: string | null
+  storeUrl?: string | null
+}
+
+export interface RecoveryArtworkResolution {
+  candidates: RecoveryArtworkCandidate[]
+  selectedCandidateId?: string | null
+  resolvedAt: string
+  candidateId: string
+  configurationKey?: string
+  providers?: Record<string, { available: boolean; acquisitionEnabled?: boolean }>
+}
+
 export interface RecoveryCandidate extends AudioQuality {
   id: string
   backend: string
@@ -79,6 +110,7 @@ export interface RecoveryItem {
   discNumber?: number | null
   musicBrainzId?: string | null
   metadataResolution?: RecoveryMetadataResolution | null
+  artworkResolution?: RecoveryArtworkResolution | null
   status: RecoveryStatus
   notes?: string | null
   error?: string | null
