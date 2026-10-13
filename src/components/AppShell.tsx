@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Album, ArrowLeft, CircleUserRound, Download, Heart, Home, ListMusic, Search, Settings, UsersRound } from 'lucide-react'
+import { Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, Search, Settings, UsersRound } from 'lucide-react'
 import { PlayerBar } from './Player'
 import { PlayerRuntime } from './PlayerRuntime'
 import { LivePlaybackSync } from './LivePlaybackSync'
@@ -8,8 +8,8 @@ import { usePlayer } from '../stores/player'
 import { localPlaybackDeviceId, useLivePlayback } from '../stores/livePlayback'
 
 const primary = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }]
-const library = [{ to: '/playlists', label: 'Playlists', icon: ListMusic }, { to: '/favourites', label: 'Favourites', icon: Heart }, { to: '/downloads', label: 'Downloads', icon: Download }]
-const mobile = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }, { to: '/favourites', label: 'Favourites', icon: Heart }]
+const library = [{ to: '/playlists', label: 'Playlists', icon: ListMusic }, { to: '/favourites', label: 'Favourites', icon: Heart }, { to: '/downloads', label: 'Downloads', icon: Download }, { to: '/recovery', label: 'Recovery', icon: LifeBuoy }]
+const mobile = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }, { to: '/recovery', label: 'Recovery', icon: LifeBuoy }, { to: '/favourites', label: 'Favourites', icon: Heart }]
 
 export function AppShell() {
   const location = useLocation()

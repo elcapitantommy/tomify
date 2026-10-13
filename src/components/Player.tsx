@@ -27,7 +27,7 @@ function usePlaybackView() {
       muted: player.muted,
       shuffle: player.shuffle,
       repeat: player.repeat,
-      command: async (_action: Parameters<typeof sendLivePlaybackCommand>[1], _value?: number) => false,
+      command: async () => false,
     }
   }
 

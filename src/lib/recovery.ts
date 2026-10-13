@@ -1,0 +1,78 @@
+export type RecoveryStatus = 'missing' | 'candidate-found' | 'importing' | 'recovered' | 'needs-upgrade' | 'failed'
+
+export interface AudioQuality {
+  codec?: string | null
+  container?: string | null
+  bitrate?: number | null
+  sampleRate?: number | null
+  channels?: number | null
+  duration?: number | null
+}
+
+export interface RecoveryCandidate extends AudioQuality {
+  id: string
+  backend: string
+  externalId: string
+  url: string
+  title: string
+  channel: string
+  channelId?: string | null
+  official: boolean
+  matchScore: number
+  thumbnail?: string | null
+  selected: boolean
+  importedPath?: string | null
+  provenance?: Record<string, unknown> | null
+}
+
+export interface RecoveryItem {
+  id: string
+  artist: string
+  title: string
+  album?: string | null
+  duration?: number | null
+  trackNumber?: number | null
+  discNumber?: number | null
+  musicBrainzId?: string | null
+  status: RecoveryStatus
+  notes?: string | null
+  error?: string | null
+  createdAt: string
+  updatedAt: string
+  candidates: RecoveryCandidate[]
+}
+
+const noise = /\b(live|remix|karaoke|nightcore|sped up|slowed|cover|instrumental|reaction)\b/i
+const official = /\b(official|topic|vevo|records|recordings|music)\b/i
+
+export function normaliseTrackText(value: string): string {
+  return value.toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+function tokenScore(expected: string, actual: string): number {
+  const wanted = new Set(normaliseTrackText(expected).split(' ').filter(Boolean))
+  const found = new Set(normaliseTrackText(actual).split(' ').filter(Boolean))
+  if (!wanted.size) return 0
+  let matches = 0
+  wanted.forEach((token) => { if (found.has(token)) matches += 1 })
+  return matches / wanted.size
+}
+
+export function scoreRecoveryCandidate(
+  wanted: Pick<RecoveryItem, 'artist' | 'title' | 'duration'>,
+  candidate: Pick<RecoveryCandidate, 'title' | 'channel' | 'duration'>,
+): { score: number; official: boolean } {
+  const title = tokenScore(wanted.title, candidate.title)
+  const artist = Math.max(tokenScore(wanted.artist, candidate.title), tokenScore(wanted.artist, candidate.channel))
+  const durationDifference = wanted.duration && candidate.duration ? Math.abs(wanted.duration - candidate.duration) : null
+  const duration = durationDifference === null ? 0.5 : durationDifference <= 2 ? 1 : durationDifference <= 5 ? 0.8 : durationDifference <= 12 ? 0.35 : 0
+  const looksOfficial = official.test(candidate.channel) || official.test(candidate.title)
+  const penalty = noise.test(candidate.title) && !noise.test(wanted.title) ? 24 : 0
+  const score = Math.max(0, Math.min(100, Math.round(title * 48 + artist * 28 + duration * 18 + (looksOfficial ? 6 : 0) - penalty)))
+  return { score, official: looksOfficial }
+}
+
+export function qualityLabel(candidate: AudioQuality): string {
+  const values = [candidate.codec?.toUpperCase(), candidate.bitrate ? `${Math.round(candidate.bitrate / 1000)} kbps` : null, candidate.sampleRate ? `${(candidate.sampleRate / 1000).toFixed(1)} kHz` : null, candidate.channels ? `${candidate.channels} ch` : null]
+  return values.filter(Boolean).join(' · ') || 'Quality measured after import'
+}

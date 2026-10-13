@@ -94,6 +94,69 @@ async function ensureReleaseTable(db) {
   }
 }
 
+async function ensureRecoveryTables(db) {
+  await db.batch([
+    db.prepare("CREATE TABLE IF NOT EXISTS recovery_items (id TEXT PRIMARY KEY, username TEXT NOT NULL, artist TEXT NOT NULL, title TEXT NOT NULL, album TEXT, duration REAL, track_number INTEGER, disc_number INTEGER, musicbrainz_id TEXT, status TEXT NOT NULL DEFAULT 'missing', notes TEXT, error TEXT, selected_candidate_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS recovery_candidates (id TEXT PRIMARY KEY, recovery_id TEXT NOT NULL, backend TEXT NOT NULL, external_id TEXT NOT NULL, url TEXT NOT NULL, title TEXT NOT NULL, channel TEXT NOT NULL, channel_id TEXT, duration REAL, official INTEGER NOT NULL DEFAULT 0, match_score INTEGER NOT NULL DEFAULT 0, thumbnail TEXT, codec TEXT, container TEXT, bitrate INTEGER, sample_rate INTEGER, channels INTEGER, imported_path TEXT, provenance_json TEXT, rights_basis TEXT, selected INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_recovery_items_username_status ON recovery_items(username, status)'),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_recovery_candidates_recovery ON recovery_candidates(recovery_id, match_score DESC)'),
+  ])
+}
+
+function recoveryCandidateRow(row) {
+  let provenance = null
+  try { provenance = row.provenanceJson ? JSON.parse(row.provenanceJson) : null } catch { provenance = null }
+  return {
+    id: row.id, backend: row.backend, externalId: row.externalId, url: row.url, title: row.title, channel: row.channel,
+    channelId: row.channelId ?? null, duration: row.duration == null ? null : Number(row.duration), official: Boolean(row.official),
+    matchScore: Number(row.matchScore || 0), thumbnail: row.thumbnail ?? null, codec: row.codec ?? null, container: row.container ?? null,
+    bitrate: row.bitrate == null ? null : Number(row.bitrate), sampleRate: row.sampleRate == null ? null : Number(row.sampleRate), channels: row.channels == null ? null : Number(row.channels),
+    importedPath: row.importedPath ?? null, provenance, selected: Boolean(row.selected),
+  }
+}
+
+async function recoveryItem(db, username, id) {
+  const row = await db.prepare('SELECT id, artist, title, album, duration, track_number AS trackNumber, disc_number AS discNumber, musicbrainz_id AS musicBrainzId, status, notes, error, created_at AS createdAt, updated_at AS updatedAt FROM recovery_items WHERE username = ? AND id = ?').bind(username, id).first()
+  if (!row) return null
+  const candidates = await db.prepare('SELECT id, backend, external_id AS externalId, url, title, channel, channel_id AS channelId, duration, official, match_score AS matchScore, thumbnail, codec, container, bitrate, sample_rate AS sampleRate, channels, imported_path AS importedPath, provenance_json AS provenanceJson, selected FROM recovery_candidates WHERE recovery_id = ? ORDER BY selected DESC, match_score DESC, created_at DESC').bind(id).all()
+  return { ...row, duration: row.duration == null ? null : Number(row.duration), trackNumber: row.trackNumber == null ? null : Number(row.trackNumber), discNumber: row.discNumber == null ? null : Number(row.discNumber), candidates: (candidates.results || []).map(recoveryCandidateRow) }
+}
+
+function recoveryTokens(value) {
+  return new Set(String(value || '').toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean))
+}
+
+function recoveryTokenScore(expected, actual) {
+  const wanted = recoveryTokens(expected)
+  const found = recoveryTokens(actual)
+  if (!wanted.size) return 0
+  let matches = 0
+  for (const token of wanted) if (found.has(token)) matches += 1
+  return matches / wanted.size
+}
+
+function scoreRecoveryCandidate(item, candidate) {
+  const title = recoveryTokenScore(item.title, candidate.title)
+  const artist = Math.max(recoveryTokenScore(item.artist, candidate.title), recoveryTokenScore(item.artist, candidate.channel))
+  const difference = item.duration && candidate.duration ? Math.abs(Number(item.duration) - Number(candidate.duration)) : null
+  const duration = difference == null ? 0.5 : difference <= 2 ? 1 : difference <= 5 ? 0.8 : difference <= 12 ? 0.35 : 0
+  const combined = String(candidate.title || '') + ' ' + String(candidate.channel || '')
+  const looksOfficial = ['official', 'topic', 'vevo', 'records', 'recordings'].some((word) => combined.toLocaleLowerCase('en').includes(word))
+  const unwanted = [' live', 'remix', 'karaoke', 'nightcore', 'sped up', 'slowed', ' cover', 'instrumental'].some((word) => String(candidate.title || '').toLocaleLowerCase('en').includes(word)) && !String(item.title || '').toLocaleLowerCase('en').includes('live')
+  return { official: looksOfficial, score: Math.max(0, Math.min(100, Math.round(title * 48 + artist * 28 + duration * 18 + (looksOfficial ? 6 : 0) - (unwanted ? 24 : 0)))) }
+}
+
+async function callRecoveryAgent(env, path, body) {
+  if (!env.RECOVERY_AGENT_URL) throw new Error('The recovery agent is not configured.')
+  const headers = { 'content-type': 'application/json', accept: 'application/json' }
+  if (env.RECOVERY_AGENT_TOKEN) headers.authorization = 'Bearer ' + env.RECOVERY_AGENT_TOKEN
+  const baseUrl = String(env.RECOVERY_AGENT_URL)
+  const response = await fetch((baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl) + path, { method: 'POST', headers, body: JSON.stringify(body) })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result.message || result.error || 'Recovery agent request failed.')
+  return result
+}
+
 function rowToItem(row) {
   if (!row) return null
   return {
@@ -210,6 +273,110 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url)
     let pathname = decodeURIComponent(url.pathname)
+
+    if (pathname === '/api/recovery' && request.method === 'GET') {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      await ensureRecoveryTables(env.TOMIFY_DB)
+      const rows = await env.TOMIFY_DB.prepare('SELECT id FROM recovery_items WHERE username = ? ORDER BY updated_at DESC, created_at DESC').bind(username).all()
+      const items = []
+      for (const row of rows.results || []) items.push(await recoveryItem(env.TOMIFY_DB, username, row.id))
+      return json({ items: items.filter(Boolean), backends: [{ id: 'youtube', label: 'YouTube', available: Boolean(env.RECOVERY_AGENT_URL), reason: env.RECOVERY_AGENT_URL ? null : 'The media-server recovery agent has not been connected yet.' }] })
+    }
+
+    if (pathname === '/api/recovery' && request.method === 'POST') {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      const body = await request.json()
+      if (!body || typeof body.artist !== 'string' || !body.artist.trim() || typeof body.title !== 'string' || !body.title.trim()) return json({ error: 'invalid-wanted-track' }, 400)
+      await ensureRecoveryTables(env.TOMIFY_DB)
+      const id = crypto.randomUUID()
+      await env.TOMIFY_DB.prepare("INSERT INTO recovery_items (id, username, artist, title, album, duration, track_number, disc_number, musicbrainz_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'missing')")
+        .bind(id, username, body.artist.trim().slice(0, 240), body.title.trim().slice(0, 240), typeof body.album === 'string' ? body.album.trim().slice(0, 240) || null : null, Number.isFinite(body.duration) && body.duration > 0 ? body.duration : null, Number.isInteger(body.trackNumber) && body.trackNumber > 0 ? body.trackNumber : null, Number.isInteger(body.discNumber) && body.discNumber > 0 ? body.discNumber : null, typeof body.musicBrainzId === 'string' ? body.musicBrainzId.slice(0, 64) : null).run()
+      return json({ item: await recoveryItem(env.TOMIFY_DB, username, id) }, 201)
+    }
+
+    const recoveryMatch = pathname.match(/^\\/api\\/recovery\\/([^/]+)(?:\\/(search|select|acquire))?$/)
+    if (recoveryMatch && request.method === 'PATCH' && !recoveryMatch[2]) {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      const body = await request.json()
+      const allowed = ['missing', 'candidate-found', 'recovered', 'needs-upgrade', 'failed']
+      if (!body || !allowed.includes(body.status)) return json({ error: 'invalid-recovery-status' }, 400)
+      await ensureRecoveryTables(env.TOMIFY_DB)
+      await env.TOMIFY_DB.prepare('UPDATE recovery_items SET status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?').bind(body.status, recoveryMatch[1], username).run()
+      const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
+      return item ? json({ item }) : json({ error: 'recovery-item-not-found' }, 404)
+    }
+
+    if (recoveryMatch && recoveryMatch[2] === 'search' && request.method === 'POST') {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      await ensureRecoveryTables(env.TOMIFY_DB)
+      const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
+      if (!item) return json({ error: 'recovery-item-not-found' }, 404)
+      try {
+        const result = await callRecoveryAgent(env, '/v1/search', { backend: 'youtube', track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
+        const candidates = Array.isArray(result.candidates) ? result.candidates.slice(0, 12) : []
+        await env.TOMIFY_DB.prepare('DELETE FROM recovery_candidates WHERE recovery_id = ? AND imported_path IS NULL').bind(item.id).run()
+        const inserts = candidates.filter((candidate) => candidate && typeof candidate.url === 'string' && typeof candidate.externalId === 'string').map((candidate) => {
+          const scored = scoreRecoveryCandidate(item, candidate)
+          return env.TOMIFY_DB.prepare("INSERT INTO recovery_candidates (id, recovery_id, backend, external_id, url, title, channel, channel_id, duration, official, match_score, thumbnail, provenance_json) VALUES (?, ?, 'youtube', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(crypto.randomUUID(), item.id, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || 'Unknown channel').slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend: 'youtube', raw: candidate.provenance || null }))
+        })
+        if (inserts.length) await env.TOMIFY_DB.batch(inserts)
+        await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(inserts.length ? 'candidate-found' : 'missing', item.id, username).run()
+        return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Candidate search failed.'
+        await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(message.slice(0, 500), item.id, username).run()
+        return json({ error: 'candidate-search-failed', message }, 502)
+      }
+    }
+
+    if (recoveryMatch && recoveryMatch[2] === 'select' && request.method === 'POST') {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      const body = await request.json()
+      await ensureRecoveryTables(env.TOMIFY_DB)
+      const candidate = body && typeof body.candidateId === 'string' ? await env.TOMIFY_DB.prepare('SELECT c.id FROM recovery_candidates c JOIN recovery_items i ON i.id = c.recovery_id WHERE c.id = ? AND c.recovery_id = ? AND i.username = ?').bind(body.candidateId, recoveryMatch[1], username).first() : null
+      if (!candidate) return json({ error: 'recovery-candidate-not-found' }, 404)
+      await env.TOMIFY_DB.batch([env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 0 WHERE recovery_id = ?').bind(recoveryMatch[1]), env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(body.candidateId), env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, status = 'candidate-found', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(body.candidateId, recoveryMatch[1], username)])
+      return json({ item: await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1]) })
+    }
+
+    if (recoveryMatch && recoveryMatch[2] === 'acquire' && request.method === 'POST') {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      const body = await request.json()
+      const rights = ['uploader-authorised', 'creative-commons', 'public-domain', 'other-authorisation']
+      if (!body || body.confirmedAuthorised !== true || !rights.includes(body.rightsBasis) || typeof body.candidateId !== 'string') return json({ error: 'source-authorisation-required' }, 400)
+      await ensureRecoveryTables(env.TOMIFY_DB)
+      const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
+      const candidate = item?.candidates.find((value) => value.id === body.candidateId)
+      if (!item || !candidate) return json({ error: 'recovery-candidate-not-found' }, 404)
+      await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'importing', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(item.id, username).run()
+      try {
+        const result = await callRecoveryAgent(env, '/v1/acquire', { backend: 'youtube', candidate: { externalId: candidate.externalId, url: candidate.url, title: candidate.title, channel: candidate.channel }, track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration, trackNumber: item.trackNumber, discNumber: item.discNumber, musicBrainzId: item.musicBrainzId }, authorisation: { confirmed: true, basis: body.rightsBasis, confirmedBy: username, confirmedAt: new Date().toISOString() } })
+        const quality = result.quality || {}
+        const provenance = { ...(result.provenance || {}), source: 'youtube', sourceUrl: candidate.url, rightsBasis: body.rightsBasis, archiveStatus: 'lossy-recovery-copy', importedAt: new Date().toISOString() }
+        await env.TOMIFY_DB.batch([
+          env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, provenance_json = ?, rights_basis = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(quality.codec || null, quality.container || null, Number.isFinite(quality.bitrate) ? quality.bitrate : null, Number.isFinite(quality.sampleRate) ? quality.sampleRate : null, Number.isFinite(quality.channels) ? quality.channels : null, Number.isFinite(quality.duration) ? quality.duration : null, String(result.path || '').slice(0, 1000), JSON.stringify(provenance), body.rightsBasis, candidate.id),
+          env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, status = 'needs-upgrade', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(candidate.id, item.id, username),
+        ])
+        return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Import failed.'
+        await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(message.slice(0, 500), item.id, username).run()
+        return json({ error: 'recovery-import-failed', message }, 502)
+      }
+    }
 
 
     if (pathname === '/api/live-playback' && request.method === 'GET') {

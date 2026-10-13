@@ -119,8 +119,8 @@ export function releaseFamilyTitle(album: Album): string {
   while (title && title !== previous) {
     previous = title
     title = title
-      .replace(/\s*[\[(](?:[^\])]*(?:edition|version|remaster(?:ed)?|deluxe|expanded|anniversary|special|limited|japan(?:ese)?|australi(?:a|an)|uk|us|usa|european|cd\s*\d+|disc\s*\d+|single|e\.?p\.?|bonus|vinyl|digital|lossless|flac|hi[- ]?res|\d+\s*bit|\d+(?:\.\d+)?\s*k?hz)[^\])]*)[\])]\s*$/i, '')
-      .replace(/\s*[\[(](?:cd|disc)\s*\d+[\])]?\s*$/i, '')
+      .replace(/\s*[[(](?:[^\])]*(?:edition|version|remaster(?:ed)?|deluxe|expanded|anniversary|special|limited|japan(?:ese)?|australi(?:a|an)|uk|us|usa|european|cd\s*\d+|disc\s*\d+|single|e\.?p\.?|bonus|vinyl|digital|lossless|flac|hi[- ]?res|\d+\s*bit|\d+(?:\.\d+)?\s*k?hz)[^\])]*)[\])]\s*$/i, '')
+      .replace(/\s*[[(](?:cd|disc)\s*\d+[\])]?\s*$/i, '')
       .trim()
   }
   return title || original
@@ -133,7 +133,7 @@ function releaseFamilyKind(album: Album, override?: ReleaseOverride): 'single-ep
 
 function releaseFamilyGroupingTitle(album: Album): string {
   const canonical = releaseFamilyTitle(album)
-  const loose = canonical.replace(/\s*[\[(][^\])]+[\])]\s*$/i, '').trim()
+  const loose = canonical.replace(/\s*[[(][^\])]+[\])]\s*$/i, '').trim()
   return loose || canonical
 }
 

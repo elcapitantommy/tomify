@@ -15,6 +15,7 @@ import { Playlists } from './pages/Playlists'
 import { PlaylistDetail } from './pages/PlaylistDetail'
 import { Favourites } from './pages/Favourites'
 import { Downloads } from './pages/Downloads'
+import { Recovery } from './pages/Recovery'
 import { Settings } from './pages/Settings'
 import { NotFound } from './pages/NotFound'
 
@@ -24,5 +25,5 @@ export default function App() {
   const loadReleaseMetadata = useReleaseMetadata((s) => s.load)
   useEffect(() => { if (session) { void validate(); void loadReleaseMetadata() } }, [session, validate, loadReleaseMetadata])
   if (!session) return <Login/>
-  return <ApiProvider><BrowserRouter><Routes><Route element={<AppShell/>}><Route index element={<Home/>}/><Route path="artists" element={<Artists/>}/><Route path="artists/:id" element={<ArtistDetail/>}/><Route path="albums" element={<Albums/>}/><Route path="albums/:id" element={<AlbumDetail/>}/><Route path="search" element={<Search/>}/><Route path="playlists" element={<Playlists/>}/><Route path="playlists/:id" element={<PlaylistDetail/>}/><Route path="favourites" element={<Favourites/>}/><Route path="downloads" element={<Downloads/>}/><Route path="settings" element={<Settings/>}/><Route path="*" element={<NotFound/>}/></Route></Routes></BrowserRouter></ApiProvider>
+  return <ApiProvider><BrowserRouter><Routes><Route element={<AppShell/>}><Route index element={<Home/>}/><Route path="artists" element={<Artists/>}/><Route path="artists/:id" element={<ArtistDetail/>}/><Route path="albums" element={<Albums/>}/><Route path="albums/:id" element={<AlbumDetail/>}/><Route path="search" element={<Search/>}/><Route path="playlists" element={<Playlists/>}/><Route path="playlists/:id" element={<PlaylistDetail/>}/><Route path="favourites" element={<Favourites/>}/><Route path="downloads" element={<Downloads/>}/><Route path="recovery" element={<Recovery/>}/><Route path="settings" element={<Settings/>}/><Route path="*" element={<NotFound/>}/></Route></Routes></BrowserRouter></ApiProvider>
 }

@@ -1,0 +1,20 @@
+[Unit]
+Description=Tomify recovery agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tom
+WorkingDirectory=/srv/tomify/app/recovery-agent
+EnvironmentFile=/etc/tomify/recovery-agent.env
+ExecStart=/usr/bin/node /srv/tomify/app/recovery-agent/index.mjs
+Restart=on-failure
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/music-recovery
+
+[Install]
+WantedBy=multi-user.target
