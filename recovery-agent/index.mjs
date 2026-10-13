@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
 import { createWriteStream } from 'node:fs'
-import { access, copyFile, mkdir, mkdtemp, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { access, copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, timingSafeEqual } from 'node:crypto'
@@ -14,6 +14,7 @@ import { deleteRecoveryArtifacts } from './deletion.mjs'
 import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './derivative.mjs'
 import { ffmpegMetadataArguments } from './metadata.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
+import { downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, parseIndexerConfig, searchNewznab, selectCompletedAudio, submitDownloader, validateCompletedPath } from './usenet.mjs'
 
 const host = process.env.TOMIFY_RECOVERY_HOST || '127.0.0.1'
 const port = Number(process.env.TOMIFY_RECOVERY_PORT || 8788)
@@ -26,6 +27,12 @@ const ffprobe = process.env.FFPROBE_PATH || 'ffprobe'
 const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg'
 const configuredArchiveMaxBytes = Number(process.env.TOMIFY_ARCHIVE_MAX_BYTES || 1024 * 1024 * 1024)
 const archiveMaxBytes = Number.isFinite(configuredArchiveMaxBytes) && configuredArchiveMaxBytes > 0 ? configuredArchiveMaxBytes : 1024 * 1024 * 1024
+const usenetDownloadRoot = process.env.TOMIFY_USENET_DOWNLOAD_DIR ? resolve(process.env.TOMIFY_USENET_DOWNLOAD_DIR) : null
+const usenetStateRoot = resolve(process.env.TOMIFY_RECOVERY_STATE_DIR || join(recoveryRoot, '.tomify-state'))
+const configuredUsenetMaxBytes = Number(process.env.TOMIFY_USENET_MAX_BYTES || 2 * 1024 * 1024 * 1024)
+const usenetMaxBytes = Number.isFinite(configuredUsenetMaxBytes) && configuredUsenetMaxBytes > 0 ? configuredUsenetMaxBytes : 2 * 1024 * 1024 * 1024
+const newznabIndexers = parseIndexerConfig(process.env.TOMIFY_NEWZNAB_INDEXERS_JSON || '')
+const usenetDownloader = downloaderConfig()
 
 function inside(child, parent) {
   return child === parent || child.startsWith(parent + sep)
@@ -33,6 +40,7 @@ function inside(child, parent) {
 
 if (masterRoot && (inside(recoveryRoot, masterRoot) || inside(masterRoot, recoveryRoot))) throw new Error('TOMIFY_RECOVERY_DIR must be separate from TOMIFY_MASTER_DIR.')
 if (youtubeCookies && inside(youtubeCookies, recoveryRoot)) throw new Error('TOMIFY_YOUTUBE_COOKIES must be outside the recovery library.')
+if (usenetDownloadRoot && masterRoot && (inside(usenetDownloadRoot, masterRoot) || inside(masterRoot, usenetDownloadRoot))) throw new Error('TOMIFY_USENET_DOWNLOAD_DIR must be separate from TOMIFY_MASTER_DIR.')
 
 function safeName(value, fallback) {
   const cleaned = String(value || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '').replace(/[. ]+$/g, '').trim().slice(0, 120)
@@ -156,6 +164,11 @@ async function searchInternetArchive(track) {
     if (results.length >= 12) break
   }
   return results.slice(0, 12)
+}
+
+async function searchUsenet(track, mode) {
+  if (!newznabIndexers.length || !usenetDownloader || !usenetDownloadRoot) throw new Error('Usenet Recovery is not fully configured.')
+  return searchNewznab(newznabIndexers, track, mode)
 }
 
 async function fetchArchiveFile(url, destination, expectedHashes = {}) {
@@ -409,6 +422,129 @@ async function acquireInternetArchive(body) {
   }
 }
 
+function usenetJobPath(id) {
+  if (!/^[a-f0-9-]{36}$/.test(String(id || ''))) throw new Error('Invalid Usenet job id.')
+  const path = resolve(usenetStateRoot, `${id}.json`)
+  if (!inside(path, usenetStateRoot)) throw new Error('Unsafe Usenet job path.')
+  return path
+}
+
+async function saveUsenetJob(job) {
+  await mkdir(usenetStateRoot, { recursive: true })
+  const path = usenetJobPath(job.id)
+  const temporary = `${path}.${crypto.randomUUID()}.tmp`
+  await writeFile(temporary, JSON.stringify(job, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+  await rename(temporary, path)
+}
+
+async function loadUsenetJob(id) {
+  return JSON.parse(await readFile(usenetJobPath(id), 'utf8'))
+}
+
+async function queueUsenet(body) {
+  if (body?.authorisation?.confirmed !== true || !body.authorisation.basis) throw new Error('Explicit source authorisation is required.')
+  if (!usenetDownloader || !usenetDownloadRoot || !newznabIndexers.length) throw new Error('Usenet Recovery is not fully configured.')
+  const reference = body?.candidate?.provenance
+  const indexer = newznabIndexers.find((value) => value.id === reference?.providerId)
+  if (!indexer || !reference?.guid) throw new Error('The selected Newznab result is no longer valid.')
+  if (Number(reference.size) > usenetMaxBytes) throw new Error('The selected Usenet result exceeds TOMIFY_USENET_MAX_BYTES.')
+  const id = crypto.randomUUID()
+  const displayName = `Tomify - ${safeName(body?.track?.artist, 'Unknown Artist')} - ${safeName(body?.track?.title, 'Recovery')}`
+  const submitted = await submitDownloader(usenetDownloader, newznabDownloadUrl(indexer, reference.guid), displayName)
+  const job = {
+    id, version: 1, status: 'queued', progress: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    downloader: submitted.downloader, remoteId: submitted.remoteId,
+    indexer: { id: indexer.id, name: indexer.name },
+    result: { externalId: body.candidate.externalId || null, title: body.candidate.title || null, detailsUrl: body.candidate.url || null, guid: reference.guid, searchMode: reference.searchMode || 'track', size: reference.size || null, ageDays: reference.ageDays || null },
+    request: { track: body.track || {}, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
+  }
+  await saveUsenetJob(job)
+  return { job: { id, status: 'queued', progress: 0, provider: indexer.name, downloader: submitted.downloader } }
+}
+
+async function importUsenetAudio(job, sourcePath, completedFiles) {
+  const track = job.request.track || {}
+  const sourceExtension = extname(sourcePath).toLowerCase() || '.mka'
+  const sourceQuality = await probe(sourcePath)
+  if (!sourceQuality.codec || !sourceQuality.duration) throw new Error('The selected completed file is not valid audio.')
+  const derivativeExtension = recoveryDerivativeExtension(sourcePath, sourceQuality)
+  const artistDirectory = safeName(track.artist, 'Unknown Artist')
+  const albumDirectory = safeName(track.album, 'Recovered Tracks')
+  const prefix = Number.isInteger(track.trackNumber) && track.trackNumber > 0 ? `${String(track.trackNumber).padStart(2, '0')} - ` : ''
+  const stem = `${prefix}${safeName(track.title, basename(sourcePath, sourceExtension))}`
+  const finalDirectory = resolve(recoveryRoot, artistDirectory, albumDirectory)
+  const sourceDirectory = resolve(finalDirectory, '.tomify-source')
+  const finalPath = resolve(finalDirectory, `${stem}${derivativeExtension}`)
+  const originalPath = resolve(sourceDirectory, `${stem}${sourceExtension}`)
+  if (!inside(finalPath, recoveryRoot) || !inside(originalPath, recoveryRoot)) throw new Error('Unsafe recovery destination.')
+  await mkdir(sourceDirectory, { recursive: true })
+  for (const path of [finalPath, originalPath, `${finalPath}.tomify.json`]) {
+    try { await access(path); throw new Error('A recovery copy already exists; Tomify will not overwrite it.') } catch (error) { if (error?.code !== 'ENOENT') throw error }
+  }
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'tomify-recovery-'))
+  const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${derivativeExtension}`)
+  const stagedCoverPath = join(finalDirectory, `.${crypto.randomUUID()}.cover.jpg`)
+  let originalCommitted = false
+  let derivativeCommitted = false
+  try {
+    const artwork = await prepareArtwork(job.request.artwork, temporaryRoot)
+    const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
+    const sourceUrl = job.result.detailsUrl || `newznab:${job.indexer.id}:${job.result.externalId || 'result'}`
+    const comment = `Tomify authorised Usenet recovery copy; provider=${job.indexer.name}; authorisation=${job.request.authorisation.basis}`
+    const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment)
+    const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
+    await run(ffmpeg, derivativePlan.args, 5 * 60_000)
+    const derivativeQuality = await probe(taggedPath)
+    await copyFile(sourcePath, originalPath, fsConstants.COPYFILE_EXCL); originalCommitted = true
+    await copyFile(taggedPath, finalPath, fsConstants.COPYFILE_EXCL); derivativeCommitted = true
+    if (artwork) { await copyFile(artwork.coverPath, stagedCoverPath, fsConstants.COPYFILE_EXCL); await rename(stagedCoverPath, releaseCoverPath) }
+    const acquiredAt = new Date().toISOString()
+    const artworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+    const provenance = {
+      source: 'usenet', sourceUrl, newznabProvider: job.indexer.name, newznabResultId: job.result.externalId, newznabTitle: job.result.title,
+      searchMode: job.result.searchMode, postedSize: job.result.size, ageDaysAtDiscovery: job.result.ageDays, downloader: job.downloader,
+      completedFileCount: completedFiles.length, acquiredAt, rightsBasis: job.request.authorisation.basis,
+      confirmedBy: job.request.authorisation.confirmedBy || null, confirmedAt: job.request.authorisation.confirmedAt || null,
+      archiveStatus: 'usenet-recovery-copy', wantedMetadata: job.request.wantedMetadata, resolvedMetadata: track,
+      catalogueSource: job.request.catalogueSource, metadataResolution: job.request.metadataResolution, artwork: artworkProvenance,
+      sourceAudio: { path: originalPath, extension: sourceExtension, quality: sourceQuality, preservedOriginal: true },
+      derivative: { path: finalPath, extension: derivativeExtension, containerRemuxed: sourceExtension !== derivativeExtension, createdByTomify: true, operation: recoveryDerivativeOperation(sourceExtension, derivativeExtension, derivativePlan.embedded), audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
+    }
+    await writeFile(`${finalPath}.tomify.json`, JSON.stringify(provenance, null, 2), { encoding: 'utf8', flag: 'wx' })
+    return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
+  } catch (error) {
+    await unlink(`${finalPath}.tomify.json`).catch(() => {})
+    if (derivativeCommitted) await unlink(finalPath).catch(() => {})
+    if (originalCommitted) await unlink(originalPath).catch(() => {})
+    throw error
+  } finally {
+    await unlink(taggedPath).catch(() => {}); await unlink(stagedCoverPath).catch(() => {})
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
+}
+
+async function pollUsenetJob(id) {
+  const job = await loadUsenetJob(id)
+  if (job.status === 'completed') return { job: { id: job.id, status: job.status, progress: 100, result: job.importResult } }
+  if (job.status === 'failed') return { job: { id: job.id, status: job.status, progress: job.progress || 0, error: job.error } }
+  try {
+    const state = await downloaderStatus(usenetDownloader, job.remoteId)
+    job.status = state.status; job.progress = state.progress || 0; job.message = state.message || null; job.updatedAt = new Date().toISOString()
+    if (state.status === 'completed') {
+      const completedPath = await validateCompletedPath(state.completedPath, usenetDownloadRoot)
+      const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
+      const selected = selectCompletedAudio(discovered.files, job.request.track)
+      if (!selected) throw new Error('No completed audio file matched the wanted track.')
+      job.importResult = await importUsenetAudio(job, selected.path, discovered.files)
+      job.status = 'completed'; job.progress = 100
+    }
+  } catch (error) {
+    job.status = 'failed'; job.error = sanitizeToolError(error instanceof Error ? error.message : 'Usenet recovery failed.', [])
+  }
+  await saveUsenetJob(job)
+  return { job: { id: job.id, status: job.status, progress: job.progress || 0, message: job.message || null, error: job.error || null, result: job.importResult || null } }
+}
+
 async function diagnoseAuthenticatedYouTube() {
   const status = await cookieStatus()
   if (!status.usable) return { configured: false, extractionAvailable: false, state: status.state }
@@ -428,31 +564,36 @@ async function deleteImportedRecovery(body) {
 }
 
 await mkdir(recoveryRoot, { recursive: true })
+await mkdir(usenetStateRoot, { recursive: true })
 
 createServer(async (request, response) => {
   try {
     if (request.method === 'GET' && request.url === '/health') {
       const auth = await cookieStatus()
-      return send(response, 200, { ok: true, backends: ['youtube', 'internet-archive'], youtubeAuthentication: auth.usable ? 'configured' : 'not-configured' })
+      return send(response, 200, { ok: true, backends: ['youtube', 'internet-archive', ...(newznabIndexers.length && usenetDownloader && usenetDownloadRoot ? ['usenet'] : [])], youtubeAuthentication: auth.usable ? 'configured' : 'not-configured' })
     }
     if (!authorised(request)) return send(response, 401, { error: 'unauthorized' })
     if (request.method !== 'POST') return send(response, 404, { error: 'not-found' })
     const body = await parseBody(request)
     if (request.url === '/v1/status') {
       const auth = await cookieStatus()
-      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }] })
+      const usenetAvailable = Boolean(newznabIndexers.length && usenetDownloader && usenetDownloadRoot)
+      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenetAvailable, authentication: usenetAvailable ? 'configured' : 'not-configured', providerCount: newznabIndexers.length, downloader: usenetDownloader?.type || null }] })
     }
     if (request.url === '/v1/diagnostics/youtube-auth') return send(response, 200, await diagnoseAuthenticatedYouTube())
     if (request.url === '/v1/search') {
       if (body.backend === 'youtube') return send(response, 200, { candidates: await searchYouTube(body.track) })
       if (body.backend === 'internet-archive') return send(response, 200, { candidates: await searchInternetArchive(body.track) })
+      if (body.backend === 'usenet') return send(response, 200, { candidates: await searchUsenet(body.track, body.searchMode) })
       throw new Error('Unsupported recovery backend.')
     }
     if (request.url === '/v1/acquire') {
       if (body.backend === 'youtube') return send(response, 200, await acquireYouTube(body))
       if (body.backend === 'internet-archive') return send(response, 200, await acquireInternetArchive(body))
+      if (body.backend === 'usenet') return send(response, 202, await queueUsenet(body))
       throw new Error('Unsupported recovery backend.')
     }
+    if (request.url === '/v1/jobs/status') return send(response, 200, await pollUsenetJob(body.jobId))
     if (request.url === '/v1/delete') return send(response, 200, await deleteImportedRecovery(body))
     return send(response, 404, { error: 'not-found' })
   } catch (error) {

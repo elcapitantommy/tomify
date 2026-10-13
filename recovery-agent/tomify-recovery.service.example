@@ -14,7 +14,8 @@ PrivateTmp=true
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/srv/music-recovery
+ReadWritePaths=/srv/music-recovery /var/lib/tomify-recovery
+ReadOnlyPaths=/srv/usenet/completed
 ReadOnlyPaths=/opt/tomify/secrets
 
 [Install]

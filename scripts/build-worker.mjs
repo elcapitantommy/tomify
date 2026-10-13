@@ -443,6 +443,7 @@ export default {
       const backendState = [
         { id: 'youtube', label: 'YouTube', available: configured, authentication: configured ? 'unavailable' : 'not-configured', reason: configured ? null : 'The media-server recovery agent has not been connected yet.' },
         { id: 'internet-archive', label: 'Internet Archive', available: configured, authentication: 'not-required', reason: configured ? null : 'The media-server recovery agent has not been connected yet.' },
+        { id: 'usenet', label: 'Usenet / NZB', available: false, authentication: 'not-configured', reason: configured ? 'Configure Newznab and SABnzbd or NZBGet on the recovery agent.' : 'The media-server recovery agent has not been connected yet.' },
       ]
       if (env.RECOVERY_AGENT_URL) {
         try {
@@ -452,7 +453,7 @@ export default {
             backend.available = Boolean(remote && remote.available !== false)
             backend.authentication = remote?.authentication || backend.authentication
           }
-        } catch { backendState.forEach((backend) => { backend.available = false; backend.authentication = backend.id === 'youtube' ? 'unavailable' : 'not-required' }) }
+        } catch { backendState.forEach((backend) => { backend.available = false; backend.authentication = backend.id === 'internet-archive' ? 'not-required' : 'unavailable' }) }
       }
       return json({ items: items.filter(Boolean), backends: backendState })
     }
@@ -470,7 +471,7 @@ export default {
       return json({ item: await recoveryItem(env.TOMIFY_DB, username, id) }, 201)
     }
 
-    const recoveryMatch = pathname.match(/^\\/api\\/recovery\\/([^/]+)(?:\\/(search|select|acquire))?$/)
+    const recoveryMatch = pathname.match(/^\\/api\\/recovery\\/([^/]+)(?:\\/(search|select|acquire|job))?$/)
     if (recoveryMatch && request.method === 'DELETE' && !recoveryMatch[2]) {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request)
@@ -478,6 +479,7 @@ export default {
       await ensureRecoveryTables(env.TOMIFY_DB)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       if (!item) return json({ error: 'recovery-item-not-found' }, 404)
+      if (item.status === 'queued' || item.status === 'downloading') return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before deleting this item.' }, 409)
       const importedPaths = [...new Set(item.candidates.map((candidate) => candidate.importedPath).filter((path) => typeof path === 'string' && path.length > 0))]
       if (importedPaths.length) {
         try {
@@ -514,17 +516,19 @@ export default {
       await ensureRecoveryTables(env.TOMIFY_DB)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       if (!item) return json({ error: 'recovery-item-not-found' }, 404)
+      if (item.status === 'queued' || item.status === 'downloading') return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before searching again.' }, 409)
       const body = await request.json().catch(() => ({}))
-      const backend = body?.backend === 'internet-archive' ? 'internet-archive' : body?.backend === 'youtube' ? 'youtube' : null
+      const backend = body?.backend === 'internet-archive' ? 'internet-archive' : body?.backend === 'youtube' ? 'youtube' : body?.backend === 'usenet' ? 'usenet' : null
       if (!backend) return json({ error: 'unsupported-recovery-backend' }, 400)
+      const searchMode = ['artist', 'track', 'release'].includes(body?.searchMode) ? body.searchMode : 'track'
       try {
-        const result = await callRecoveryAgent(env, '/v1/search', { backend, track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
+        const result = await callRecoveryAgent(env, '/v1/search', { backend, searchMode, track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
         const candidates = Array.isArray(result.candidates) ? result.candidates.slice(0, 12) : []
         await env.TOMIFY_DB.prepare('DELETE FROM recovery_candidates WHERE recovery_id = ? AND backend = ? AND imported_path IS NULL').bind(item.id, backend).run()
         const inserts = candidates.filter((candidate) => candidate && typeof candidate.url === 'string' && typeof candidate.externalId === 'string').map((candidate) => {
           const scored = scoreRecoveryCandidate(item, candidate)
           return env.TOMIFY_DB.prepare('INSERT INTO recovery_candidates (id, recovery_id, backend, external_id, url, title, channel, channel_id, duration, official, match_score, thumbnail, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-            .bind(crypto.randomUUID(), item.id, backend, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || (backend === 'youtube' ? 'Unknown channel' : 'Internet Archive')).slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend, raw: candidate.provenance || null }))
+            .bind(crypto.randomUUID(), item.id, backend, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || (backend === 'youtube' ? 'Unknown channel' : backend === 'usenet' ? 'Newznab indexer' : 'Internet Archive')).slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend, searchMode, raw: candidate.provenance || null }))
         })
         if (inserts.length) await env.TOMIFY_DB.batch(inserts)
         const retainedSelection = item.candidates.find((candidate) => candidate.selected && (candidate.backend !== backend || candidate.importedPath))
@@ -546,6 +550,7 @@ export default {
       const body = await request.json()
       await ensureRecoveryTables(env.TOMIFY_DB)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
+      if (item?.status === 'queued' || item?.status === 'downloading') return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before changing candidates.' }, 409)
       const candidate = body && typeof body.candidateId === 'string' ? item?.candidates.find((value) => value.id === body.candidateId) : null
       if (!candidate) return json({ error: 'recovery-candidate-not-found' }, 404)
       let metadataResolution
@@ -558,6 +563,44 @@ export default {
       catch { artworkResolution = { candidates: rankArtworkCandidates(youtubeArtworkCandidates(candidate)), selectedCandidateId: candidate.backend === 'youtube' && candidate.thumbnail ? 'youtube:' + candidate.externalId : null, candidateId: candidate.id, configurationKey: artworkConfigurationKey(env), resolvedAt: new Date().toISOString(), providers: {} } }
       await env.TOMIFY_DB.batch([env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 0 WHERE recovery_id = ?').bind(recoveryMatch[1]), env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(body.candidateId), env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, metadata_resolution_json = ?, artwork_resolution_json = ?, status = 'candidate-found', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(body.candidateId, JSON.stringify(metadataResolution), JSON.stringify(artworkResolution), recoveryMatch[1], username)])
       return json({ item: await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1]) })
+    }
+
+    if (recoveryMatch && recoveryMatch[2] === 'job' && request.method === 'GET') {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      await ensureRecoveryTables(env.TOMIFY_DB)
+      const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
+      const candidate = item?.candidates.find((value) => value.selected && value.provenance?.job?.id)
+      if (!item || !candidate) return json({ error: 'recovery-job-not-found' }, 404)
+      try {
+        const result = await callRecoveryAgent(env, '/v1/jobs/status', { jobId: candidate.provenance.job.id })
+        const job = result.job || {}
+        const provenance = { ...candidate.provenance, job: { ...candidate.provenance.job, id: candidate.provenance.job.id, status: job.status || 'queued', progress: Number.isFinite(job.progress) ? job.progress : 0, message: job.message || null, error: job.error || null } }
+        if (job.status === 'completed' && job.result) {
+          const quality = job.result.quality || {}
+          const finalProvenance = { ...provenance, ...(job.result.provenance || {}), source: 'usenet', job: provenance.job, importedAt: new Date().toISOString() }
+          await env.TOMIFY_DB.batch([
+            env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, provenance_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(quality.codec || null, quality.container || null, Number.isFinite(quality.bitrate) ? quality.bitrate : null, Number.isFinite(quality.sampleRate) ? quality.sampleRate : null, Number.isFinite(quality.channels) ? quality.channels : null, Number.isFinite(quality.duration) ? quality.duration : null, String(job.result.path || '').slice(0, 1000), JSON.stringify(finalProvenance), candidate.id),
+            env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'needs-upgrade', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(item.id, username),
+          ])
+        } else if (job.status === 'failed') {
+          await env.TOMIFY_DB.batch([
+            env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET provenance_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(JSON.stringify(provenance), candidate.id),
+            env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(String(job.error || 'Usenet recovery failed.').slice(0, 500), item.id, username),
+          ])
+        } else {
+          const status = job.status === 'downloading' ? 'downloading' : 'queued'
+          await env.TOMIFY_DB.batch([
+            env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET provenance_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(JSON.stringify(provenance), candidate.id),
+            env.TOMIFY_DB.prepare('UPDATE recovery_items SET status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?').bind(status, item.id, username),
+          ])
+        }
+        return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not poll the Usenet recovery job.'
+        return json({ error: 'recovery-job-poll-failed', message }, 502)
+      }
     }
 
     if (recoveryMatch && recoveryMatch[2] === 'acquire' && request.method === 'POST') {
@@ -582,7 +625,14 @@ export default {
       try {
         const result = await callRecoveryAgent(env, '/v1/acquire', { backend: candidate.backend, candidate: { externalId: candidate.externalId, url: candidate.url, title: candidate.title, channel: candidate.channel, provenance: candidate.provenance?.raw || null }, track: resolvedMetadata, wantedMetadata, catalogueSource: item.catalogueSource || null, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, artwork: artwork ? { id: artwork.id, provider: artwork.provider, providerLabel: artwork.providerLabel, providerId: artwork.providerId, url: artwork.url, expectedWidth: artwork.width || null, expectedHeight: artwork.height || null, confidence: artwork.confidence } : null, authorisation: { confirmed: true, basis: body.rightsBasis, confirmedBy: username, confirmedAt: new Date().toISOString() } })
         const quality = result.quality || {}
-        const provenance = { ...(result.provenance || {}), source: result.provenance?.source || candidate.backend, sourceUrl: result.provenance?.sourceUrl || candidate.url, catalogueSource: item.catalogueSource || null, rightsBasis: body.rightsBasis, archiveStatus: result.provenance?.archiveStatus || 'recovery-copy', importedAt: new Date().toISOString(), wantedMetadata, resolvedMetadata, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices } }
+        const provenance = { ...(candidate.provenance || {}), ...(result.provenance || {}), source: result.provenance?.source || candidate.backend, sourceUrl: result.provenance?.sourceUrl || candidate.url, catalogueSource: item.catalogueSource || null, rightsBasis: body.rightsBasis, archiveStatus: result.provenance?.archiveStatus || 'recovery-copy', importedAt: result.job ? null : new Date().toISOString(), wantedMetadata, resolvedMetadata, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, job: result.job || null }
+        if (result.job) {
+          await env.TOMIFY_DB.batch([
+            env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, provenance_json = ?, rights_basis = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(JSON.stringify(provenance), body.rightsBasis, candidate.id),
+            env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, status = 'queued', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(candidate.id, item.id, username),
+          ])
+          return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) }, 202)
+        }
         await env.TOMIFY_DB.batch([
           env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, provenance_json = ?, rights_basis = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(quality.codec || null, quality.container || null, Number.isFinite(quality.bitrate) ? quality.bitrate : null, Number.isFinite(quality.sampleRate) ? quality.sampleRate : null, Number.isFinite(quality.channels) ? quality.channels : null, Number.isFinite(quality.duration) ? quality.duration : null, String(result.path || '').slice(0, 1000), JSON.stringify(provenance), body.rightsBasis, candidate.id),
           env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, status = 'needs-upgrade', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(candidate.id, item.id, username),

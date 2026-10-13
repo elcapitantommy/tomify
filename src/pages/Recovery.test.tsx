@@ -7,13 +7,14 @@ import { Recovery } from './Recovery'
 
 vi.mock('../lib/recovery-api', () => ({
   recoveryApi: {
-    list: vi.fn(), add: vi.fn(), search: vi.fn(), select: vi.fn(), acquire: vi.fn(), updateStatus: vi.fn(), delete: vi.fn(),
+    list: vi.fn(), add: vi.fn(), search: vi.fn(), select: vi.fn(), acquire: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), delete: vi.fn(),
   },
 }))
 
 const backends = [
   { id: 'youtube', label: 'YouTube', available: true as const },
   { id: 'internet-archive', label: 'Internet Archive', available: true as const },
+  { id: 'usenet', label: 'Usenet / NZB', available: true as const },
 ]
 
 function item(overrides: Partial<RecoveryItem> = {}): RecoveryItem {
@@ -48,8 +49,18 @@ describe('Recovery page actions', () => {
     expect(inactive.querySelector('.spin')).toBeNull()
   })
 
+  it('searches Newznab independently by artist, track title, or release', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ album: 'Lush Life' })], backends })
+    vi.mocked(recoveryApi.search).mockImplementation(() => new Promise(() => {}))
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Usenet search mode' }), { target: { value: 'artist' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search NZB' }))
+    expect(recoveryApi.search).toHaveBeenCalledWith('recovery-1', 'usenet', 'artist')
+  })
+
   it('continues from metadata and artwork review into source authorisation without resetting choices', async () => {
-    const selectedCandidate = { id: 'candidate-1', backend: 'youtube', externalId: 'video-1', url: 'https://www.youtube.com/watch?v=video-1', title: 'Zara Larsson - Lush Life', channel: 'Zara Larsson', official: true, matchScore: 97, selected: true }
+    const selectedCandidate = { id: 'candidate-1', backend: 'youtube' as const, externalId: 'video-1', url: 'https://www.youtube.com/watch?v=video-1', title: 'Zara Larsson - Lush Life', channel: 'Zara Larsson', official: true, matchScore: 97, selected: true }
     vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({
       candidates: [selectedCandidate],
       metadataResolution: { authority: 'musicbrainz', status: 'matched', confidence: 97, strong: true, candidateId: 'candidate-1', resolvedAt: '2026-01-01', metadata: { artist: 'Zara Larsson', title: 'Lush Life', album: '1', releaseDate: '2014-06-09', trackNumber: 1 } },

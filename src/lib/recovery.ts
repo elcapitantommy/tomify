@@ -1,4 +1,6 @@
-export type RecoveryStatus = 'missing' | 'candidate-found' | 'importing' | 'recovered' | 'needs-upgrade' | 'failed'
+export type RecoveryStatus = 'missing' | 'candidate-found' | 'importing' | 'queued' | 'downloading' | 'recovered' | 'needs-upgrade' | 'failed'
+export type RecoveryBackend = 'youtube' | 'internet-archive' | 'usenet'
+export type RecoverySearchMode = 'artist' | 'track' | 'release'
 
 export interface AudioQuality {
   codec?: string | null
@@ -20,6 +22,7 @@ export interface RecoveryProvenance {
   raw?: { licenseUrl?: string | null; rights?: string | null; fileFormat?: string | null; fileSource?: string | null; [key: string]: unknown } | null
   sourceAudio?: { path?: string; extension?: string; quality?: AudioQuality; preservedOriginal?: boolean }
   derivative?: { path?: string; extension?: string; containerRemuxed?: boolean; createdByTomify?: boolean; operation?: string; audioStreamCopied?: boolean; transcoded?: boolean; quality?: AudioQuality }
+  job?: { id: string; status: 'queued' | 'downloading' | 'completed' | 'failed'; progress: number; provider?: string; downloader?: string; message?: string | null; error?: string | null } | null
   [key: string]: unknown
 }
 
@@ -89,7 +92,7 @@ export interface RecoveryArtworkResolution {
 
 export interface RecoveryCandidate extends AudioQuality {
   id: string
-  backend: string
+  backend: RecoveryBackend
   externalId: string
   url: string
   title: string
