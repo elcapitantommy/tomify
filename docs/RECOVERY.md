@@ -108,13 +108,13 @@ This backend is for lawful recovery only. The operator must retrieve only conten
 
 Keep all indexer and downloader credentials on the recovery server. Newznab remains supported: configure `TOMIFY_NEWZNAB_INDEXERS_JSON` as a JSON array of `{ "id", "name", "url", "apiKey", "categories" }` objects in `/etc/tomify/recovery-agent.env`.
 
-To use NZBIndex, obtain the API key shown by your NZBIndex account, then add it directly to the same protected server environment file. Do not put it in Worker variables, D1, the browser, or a URL stored in Tomify:
+NZBIndex needs no account or API key for normal use. Tomify enables its documented search and NZB download endpoints by default and makes anonymous requests when `TOMIFY_NZBINDEX_API_KEY` is unset or blank. Although the current API page describes the `key` query parameter as required, both endpoints currently accept anonymous requests. If NZBIndex has separately issued you a key, you may add it to the protected server environment file; do not put it in Worker variables, D1, the browser, or a URL stored in Tomify:
 
 ```text
-TOMIFY_NZBINDEX_API_KEY=replace-with-your-nzbindex-api-key
+TOMIFY_NZBINDEX_API_KEY=
 ```
 
-No base URL is required: Tomify uses the documented `https://api.nzbindex.com/api/search` and `/api/download/{collection-id}.nzb` endpoints, and links reviews to `https://www.nzbindex.com/collection/{collection-id}`. The API key is attached only to server-to-server API and downloader requests. To use both provider types, set both `TOMIFY_NEWZNAB_INDEXERS_JSON` and `TOMIFY_NZBINDEX_API_KEY`; otherwise leave the unused setting empty or `[]`.
+No base URL is required: Tomify uses the documented `https://api.nzbindex.com/api/search` and `/api/download/{collection-id}.nzb` endpoints, and links reviews to `https://www.nzbindex.com/collection/{collection-id}`. When a non-empty optional API key is configured, Tomify attaches it as the documented `key` query parameter only to server-to-server search and NZB download requests. Newznab and NZBIndex can be used together by configuring `TOMIFY_NEWZNAB_INDEXERS_JSON`; leave it as `[]` to use NZBIndex alone.
 
 Configure exactly one downloader:
 
@@ -137,7 +137,7 @@ curl -s http://127.0.0.1:8788/health
 echo
 ```
 
-Usenet is available when at least one indexer is configured across Newznab and NZBIndex, exactly one downloader is configured, and `TOMIFY_USENET_DOWNLOAD_DIR` is set.
+NZBIndex always counts as an available indexer, with or without its optional key. Usenet is available when exactly one downloader is configured and `TOMIFY_USENET_DOWNLOAD_DIR` is set; configured Newznab indexers are searched alongside NZBIndex.
 
 Acquisition is asynchronous. The UI reports queued, downloading, completed, or failed job state and progress while polling through the Worker. On completion, the agent resolves the downloader path and rejects anything outside `TOMIFY_USENET_DOWNLOAD_DIR`, symlinks, non-regular files, excessive file counts, and downloads over `TOMIFY_USENET_MAX_BYTES`. It chooses the audio file whose name best matches the wanted track, verifies it with FFprobe, preserves the unchanged source beneath `.tomify-source`, and creates the Navidrome-facing derivative through the same stream-copy and metadata pipeline as other Recovery sources. Existing recovery artifacts and canonical masters are never overwritten.
 

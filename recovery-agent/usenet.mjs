@@ -37,7 +37,7 @@ export function parseIndexerConfig(raw) {
 
 export function nzbIndexConfig(env = process.env) {
   const apiKey = text(env.TOMIFY_NZBINDEX_API_KEY)
-  return apiKey ? { type: 'nzbindex', id: 'nzbindex', name: 'NZBIndex', apiKey, apiUrl: NZBINDEX_API_URL, siteUrl: NZBINDEX_SITE_URL } : null
+  return { type: 'nzbindex', id: 'nzbindex', name: 'NZBIndex', apiKey, apiUrl: NZBINDEX_API_URL, siteUrl: NZBINDEX_SITE_URL }
 }
 
 export function usenetCapability({ newznabIndexers = [], nzbIndex = null, downloader = null, downloadRoot = null } = {}) {
@@ -104,7 +104,7 @@ export function nzbIndexSearchUrl(config, track, mode) {
   url.searchParams.set('q', usenetSearchQuery(track, mode))
   url.searchParams.set('max', '40')
   url.searchParams.set('sort', 'agedesc')
-  url.searchParams.set('key', config.apiKey)
+  if (text(config.apiKey)) url.searchParams.set('key', text(config.apiKey))
   return url
 }
 
@@ -158,7 +158,7 @@ export function nzbIndexDownloadUrl(config, collectionId) {
   const id = text(collectionId)
   if (!id || id.length > 500 || !/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Invalid NZBIndex collection id.')
   const url = new URL(`/api/download/${encodeURIComponent(id)}.nzb`, config.apiUrl)
-  url.searchParams.set('key', config.apiKey)
+  if (text(config.apiKey)) url.searchParams.set('key', text(config.apiKey))
   return url.toString()
 }
 

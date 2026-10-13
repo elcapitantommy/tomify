@@ -443,7 +443,7 @@ export default {
       const backendState = [
         { id: 'youtube', label: 'YouTube', available: configured, authentication: configured ? 'unavailable' : 'not-configured', reason: configured ? null : 'The media-server recovery agent has not been connected yet.' },
         { id: 'internet-archive', label: 'Internet Archive', available: configured, authentication: 'not-required', reason: configured ? null : 'The media-server recovery agent has not been connected yet.' },
-        { id: 'usenet', label: 'Usenet / NZB', available: false, authentication: 'not-configured', reason: configured ? 'Configure Newznab and SABnzbd or NZBGet on the recovery agent.' : 'The media-server recovery agent has not been connected yet.' },
+        { id: 'usenet', label: 'Usenet / NZB', available: false, authentication: 'not-configured', reason: configured ? 'Configure SABnzbd or NZBGet and its download directory on the recovery agent.' : 'The media-server recovery agent has not been connected yet.' },
       ]
       if (env.RECOVERY_AGENT_URL) {
         try {
