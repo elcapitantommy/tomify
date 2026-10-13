@@ -189,7 +189,7 @@ pnpm build
 - Media Session metadata (absolute artwork in six sizes), transport controls and position updates.
 - Installable manifest, app icons, standalone mode, cached app shell and cached artwork.
 - A playback source resolver boundary ready to prefer IndexedDB audio before the network in the next phase.
-- A source-aware Recovery queue with D1 provenance, candidate review and an optional media-server acquisition agent.
+- A source-aware Recovery queue with D1 provenance, candidate review, safe recovery-copy deletion and an optional media-server acquisition agent.
 
 ### Recovery imports
 

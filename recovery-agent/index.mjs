@@ -6,6 +6,7 @@ import { basename, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { timingSafeEqual } from 'node:crypto'
 import { audioFormatSummary, sanitizeToolError, selectBestAudioFormat } from './youtube.mjs'
+import { deleteRecoveryArtifacts } from './deletion.mjs'
 
 const host = process.env.TOMIFY_RECOVERY_HOST || '127.0.0.1'
 const port = Number(process.env.TOMIFY_RECOVERY_PORT || 8788)
@@ -213,6 +214,15 @@ async function diagnoseAuthenticatedYouTube() {
   } catch { return { configured: true, extractionAvailable: false, state: 'authentication-failed' } }
 }
 
+async function deleteImportedRecovery(body) {
+  const paths = Array.isArray(body?.importedPaths) ? body.importedPaths : []
+  if (!paths.length || paths.some((path) => typeof path !== 'string')) throw new Error('At least one imported recovery path is required.')
+  const uniquePaths = [...new Set(paths)]
+  const results = []
+  for (const importedPath of uniquePaths) results.push(await deleteRecoveryArtifacts(importedPath, recoveryRoot, masterRoot))
+  return { deleted: results.flatMap((result) => result.deleted) }
+}
+
 await mkdir(recoveryRoot, { recursive: true })
 
 createServer(async (request, response) => {
@@ -231,6 +241,7 @@ createServer(async (request, response) => {
     if (request.url === '/v1/diagnostics/youtube-auth') return send(response, 200, await diagnoseAuthenticatedYouTube())
     if (request.url === '/v1/search') return send(response, 200, { candidates: await searchYouTube(body.track) })
     if (request.url === '/v1/acquire') return send(response, 200, await acquireYouTube(body))
+    if (request.url === '/v1/delete') return send(response, 200, await deleteImportedRecovery(body))
     return send(response, 404, { error: 'not-found' })
   } catch (error) {
     const message = sanitizeToolError(error instanceof Error ? error.message : 'Recovery agent failed.', [youtubeCookies])

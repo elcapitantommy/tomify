@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build && node scripts/build-worker.mjs",
     "lint": "eslint .",
     "typecheck": "tsc -b --pretty false",
-    "test": "vitest run",
+    "test": "vitest run && node --test recovery-agent/*.node-test.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

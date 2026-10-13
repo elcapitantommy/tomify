@@ -308,6 +308,29 @@ export default {
     }
 
     const recoveryMatch = pathname.match(/^\\/api\\/recovery\\/([^/]+)(?:\\/(search|select|acquire))?$/)
+    if (recoveryMatch && request.method === 'DELETE' && !recoveryMatch[2]) {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      await ensureRecoveryTables(env.TOMIFY_DB)
+      const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
+      if (!item) return json({ error: 'recovery-item-not-found' }, 404)
+      const importedPaths = [...new Set(item.candidates.map((candidate) => candidate.importedPath).filter((path) => typeof path === 'string' && path.length > 0))]
+      if (importedPaths.length) {
+        try {
+          await callRecoveryAgent(env, '/v1/delete', { importedPaths })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Recovery library cleanup failed.'
+          return json({ error: 'recovery-delete-failed', message: 'Files could not be removed from the recovery library. The queue item was kept. ' + message }, 502)
+        }
+      }
+      await env.TOMIFY_DB.batch([
+        env.TOMIFY_DB.prepare('DELETE FROM recovery_candidates WHERE recovery_id = ?').bind(item.id),
+        env.TOMIFY_DB.prepare('DELETE FROM recovery_items WHERE id = ? AND username = ?').bind(item.id, username),
+      ])
+      return json({ deleted: true, filesRemoved: importedPaths.length > 0 })
+    }
+
     if (recoveryMatch && request.method === 'PATCH' && !recoveryMatch[2]) {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request)
