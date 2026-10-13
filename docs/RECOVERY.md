@@ -9,12 +9,14 @@ Tomify Recovery is a queue for rebuilding missing tracks without confusing a con
 - Penalises likely live, remix, karaoke, nightcore, sped-up, slowed and cover versions unless those words are part of the wanted title.
 - Shows the channel, duration, match confidence and source URL before selection.
 - Requires a source-specific authorisation basis before acquisition. Owning a physical copy is not presented as permission to download an unrelated upload.
-- Downloads public, unauthenticated YouTube candidates only when confirmed, then uses FFprobe to measure codec, container, bitrate, sample rate, channels and duration.
-- Uses FFmpeg stream-copy tagging to avoid a second lossy encode and writes a `.tomify.json` provenance sidecar.
+- Uses anonymous YouTube extraction by default. An optional exported-cookie session can expose the formats available to a YouTube Premium account without storing a Google username or password.
+- Inspects every audio format exposed for the selected video, chooses the strongest genuine audio stream available to that session, and records the selected format ID.
+- Uses FFprobe to measure the downloaded source and derivative codec, container, bitrate, sample rate, channels and duration. It never claims that a higher nominal output bitrate improves a lower-quality source.
+- Retains the original downloaded audio in a hidden `.tomify-source` directory, creates a separately identified FFmpeg stream-copy/tagging derivative, and writes a `.tomify.json` provenance sidecar. A future compatibility transcode must retain the source and record `transcoded: true`.
 - Writes only into a dedicated recovery directory. Existing files are not overwritten and the configured FLAC master tree must be separate.
 - Marks every YouTube result `lossy-recovery-copy` and initially `needs-upgrade`; it is never promoted to an archival master automatically.
 
-Tomify does not provide cookies, account login, DRM handling, signature bypasses or access-control circumvention to the recovery agent.
+Tomify does not capture credentials, accept Google passwords, circumvent DRM or bypass access controls. Exported cookies are sensitive session credentials: they stay entirely on the media server and are never stored in D1, browser storage, frontend code, Worker assets, logs or API responses.
 
 ## Components
 
@@ -44,11 +46,55 @@ Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`.
 
 The recovery directory may be added to Navidrome as a separate library path after review. It should not be merged over `/srv/music` by an automated job.
 
+## Optional authenticated YouTube session
+
+Authentication is optional. Without it—or when it fails—the backend uses anonymous YouTube extraction. Tomify never stores a Google/YouTube username or password.
+
+Export a Netscape-format cookie file from a browser session you control, transfer it directly to the server, and place it outside both the repository and every web-served directory:
+
+```bash
+sudo install -d -m 700 -o tom -g tom /opt/tomify/secrets
+sudo install -m 600 -o tom -g tom /path/to/exported-cookies.txt /opt/tomify/secrets/youtube.cookies
+sudo chown tom:tom /opt/tomify/secrets/youtube.cookies
+sudo chmod 600 /opt/tomify/secrets/youtube.cookies
+```
+
+Set this only in `/etc/tomify/recovery-agent.env`:
+
+```text
+TOMIFY_YOUTUBE_COOKIES=/opt/tomify/secrets/youtube.cookies
+```
+
+`/opt/tomify/secrets/` must remain readable only by the recovery-agent service account. Never copy it into the Tomify checkout, `public/`, a container image, backup intended for source artifacts, D1, or Cloudflare configuration. The supplied `.gitignore` also rejects common cookie filenames as a second line of defence.
+
+Restart and check the local status without printing the path or cookie contents:
+
+```bash
+sudo systemctl restart tomify-recovery
+curl -s http://127.0.0.1:8788/health
+```
+
+Expected status includes `"youtubeAuthentication":"configured"`. To perform an authenticated extraction diagnostic through the protected API without returning video metadata or secrets:
+
+```bash
+curl -s -X POST --config - http://127.0.0.1:8788/v1/diagnostics/youtube-auth -d '{}' <<EOF
+header = "Authorization: Bearer ${TOMIFY_RECOVERY_TOKEN}"
+header = "Content-Type: application/json"
+EOF
+```
+
+Using standard input for the curl configuration keeps the expanded token out of the process command line. Load `TOMIFY_RECOVERY_TOKEN` from the protected service environment in the administrative shell first; do not paste the value into shell history.
+
+The result reports only whether the cookie session is configured and extraction succeeds. Tomify sanitises tool failures and does not echo the cookie path or command line. If the cookie is missing, unreadable, more permissive than mode `600`, expired, or rejected, authenticated mode is disabled and ordinary searches/imports fall back to anonymous extraction where possible.
+
 ## Backend contract
 
 An acquisition backend exposes:
 
 - `POST /v1/search` with `{ backend, track }`, returning `{ candidates }`.
 - `POST /v1/acquire` with `{ backend, candidate, track, authorisation }`, returning `{ path, quality, provenance }`.
+- `POST /v1/status`, returning backend capability state without secret paths or values.
 
 That boundary is intentionally source-neutral. A later CD-rip, purchased-download or recovered-file backend can implement the same result shape without changing the Recovery page or D1 model.
+
+YouTube provenance records the video ID and URL, channel/uploader, title, acquisition timestamp, selected format ID, all available audio-format summaries, measured source quality, derivative details, and whether authenticated access was actually used. Cookies themselves are never provenance.

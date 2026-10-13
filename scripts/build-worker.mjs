@@ -282,7 +282,16 @@ export default {
       const rows = await env.TOMIFY_DB.prepare('SELECT id FROM recovery_items WHERE username = ? ORDER BY updated_at DESC, created_at DESC').bind(username).all()
       const items = []
       for (const row of rows.results || []) items.push(await recoveryItem(env.TOMIFY_DB, username, row.id))
-      return json({ items: items.filter(Boolean), backends: [{ id: 'youtube', label: 'YouTube', available: Boolean(env.RECOVERY_AGENT_URL), reason: env.RECOVERY_AGENT_URL ? null : 'The media-server recovery agent has not been connected yet.' }] })
+      const youtubeBackend = { id: 'youtube', label: 'YouTube', available: Boolean(env.RECOVERY_AGENT_URL), authentication: env.RECOVERY_AGENT_URL ? 'unavailable' : 'not-configured', reason: env.RECOVERY_AGENT_URL ? null : 'The media-server recovery agent has not been connected yet.' }
+      if (env.RECOVERY_AGENT_URL) {
+        try {
+          const status = await callRecoveryAgent(env, '/v1/status', {})
+          const remote = Array.isArray(status.backends) ? status.backends.find((backend) => backend?.id === 'youtube') : null
+          youtubeBackend.available = remote?.available !== false
+          youtubeBackend.authentication = remote?.authentication === 'configured' ? 'configured' : 'not-configured'
+        } catch { youtubeBackend.authentication = 'unavailable' }
+      }
+      return json({ items: items.filter(Boolean), backends: [youtubeBackend] })
     }
 
     if (pathname === '/api/recovery' && request.method === 'POST') {

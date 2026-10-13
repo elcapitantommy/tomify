@@ -20,7 +20,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const recoveryApi = {
-  list: () => request<{ items: RecoveryItem[]; backends: Array<{ id: string; label: string; available: boolean; reason?: string }> }>('/api/recovery'),
+  list: () => request<{ items: RecoveryItem[]; backends: Array<{ id: string; label: string; available: boolean; authentication?: 'configured' | 'not-configured' | 'unavailable'; reason?: string }> }>('/api/recovery'),
   add: (input: { artist: string; title: string; album?: string; duration?: number; trackNumber?: number }) => request<{ item: RecoveryItem }>('/api/recovery', { method: 'POST', body: JSON.stringify(input) }),
   search: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/search`, { method: 'POST', body: JSON.stringify({ backend: 'youtube' }) }),
   select: (id: string, candidateId: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/select`, { method: 'POST', body: JSON.stringify({ candidateId }) }),

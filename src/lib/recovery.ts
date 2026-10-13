@@ -9,6 +9,17 @@ export interface AudioQuality {
   duration?: number | null
 }
 
+export interface RecoveryProvenance {
+  source?: string
+  acquisitionMode?: 'anonymous-youtube' | 'authenticated-youtube-session'
+  authenticatedAccessUsed?: boolean
+  selectedFormatId?: string
+  archiveStatus?: string
+  sourceAudio?: { quality?: AudioQuality; preservedOriginal?: boolean }
+  derivative?: { createdByTomify?: boolean; operation?: string; transcoded?: boolean; quality?: AudioQuality }
+  [key: string]: unknown
+}
+
 export interface RecoveryCandidate extends AudioQuality {
   id: string
   backend: string
@@ -22,7 +33,7 @@ export interface RecoveryCandidate extends AudioQuality {
   thumbnail?: string | null
   selected: boolean
   importedPath?: string | null
-  provenance?: Record<string, unknown> | null
+  provenance?: RecoveryProvenance | null
 }
 
 export interface RecoveryItem {

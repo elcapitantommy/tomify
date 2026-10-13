@@ -15,6 +15,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/srv/music-recovery
+ReadOnlyPaths=/opt/tomify/secrets
 
 [Install]
 WantedBy=multi-user.target
