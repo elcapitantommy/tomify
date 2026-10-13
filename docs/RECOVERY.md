@@ -5,18 +5,19 @@ Tomify Recovery is a queue for rebuilding missing tracks without confusing a con
 ## What v1 does
 
 - Adds wanted tracks with artist, title, release, duration and track number.
-- Searches YouTube through a pluggable backend and ranks candidates by title, artist, duration and official artist/label signals.
+- Searches YouTube or Internet Archive through the same pluggable backend contract and ranks candidates by title, artist and duration evidence.
 - Penalises likely live, remix, karaoke, nightcore, sped-up, slowed and cover versions unless those words are part of the wanted title.
 - Shows the channel, duration, match confidence and source URL before selection.
 - Resolves the selected candidate against MusicBrainz recordings before import, using artist/title similarity, duration, MusicBrainz search confidence and a strong album preference when an entered album is available.
 - Presents entered and canonical metadata side by side. Strong matches default to the MusicBrainz artist, title, album, release date and track/disc positions, with an individual opt-out for every field group.
-- Treats YouTube only as the audio and provenance source. Video titles are never split or promoted into canonical library metadata.
+- Treats acquisition providers only as audio/provenance sources. YouTube titles and Internet Archive item metadata are never promoted over the MusicBrainz canonical review.
 - Leaves entered metadata unchanged when MusicBrainz has no sufficiently strong, unambiguous match or is unavailable.
 - Resolves artwork from the canonical metadata through a provider boundary ordered Apple catalogue, optional Spotify, Cover Art Archive, then YouTube thumbnail. Clean square images of at least 1000px rank highest; 600px square images are preferred and lower/non-square results are labelled fallback quality.
 - Accepts provider-neutral wanted-track provenance from catalogue imports. Spotify playlist items retain their track, album, artist, playlist, position, ISRC, release, explicit and artwork references while MusicBrainz remains canonical metadata authority.
 - Shows artwork candidates, provider, expected dimensions and confidence during metadata review, with explicit candidate selection or **No artwork**.
 - Requires a source-specific authorisation basis before acquisition. Owning a physical copy is not presented as permission to download an unrelated upload.
 - Uses anonymous YouTube extraction by default. An optional exported-cookie session can expose the formats available to a YouTube Premium account without storing a Google username or password.
+- Uses Internet Archive's public Advanced Search and Metadata APIs without credentials, inspects each returned item's files, and favours original lossless audio over derivatives where available.
 - Inspects every audio format exposed for the selected video, chooses the strongest genuine audio stream available to that session, and records the selected format ID.
 - Uses FFprobe to measure the downloaded source and derivative codec, container, bitrate, sample rate, channels and duration. It never claims that a higher nominal output bitrate improves a lower-quality source.
 - Retains the original downloaded audio in a hidden `.tomify-source` directory, creates a separately identified FFmpeg stream-copy/tagging derivative, and writes a `.tomify.json` provenance sidecar. A future compatibility transcode must retain the source and record `transcoded: true`.
@@ -24,12 +25,13 @@ Tomify Recovery is a queue for rebuilding missing tracks without confusing a con
 - Writes only into a dedicated recovery directory. Existing files are not overwritten and the configured FLAC master tree must be separate.
 - Deletes queue-only items directly from D1. For imported items, deletion first removes the recovery derivative, its `.tomify.json` sidecar and the matching preserved original under `.tomify-source`; D1 state is retained if that filesystem cleanup fails.
 - Marks every YouTube result `lossy-recovery-copy` and initially `needs-upgrade`; it is never promoted to an archival master automatically.
+- Marks Internet Archive imports `internet-archive-recovery-copy`. A lossless file is still a recovery source, not proof of an archival master.
 
 Tomify does not capture credentials, accept Google passwords, circumvent DRM or bypass access controls. Exported cookies are sensitive session credentials: they stay entirely on the media server and are never stored in D1, browser storage, frontend code, Worker assets, logs or API responses.
 
 ## Canonical metadata review
 
-Selecting a YouTube candidate triggers a MusicBrainz recording search using the wanted artist/title plus any available album and duration evidence. Tomify stores the resulting suggestion, recording/release/release-group identifiers, confidence and resolution time on the existing Recovery item. That saved result is reused for 30 days when the same candidate is selected again.
+Selecting any acquisition candidate triggers a MusicBrainz recording search using the wanted artist/title plus any available album and duration evidence. Tomify stores the resulting suggestion, recording/release/release-group identifiers, confidence and resolution time on the existing Recovery item. That saved result is reused for 30 days when the same candidate is selected again.
 
 MusicBrainz calls identify Tomify with a descriptive user agent and are serialised at no more than one request per 1.1 seconds per Worker isolate. A result is only confirmed when the combined score is strong, artist and title similarity clear, supplied album evidence agrees, duration is within tolerance and the leading alternatives are not ambiguous.
 
@@ -73,6 +75,7 @@ Recovery page
     +-- acquisition backend interface
            |
            +-- YouTube recovery agent (v1)
+           +-- Internet Archive recovery agent (v1)
            +-- CD rip / purchased download / recovered file (future)
 ```
 
@@ -80,7 +83,7 @@ The hosted Worker cannot execute media binaries. `recovery-agent/index.mjs` is a
 
 ## Media-server setup
 
-Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`.
+Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`. Internet Archive search/download uses Node's built-in HTTPS fetch and needs no provider credentials.
 
 1. Copy `recovery-agent/recovery-agent.env.example` to `/etc/tomify/recovery-agent.env` and set a long random token.
 2. Keep `TOMIFY_RECOVERY_DIR=/srv/music-recovery` separate from `TOMIFY_MASTER_DIR=/srv/music`.
@@ -89,6 +92,12 @@ Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`.
 5. Set hosted secrets `RECOVERY_AGENT_URL` and `RECOVERY_AGENT_TOKEN` for the Tomify Site, plus any optional artwork-provider configuration above, then redeploy.
 
 The recovery directory may be added to Navidrome as a separate library path after review. It should not be merged over `/srv/music` by an automated job.
+
+## Internet Archive backend
+
+Internet Archive candidates are discovered with field-restricted public audio searches, then verified against the item's current Metadata API file list before import. Tomify constructs the download URL from the validated item identifier and filename rather than trusting a browser-supplied URL. Downloads are HTTPS-only, redirects are limited to `archive.org` and its download hosts, and the default maximum file size is 1 GiB. Operators can lower or raise that bound with `TOMIFY_ARCHIVE_MAX_BYTES`.
+
+The candidate review links to the Archive item so the user can inspect its description, uploader, licence and rights statement. Archive availability alone is not permission: import still requires the same explicit authorisation basis. Provenance records the item/file identifiers, final download URL, creator, collection, licence/rights fields, file format/source, byte count and supplied hashes. The downloaded bytes are preserved unchanged in `.tomify-source`; tagging and artwork are applied only to the stream-copy derivative.
 
 ## Optional authenticated YouTube session
 
@@ -145,3 +154,5 @@ All `/v1/*` endpoints, including deletion, use the same `TOMIFY_RECOVERY_TOKEN` 
 That boundary is intentionally source-neutral. A later CD-rip, purchased-download or recovered-file backend can implement the same result shape without changing the Recovery page or D1 model.
 
 YouTube provenance records the video ID and URL, channel/uploader, title, acquisition timestamp, selected format ID, all available audio-format summaries, measured source quality, derivative details, and whether authenticated access was actually used. Cookies themselves are never provenance.
+
+Internet Archive provenance records the item identifier and details URL, exact filename and final download URL, creator, item title, collection, licence/rights statements, format, original/derivative source flag, byte count, supplied MD5/SHA-1 values, acquisition time, measured audio quality and derivative details.

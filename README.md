@@ -194,7 +194,7 @@ pnpm build
 
 ### Recovery imports
 
-The Recovery page accepts wanted track metadata, searches pluggable candidate backends and keeps source, match, measured quality and import status together. The first backend is an optional YouTube agent running beside the home music server. It supports anonymous extraction and an optional server-only exported-cookie session, requires an explicit source-specific authorisation confirmation, inspects the resulting file with FFprobe, preserves the original stream, tags a distinct FFmpeg stream-copy derivative and writes both only to a separate recovery library. YouTube-derived files are permanently identified as lossy recovery copies and never replace verified FLAC masters.
+The Recovery page accepts wanted track metadata, searches pluggable candidate backends and keeps source, match, measured quality and import status together. The media-server agent supports YouTube plus Internet Archive's public catalogue/file APIs. Both paths require an explicit source-specific authorisation confirmation, inspect the resulting file with FFprobe, preserve the original stream, tag a distinct FFmpeg stream-copy derivative and write only to the separate recovery library. Recovery files never replace verified masters automatically.
 
 See [docs/RECOVERY.md](docs/RECOVERY.md) for the agent setup, backend contract and legal/quality boundaries.
 

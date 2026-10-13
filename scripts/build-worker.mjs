@@ -338,7 +338,7 @@ async function coverArtArchiveCandidates(metadata) {
 }
 
 function youtubeArtworkCandidates(sourceCandidate) {
-  if (!sourceCandidate?.thumbnail) return []
+  if (sourceCandidate?.backend !== 'youtube' || !sourceCandidate?.thumbnail) return []
   return [{ id: 'youtube:' + sourceCandidate.externalId, provider: 'youtube', providerLabel: 'YouTube thumbnail', providerId: sourceCandidate.externalId, url: sourceCandidate.thumbnail, previewUrl: sourceCandidate.thumbnail, width: null, height: null, confidence: Math.min(50, Number(sourceCandidate.matchScore || 0)), artist: null, album: null, releaseDate: null, selectable: true, unavailableReason: null }]
 }
 
@@ -365,7 +365,7 @@ async function resolveRecoveryArtwork(env, metadataResolution, item, sourceCandi
   const metadata = { artist: matched?.artist || item.artist, title: matched?.title || item.title, album: matched?.album || item.album || null, releaseDate: matched?.releaseDate || null, releaseId: matched?.releaseId || null, matchConfidence: metadataResolution?.confidence || 0 }
   const results = await Promise.allSettled([appleArtworkCandidates(env, metadata), spotifyArtworkCandidates(env, metadata), coverArtArchiveCandidates(metadata)])
   const candidates = rankArtworkCandidates([...results.flatMap((result) => result.status === 'fulfilled' ? result.value : []), ...catalogueArtworkCandidates(env, item), ...youtubeArtworkCandidates(sourceCandidate)]).slice(0, 10)
-  return { candidates, selectedCandidateId: candidates.find((candidate) => candidate.selectable)?.id || null, resolvedAt: new Date().toISOString(), candidateId: sourceCandidate.id, configurationKey: artworkConfigurationKey(env), providers: { apple: { available: true, acquisitionEnabled: String(env.APPLE_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true' }, spotify: { available: Boolean(env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET), acquisitionEnabled: String(env.SPOTIFY_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true' }, coverArtArchive: { available: Boolean(metadata.releaseId) }, youtube: { available: Boolean(sourceCandidate.thumbnail) } } }
+  return { candidates, selectedCandidateId: candidates.find((candidate) => candidate.selectable)?.id || null, resolvedAt: new Date().toISOString(), candidateId: sourceCandidate.id, configurationKey: artworkConfigurationKey(env), providers: { apple: { available: true, acquisitionEnabled: String(env.APPLE_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true' }, spotify: { available: Boolean(env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET), acquisitionEnabled: String(env.SPOTIFY_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true' }, coverArtArchive: { available: Boolean(metadata.releaseId) }, youtube: { available: sourceCandidate.backend === 'youtube' && Boolean(sourceCandidate.thumbnail) } } }
 }
 
 async function lookupMusicBrainzReleaseGroup(album) {
@@ -439,16 +439,22 @@ export default {
       const rows = await env.TOMIFY_DB.prepare('SELECT id FROM recovery_items WHERE username = ? ORDER BY updated_at DESC, created_at DESC').bind(username).all()
       const items = []
       for (const row of rows.results || []) items.push(await recoveryItem(env.TOMIFY_DB, username, row.id))
-      const youtubeBackend = { id: 'youtube', label: 'YouTube', available: Boolean(env.RECOVERY_AGENT_URL), authentication: env.RECOVERY_AGENT_URL ? 'unavailable' : 'not-configured', reason: env.RECOVERY_AGENT_URL ? null : 'The media-server recovery agent has not been connected yet.' }
+      const configured = Boolean(env.RECOVERY_AGENT_URL)
+      const backendState = [
+        { id: 'youtube', label: 'YouTube', available: configured, authentication: configured ? 'unavailable' : 'not-configured', reason: configured ? null : 'The media-server recovery agent has not been connected yet.' },
+        { id: 'internet-archive', label: 'Internet Archive', available: configured, authentication: 'not-required', reason: configured ? null : 'The media-server recovery agent has not been connected yet.' },
+      ]
       if (env.RECOVERY_AGENT_URL) {
         try {
           const status = await callRecoveryAgent(env, '/v1/status', {})
-          const remote = Array.isArray(status.backends) ? status.backends.find((backend) => backend?.id === 'youtube') : null
-          youtubeBackend.available = remote?.available !== false
-          youtubeBackend.authentication = remote?.authentication === 'configured' ? 'configured' : 'not-configured'
-        } catch { youtubeBackend.authentication = 'unavailable' }
+          for (const backend of backendState) {
+            const remote = Array.isArray(status.backends) ? status.backends.find((value) => value?.id === backend.id) : null
+            backend.available = Boolean(remote && remote.available !== false)
+            backend.authentication = remote?.authentication || backend.authentication
+          }
+        } catch { backendState.forEach((backend) => { backend.available = false; backend.authentication = backend.id === 'youtube' ? 'unavailable' : 'not-required' }) }
       }
-      return json({ items: items.filter(Boolean), backends: [youtubeBackend] })
+      return json({ items: items.filter(Boolean), backends: backendState })
     }
 
     if (pathname === '/api/recovery' && request.method === 'POST') {
@@ -508,17 +514,23 @@ export default {
       await ensureRecoveryTables(env.TOMIFY_DB)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       if (!item) return json({ error: 'recovery-item-not-found' }, 404)
+      const body = await request.json().catch(() => ({}))
+      const backend = body?.backend === 'internet-archive' ? 'internet-archive' : body?.backend === 'youtube' ? 'youtube' : null
+      if (!backend) return json({ error: 'unsupported-recovery-backend' }, 400)
       try {
-        const result = await callRecoveryAgent(env, '/v1/search', { backend: 'youtube', track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
+        const result = await callRecoveryAgent(env, '/v1/search', { backend, track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
         const candidates = Array.isArray(result.candidates) ? result.candidates.slice(0, 12) : []
-        await env.TOMIFY_DB.prepare('DELETE FROM recovery_candidates WHERE recovery_id = ? AND imported_path IS NULL').bind(item.id).run()
+        await env.TOMIFY_DB.prepare('DELETE FROM recovery_candidates WHERE recovery_id = ? AND backend = ? AND imported_path IS NULL').bind(item.id, backend).run()
         const inserts = candidates.filter((candidate) => candidate && typeof candidate.url === 'string' && typeof candidate.externalId === 'string').map((candidate) => {
           const scored = scoreRecoveryCandidate(item, candidate)
-          return env.TOMIFY_DB.prepare("INSERT INTO recovery_candidates (id, recovery_id, backend, external_id, url, title, channel, channel_id, duration, official, match_score, thumbnail, provenance_json) VALUES (?, ?, 'youtube', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-            .bind(crypto.randomUUID(), item.id, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || 'Unknown channel').slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend: 'youtube', raw: candidate.provenance || null }))
+          return env.TOMIFY_DB.prepare('INSERT INTO recovery_candidates (id, recovery_id, backend, external_id, url, title, channel, channel_id, duration, official, match_score, thumbnail, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .bind(crypto.randomUUID(), item.id, backend, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || (backend === 'youtube' ? 'Unknown channel' : 'Internet Archive')).slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend, raw: candidate.provenance || null }))
         })
         if (inserts.length) await env.TOMIFY_DB.batch(inserts)
-        await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = ?, selected_candidate_id = NULL, metadata_resolution_json = NULL, artwork_resolution_json = NULL, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(inserts.length ? 'candidate-found' : 'missing', item.id, username).run()
+        const retainedSelection = item.candidates.find((candidate) => candidate.selected && (candidate.backend !== backend || candidate.importedPath))
+        const candidateCount = inserts.length + item.candidates.filter((candidate) => candidate.backend !== backend || candidate.importedPath).length
+        if (retainedSelection) await env.TOMIFY_DB.prepare('UPDATE recovery_items SET status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?').bind(retainedSelection.importedPath ? item.status : 'candidate-found', item.id, username).run()
+        else await env.TOMIFY_DB.prepare('UPDATE recovery_items SET status = ?, selected_candidate_id = NULL, metadata_resolution_json = NULL, artwork_resolution_json = NULL, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?').bind(candidateCount ? 'candidate-found' : 'missing', item.id, username).run()
         return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Candidate search failed.'
@@ -543,7 +555,7 @@ export default {
       let artworkResolution
       const cachedArtwork = item.artworkResolution?.candidateId === candidate.id && item.artworkResolution?.configurationKey === artworkConfigurationKey(env) && Date.now() - Date.parse(item.artworkResolution.resolvedAt || '') < 30 * 24 * 60 * 60 * 1000 ? item.artworkResolution : null
       try { artworkResolution = cachedArtwork || await resolveRecoveryArtwork(env, metadataResolution, item, candidate) }
-      catch { artworkResolution = { candidates: rankArtworkCandidates(youtubeArtworkCandidates(candidate)), selectedCandidateId: candidate.thumbnail ? 'youtube:' + candidate.externalId : null, candidateId: candidate.id, configurationKey: artworkConfigurationKey(env), resolvedAt: new Date().toISOString(), providers: {} } }
+      catch { artworkResolution = { candidates: rankArtworkCandidates(youtubeArtworkCandidates(candidate)), selectedCandidateId: candidate.backend === 'youtube' && candidate.thumbnail ? 'youtube:' + candidate.externalId : null, candidateId: candidate.id, configurationKey: artworkConfigurationKey(env), resolvedAt: new Date().toISOString(), providers: {} } }
       await env.TOMIFY_DB.batch([env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 0 WHERE recovery_id = ?').bind(recoveryMatch[1]), env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(body.candidateId), env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, metadata_resolution_json = ?, artwork_resolution_json = ?, status = 'candidate-found', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(body.candidateId, JSON.stringify(metadataResolution), JSON.stringify(artworkResolution), recoveryMatch[1], username)])
       return json({ item: await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1]) })
     }
@@ -568,9 +580,9 @@ export default {
       if (body.artworkCandidateId != null && !artwork) return json({ error: 'invalid-recovery-artwork', message: 'The selected artwork is unavailable or is not approved for acquisition.' }, 400)
       await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'importing', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(item.id, username).run()
       try {
-        const result = await callRecoveryAgent(env, '/v1/acquire', { backend: 'youtube', candidate: { externalId: candidate.externalId, url: candidate.url, title: candidate.title, channel: candidate.channel }, track: resolvedMetadata, wantedMetadata, catalogueSource: item.catalogueSource || null, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, artwork: artwork ? { id: artwork.id, provider: artwork.provider, providerLabel: artwork.providerLabel, providerId: artwork.providerId, url: artwork.url, expectedWidth: artwork.width || null, expectedHeight: artwork.height || null, confidence: artwork.confidence } : null, authorisation: { confirmed: true, basis: body.rightsBasis, confirmedBy: username, confirmedAt: new Date().toISOString() } })
+        const result = await callRecoveryAgent(env, '/v1/acquire', { backend: candidate.backend, candidate: { externalId: candidate.externalId, url: candidate.url, title: candidate.title, channel: candidate.channel, provenance: candidate.provenance?.raw || null }, track: resolvedMetadata, wantedMetadata, catalogueSource: item.catalogueSource || null, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, artwork: artwork ? { id: artwork.id, provider: artwork.provider, providerLabel: artwork.providerLabel, providerId: artwork.providerId, url: artwork.url, expectedWidth: artwork.width || null, expectedHeight: artwork.height || null, confidence: artwork.confidence } : null, authorisation: { confirmed: true, basis: body.rightsBasis, confirmedBy: username, confirmedAt: new Date().toISOString() } })
         const quality = result.quality || {}
-        const provenance = { ...(result.provenance || {}), source: 'youtube', sourceUrl: candidate.url, catalogueSource: item.catalogueSource || null, rightsBasis: body.rightsBasis, archiveStatus: 'lossy-recovery-copy', importedAt: new Date().toISOString(), wantedMetadata, resolvedMetadata, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices } }
+        const provenance = { ...(result.provenance || {}), source: result.provenance?.source || candidate.backend, sourceUrl: result.provenance?.sourceUrl || candidate.url, catalogueSource: item.catalogueSource || null, rightsBasis: body.rightsBasis, archiveStatus: result.provenance?.archiveStatus || 'recovery-copy', importedAt: new Date().toISOString(), wantedMetadata, resolvedMetadata, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices } }
         await env.TOMIFY_DB.batch([
           env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, provenance_json = ?, rights_basis = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(quality.codec || null, quality.container || null, Number.isFinite(quality.bitrate) ? quality.bitrate : null, Number.isFinite(quality.sampleRate) ? quality.sampleRate : null, Number.isFinite(quality.channels) ? quality.channels : null, Number.isFinite(quality.duration) ? quality.duration : null, String(result.path || '').slice(0, 1000), JSON.stringify(provenance), body.rightsBasis, candidate.id),
           env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, status = 'needs-upgrade', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(candidate.id, item.id, username),

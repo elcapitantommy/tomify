@@ -1,11 +1,15 @@
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
+import { createWriteStream } from 'node:fs'
 import { access, copyFile, mkdir, mkdtemp, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
-import { timingSafeEqual } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { audioFormatSummary, sanitizeToolError, selectBestAudioFormat } from './youtube.mjs'
+import { archiveCandidate, archiveDownloadUrl, archiveMetadataUrl, archiveSearchUrl, selectArchiveAudioFiles, validateArchiveDownloadUrl } from './internet-archive.mjs'
 import { deleteRecoveryArtifacts } from './deletion.mjs'
 import { ffmpegMetadataArguments } from './metadata.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
@@ -19,6 +23,8 @@ const token = process.env.TOMIFY_RECOVERY_TOKEN || ''
 const ytdlp = process.env.YT_DLP_PATH || 'yt-dlp'
 const ffprobe = process.env.FFPROBE_PATH || 'ffprobe'
 const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg'
+const configuredArchiveMaxBytes = Number(process.env.TOMIFY_ARCHIVE_MAX_BYTES || 1024 * 1024 * 1024)
+const archiveMaxBytes = Number.isFinite(configuredArchiveMaxBytes) && configuredArchiveMaxBytes > 0 ? configuredArchiveMaxBytes : 1024 * 1024 * 1024
 
 function inside(child, parent) {
   return child === parent || child.startsWith(parent + sep)
@@ -128,6 +134,54 @@ async function searchYouTube(track) {
       provenance: { extractor: entry.extractor_key || entry.extractor || 'YouTube', availability: entry.availability || 'public', discoveryMode: search.authenticatedAccessUsed ? 'authenticated-youtube-session' : 'anonymous-youtube', availableAudioFormatCount: formats.length, preferredFormat: best ? audioFormatSummary(best) : null },
     }
   }).filter((entry) => entry.externalId)
+}
+
+async function fetchJson(url, label) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(30_000), headers: { accept: 'application/json', 'user-agent': 'Tomify/0.1 recovery-agent' } })
+  if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}.`)
+  return response.json()
+}
+
+async function searchInternetArchive(track) {
+  const search = await fetchJson(archiveSearchUrl(track), 'Internet Archive search')
+  const documents = Array.isArray(search?.response?.docs) ? search.response.docs.slice(0, 8) : []
+  const results = []
+  for (const document of documents) {
+    const identifier = String(document?.identifier || '')
+    if (!identifier) continue
+    const item = await fetchJson(archiveMetadataUrl(identifier), 'Internet Archive metadata')
+    if (item?.is_dark || item?.d1 || !item?.metadata) continue
+    for (const file of selectArchiveAudioFiles(item, 3)) results.push(archiveCandidate(identifier, item.metadata, file))
+    if (results.length >= 12) break
+  }
+  return results.slice(0, 12)
+}
+
+async function fetchArchiveFile(url, destination, expectedHashes = {}) {
+  let currentUrl = validateArchiveDownloadUrl(url)
+  for (let redirects = 0; redirects <= 5; redirects += 1) {
+    const response = await fetch(currentUrl, { redirect: 'manual', signal: AbortSignal.timeout(10 * 60_000), headers: { 'user-agent': 'Tomify/0.1 recovery-agent' } })
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      if (!location || redirects === 5) throw new Error('Internet Archive returned an invalid redirect.')
+      await response.body?.cancel()
+      currentUrl = validateArchiveDownloadUrl(new URL(location, currentUrl).toString())
+      continue
+    }
+    if (!response.ok || !response.body) throw new Error(`Internet Archive download returned HTTP ${response.status}.`)
+    const declaredLength = Number(response.headers.get('content-length') || 0)
+    if (declaredLength > archiveMaxBytes) throw new Error('Internet Archive audio file exceeds the configured size limit.')
+    let received = 0
+    const md5 = createHash('md5')
+    const sha1 = createHash('sha1')
+    const limiter = new Transform({ transform(chunk, _encoding, callback) { received += chunk.length; md5.update(chunk); sha1.update(chunk); callback(received > archiveMaxBytes ? new Error('Internet Archive audio file exceeds the configured size limit.') : null, chunk) } })
+    await pipeline(Readable.fromWeb(response.body), limiter, createWriteStream(destination, { flags: 'wx' }))
+    const hashes = { md5: md5.digest('hex'), sha1: sha1.digest('hex') }
+    if (expectedHashes.md5 && hashes.md5 !== String(expectedHashes.md5).toLowerCase()) throw new Error('Internet Archive audio failed its MD5 integrity check.')
+    if (expectedHashes.sha1 && hashes.sha1 !== String(expectedHashes.sha1).toLowerCase()) throw new Error('Internet Archive audio failed its SHA-1 integrity check.')
+    return { finalUrl: currentUrl, bytes: received, hashes }
+  }
+  throw new Error('Internet Archive download failed.')
 }
 
 async function probe(path) {
@@ -270,6 +324,88 @@ async function acquireYouTube(body) {
   }
 }
 
+async function acquireInternetArchive(body) {
+  if (body?.authorisation?.confirmed !== true || !body.authorisation.basis) throw new Error('Explicit source authorisation is required.')
+  const reference = body?.candidate?.provenance
+  const identifier = String(reference?.identifier || '')
+  const filename = String(reference?.filename || '')
+  const metadata = await fetchJson(archiveMetadataUrl(identifier), 'Internet Archive metadata')
+  const file = (Array.isArray(metadata?.files) ? metadata.files : []).find((entry) => entry?.name === filename)
+  if (!file || !selectArchiveAudioFiles({ files: [file] }, 1).length) throw new Error('The selected Internet Archive audio file is no longer available.')
+  const expectedUrl = archiveDownloadUrl(identifier, filename)
+  const track = body?.track || {}
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'tomify-recovery-'))
+  try {
+    const extension = extname(filename).toLowerCase() || '.mka'
+    const sourcePath = resolve(temporaryRoot, `archive-source${extension}`)
+    const download = await fetchArchiveFile(expectedUrl, sourcePath, { md5: file.md5, sha1: file.sha1 })
+    const sourceQuality = await probe(sourcePath)
+    if (!sourceQuality.codec || !sourceQuality.duration) throw new Error('The Internet Archive file is not valid audio.')
+    const artistDirectory = safeName(track.artist, 'Unknown Artist')
+    const albumDirectory = safeName(track.album, 'Recovered Tracks')
+    const prefix = Number.isInteger(track.trackNumber) && track.trackNumber > 0 ? `${String(track.trackNumber).padStart(2, '0')} - ` : ''
+    const stem = `${prefix}${safeName(track.title, 'Recovered Track')}`
+    const finalDirectory = resolve(recoveryRoot, artistDirectory, albumDirectory)
+    const sourceDirectory = resolve(finalDirectory, '.tomify-source')
+    const finalPath = resolve(finalDirectory, `${stem}${extension}`)
+    const originalPath = resolve(sourceDirectory, `${stem}${extension}`)
+    if (!inside(finalPath, recoveryRoot) || !inside(originalPath, recoveryRoot)) throw new Error('Unsafe recovery destination.')
+    await mkdir(sourceDirectory, { recursive: true })
+    for (const path of [finalPath, originalPath, `${finalPath}.tomify.json`]) {
+      try { await access(path); throw new Error('A recovery copy already exists; Tomify will not overwrite it.') } catch (error) { if (error?.code !== 'ENOENT') throw error }
+    }
+    const artwork = await prepareArtwork(body.artwork, temporaryRoot)
+    const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${extension}`)
+    const stagedCoverPath = join(finalDirectory, `.${crypto.randomUUID()}.cover.jpg`)
+    const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
+    if (!inside(releaseCoverPath, recoveryRoot)) throw new Error('Unsafe recovery artwork destination.')
+    const sourceUrl = `https://archive.org/details/${encodeURIComponent(identifier)}`
+    const comment = `Tomify Internet Archive recovery copy; source=${sourceUrl}; authorisation=${body.authorisation.basis}`
+    const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment)
+    const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
+    let originalCommitted = false
+    let derivativeCommitted = false
+    try {
+      await run(ffmpeg, derivativePlan.args, 5 * 60_000)
+      const derivativeQuality = await probe(taggedPath)
+      await copyFile(sourcePath, originalPath, fsConstants.COPYFILE_EXCL)
+      originalCommitted = true
+      await copyFile(taggedPath, finalPath, fsConstants.COPYFILE_EXCL)
+      derivativeCommitted = true
+      if (artwork) {
+        await copyFile(artwork.coverPath, stagedCoverPath, fsConstants.COPYFILE_EXCL)
+        await rename(stagedCoverPath, releaseCoverPath)
+      }
+      const acquiredAt = new Date().toISOString()
+      const artworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+      const provenance = {
+        source: 'internet-archive', sourceUrl, archiveIdentifier: identifier, archiveFilename: filename,
+        archiveDownloadUrl: download.finalUrl, archiveItemTitle: metadata.metadata?.title || null, archiveCreator: metadata.metadata?.creator || null,
+        licenseUrl: metadata.metadata?.licenseurl || null, rights: metadata.metadata?.rights || null, collection: metadata.metadata?.collection || null,
+        fileFormat: file.format || null, fileSource: file.source || null, sourceSize: download.bytes, md5: file.md5 || null, sha1: file.sha1 || null,
+        acquiredAt, rightsBasis: body.authorisation.basis, confirmedBy: body.authorisation.confirmedBy || null, confirmedAt: body.authorisation.confirmedAt || null,
+        archiveStatus: 'internet-archive-recovery-copy', wantedMetadata: body.wantedMetadata || null, resolvedMetadata: track,
+        catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: artworkProvenance,
+        sourceAudio: { path: originalPath, quality: sourceQuality, preservedOriginal: true },
+        derivative: { path: finalPath, createdByTomify: true, operation: derivativePlan.embedded ? 'ffmpeg-stream-copy-tagging-with-attached-artwork' : 'ffmpeg-stream-copy-tagging', audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
+      }
+      await writeFile(`${finalPath}.tomify.json`, JSON.stringify(provenance, null, 2), { encoding: 'utf8', flag: 'wx' })
+      return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
+    } catch (error) {
+      await unlink(`${finalPath}.tomify.json`).catch(() => {})
+      if (derivativeCommitted) await unlink(finalPath).catch(() => {})
+      if (originalCommitted) await unlink(originalPath).catch(() => {})
+      throw error
+    } finally {
+      await unlink(taggedPath).catch(() => {})
+      await unlink(stagedCoverPath).catch(() => {})
+    }
+  } finally {
+    const resolvedTemporaryRoot = resolve(temporaryRoot)
+    if (inside(resolvedTemporaryRoot, resolve(tmpdir())) && basename(resolvedTemporaryRoot).startsWith('tomify-recovery-')) await rm(resolvedTemporaryRoot, { recursive: true, force: true })
+  }
+}
+
 async function diagnoseAuthenticatedYouTube() {
   const status = await cookieStatus()
   if (!status.usable) return { configured: false, extractionAvailable: false, state: status.state }
@@ -294,18 +430,26 @@ createServer(async (request, response) => {
   try {
     if (request.method === 'GET' && request.url === '/health') {
       const auth = await cookieStatus()
-      return send(response, 200, { ok: true, backends: ['youtube'], youtubeAuthentication: auth.usable ? 'configured' : 'not-configured' })
+      return send(response, 200, { ok: true, backends: ['youtube', 'internet-archive'], youtubeAuthentication: auth.usable ? 'configured' : 'not-configured' })
     }
     if (!authorised(request)) return send(response, 401, { error: 'unauthorized' })
     if (request.method !== 'POST') return send(response, 404, { error: 'not-found' })
     const body = await parseBody(request)
     if (request.url === '/v1/status') {
       const auth = await cookieStatus()
-      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }] })
+      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }] })
     }
     if (request.url === '/v1/diagnostics/youtube-auth') return send(response, 200, await diagnoseAuthenticatedYouTube())
-    if (request.url === '/v1/search') return send(response, 200, { candidates: await searchYouTube(body.track) })
-    if (request.url === '/v1/acquire') return send(response, 200, await acquireYouTube(body))
+    if (request.url === '/v1/search') {
+      if (body.backend === 'youtube') return send(response, 200, { candidates: await searchYouTube(body.track) })
+      if (body.backend === 'internet-archive') return send(response, 200, { candidates: await searchInternetArchive(body.track) })
+      throw new Error('Unsupported recovery backend.')
+    }
+    if (request.url === '/v1/acquire') {
+      if (body.backend === 'youtube') return send(response, 200, await acquireYouTube(body))
+      if (body.backend === 'internet-archive') return send(response, 200, await acquireInternetArchive(body))
+      throw new Error('Unsupported recovery backend.')
+    }
     if (request.url === '/v1/delete') return send(response, 200, await deleteImportedRecovery(body))
     return send(response, 404, { error: 'not-found' })
   } catch (error) {

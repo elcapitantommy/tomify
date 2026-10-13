@@ -15,6 +15,9 @@ export interface RecoveryProvenance {
   authenticatedAccessUsed?: boolean
   selectedFormatId?: string
   archiveStatus?: string
+  licenseUrl?: string | null
+  rights?: string | null
+  raw?: { licenseUrl?: string | null; rights?: string | null; fileFormat?: string | null; fileSource?: string | null; [key: string]: unknown } | null
   sourceAudio?: { quality?: AudioQuality; preservedOriginal?: boolean }
   derivative?: { createdByTomify?: boolean; operation?: string; transcoded?: boolean; quality?: AudioQuality }
   [key: string]: unknown
