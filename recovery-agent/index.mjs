@@ -545,7 +545,7 @@ async function pollUsenetJob(id) {
     const state = await downloaderStatus(usenetDownloader, job.remoteId)
     job.status = state.status; job.progress = state.progress || 0; job.message = state.message || null; job.updatedAt = new Date().toISOString()
     if (state.status === 'completed') {
-      const completedPath = await validateCompletedPath(state.completedPath, usenetDownloadRoot)
+      const completedPath = await validateCompletedPath(state.completedPath, usenetDownloadRoot, usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null)
       const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
       const selected = selectCompletedAudio(discovered.files, job.request.track)
       if (!selected) throw new Error('No completed audio file matched the wanted track.')

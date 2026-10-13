@@ -3,7 +3,14 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { downloaderConfig, findCompletedAudio, nzbIndexConfig, nzbIndexDownloadUrl, nzbIndexSearchUrl, parseIndexerConfig, parseNewznabResults, parseNzbIndexResults, searchNzbIndex, searchUsenetProviders, selectCompletedAudio, submitDownloader, usenetCapability, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
+import { downloaderConfig, downloaderStatus, findCompletedAudio, nzbIndexConfig, nzbIndexDownloadUrl, nzbIndexSearchUrl, parseIndexerConfig, parseNewznabResults, parseNzbIndexResults, searchNzbIndex, searchUsenetProviders, selectCompletedAudio, submitDownloader, usenetCapability, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
+
+function sabStatusFetch({ queue = [], history = [] }) {
+  return async (requestUrl) => {
+    const mode = new URL(requestUrl).searchParams.get('mode')
+    return { ok: true, json: async () => mode === 'queue' ? { queue: { slots: queue } } : { history: { slots: history } } }
+  }
+}
 
 test('builds independent artist, track, and release queries', () => {
   const track = { artist: 'Massive Attack', title: 'Teardrop', album: 'Mezzanine' }
@@ -133,6 +140,51 @@ test('keeps downloader credentials in server-side requests and uses the NZBGet a
   assert.equal(request.params[0], 'Tomify test.nzb')
   assert.equal(request.params[1], 'https://indexer.test/api?t=get&id=abc&apikey=hidden')
   assert.match(calls[0].init.headers.authorization, /^Basic /)
+})
+
+test('reports SAB queue downloads with their existing progress and status text', async () => {
+  const config = downloaderConfig({ TOMIFY_SABNZBD_URL: 'http://127.0.0.1:8080', TOMIFY_SABNZBD_API_KEY: 'secret' })
+  const state = await downloaderStatus(config, 'sab-job', sabStatusFetch({ queue: [{ nzo_id: 'sab-job', status: 'Downloading', percentage: '37.5' }] }))
+  assert.deepEqual(state, { status: 'downloading', progress: 37.5, message: 'Downloading' })
+})
+
+test('keeps SAB post-processing history states active', async () => {
+  const config = downloaderConfig({ TOMIFY_SABNZBD_URL: 'http://127.0.0.1:8080', TOMIFY_SABNZBD_API_KEY: 'secret' })
+  for (const status of ['Extracting', 'verifying', 'REPAIRING', 'Quick Check', 'Moving', 'Running']) {
+    const state = await downloaderStatus(config, 'sab-job', sabStatusFetch({ history: [{ nzo_id: 'sab-job', status }] }))
+    assert.deepEqual(state, { status: 'downloading', progress: 100, message: status })
+  }
+})
+
+test('reports only genuine SAB terminal states as completed or failed', async () => {
+  const config = downloaderConfig({ TOMIFY_SABNZBD_URL: 'http://127.0.0.1:8080', TOMIFY_SABNZBD_API_KEY: 'secret' })
+  const completed = await downloaderStatus(config, 'sab-job', sabStatusFetch({ history: [{ nzo_id: 'sab-job', status: 'COMPLETED', storage: '/downloads/album' }] }))
+  assert.deepEqual(completed, { status: 'completed', progress: 100, completedPath: '/downloads/album' })
+  const failed = await downloaderStatus(config, 'sab-job', sabStatusFetch({ history: [{ nzo_id: 'sab-job', status: 'Failed', fail_message: 'Unpack failed' }] }))
+  assert.deepEqual(failed, { status: 'failed', progress: 0, message: 'Unpack failed' })
+  const unfamiliar = await downloaderStatus(config, 'sab-job', sabStatusFetch({ history: [{ nzo_id: 'sab-job', status: 'Finalizing files' }] }))
+  assert.deepEqual(unfamiliar, { status: 'downloading', progress: 100, message: 'Finalizing files' })
+})
+
+test('keeps NZBGet status handling unchanged', async () => {
+  const config = downloaderConfig({ TOMIFY_NZBGET_URL: 'http://127.0.0.1:6789', TOMIFY_NZBGET_USERNAME: 'tom', TOMIFY_NZBGET_PASSWORD: 'secret' })
+  const responses = [{ result: [] }, { result: [{ NZBID: 42, Status: 'SUCCESS/ALL', DestDir: '/srv/usenet/completed/album' }] }]
+  const state = await downloaderStatus(config, '42', async () => ({ ok: true, json: async () => responses.shift() }))
+  assert.deepEqual(state, { status: 'completed', progress: 100, completedPath: '/srv/usenet/completed/album' })
+})
+
+test('maps a SAB container completion path to the host root before validation', async () => {
+  const config = downloaderConfig({ TOMIFY_SABNZBD_URL: 'http://127.0.0.1:8080', TOMIFY_SABNZBD_DOWNLOAD_DIR: '/downloads' })
+  assert.equal(config.downloadRoot, '/downloads')
+  const hostRoot = await mkdtemp(join(tmpdir(), 'tomify-sab-map-test-'))
+  const job = join(hostRoot, 'album'); await mkdir(job); await writeFile(join(job, '01 - Track.flac'), 'audio')
+  assert.equal(await validateCompletedPath('/downloads/album', hostRoot, config.downloadRoot), job)
+  await assert.rejects(validateCompletedPath('/elsewhere/album', hostRoot, config.downloadRoot), /outside TOMIFY_SABNZBD_DOWNLOAD_DIR/)
+  await assert.rejects(validateCompletedPath('/downloads/../elsewhere/album', hostRoot, config.downloadRoot), /outside TOMIFY_SABNZBD_DOWNLOAD_DIR/)
+  const outsideRoot = await mkdtemp(join(tmpdir(), 'tomify-sab-outside-test-'))
+  const outsideFile = join(outsideRoot, 'escape.flac'); await writeFile(outsideFile, 'audio')
+  await symlink(outsideFile, join(hostRoot, 'escape.flac'))
+  await assert.rejects(validateCompletedPath('/downloads/escape.flac', hostRoot, config.downloadRoot), /outside TOMIFY_USENET_DOWNLOAD_DIR/)
 })
 
 test('validates completion paths and rejects symlinks during bounded traversal', async () => {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { lstat, readdir, realpath, stat } from 'node:fs/promises'
-import { basename, extname, join, resolve, sep } from 'node:path'
+import { basename, extname, join, relative, resolve, sep } from 'node:path'
 
 const AUDIO_EXTENSIONS = new Set(['.flac', '.mp3', '.m4a', '.mp4', '.aac', '.ogg', '.opus', '.wav', '.aiff', '.aif', '.mka', '.wma', '.webm'])
 const NZBINDEX_API_URL = 'https://api.nzbindex.com'
@@ -173,7 +173,7 @@ export function downloaderConfig(env = process.env) {
   const sabUrl = text(env.TOMIFY_SABNZBD_URL)
   const nzbgetUrl = text(env.TOMIFY_NZBGET_URL)
   if (sabUrl && nzbgetUrl) throw new Error('Configure either SABnzbd or NZBGet, not both.')
-  if (sabUrl) return { type: 'sabnzbd', url: serviceUrl(sabUrl, 'SABnzbd URL'), apiKey: text(env.TOMIFY_SABNZBD_API_KEY), category: text(env.TOMIFY_USENET_CATEGORY) }
+  if (sabUrl) return { type: 'sabnzbd', url: serviceUrl(sabUrl, 'SABnzbd URL'), apiKey: text(env.TOMIFY_SABNZBD_API_KEY), category: text(env.TOMIFY_USENET_CATEGORY), downloadRoot: text(env.TOMIFY_SABNZBD_DOWNLOAD_DIR) || null }
   if (nzbgetUrl) return { type: 'nzbget', url: serviceUrl(nzbgetUrl, 'NZBGet URL'), username: text(env.TOMIFY_NZBGET_USERNAME), password: text(env.TOMIFY_NZBGET_PASSWORD), category: text(env.TOMIFY_USENET_CATEGORY) }
   return null
 }
@@ -205,8 +205,14 @@ export async function downloaderStatus(config, remoteId, fetchImpl = fetch) {
     const completed = await jsonRequest(history, { method: 'GET' }, 'SABnzbd history', fetchImpl)
     const item = completed?.history?.slots?.find((value) => String(value.nzo_id) === String(remoteId))
     if (!item) return { status: 'queued', progress: 0, message: 'Waiting for downloader' }
-    const success = String(item.status).toLowerCase() === 'completed'
-    return success ? { status: 'completed', progress: 100, completedPath: text(item.storage) } : { status: 'failed', progress: 0, message: text(item.fail_message || item.status || 'Download failed') }
+    const statusText = text(item.status)
+    const normalizedStatus = statusText.toLowerCase().replace(/[^a-z]/g, '')
+    // SAB exposes post-processing jobs in history; only its documented terminal states end the job.
+    if (normalizedStatus === 'completed') return { status: 'completed', progress: 100, completedPath: text(item.storage) }
+    if (normalizedStatus === 'failed') return { status: 'failed', progress: 0, message: text(item.fail_message || statusText || 'Download failed') }
+    const activeMessage = statusText || 'Post-processing'
+    const activeProgress = Math.max(0, Math.min(100, number(item.percentage) ?? 100))
+    return { status: 'downloading', progress: activeProgress, message: activeMessage }
   }
   const request = async (method, params = []) => jsonRequest(`${config.url}/jsonrpc`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: basicAuth(config) }, body: JSON.stringify({ method, params }) }, `NZBGet ${method}`, fetchImpl)
   const groups = (await request('listgroups'))?.result || []
@@ -219,10 +225,16 @@ export async function downloaderStatus(config, remoteId, fetchImpl = fetch) {
   return success ? { status: 'completed', progress: 100, completedPath: text(item.DestDir) } : { status: 'failed', progress: 0, message: text(item.Status || 'Download failed') }
 }
 
-export async function validateCompletedPath(value, downloadRoot) {
+export async function validateCompletedPath(value, downloadRoot, downloaderRoot = null) {
   if (!downloadRoot) throw new Error('TOMIFY_USENET_DOWNLOAD_DIR is required.')
   const root = await realpath(resolve(downloadRoot))
-  const candidate = await realpath(resolve(text(value)))
+  let candidatePath = resolve(text(value))
+  if (downloaderRoot) {
+    const reportedRoot = resolve(text(downloaderRoot))
+    if (!inside(candidatePath, reportedRoot)) throw new Error('Downloader returned a path outside TOMIFY_SABNZBD_DOWNLOAD_DIR.')
+    candidatePath = resolve(downloadRoot, relative(reportedRoot, candidatePath))
+  }
+  const candidate = await realpath(candidatePath)
   if (!inside(candidate, root) || candidate === root) throw new Error('Downloader returned a path outside TOMIFY_USENET_DOWNLOAD_DIR.')
   const details = await stat(candidate)
   if (!details.isDirectory() && !details.isFile()) throw new Error('Downloader completion path is not a regular file or directory.')

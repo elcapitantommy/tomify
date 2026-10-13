@@ -121,13 +121,16 @@ Configure exactly one downloader:
 ```text
 TOMIFY_SABNZBD_URL=http://127.0.0.1:8080
 TOMIFY_SABNZBD_API_KEY=replace-me
+TOMIFY_SABNZBD_DOWNLOAD_DIR=/downloads
 TOMIFY_USENET_DOWNLOAD_DIR=/srv/usenet/completed
 TOMIFY_USENET_CATEGORY=music
 TOMIFY_USENET_MAX_BYTES=2147483648
 TOMIFY_RECOVERY_STATE_DIR=/var/lib/tomify-recovery
 ```
 
-For NZBGet, use `TOMIFY_NZBGET_URL`, `TOMIFY_NZBGET_USERNAME`, and `TOMIFY_NZBGET_PASSWORD` instead of the SABnzbd settings. Indexer URLs must use HTTPS, except for loopback development services. Credentials and credential-bearing NZB download URLs are used only by the recovery agent; they are never returned to the Worker, browser, D1, or provenance.
+`TOMIFY_USENET_DOWNLOAD_DIR` is the completed-download root visible to the Tomify host. Set `TOMIFY_SABNZBD_DOWNLOAD_DIR` only when SABnzbd reports a different root, such as `/downloads` inside a Docker container mapped to the host's `/srv/usenet/completed`. Tomify accepts a SAB completion path only when it is contained beneath that downloader-visible root, translates the relative suffix to the host root, then applies the existing realpath, containment, file-type, symlink, file-count, and size checks.
+
+For NZBGet, use `TOMIFY_NZBGET_URL`, `TOMIFY_NZBGET_USERNAME`, and `TOMIFY_NZBGET_PASSWORD` instead of the SABnzbd settings. `TOMIFY_SABNZBD_DOWNLOAD_DIR` does not apply to NZBGet. Indexer URLs must use HTTPS, except for loopback development services. Credentials and credential-bearing NZB download URLs are used only by the recovery agent; they are never returned to the Worker, browser, D1, or provenance.
 
 Restart the service after editing the environment, then confirm that `/health` lists `usenet`:
 
