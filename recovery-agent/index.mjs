@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { timingSafeEqual } from 'node:crypto'
 import { audioFormatSummary, sanitizeToolError, selectBestAudioFormat } from './youtube.mjs'
 import { deleteRecoveryArtifacts } from './deletion.mjs'
+import { ffmpegMetadataArguments } from './metadata.mjs'
 
 const host = process.env.TOMIFY_RECOVERY_HOST || '127.0.0.1'
 const port = Number(process.env.TOMIFY_RECOVERY_PORT || 8788)
@@ -178,7 +179,7 @@ async function acquireYouTube(body) {
     const sourceQuality = await probe(sourcePath)
     const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${extension}`)
     const comment = `Tomify lossy recovery copy; source=${sourceUrl}; authorisation=${body.authorisation.basis}`
-    const tags = ['-metadata', `artist=${track.artist || ''}`, '-metadata', `title=${track.title || ''}`, '-metadata', `album=${track.album || ''}`, '-metadata', `track=${track.trackNumber || ''}`, '-metadata', `disc=${track.discNumber || ''}`, '-metadata', `comment=${comment}`, '-metadata', 'TOMIFY_ARCHIVE_STATUS=lossy-recovery-copy', '-metadata', `TOMIFY_SOURCE_URL=${sourceUrl}`]
+    const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment)
     try {
       await run(ffmpeg, ['-v', 'error', '-nostdin', '-n', '-i', sourcePath, '-map', '0:a:0', '-map_metadata', '-1', '-c:a', 'copy', ...tags, taggedPath], 5 * 60_000)
       const derivativeQuality = await probe(taggedPath)
@@ -191,6 +192,7 @@ async function acquireYouTube(body) {
         authenticatedAccessUsed: acquisition.authenticatedAccessUsed, authenticationFallback: acquisition.authenticationFallback, selectedFormatId: String(selected.format_id),
         availableAudioFormats: formats.map(audioFormatSummary), acquiredAt: importedAt, rightsBasis: body.authorisation.basis,
         confirmedBy: body.authorisation.confirmedBy || null, confirmedAt: body.authorisation.confirmedAt || null, archiveStatus: 'lossy-recovery-copy',
+        wantedMetadata: body.wantedMetadata || null, resolvedMetadata: track, metadataResolution: body.metadataResolution || null,
         sourceAudio: { path: originalPath, quality: sourceQuality, preservedOriginal: true },
         derivative: { path: finalPath, createdByTomify: true, operation: 'ffmpeg-stream-copy-tagging', transcoded: false, quality: derivativeQuality },
       }

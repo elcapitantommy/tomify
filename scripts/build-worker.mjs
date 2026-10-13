@@ -1,5 +1,6 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises'
 import { extname, join, relative, sep } from 'node:path'
+import { recoveryMetadataWorkerSource } from './recovery-metadata.mjs'
 
 const outputDirectory = new URL('../dist/', import.meta.url)
 const workerPath = new URL('../dist/server/index.js', import.meta.url)
@@ -36,6 +37,8 @@ const assets = Object.fromEntries(
 )
 
 const worker = `const assets = ${JSON.stringify(assets)}
+
+${recoveryMetadataWorkerSource}
 
 function decode(value) {
   const binary = atob(value)
@@ -96,11 +99,12 @@ async function ensureReleaseTable(db) {
 
 async function ensureRecoveryTables(db) {
   await db.batch([
-    db.prepare("CREATE TABLE IF NOT EXISTS recovery_items (id TEXT PRIMARY KEY, username TEXT NOT NULL, artist TEXT NOT NULL, title TEXT NOT NULL, album TEXT, duration REAL, track_number INTEGER, disc_number INTEGER, musicbrainz_id TEXT, status TEXT NOT NULL DEFAULT 'missing', notes TEXT, error TEXT, selected_candidate_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS recovery_items (id TEXT PRIMARY KEY, username TEXT NOT NULL, artist TEXT NOT NULL, title TEXT NOT NULL, album TEXT, duration REAL, track_number INTEGER, disc_number INTEGER, musicbrainz_id TEXT, metadata_resolution_json TEXT, status TEXT NOT NULL DEFAULT 'missing', notes TEXT, error TEXT, selected_candidate_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS recovery_candidates (id TEXT PRIMARY KEY, recovery_id TEXT NOT NULL, backend TEXT NOT NULL, external_id TEXT NOT NULL, url TEXT NOT NULL, title TEXT NOT NULL, channel TEXT NOT NULL, channel_id TEXT, duration REAL, official INTEGER NOT NULL DEFAULT 0, match_score INTEGER NOT NULL DEFAULT 0, thumbnail TEXT, codec TEXT, container TEXT, bitrate INTEGER, sample_rate INTEGER, channels INTEGER, imported_path TEXT, provenance_json TEXT, rights_basis TEXT, selected INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_recovery_items_username_status ON recovery_items(username, status)'),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_recovery_candidates_recovery ON recovery_candidates(recovery_id, match_score DESC)'),
   ])
+  try { await db.prepare('ALTER TABLE recovery_items ADD COLUMN metadata_resolution_json TEXT').run() } catch { /* column already exists */ }
 }
 
 function recoveryCandidateRow(row) {
@@ -116,10 +120,13 @@ function recoveryCandidateRow(row) {
 }
 
 async function recoveryItem(db, username, id) {
-  const row = await db.prepare('SELECT id, artist, title, album, duration, track_number AS trackNumber, disc_number AS discNumber, musicbrainz_id AS musicBrainzId, status, notes, error, created_at AS createdAt, updated_at AS updatedAt FROM recovery_items WHERE username = ? AND id = ?').bind(username, id).first()
+  const row = await db.prepare('SELECT id, artist, title, album, duration, track_number AS trackNumber, disc_number AS discNumber, musicbrainz_id AS musicBrainzId, metadata_resolution_json AS metadataResolutionJson, status, notes, error, created_at AS createdAt, updated_at AS updatedAt FROM recovery_items WHERE username = ? AND id = ?').bind(username, id).first()
   if (!row) return null
   const candidates = await db.prepare('SELECT id, backend, external_id AS externalId, url, title, channel, channel_id AS channelId, duration, official, match_score AS matchScore, thumbnail, codec, container, bitrate, sample_rate AS sampleRate, channels, imported_path AS importedPath, provenance_json AS provenanceJson, selected FROM recovery_candidates WHERE recovery_id = ? ORDER BY selected DESC, match_score DESC, created_at DESC').bind(id).all()
-  return { ...row, duration: row.duration == null ? null : Number(row.duration), trackNumber: row.trackNumber == null ? null : Number(row.trackNumber), discNumber: row.discNumber == null ? null : Number(row.discNumber), candidates: (candidates.results || []).map(recoveryCandidateRow) }
+  let metadataResolution = null
+  try { metadataResolution = row.metadataResolutionJson ? JSON.parse(row.metadataResolutionJson) : null } catch { metadataResolution = null }
+  const { metadataResolutionJson, ...item } = row
+  return { ...item, metadataResolution, duration: row.duration == null ? null : Number(row.duration), trackNumber: row.trackNumber == null ? null : Number(row.trackNumber), discNumber: row.discNumber == null ? null : Number(row.discNumber), candidates: (candidates.results || []).map(recoveryCandidateRow) }
 }
 
 function recoveryTokens(value) {
@@ -200,16 +207,33 @@ function artistCredit(group) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+let musicBrainzQueue = Promise.resolve()
+let lastMusicBrainzRequestAt = 0
 
 async function musicBrainzJson(url) {
-  const response = await fetch(url, {
-    headers: {
-      accept: 'application/json',
-      'user-agent': 'Tomify/0.1 (https://app.tomify.tomdixon.uk)',
-    },
+  const operation = musicBrainzQueue.then(async () => {
+    const wait = Math.max(0, 1100 - (Date.now() - lastMusicBrainzRequestAt))
+    if (wait) await sleep(wait)
+    lastMusicBrainzRequestAt = Date.now()
+    const response = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Tomify/0.1 (https://app.tomify.tomdixon.uk)' } })
+    if (!response.ok) return null
+    return response.json()
   })
-  if (!response.ok) return null
-  return response.json()
+  musicBrainzQueue = operation.catch(() => null)
+  return operation
+}
+
+async function resolveMusicBrainzRecovery(item, candidateId) {
+  const title = normaliseMetadataText(item.title)
+  const artist = normaliseMetadataText(item.artist)
+  if (!title || !artist) return { authority: 'musicbrainz', status: 'not-found', confidence: 0, strong: false, metadata: null, candidateId, resolvedAt: new Date().toISOString() }
+  const url = new URL('https://musicbrainz.org/ws/2/recording/')
+  url.searchParams.set('query', 'recording:(' + title + ') AND artist:(' + artist + ')')
+  url.searchParams.set('limit', '15')
+  url.searchParams.set('fmt', 'json')
+  const result = await musicBrainzJson(url)
+  if (!result) return { authority: 'musicbrainz', status: 'unavailable', confidence: 0, strong: false, metadata: null, candidateId, resolvedAt: new Date().toISOString() }
+  return { authority: 'musicbrainz', ...resolveRecoveryMetadata({ artist: item.artist, title: item.title, album: item.album, duration: item.duration || item.candidates.find((value) => value.id === candidateId)?.duration || null }, result.recordings), candidateId, resolvedAt: new Date().toISOString() }
 }
 
 async function lookupMusicBrainzReleaseGroup(album) {
@@ -221,7 +245,6 @@ async function lookupMusicBrainzReleaseGroup(album) {
     releaseUrl.searchParams.set('fmt', 'json')
     const release = await musicBrainzJson(releaseUrl)
     if (release?.['release-group']?.id) {
-      await sleep(1100)
       const fullGroupUrl = new URL('https://musicbrainz.org/ws/2/release-group/' + release['release-group'].id)
       fullGroupUrl.searchParams.set('fmt', 'json')
       const fullGroup = await musicBrainzJson(fullGroupUrl)
@@ -361,7 +384,7 @@ export default {
             .bind(crypto.randomUUID(), item.id, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || 'Unknown channel').slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend: 'youtube', raw: candidate.provenance || null }))
         })
         if (inserts.length) await env.TOMIFY_DB.batch(inserts)
-        await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(inserts.length ? 'candidate-found' : 'missing', item.id, username).run()
+        await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = ?, selected_candidate_id = NULL, metadata_resolution_json = NULL, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(inserts.length ? 'candidate-found' : 'missing', item.id, username).run()
         return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Candidate search failed.'
@@ -376,9 +399,14 @@ export default {
       if (!username) return json({ error: 'unauthorized' }, 401)
       const body = await request.json()
       await ensureRecoveryTables(env.TOMIFY_DB)
-      const candidate = body && typeof body.candidateId === 'string' ? await env.TOMIFY_DB.prepare('SELECT c.id FROM recovery_candidates c JOIN recovery_items i ON i.id = c.recovery_id WHERE c.id = ? AND c.recovery_id = ? AND i.username = ?').bind(body.candidateId, recoveryMatch[1], username).first() : null
+      const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
+      const candidate = body && typeof body.candidateId === 'string' ? item?.candidates.find((value) => value.id === body.candidateId) : null
       if (!candidate) return json({ error: 'recovery-candidate-not-found' }, 404)
-      await env.TOMIFY_DB.batch([env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 0 WHERE recovery_id = ?').bind(recoveryMatch[1]), env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(body.candidateId), env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, status = 'candidate-found', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(body.candidateId, recoveryMatch[1], username)])
+      let metadataResolution
+      const cachedResolution = item.metadataResolution?.candidateId === candidate.id && Date.now() - Date.parse(item.metadataResolution.resolvedAt || '') < 30 * 24 * 60 * 60 * 1000 && item.metadataResolution.status !== 'unavailable' ? item.metadataResolution : null
+      try { metadataResolution = cachedResolution || await resolveMusicBrainzRecovery(item, candidate.id) }
+      catch { metadataResolution = { authority: 'musicbrainz', status: 'unavailable', confidence: 0, strong: false, metadata: null, candidateId: candidate.id, resolvedAt: new Date().toISOString() } }
+      await env.TOMIFY_DB.batch([env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 0 WHERE recovery_id = ?').bind(recoveryMatch[1]), env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(body.candidateId), env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, metadata_resolution_json = ?, status = 'candidate-found', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(body.candidateId, JSON.stringify(metadataResolution), recoveryMatch[1], username)])
       return json({ item: await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1]) })
     }
 
@@ -393,11 +421,15 @@ export default {
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       const candidate = item?.candidates.find((value) => value.id === body.candidateId)
       if (!item || !candidate) return json({ error: 'recovery-candidate-not-found' }, 404)
+      if (item.metadataResolution?.candidateId !== candidate.id) return json({ error: 'recovery-metadata-review-required', message: 'Select this candidate again to resolve and review its metadata before importing.' }, 409)
+      const metadataChoices = body.metadataChoices && typeof body.metadataChoices === 'object' ? body.metadataChoices : {}
+      const wantedMetadata = { artist: item.artist, title: item.title, album: item.album || null, releaseDate: null, trackNumber: item.trackNumber || null, discNumber: item.discNumber || null, duration: item.duration || null, recordingId: item.musicBrainzId || null }
+      const resolvedMetadata = applyRecoveryMetadataChoices(wantedMetadata, item.metadataResolution, metadataChoices)
       await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'importing', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(item.id, username).run()
       try {
-        const result = await callRecoveryAgent(env, '/v1/acquire', { backend: 'youtube', candidate: { externalId: candidate.externalId, url: candidate.url, title: candidate.title, channel: candidate.channel }, track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration, trackNumber: item.trackNumber, discNumber: item.discNumber, musicBrainzId: item.musicBrainzId }, authorisation: { confirmed: true, basis: body.rightsBasis, confirmedBy: username, confirmedAt: new Date().toISOString() } })
+        const result = await callRecoveryAgent(env, '/v1/acquire', { backend: 'youtube', candidate: { externalId: candidate.externalId, url: candidate.url, title: candidate.title, channel: candidate.channel }, track: resolvedMetadata, wantedMetadata, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, authorisation: { confirmed: true, basis: body.rightsBasis, confirmedBy: username, confirmedAt: new Date().toISOString() } })
         const quality = result.quality || {}
-        const provenance = { ...(result.provenance || {}), source: 'youtube', sourceUrl: candidate.url, rightsBasis: body.rightsBasis, archiveStatus: 'lossy-recovery-copy', importedAt: new Date().toISOString() }
+        const provenance = { ...(result.provenance || {}), source: 'youtube', sourceUrl: candidate.url, rightsBasis: body.rightsBasis, archiveStatus: 'lossy-recovery-copy', importedAt: new Date().toISOString(), wantedMetadata, resolvedMetadata, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices } }
         await env.TOMIFY_DB.batch([
           env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, provenance_json = ?, rights_basis = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(quality.codec || null, quality.container || null, Number.isFinite(quality.bitrate) ? quality.bitrate : null, Number.isFinite(quality.sampleRate) ? quality.sampleRate : null, Number.isFinite(quality.channels) ? quality.channels : null, Number.isFinite(quality.duration) ? quality.duration : null, String(result.path || '').slice(0, 1000), JSON.stringify(provenance), body.rightsBasis, candidate.id),
           env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, status = 'needs-upgrade', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(candidate.id, item.id, username),

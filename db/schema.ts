@@ -1,5 +1,5 @@
 // Canonical D1 schema fragments. The production worker creates these defensively;
-// drizzle/0001_recovery.sql is the deployable migration.
+// drizzle/ contains the deployable recovery migrations.
 export const recoverySchema = {
   items: 'recovery_items',
   candidates: 'recovery_candidates',

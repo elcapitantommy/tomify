@@ -20,6 +20,39 @@ export interface RecoveryProvenance {
   [key: string]: unknown
 }
 
+export interface RecoveryMetadata {
+  artist?: string | null
+  title?: string | null
+  album?: string | null
+  releaseDate?: string | null
+  trackNumber?: number | null
+  discNumber?: number | null
+  recordingId?: string | null
+  releaseId?: string | null
+  releaseGroupId?: string | null
+  duration?: number | null
+  isrc?: string | null
+}
+
+export interface RecoveryMetadataResolution {
+  authority: 'musicbrainz'
+  status: 'matched' | 'unconfirmed' | 'not-found' | 'unavailable'
+  confidence: number
+  strong: boolean
+  ambiguous?: boolean
+  metadata?: RecoveryMetadata | null
+  candidateId: string
+  resolvedAt: string
+}
+
+export interface RecoveryMetadataChoices {
+  artist: boolean
+  title: boolean
+  album: boolean
+  releaseDate: boolean
+  trackNumbers: boolean
+}
+
 export interface RecoveryCandidate extends AudioQuality {
   id: string
   backend: string
@@ -45,6 +78,7 @@ export interface RecoveryItem {
   trackNumber?: number | null
   discNumber?: number | null
   musicBrainzId?: string | null
+  metadataResolution?: RecoveryMetadataResolution | null
   status: RecoveryStatus
   notes?: string | null
   error?: string | null
