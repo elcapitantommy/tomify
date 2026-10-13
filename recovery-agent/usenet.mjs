@@ -3,6 +3,8 @@ import { lstat, readdir, realpath, stat } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 
 const AUDIO_EXTENSIONS = new Set(['.flac', '.mp3', '.m4a', '.mp4', '.aac', '.ogg', '.opus', '.wav', '.aiff', '.aif', '.mka', '.wma', '.webm'])
+const NZBINDEX_API_URL = 'https://api.nzbindex.com'
+const NZBINDEX_SITE_URL = 'https://www.nzbindex.com'
 
 function text(value) { return String(value ?? '').trim() }
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null }
@@ -31,6 +33,16 @@ export function parseIndexerConfig(raw) {
     if (!id || !apiKey) throw new Error(`Newznab indexer ${name} is missing an id or apiKey.`)
     return { id, name, url: url.toString().replace(/\/$/, ''), apiKey, categories: text(value?.categories || '3000') }
   })
+}
+
+export function nzbIndexConfig(env = process.env) {
+  const apiKey = text(env.TOMIFY_NZBINDEX_API_KEY)
+  return apiKey ? { type: 'nzbindex', id: 'nzbindex', name: 'NZBIndex', apiKey, apiUrl: NZBINDEX_API_URL, siteUrl: NZBINDEX_SITE_URL } : null
+}
+
+export function usenetCapability({ newznabIndexers = [], nzbIndex = null, downloader = null, downloadRoot = null } = {}) {
+  const providerCount = newznabIndexers.length + (nzbIndex ? 1 : 0)
+  return { available: Boolean(providerCount && downloader && downloadRoot), providerCount }
 }
 
 export function usenetSearchQuery(track, mode) {
@@ -62,7 +74,7 @@ export function parseNewznabResults(xml, indexer, mode) {
     return {
       externalId: createHash('sha256').update(`${indexer.id}\0${guid}`).digest('hex'), url: detailsUrl,
       title, channel: indexer.name, duration: null, thumbnail: null,
-      provenance: { providerId: indexer.id, providerName: indexer.name, guid, searchMode: mode, size, ageDays, categories: xmlAttr(item, 'category') || null },
+      provenance: { providerType: 'newznab', providerId: indexer.id, providerName: indexer.name, resultId: guid, guid, postedTitle: title, searchMode: mode, size, ageDays, detailsUrl, categories: xmlAttr(item, 'category') || null },
     }
   }).filter(Boolean)
 }
@@ -84,6 +96,69 @@ export async function searchNewznab(indexers, track, mode, fetchImpl = fetch) {
 export function newznabDownloadUrl(indexer, guid) {
   const url = apiEndpoint(indexer.url)
   url.searchParams.set('t', 'get'); url.searchParams.set('id', text(guid)); url.searchParams.set('apikey', indexer.apiKey)
+  return url.toString()
+}
+
+export function nzbIndexSearchUrl(config, track, mode) {
+  const url = new URL('/api/search', config.apiUrl)
+  url.searchParams.set('q', usenetSearchQuery(track, mode))
+  url.searchParams.set('max', '40')
+  url.searchParams.set('sort', 'agedesc')
+  url.searchParams.set('key', config.apiKey)
+  return url
+}
+
+export function parseNzbIndexResults(payload, config, mode, now = Date.now()) {
+  if (payload?.error) throw new Error(`NZBIndex search failed${payload.errorMessage ? `: ${text(payload.errorMessage).slice(0, 240)}` : '.'}`)
+  const collections = Array.isArray(payload?.data?.content) ? payload.data.content : []
+  return collections.slice(0, 40).map((collection) => {
+    const collectionId = text(collection?.id).slice(0, 500)
+    const title = text(collection?.name).slice(0, 500)
+    if (!collectionId || !title) return null
+    const postedSeconds = number(collection?.posted)
+    const postedDate = postedSeconds === null ? null : new Date(postedSeconds * 1000)
+    const postedAt = postedDate && Number.isFinite(postedDate.getTime()) ? postedDate.toISOString() : null
+    const ageDays = postedAt === null ? null : Math.max(0, (now - postedSeconds * 1000) / 86400000)
+    const detailsUrl = new URL(`/collection/${encodeURIComponent(collectionId)}`, config.siteUrl).toString()
+    return {
+      externalId: createHash('sha256').update(`${config.id}\0${collectionId}`).digest('hex'), url: detailsUrl,
+      title, channel: config.name, duration: null, thumbnail: null,
+      provenance: {
+        providerType: 'nzbindex', providerId: config.id, providerName: config.name, resultId: collectionId, collectionId,
+        postedTitle: title, postedAt, searchMode: mode, size: number(collection?.size), ageDays, detailsUrl,
+        fileCount: number(collection?.fileCount), complete: typeof collection?.complete === 'boolean' ? collection.complete : null,
+        poster: text(collection?.poster).slice(0, 240) || null,
+        groups: Array.isArray(collection?.groups) ? collection.groups.map((group) => text(group).slice(0, 240)).filter(Boolean).slice(0, 50) : [],
+      },
+    }
+  }).filter(Boolean)
+}
+
+export async function searchNzbIndex(config, track, mode, fetchImpl = fetch) {
+  const response = await fetchImpl(nzbIndexSearchUrl(config, track, mode), { signal: AbortSignal.timeout(30_000), headers: { accept: 'application/json', 'user-agent': 'Tomify/0.1 recovery-agent' } })
+  if (!response.ok) throw new Error(`NZBIndex returned HTTP ${response.status}.`)
+  return parseNzbIndexResults(await response.json(), config, mode)
+}
+
+export async function searchUsenetProviders(newznabIndexers, nzbIndex, track, mode, fetchImpl = fetch) {
+  const searches = []
+  if (newznabIndexers.length) searches.push(searchNewznab(newznabIndexers, track, mode, fetchImpl))
+  if (nzbIndex) searches.push(searchNzbIndex(nzbIndex, track, mode, fetchImpl))
+  const settled = await Promise.allSettled(searches)
+  const batches = settled.filter((result) => result.status === 'fulfilled').map((result) => result.value)
+  if (!batches.length && settled.length) throw settled[0].reason
+  const results = []
+  for (let index = 0; results.length < 40 && batches.some((batch) => index < batch.length); index += 1) {
+    for (const batch of batches) if (index < batch.length && results.length < 40) results.push(batch[index])
+  }
+  return results
+}
+
+export function nzbIndexDownloadUrl(config, collectionId) {
+  const id = text(collectionId)
+  if (!id || id.length > 500 || !/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Invalid NZBIndex collection id.')
+  const url = new URL(`/api/download/${encodeURIComponent(id)}.nzb`, config.apiUrl)
+  url.searchParams.set('key', config.apiKey)
   return url.toString()
 }
 

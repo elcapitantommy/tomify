@@ -100,13 +100,23 @@ Internet Archive candidates are discovered with field-restricted public audio se
 
 The candidate review links to the Archive item so the user can inspect its description, uploader, licence and rights statement. Archive availability alone is not permission: import still requires the same explicit authorisation basis. Provenance records the item/file identifiers, final download URL, creator, collection, licence/rights fields, file format/source, byte count and supplied hashes. The downloaded bytes are preserved unchanged in `.tomify-source`; tagging and artwork are applied only to the stream-copy derivative.
 
-## Newznab and Usenet backend
+## Newznab, NZBIndex and Usenet backend
 
-The optional Usenet backend searches one or more Newznab-compatible indexers and queues an explicitly selected result in either SABnzbd or NZBGet. It supports three independent query modes: artist, track title, or release/album. Results are shown in a provider-neutral review list with their indexer, title, advertised size, age when available, and a link to the provider's detail page. Search results are not treated as evidence of permission.
+The optional Usenet backend searches one or more Newznab-compatible indexers, NZBIndex, or both, and queues an explicitly selected result in either SABnzbd or NZBGet. It supports three independent query modes: artist, track title, or release/album. Results are shown in a provider-neutral review list with their indexer, title, advertised size, age when available, and a link to the provider's detail page. Search results are not treated as evidence of permission.
 
 This backend is for lawful recovery only. The operator must retrieve only content they are authorised to copy. Tomify does not bypass subscriptions, authentication, takedowns, encryption, or other access controls. Acquisition remains disabled until the existing source-specific authorisation confirmation is completed for the selected result.
 
-Keep all indexer and downloader credentials on the recovery server. Configure `TOMIFY_NEWZNAB_INDEXERS_JSON` as a JSON array of `{ "id", "name", "url", "apiKey", "categories" }` objects in `/etc/tomify/recovery-agent.env`. Configure exactly one downloader:
+Keep all indexer and downloader credentials on the recovery server. Newznab remains supported: configure `TOMIFY_NEWZNAB_INDEXERS_JSON` as a JSON array of `{ "id", "name", "url", "apiKey", "categories" }` objects in `/etc/tomify/recovery-agent.env`.
+
+To use NZBIndex, obtain the API key shown by your NZBIndex account, then add it directly to the same protected server environment file. Do not put it in Worker variables, D1, the browser, or a URL stored in Tomify:
+
+```text
+TOMIFY_NZBINDEX_API_KEY=replace-with-your-nzbindex-api-key
+```
+
+No base URL is required: Tomify uses the documented `https://api.nzbindex.com/api/search` and `/api/download/{collection-id}.nzb` endpoints, and links reviews to `https://www.nzbindex.com/collection/{collection-id}`. The API key is attached only to server-to-server API and downloader requests. To use both provider types, set both `TOMIFY_NEWZNAB_INDEXERS_JSON` and `TOMIFY_NZBINDEX_API_KEY`; otherwise leave the unused setting empty or `[]`.
+
+Configure exactly one downloader:
 
 ```text
 TOMIFY_SABNZBD_URL=http://127.0.0.1:8080
@@ -118,6 +128,16 @@ TOMIFY_RECOVERY_STATE_DIR=/var/lib/tomify-recovery
 ```
 
 For NZBGet, use `TOMIFY_NZBGET_URL`, `TOMIFY_NZBGET_USERNAME`, and `TOMIFY_NZBGET_PASSWORD` instead of the SABnzbd settings. Indexer URLs must use HTTPS, except for loopback development services. Credentials and credential-bearing NZB download URLs are used only by the recovery agent; they are never returned to the Worker, browser, D1, or provenance.
+
+Restart the service after editing the environment, then confirm that `/health` lists `usenet`:
+
+```bash
+sudo systemctl restart tomify-recovery
+curl -s http://127.0.0.1:8788/health
+echo
+```
+
+Usenet is available when at least one indexer is configured across Newznab and NZBIndex, exactly one downloader is configured, and `TOMIFY_USENET_DOWNLOAD_DIR` is set.
 
 Acquisition is asynchronous. The UI reports queued, downloading, completed, or failed job state and progress while polling through the Worker. On completion, the agent resolves the downloader path and rejects anything outside `TOMIFY_USENET_DOWNLOAD_DIR`, symlinks, non-regular files, excessive file counts, and downloads over `TOMIFY_USENET_MAX_BYTES`. It chooses the audio file whose name best matches the wanted track, verifies it with FFprobe, preserves the unchanged source beneath `.tomify-source`, and creates the Navidrome-facing derivative through the same stream-copy and metadata pipeline as other Recovery sources. Existing recovery artifacts and canonical masters are never overwritten.
 
@@ -180,4 +200,4 @@ YouTube provenance records the video ID and URL, channel/uploader, title, acquis
 
 Internet Archive provenance records the item identifier and details URL, exact filename and final download URL, creator, item title, collection, licence/rights statements, format, original/derivative source flag, byte count, supplied MD5/SHA-1 values, acquisition time, measured audio quality and derivative details.
 
-Usenet provenance records the Newznab provider name, opaque result identifier, posted title, selected search mode, advertised size/age, downloader type, completed file count, measured source quality, and derivative details. It never records indexer API keys, downloader credentials, or credential-bearing download URLs.
+Usenet provenance records the provider type and name, opaque result or collection identifier, posted title and date when supplied, selected search mode, details URL, advertised size/age, downloader type, completed file count, measured source quality, and derivative details. It never records indexer API keys, downloader credentials, or credential-bearing download URLs.

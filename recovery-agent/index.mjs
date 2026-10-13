@@ -14,7 +14,7 @@ import { deleteRecoveryArtifacts } from './deletion.mjs'
 import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './derivative.mjs'
 import { ffmpegMetadataArguments } from './metadata.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
-import { downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, parseIndexerConfig, searchNewznab, selectCompletedAudio, submitDownloader, validateCompletedPath } from './usenet.mjs'
+import { downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, selectCompletedAudio, submitDownloader, usenetCapability, validateCompletedPath } from './usenet.mjs'
 
 const host = process.env.TOMIFY_RECOVERY_HOST || '127.0.0.1'
 const port = Number(process.env.TOMIFY_RECOVERY_PORT || 8788)
@@ -32,7 +32,9 @@ const usenetStateRoot = resolve(process.env.TOMIFY_RECOVERY_STATE_DIR || join(re
 const configuredUsenetMaxBytes = Number(process.env.TOMIFY_USENET_MAX_BYTES || 2 * 1024 * 1024 * 1024)
 const usenetMaxBytes = Number.isFinite(configuredUsenetMaxBytes) && configuredUsenetMaxBytes > 0 ? configuredUsenetMaxBytes : 2 * 1024 * 1024 * 1024
 const newznabIndexers = parseIndexerConfig(process.env.TOMIFY_NEWZNAB_INDEXERS_JSON || '')
+const nzbIndex = nzbIndexConfig()
 const usenetDownloader = downloaderConfig()
+const usenet = usenetCapability({ newznabIndexers, nzbIndex, downloader: usenetDownloader, downloadRoot: usenetDownloadRoot })
 
 function inside(child, parent) {
   return child === parent || child.startsWith(parent + sep)
@@ -167,8 +169,8 @@ async function searchInternetArchive(track) {
 }
 
 async function searchUsenet(track, mode) {
-  if (!newznabIndexers.length || !usenetDownloader || !usenetDownloadRoot) throw new Error('Usenet Recovery is not fully configured.')
-  return searchNewznab(newznabIndexers, track, mode)
+  if (!usenet.available) throw new Error('Usenet Recovery is not fully configured.')
+  return searchUsenetProviders(newznabIndexers, nzbIndex, track, mode)
 }
 
 async function fetchArchiveFile(url, destination, expectedHashes = {}) {
@@ -443,23 +445,33 @@ async function loadUsenetJob(id) {
 
 async function queueUsenet(body) {
   if (body?.authorisation?.confirmed !== true || !body.authorisation.basis) throw new Error('Explicit source authorisation is required.')
-  if (!usenetDownloader || !usenetDownloadRoot || !newznabIndexers.length) throw new Error('Usenet Recovery is not fully configured.')
+  if (!usenet.available) throw new Error('Usenet Recovery is not fully configured.')
   const reference = body?.candidate?.provenance
-  const indexer = newznabIndexers.find((value) => value.id === reference?.providerId)
-  if (!indexer || !reference?.guid) throw new Error('The selected Newznab result is no longer valid.')
+  let provider
+  let nzbUrl
+  if (reference?.providerType === 'nzbindex') {
+    if (!nzbIndex || reference.providerId !== nzbIndex.id || !reference.collectionId) throw new Error('The selected NZBIndex result is no longer valid.')
+    provider = nzbIndex
+    nzbUrl = nzbIndexDownloadUrl(nzbIndex, reference.collectionId)
+  } else {
+    const indexer = newznabIndexers.find((value) => value.id === reference?.providerId)
+    if (!indexer || !reference?.guid) throw new Error('The selected Newznab result is no longer valid.')
+    provider = { ...indexer, type: 'newznab' }
+    nzbUrl = newznabDownloadUrl(indexer, reference.guid)
+  }
   if (Number(reference.size) > usenetMaxBytes) throw new Error('The selected Usenet result exceeds TOMIFY_USENET_MAX_BYTES.')
   const id = crypto.randomUUID()
   const displayName = `Tomify - ${safeName(body?.track?.artist, 'Unknown Artist')} - ${safeName(body?.track?.title, 'Recovery')}`
-  const submitted = await submitDownloader(usenetDownloader, newznabDownloadUrl(indexer, reference.guid), displayName)
+  const submitted = await submitDownloader(usenetDownloader, nzbUrl, displayName)
   const job = {
     id, version: 1, status: 'queued', progress: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     downloader: submitted.downloader, remoteId: submitted.remoteId,
-    indexer: { id: indexer.id, name: indexer.name },
-    result: { externalId: body.candidate.externalId || null, title: body.candidate.title || null, detailsUrl: body.candidate.url || null, guid: reference.guid, searchMode: reference.searchMode || 'track', size: reference.size || null, ageDays: reference.ageDays || null },
+    indexer: { type: provider.type, id: provider.id, name: provider.name },
+    result: { externalId: body.candidate.externalId || null, resultId: reference.resultId || reference.collectionId || reference.guid || null, title: body.candidate.title || null, detailsUrl: body.candidate.url || null, postedAt: reference.postedAt || null, searchMode: reference.searchMode || 'track', size: reference.size || null, ageDays: reference.ageDays || null },
     request: { track: body.track || {}, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
   }
   await saveUsenetJob(job)
-  return { job: { id, status: 'queued', progress: 0, provider: indexer.name, downloader: submitted.downloader } }
+  return { job: { id, status: 'queued', progress: 0, provider: provider.name, downloader: submitted.downloader } }
 }
 
 async function importUsenetAudio(job, sourcePath, completedFiles) {
@@ -489,7 +501,8 @@ async function importUsenetAudio(job, sourcePath, completedFiles) {
   try {
     const artwork = await prepareArtwork(job.request.artwork, temporaryRoot)
     const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
-    const sourceUrl = job.result.detailsUrl || `newznab:${job.indexer.id}:${job.result.externalId || 'result'}`
+    const providerType = job.indexer.type || 'newznab'
+    const sourceUrl = job.result.detailsUrl || `${providerType}:${job.indexer.id}:${job.result.externalId || 'result'}`
     const comment = `Tomify authorised Usenet recovery copy; provider=${job.indexer.name}; authorisation=${job.request.authorisation.basis}`
     const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment)
     const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
@@ -501,8 +514,9 @@ async function importUsenetAudio(job, sourcePath, completedFiles) {
     const acquiredAt = new Date().toISOString()
     const artworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
     const provenance = {
-      source: 'usenet', sourceUrl, newznabProvider: job.indexer.name, newznabResultId: job.result.externalId, newznabTitle: job.result.title,
-      searchMode: job.result.searchMode, postedSize: job.result.size, ageDaysAtDiscovery: job.result.ageDays, downloader: job.downloader,
+      source: 'usenet', sourceUrl, providerType, providerName: job.indexer.name, providerId: job.indexer.id, providerResultId: job.result.resultId || job.result.externalId, postedTitle: job.result.title, detailsUrl: job.result.detailsUrl,
+      searchMode: job.result.searchMode, postedAt: job.result.postedAt, postedSize: job.result.size, ageDaysAtDiscovery: job.result.ageDays, downloader: job.downloader,
+      ...(providerType === 'newznab' ? { newznabProvider: job.indexer.name, newznabResultId: job.result.externalId, newznabTitle: job.result.title } : {}),
       completedFileCount: completedFiles.length, acquiredAt, rightsBasis: job.request.authorisation.basis,
       confirmedBy: job.request.authorisation.confirmedBy || null, confirmedAt: job.request.authorisation.confirmedAt || null,
       archiveStatus: 'usenet-recovery-copy', wantedMetadata: job.request.wantedMetadata, resolvedMetadata: track,
@@ -570,15 +584,14 @@ createServer(async (request, response) => {
   try {
     if (request.method === 'GET' && request.url === '/health') {
       const auth = await cookieStatus()
-      return send(response, 200, { ok: true, backends: ['youtube', 'internet-archive', ...(newznabIndexers.length && usenetDownloader && usenetDownloadRoot ? ['usenet'] : [])], youtubeAuthentication: auth.usable ? 'configured' : 'not-configured' })
+      return send(response, 200, { ok: true, backends: ['youtube', 'internet-archive', ...(usenet.available ? ['usenet'] : [])], youtubeAuthentication: auth.usable ? 'configured' : 'not-configured' })
     }
     if (!authorised(request)) return send(response, 401, { error: 'unauthorized' })
     if (request.method !== 'POST') return send(response, 404, { error: 'not-found' })
     const body = await parseBody(request)
     if (request.url === '/v1/status') {
       const auth = await cookieStatus()
-      const usenetAvailable = Boolean(newznabIndexers.length && usenetDownloader && usenetDownloadRoot)
-      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenetAvailable, authentication: usenetAvailable ? 'configured' : 'not-configured', providerCount: newznabIndexers.length, downloader: usenetDownloader?.type || null }] })
+      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenet.available, authentication: usenet.available ? 'configured' : 'not-configured', providerCount: usenet.providerCount, providers: [...(newznabIndexers.length ? ['newznab'] : []), ...(nzbIndex ? ['nzbindex'] : [])], downloader: usenetDownloader?.type || null }] })
     }
     if (request.url === '/v1/diagnostics/youtube-auth') return send(response, 200, await diagnoseAuthenticatedYouTube())
     if (request.url === '/v1/search') {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { downloaderConfig, findCompletedAudio, parseIndexerConfig, parseNewznabResults, selectCompletedAudio, submitDownloader, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
+import { downloaderConfig, findCompletedAudio, nzbIndexConfig, nzbIndexDownloadUrl, nzbIndexSearchUrl, parseIndexerConfig, parseNewznabResults, parseNzbIndexResults, searchNzbIndex, searchUsenetProviders, selectCompletedAudio, submitDownloader, usenetCapability, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
 
 test('builds independent artist, track, and release queries', () => {
   const track = { artist: 'Massive Attack', title: 'Teardrop', album: 'Mezzanine' }
@@ -24,6 +24,68 @@ test('parses provider-neutral Newznab results without exposing credentials', () 
 test('requires secure indexers except loopback development endpoints', () => {
   assert.throws(() => parseIndexerConfig(JSON.stringify([{ url: 'http://indexer.test', apiKey: 'secret' }])), /HTTPS/)
   assert.equal(parseIndexerConfig(JSON.stringify([{ id: 'local', url: 'http://127.0.0.1:9117', apiKey: 'secret' }]))[0].id, 'local')
+})
+
+test('parses and normalizes NZBIndex collections without exposing its API key', () => {
+  const config = nzbIndexConfig({ TOMIFY_NZBINDEX_API_KEY: 'server-secret' })
+  const posted = 1_720_733_190
+  const [result] = parseNzbIndexResults({ data: { content: [{ id: '759d4736-eac6-3320-83dd-44cd3979f652', name: 'Artist - Album FLAC', poster: 'poster@example.test', posted, size: 123456, fileCount: 8, complete: true, groups: ['alt.binaries.sounds.lossless'] }] }, error: false }, config, 'release', (posted + 172800) * 1000)
+  assert.equal(result.channel, 'NZBIndex')
+  assert.equal(result.url, 'https://www.nzbindex.com/collection/759d4736-eac6-3320-83dd-44cd3979f652')
+  assert.equal(result.provenance.providerType, 'nzbindex')
+  assert.equal(result.provenance.collectionId, '759d4736-eac6-3320-83dd-44cd3979f652')
+  assert.equal(result.provenance.postedAt, '2024-07-11T21:26:30.000Z')
+  assert.equal(result.provenance.ageDays, 2)
+  assert.equal(result.provenance.searchMode, 'release')
+  assert.equal(result.provenance.size, 123456)
+  assert.doesNotMatch(JSON.stringify(result), /server-secret|\bkey\b/i)
+})
+
+test('constructs NZBIndex query modes and server-side API requests', async () => {
+  const config = nzbIndexConfig({ TOMIFY_NZBINDEX_API_KEY: 'server-secret' })
+  const track = { artist: 'Massive Attack', title: 'Teardrop', album: 'Mezzanine' }
+  for (const [mode, query] of [['artist', 'Massive Attack'], ['track', 'Teardrop'], ['release', 'Mezzanine']]) {
+    const url = nzbIndexSearchUrl(config, track, mode)
+    assert.equal(url.origin + url.pathname, 'https://api.nzbindex.com/api/search')
+    assert.equal(url.searchParams.get('q'), query)
+    assert.equal(url.searchParams.get('max'), '40')
+    assert.equal(url.searchParams.get('sort'), 'agedesc')
+    assert.equal(url.searchParams.get('key'), 'server-secret')
+  }
+  const calls = []
+  await searchNzbIndex(config, track, 'track', async (url, init) => {
+    calls.push({ url: String(url), init })
+    return { ok: true, json: async () => ({ data: { content: [] }, error: false }) }
+  })
+  assert.match(calls[0].url, /^https:\/\/api\.nzbindex\.com\/api\/search\?/)
+  assert.equal(calls[0].init.headers.accept, 'application/json')
+})
+
+test('returns NZBIndex and Newznab results together when both are configured', async () => {
+  const nzbIndex = nzbIndexConfig({ TOMIFY_NZBINDEX_API_KEY: 'server-secret' })
+  const newznab = [{ id: 'newznab-one', name: 'Newznab One', url: 'https://newznab.test', apiKey: 'newznab-secret', categories: '3000' }]
+  const fetchImpl = async (url) => String(url).startsWith('https://api.nzbindex.com')
+    ? { ok: true, json: async () => ({ data: { content: [{ id: 'nzbindex-id', name: 'NZBIndex result' }] }, error: false }) }
+    : { ok: true, text: async () => '<rss><channel><item><title>Newznab result</title><guid>newznab-id</guid></item></channel></rss>' }
+  const results = await searchUsenetProviders(newznab, nzbIndex, { title: 'Track' }, 'track', fetchImpl)
+  assert.deepEqual(results.map((result) => result.provenance.providerType), ['newznab', 'nzbindex'])
+})
+
+test('constructs NZBIndex NZB downloads with credentials only in the server request URL', () => {
+  const config = nzbIndexConfig({ TOMIFY_NZBINDEX_API_KEY: 'server-secret' })
+  const url = new URL(nzbIndexDownloadUrl(config, '759d4736-eac6-3320-83dd-44cd3979f652'))
+  assert.equal(url.origin + url.pathname, 'https://api.nzbindex.com/api/download/759d4736-eac6-3320-83dd-44cd3979f652.nzb')
+  assert.equal(url.searchParams.get('key'), 'server-secret')
+  assert.throws(() => nzbIndexDownloadUrl(config, '../escape'), /Invalid NZBIndex collection id/)
+})
+
+test('enables Usenet with either indexer type plus a downloader and download directory', () => {
+  const downloader = { type: 'sabnzbd' }
+  assert.equal(usenetCapability({ newznabIndexers: [{}], downloader, downloadRoot: '/downloads' }).available, true)
+  assert.deepEqual(usenetCapability({ nzbIndex: {}, downloader, downloadRoot: '/downloads' }), { available: true, providerCount: 1 })
+  assert.deepEqual(usenetCapability({ newznabIndexers: [{}], nzbIndex: {}, downloader, downloadRoot: '/downloads' }), { available: true, providerCount: 2 })
+  assert.equal(usenetCapability({ nzbIndex: {}, downloadRoot: '/downloads' }).available, false)
+  assert.equal(usenetCapability({ nzbIndex: {}, downloader }).available, false)
 })
 
 test('keeps downloader credentials in server-side requests and uses the NZBGet append contract', async () => {
