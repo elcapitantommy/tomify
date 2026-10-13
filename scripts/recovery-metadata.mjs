@@ -69,15 +69,16 @@ export function resolveRecoveryMetadata(wanted, recordings) {
     const release = releaseDetails(recording, wanted?.album)
     const albumSimilarity = wanted?.album ? release?.albumSimilarity || 0 : 1
     const duration = durationConfidence(Number(wanted?.duration), Number(recording?.length))
+    const isrcMatch = Boolean(wanted?.isrc && Array.isArray(recording?.isrcs) && recording.isrcs.some((isrc) => normaliseMetadataText(isrc) === normaliseMetadataText(wanted.isrc)))
     const searchScore = Math.max(0, Math.min(100, Number(recording?.score || 0))) / 100
     const confidence = wanted?.album
       ? titleSimilarity * 30 + artistSimilarity * 25 + albumSimilarity * 25 + duration.score * 15 + searchScore * 5
       : titleSimilarity * 38 + artistSimilarity * 30 + duration.score * 22 + searchScore * 10
-    const adjustedConfidence = confidence - (recording?.video === true ? 8 : 0)
+    const adjustedConfidence = confidence + (isrcMatch ? 15 : 0) - (recording?.video === true ? 8 : 0)
     const mediumPosition = Number(release?.medium?.position)
     const trackPosition = release?.track ? numericTrack(release.track.number, release.trackIndex >= 0 ? release.trackIndex + 1 : null) : null
     return {
-      confidence: Math.max(0, Math.min(100, Math.round(adjustedConfidence))), titleSimilarity, artistSimilarity, albumSimilarity,
+      confidence: Math.max(0, Math.min(100, Math.round(adjustedConfidence))), titleSimilarity, artistSimilarity, albumSimilarity, isrcMatch,
       durationDifference: duration.difference,
       metadata: {
         artist: artist || null,
@@ -93,7 +94,7 @@ export function resolveRecoveryMetadata(wanted, recordings) {
         isrc: Array.isArray(recording?.isrcs) && recording.isrcs.length ? String(recording.isrcs[0]) : null,
       },
     }
-  }).filter((candidate) => candidate.metadata.artist && candidate.metadata.title).sort((left, right) => right.confidence - left.confidence)
+  }).filter((candidate) => candidate.metadata.artist && candidate.metadata.title).sort((left, right) => right.confidence - left.confidence || Number(right.isrcMatch) - Number(left.isrcMatch))
 
   if (!candidates.length) return { status: 'not-found', confidence: 0, strong: false, metadata: null }
   const best = candidates[0]

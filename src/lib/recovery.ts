@@ -111,6 +111,7 @@ export interface RecoveryItem {
   musicBrainzId?: string | null
   metadataResolution?: RecoveryMetadataResolution | null
   artworkResolution?: RecoveryArtworkResolution | null
+  catalogueSource?: { catalogueSource: string; spotifyTrackId?: string | null; spotifyPlaylistId?: string | null; spotifyPlaylistPosition?: number | null; spotifyISRC?: string | null } | null
   status: RecoveryStatus
   notes?: string | null
   error?: string | null

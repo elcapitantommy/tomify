@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Check, ChevronDown, ChevronUp, CircleGauge, ExternalLink, FileAudio, LoaderCircle, Plus, RefreshCw, Search, ShieldCheck, Trash2, Youtube } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
 import { recoveryApi } from '../lib/recovery-api'
 import { qualityLabel, type RecoveryItem, type RecoveryMetadataChoices, type RecoveryStatus } from '../lib/recovery'
 import { formatDuration } from '../lib/format'
@@ -14,13 +15,14 @@ const statusLabels: Record<RecoveryStatus, string> = {
 }
 
 export function Recovery() {
+  const [searchParams] = useSearchParams()
   const [items, setItems] = useState<RecoveryItem[]>([])
   const [backends, setBackends] = useState<Array<{ id: string; label: string; available: boolean; authentication?: 'configured' | 'not-configured' | 'unavailable'; reason?: string }>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
-  const [expanded, setExpanded] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<string | null>(searchParams.get('item'))
   const [form, setForm] = useState({ artist: '', title: '', album: '', duration: '', trackNumber: '' })
 
   const load = useCallback(async () => {

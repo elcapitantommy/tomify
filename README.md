@@ -190,6 +190,7 @@ pnpm build
 - Installable manifest, app icons, standalone mode, cached app shell and cached artwork.
 - A playback source resolver boundary ready to prefer IndexedDB audio before the network in the next phase.
 - A source-aware Recovery queue with MusicBrainz metadata review, provider-ranked cover art, D1 provenance, safe recovery-copy deletion and an optional media-server acquisition agent.
+- OAuth-backed Spotify playlist import as catalogue metadata only, with Navidrome matching, ambiguous-match review, ordered pending Recovery entries, duplicate preservation, and manual refresh diffs.
 
 ### Recovery imports
 

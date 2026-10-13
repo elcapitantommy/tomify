@@ -27,6 +27,13 @@ test('a strong duration match outranks a materially different recording', () => 
   assert.equal(result.strong, true)
 })
 
+test('an exact wanted ISRC is a strong canonical matching signal', () => {
+  const wrongIsrc = recording({ id: 'wrong-isrc', isrcs: ['OTHER0000001'], score: 100 })
+  const exactIsrc = recording({ id: 'exact-isrc', isrcs: ['SE3R41500004'], score: 80 })
+  const result = resolveRecoveryMetadata({ artist: 'Zara Larsson', title: 'Lush Life', duration: 202, isrc: 'SE3R41500004' }, [wrongIsrc, exactIsrc])
+  assert.equal(result.metadata.recordingId, 'exact-isrc')
+})
+
 test('weak or ambiguous matches are not confirmed for automatic correction', () => {
   const first = recording({ id: 'first', title: 'Lush Life (remix)', 'artist-credit': [{ name: 'Zara Larsson' }] })
   const second = recording({ id: 'second', title: 'Lush Life (live)', 'artist-credit': [{ name: 'Zara Larsson' }] })

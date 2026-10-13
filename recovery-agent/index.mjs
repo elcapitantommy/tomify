@@ -248,7 +248,7 @@ async function acquireYouTube(body) {
         authenticatedAccessUsed: acquisition.authenticatedAccessUsed, authenticationFallback: acquisition.authenticationFallback, selectedFormatId: String(selected.format_id),
         availableAudioFormats: formats.map(audioFormatSummary), acquiredAt: importedAt, rightsBasis: body.authorisation.basis,
         confirmedBy: body.authorisation.confirmedBy || null, confirmedAt: body.authorisation.confirmedAt || null, archiveStatus: 'lossy-recovery-copy',
-        wantedMetadata: body.wantedMetadata || null, resolvedMetadata: track, metadataResolution: body.metadataResolution || null,
+        wantedMetadata: body.wantedMetadata || null, resolvedMetadata: track, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null,
         artwork: artworkProvenance,
         sourceAudio: { path: originalPath, quality: sourceQuality, preservedOriginal: true },
         derivative: { path: finalPath, createdByTomify: true, operation: derivativePlan.embedded ? 'ffmpeg-stream-copy-tagging-with-attached-artwork' : 'ffmpeg-stream-copy-tagging', audioStreamCopied: true, transcoded: false, quality: derivativeQuality },

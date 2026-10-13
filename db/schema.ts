@@ -5,3 +5,9 @@ export const recoverySchema = {
   candidates: 'recovery_candidates',
   indexes: ['idx_recovery_items_username_status', 'idx_recovery_candidates_recovery'],
 } as const
+
+export const catalogueImportSchema = {
+  playlists: 'catalogue_playlists',
+  items: 'catalogue_playlist_items',
+  providerTokens: 'catalogue_provider_tokens',
+} as const
