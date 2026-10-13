@@ -1,6 +1,7 @@
 export function ffmpegMetadataArguments(track, comment) {
   const values = [
     ['artist', track?.artist],
+    ['album_artist', track?.albumArtist],
     ['title', track?.title],
     ['album', track?.album],
     ['date', track?.releaseDate],

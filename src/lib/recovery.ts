@@ -22,12 +22,16 @@ export interface RecoveryProvenance {
   raw?: { licenseUrl?: string | null; rights?: string | null; fileFormat?: string | null; fileSource?: string | null; [key: string]: unknown } | null
   sourceAudio?: { path?: string; extension?: string; quality?: AudioQuality; preservedOriginal?: boolean }
   derivative?: { path?: string; extension?: string; containerRemuxed?: boolean; createdByTomify?: boolean; operation?: string; audioStreamCopied?: boolean; transcoded?: boolean; quality?: AudioQuality }
+  importedCount?: number
+  importedTracks?: Array<{ path?: string | null; originalPath?: string | null; artist?: string | null; albumArtist?: string | null; album?: string | null; title?: string | null; trackNumber?: number | null; discNumber?: number | null; quality?: AudioQuality | null }>
+  importedRelease?: { artist?: string | null; album?: string | null } | null
   job?: { id: string; status: 'queued' | 'downloading' | 'completed' | 'failed'; progress: number; provider?: string; downloader?: string; message?: string | null; error?: string | null } | null
   [key: string]: unknown
 }
 
 export interface RecoveryMetadata {
   artist?: string | null
+  albumArtist?: string | null
   title?: string | null
   album?: string | null
   releaseDate?: string | null

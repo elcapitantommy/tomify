@@ -480,7 +480,7 @@ export default {
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       if (!item) return json({ error: 'recovery-item-not-found' }, 404)
       if (item.status === 'queued' || item.status === 'downloading') return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before deleting this item.' }, 409)
-      const importedPaths = [...new Set(item.candidates.map((candidate) => candidate.importedPath).filter((path) => typeof path === 'string' && path.length > 0))]
+      const importedPaths = [...new Set(item.candidates.flatMap((candidate) => [candidate.importedPath, ...(Array.isArray(candidate.provenance?.importedTracks) ? candidate.provenance.importedTracks.map((track) => track?.path) : [])]).filter((path) => typeof path === 'string' && path.length > 0))]
       if (importedPaths.length) {
         try {
           await callRecoveryAgent(env, '/v1/delete', { importedPaths })
@@ -579,7 +579,9 @@ export default {
         const provenance = { ...candidate.provenance, job: { ...candidate.provenance.job, id: candidate.provenance.job.id, status: job.status || 'queued', progress: Number.isFinite(job.progress) ? job.progress : 0, message: job.message || null, error: job.error || null } }
         if (job.status === 'completed' && job.result) {
           const quality = job.result.quality || {}
-          const finalProvenance = { ...provenance, ...(job.result.provenance || {}), source: 'usenet', job: provenance.job, importedAt: new Date().toISOString() }
+          const importedTracks = Array.isArray(job.result.importedTracks) ? job.result.importedTracks.map((track) => ({ path: track?.path || null, originalPath: track?.originalPath || null, artist: track?.artist || null, albumArtist: track?.albumArtist || null, album: track?.album || null, title: track?.title || null, trackNumber: track?.trackNumber || null, discNumber: track?.discNumber || null, quality: track?.quality || null, derivative: track?.derivative || null })) : []
+          const importedCount = Number.isInteger(job.result.importedCount) ? job.result.importedCount : importedTracks.length || 1
+          const finalProvenance = { ...provenance, ...(job.result.provenance || {}), source: 'usenet', job: provenance.job, importedAt: new Date().toISOString(), importedCount, importedTracks, importedRelease: importedCount > 1 ? { artist: job.result.artist || null, album: job.result.album || null } : null }
           await env.TOMIFY_DB.batch([
             env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, provenance_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(quality.codec || null, quality.container || null, Number.isFinite(quality.bitrate) ? quality.bitrate : null, Number.isFinite(quality.sampleRate) ? quality.sampleRate : null, Number.isFinite(quality.channels) ? quality.channels : null, Number.isFinite(quality.duration) ? quality.duration : null, String(job.result.path || '').slice(0, 1000), JSON.stringify(finalProvenance), candidate.id),
             env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'needs-upgrade', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(item.id, username),

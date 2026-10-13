@@ -14,7 +14,8 @@ import { deleteRecoveryArtifacts } from './deletion.mjs'
 import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './derivative.mjs'
 import { ffmpegMetadataArguments } from './metadata.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
-import { downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, selectCompletedAudio, submitDownloader, usenetCapability, validateCompletedPath } from './usenet.mjs'
+import { downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, validateCompletedPath } from './usenet.mjs'
+import { importUsenetCompletion } from './usenet-import.mjs'
 
 const host = process.env.TOMIFY_RECOVERY_HOST || '127.0.0.1'
 const port = Number(process.env.TOMIFY_RECOVERY_PORT || 8788)
@@ -201,10 +202,10 @@ async function fetchArchiveFile(url, destination, expectedHashes = {}) {
 }
 
 async function probe(path) {
-  const { stdout } = await run(ffprobe, ['-v', 'error', '-show_entries', 'format=format_name,duration,bit_rate:stream=codec_type,codec_name,sample_rate,channels,bit_rate', '-of', 'json', path])
+  const { stdout } = await run(ffprobe, ['-v', 'error', '-show_entries', 'format=format_name,duration,bit_rate:format_tags:stream=codec_type,codec_name,sample_rate,channels,bit_rate:stream_tags', '-of', 'json', path])
   const value = JSON.parse(stdout)
   const audio = (value.streams || []).find((stream) => stream.codec_type === 'audio') || {}
-  return { codec: audio.codec_name || null, container: value.format?.format_name || extname(path).slice(1) || null, bitrate: Number(audio.bit_rate || value.format?.bit_rate) || null, sampleRate: Number(audio.sample_rate) || null, channels: Number(audio.channels) || null, duration: Number(value.format?.duration) || null }
+  return { codec: audio.codec_name || null, container: value.format?.format_name || extname(path).slice(1) || null, bitrate: Number(audio.bit_rate || value.format?.bit_rate) || null, sampleRate: Number(audio.sample_rate) || null, channels: Number(audio.channels) || null, duration: Number(value.format?.duration) || null, tags: { ...(audio.tags || {}), ...(value.format?.tags || {}) } }
 }
 
 async function probeImage(path) {
@@ -474,69 +475,6 @@ async function queueUsenet(body) {
   return { job: { id, status: 'queued', progress: 0, provider: provider.name, downloader: submitted.downloader } }
 }
 
-async function importUsenetAudio(job, sourcePath, completedFiles) {
-  const track = job.request.track || {}
-  const sourceExtension = extname(sourcePath).toLowerCase() || '.mka'
-  const sourceQuality = await probe(sourcePath)
-  if (!sourceQuality.codec || !sourceQuality.duration) throw new Error('The selected completed file is not valid audio.')
-  const derivativeExtension = recoveryDerivativeExtension(sourcePath, sourceQuality)
-  const artistDirectory = safeName(track.artist, 'Unknown Artist')
-  const albumDirectory = safeName(track.album, 'Recovered Tracks')
-  const prefix = Number.isInteger(track.trackNumber) && track.trackNumber > 0 ? `${String(track.trackNumber).padStart(2, '0')} - ` : ''
-  const stem = `${prefix}${safeName(track.title, basename(sourcePath, sourceExtension))}`
-  const finalDirectory = resolve(recoveryRoot, artistDirectory, albumDirectory)
-  const sourceDirectory = resolve(finalDirectory, '.tomify-source')
-  const finalPath = resolve(finalDirectory, `${stem}${derivativeExtension}`)
-  const originalPath = resolve(sourceDirectory, `${stem}${sourceExtension}`)
-  if (!inside(finalPath, recoveryRoot) || !inside(originalPath, recoveryRoot)) throw new Error('Unsafe recovery destination.')
-  await mkdir(sourceDirectory, { recursive: true })
-  for (const path of [finalPath, originalPath, `${finalPath}.tomify.json`]) {
-    try { await access(path); throw new Error('A recovery copy already exists; Tomify will not overwrite it.') } catch (error) { if (error?.code !== 'ENOENT') throw error }
-  }
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'tomify-recovery-'))
-  const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${derivativeExtension}`)
-  const stagedCoverPath = join(finalDirectory, `.${crypto.randomUUID()}.cover.jpg`)
-  let originalCommitted = false
-  let derivativeCommitted = false
-  try {
-    const artwork = await prepareArtwork(job.request.artwork, temporaryRoot)
-    const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
-    const providerType = job.indexer.type || 'newznab'
-    const sourceUrl = job.result.detailsUrl || `${providerType}:${job.indexer.id}:${job.result.externalId || 'result'}`
-    const comment = `Tomify authorised Usenet recovery copy; provider=${job.indexer.name}; authorisation=${job.request.authorisation.basis}`
-    const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment)
-    const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
-    await run(ffmpeg, derivativePlan.args, 5 * 60_000)
-    const derivativeQuality = await probe(taggedPath)
-    await copyFile(sourcePath, originalPath, fsConstants.COPYFILE_EXCL); originalCommitted = true
-    await copyFile(taggedPath, finalPath, fsConstants.COPYFILE_EXCL); derivativeCommitted = true
-    if (artwork) { await copyFile(artwork.coverPath, stagedCoverPath, fsConstants.COPYFILE_EXCL); await rename(stagedCoverPath, releaseCoverPath) }
-    const acquiredAt = new Date().toISOString()
-    const artworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
-    const provenance = {
-      source: 'usenet', sourceUrl, providerType, providerName: job.indexer.name, providerId: job.indexer.id, providerResultId: job.result.resultId || job.result.externalId, postedTitle: job.result.title, detailsUrl: job.result.detailsUrl,
-      searchMode: job.result.searchMode, postedAt: job.result.postedAt, postedSize: job.result.size, ageDaysAtDiscovery: job.result.ageDays, downloader: job.downloader,
-      ...(providerType === 'newznab' ? { newznabProvider: job.indexer.name, newznabResultId: job.result.externalId, newznabTitle: job.result.title } : {}),
-      completedFileCount: completedFiles.length, acquiredAt, rightsBasis: job.request.authorisation.basis,
-      confirmedBy: job.request.authorisation.confirmedBy || null, confirmedAt: job.request.authorisation.confirmedAt || null,
-      archiveStatus: 'usenet-recovery-copy', wantedMetadata: job.request.wantedMetadata, resolvedMetadata: track,
-      catalogueSource: job.request.catalogueSource, metadataResolution: job.request.metadataResolution, artwork: artworkProvenance,
-      sourceAudio: { path: originalPath, extension: sourceExtension, quality: sourceQuality, preservedOriginal: true },
-      derivative: { path: finalPath, extension: derivativeExtension, containerRemuxed: sourceExtension !== derivativeExtension, createdByTomify: true, operation: recoveryDerivativeOperation(sourceExtension, derivativeExtension, derivativePlan.embedded), audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
-    }
-    await writeFile(`${finalPath}.tomify.json`, JSON.stringify(provenance, null, 2), { encoding: 'utf8', flag: 'wx' })
-    return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
-  } catch (error) {
-    await unlink(`${finalPath}.tomify.json`).catch(() => {})
-    if (derivativeCommitted) await unlink(finalPath).catch(() => {})
-    if (originalCommitted) await unlink(originalPath).catch(() => {})
-    throw error
-  } finally {
-    await unlink(taggedPath).catch(() => {}); await unlink(stagedCoverPath).catch(() => {})
-    await rm(temporaryRoot, { recursive: true, force: true })
-  }
-}
-
 async function pollUsenetJob(id) {
   const job = await loadUsenetJob(id)
   if (job.status === 'completed') return { job: { id: job.id, status: job.status, progress: 100, result: job.importResult } }
@@ -547,9 +485,7 @@ async function pollUsenetJob(id) {
     if (state.status === 'completed') {
       const completedPath = await validateCompletedPath(state.completedPath, usenetDownloadRoot, usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null)
       const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
-      const selected = selectCompletedAudio(discovered.files, job.request.track)
-      if (!selected) throw new Error('No completed audio file matched the wanted track.')
-      job.importResult = await importUsenetAudio(job, selected.path, discovered.files)
+      job.importResult = await importUsenetCompletion(job, discovered.files, { recoveryRoot, probe, prepareArtwork, run, ffmpeg })
       job.status = 'completed'; job.progress = 100
     }
   } catch (error) {

@@ -79,4 +79,14 @@ describe('Recovery page actions', () => {
     expect(artistChoice).not.toBeChecked()
     expect(screen.getByText('No artwork selected')).toBeInTheDocument()
   })
+
+  it('shows the imported track count for a completed Usenet release', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({
+      status: 'needs-upgrade', album: 'Flood', candidates: [{ id: 'candidate-1', backend: 'usenet', externalId: 'release-1', url: 'https://www.nzbindex.com/collection/release-1', title: 'They Might Be Giants - Flood', channel: 'NZBIndex', official: false, matchScore: 90, selected: true, importedPath: '/srv/music-recovery/They Might Be Giants/Flood/01 - Theme from Flood.mp3', provenance: { importedCount: 19, importedTracks: [] } }],
+    })], backends })
+    renderRecovery()
+    expect(await screen.findByText('Imported 19 tracks')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /lush life/i }))
+    expect(screen.getAllByText('Imported 19 tracks').length).toBeGreaterThan(1)
+  })
 })
