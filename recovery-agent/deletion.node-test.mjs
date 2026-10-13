@@ -12,11 +12,30 @@ test('deletes the derivative, sidecar, and matching preserved original', async (
   await mkdir(source, { recursive: true })
   const imported = join(album, '01 - Track.webm')
   const paths = recoveryArtifactPaths(imported, root)
-  await Promise.all(paths.map((path) => writeFile(path, 'test')))
+  await writeFile(paths[0], 'test')
+  await writeFile(paths[1], JSON.stringify({ sourceAudio: { path: paths[2] } }))
+  await writeFile(paths[2], 'test')
 
   const result = await deleteRecoveryArtifacts(imported, root)
   assert.deepEqual(result.deleted.sort(), paths.sort())
   await Promise.all(paths.map((path) => assert.rejects(readFile(path), { code: 'ENOENT' })))
+})
+
+test('deletes a .opus derivative and its preserved .webm original from provenance', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tomify-delete-test-'))
+  const album = join(root, 'Artist', 'Album')
+  const source = join(album, '.tomify-source')
+  await mkdir(source, { recursive: true })
+  const imported = join(album, '01 - Track.opus')
+  const original = join(source, '01 - Track.webm')
+  const sidecar = `${imported}.tomify.json`
+  await writeFile(imported, 'derivative')
+  await writeFile(original, 'original')
+  await writeFile(sidecar, JSON.stringify({ sourceAudio: { path: original } }))
+
+  const result = await deleteRecoveryArtifacts(imported, root)
+  assert.deepEqual(result.deleted.sort(), [imported, sidecar, original].sort())
+  await Promise.all([imported, sidecar, original].map((path) => assert.rejects(readFile(path), { code: 'ENOENT' })))
 })
 
 test('refuses paths outside the recovery root or inside the master tree', () => {

@@ -18,8 +18,8 @@ export interface RecoveryProvenance {
   licenseUrl?: string | null
   rights?: string | null
   raw?: { licenseUrl?: string | null; rights?: string | null; fileFormat?: string | null; fileSource?: string | null; [key: string]: unknown } | null
-  sourceAudio?: { quality?: AudioQuality; preservedOriginal?: boolean }
-  derivative?: { createdByTomify?: boolean; operation?: string; transcoded?: boolean; quality?: AudioQuality }
+  sourceAudio?: { path?: string; extension?: string; quality?: AudioQuality; preservedOriginal?: boolean }
+  derivative?: { path?: string; extension?: string; containerRemuxed?: boolean; createdByTomify?: boolean; operation?: string; audioStreamCopied?: boolean; transcoded?: boolean; quality?: AudioQuality }
   [key: string]: unknown
 }
 

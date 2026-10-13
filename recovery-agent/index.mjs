@@ -11,6 +11,7 @@ import { pipeline } from 'node:stream/promises'
 import { audioFormatSummary, sanitizeToolError, selectBestAudioFormat } from './youtube.mjs'
 import { archiveCandidate, archiveDownloadUrl, archiveMetadataUrl, archiveSearchUrl, selectArchiveAudioFiles, validateArchiveDownloadUrl } from './internet-archive.mjs'
 import { deleteRecoveryArtifacts } from './deletion.mjs'
+import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './derivative.mjs'
 import { ffmpegMetadataArguments } from './metadata.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
 
@@ -257,24 +258,25 @@ async function acquireYouTube(body) {
   try {
     const acquisition = await inspectAndDownload(sourceUrl, temporaryRoot)
     const { sourcePath, metadata, formats, selected } = acquisition.value
-    const extension = extname(sourcePath).toLowerCase() || '.mka'
+    const sourceExtension = extname(sourcePath).toLowerCase() || '.mka'
+    const sourceQuality = await probe(sourcePath)
+    const derivativeExtension = recoveryDerivativeExtension(sourcePath, sourceQuality)
     const artistDirectory = safeName(track.artist, 'Unknown Artist')
     const albumDirectory = safeName(track.album, 'Recovered Tracks')
     const prefix = Number.isInteger(track.trackNumber) && track.trackNumber > 0 ? `${String(track.trackNumber).padStart(2, '0')} - ` : ''
     const stem = `${prefix}${safeName(track.title, 'Recovered Track')}`
     const finalDirectory = resolve(recoveryRoot, artistDirectory, albumDirectory)
     const sourceDirectory = resolve(finalDirectory, '.tomify-source')
-    const finalPath = resolve(finalDirectory, `${stem}${extension}`)
-    const originalPath = resolve(sourceDirectory, `${stem}${extension}`)
+    const finalPath = resolve(finalDirectory, `${stem}${derivativeExtension}`)
+    const originalPath = resolve(sourceDirectory, `${stem}${sourceExtension}`)
     if (!inside(finalPath, recoveryRoot) || !inside(originalPath, recoveryRoot)) throw new Error('Unsafe recovery destination.')
     await mkdir(sourceDirectory, { recursive: true })
     for (const path of [finalPath, originalPath, `${finalPath}.tomify.json`]) {
       try { await access(path); throw new Error('A recovery copy already exists; Tomify will not overwrite it.') } catch (error) { if (error?.code !== 'ENOENT') throw error }
     }
 
-    const sourceQuality = await probe(sourcePath)
     const artwork = await prepareArtwork(body.artwork, temporaryRoot)
-    const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${extension}`)
+    const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${derivativeExtension}`)
     const stagedCoverPath = join(finalDirectory, `.${crypto.randomUUID()}.cover.jpg`)
     const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
     if (!inside(releaseCoverPath, recoveryRoot)) throw new Error('Unsafe recovery artwork destination.')
@@ -304,8 +306,8 @@ async function acquireYouTube(body) {
         confirmedBy: body.authorisation.confirmedBy || null, confirmedAt: body.authorisation.confirmedAt || null, archiveStatus: 'lossy-recovery-copy',
         wantedMetadata: body.wantedMetadata || null, resolvedMetadata: track, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null,
         artwork: artworkProvenance,
-        sourceAudio: { path: originalPath, quality: sourceQuality, preservedOriginal: true },
-        derivative: { path: finalPath, createdByTomify: true, operation: derivativePlan.embedded ? 'ffmpeg-stream-copy-tagging-with-attached-artwork' : 'ffmpeg-stream-copy-tagging', audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
+        sourceAudio: { path: originalPath, extension: sourceExtension, quality: sourceQuality, preservedOriginal: true },
+        derivative: { path: finalPath, extension: derivativeExtension, containerRemuxed: sourceExtension !== derivativeExtension, createdByTomify: true, operation: recoveryDerivativeOperation(sourceExtension, derivativeExtension, derivativePlan.embedded), audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
       }
       await writeFile(`${finalPath}.tomify.json`, JSON.stringify(provenance, null, 2), { encoding: 'utf8', flag: 'wx' })
       return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
@@ -336,26 +338,27 @@ async function acquireInternetArchive(body) {
   const track = body?.track || {}
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'tomify-recovery-'))
   try {
-    const extension = extname(filename).toLowerCase() || '.mka'
-    const sourcePath = resolve(temporaryRoot, `archive-source${extension}`)
+    const sourceExtension = extname(filename).toLowerCase() || '.mka'
+    const sourcePath = resolve(temporaryRoot, `archive-source${sourceExtension}`)
     const download = await fetchArchiveFile(expectedUrl, sourcePath, { md5: file.md5, sha1: file.sha1 })
     const sourceQuality = await probe(sourcePath)
     if (!sourceQuality.codec || !sourceQuality.duration) throw new Error('The Internet Archive file is not valid audio.')
+    const derivativeExtension = recoveryDerivativeExtension(sourcePath, sourceQuality)
     const artistDirectory = safeName(track.artist, 'Unknown Artist')
     const albumDirectory = safeName(track.album, 'Recovered Tracks')
     const prefix = Number.isInteger(track.trackNumber) && track.trackNumber > 0 ? `${String(track.trackNumber).padStart(2, '0')} - ` : ''
     const stem = `${prefix}${safeName(track.title, 'Recovered Track')}`
     const finalDirectory = resolve(recoveryRoot, artistDirectory, albumDirectory)
     const sourceDirectory = resolve(finalDirectory, '.tomify-source')
-    const finalPath = resolve(finalDirectory, `${stem}${extension}`)
-    const originalPath = resolve(sourceDirectory, `${stem}${extension}`)
+    const finalPath = resolve(finalDirectory, `${stem}${derivativeExtension}`)
+    const originalPath = resolve(sourceDirectory, `${stem}${sourceExtension}`)
     if (!inside(finalPath, recoveryRoot) || !inside(originalPath, recoveryRoot)) throw new Error('Unsafe recovery destination.')
     await mkdir(sourceDirectory, { recursive: true })
     for (const path of [finalPath, originalPath, `${finalPath}.tomify.json`]) {
       try { await access(path); throw new Error('A recovery copy already exists; Tomify will not overwrite it.') } catch (error) { if (error?.code !== 'ENOENT') throw error }
     }
     const artwork = await prepareArtwork(body.artwork, temporaryRoot)
-    const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${extension}`)
+    const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${derivativeExtension}`)
     const stagedCoverPath = join(finalDirectory, `.${crypto.randomUUID()}.cover.jpg`)
     const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
     if (!inside(releaseCoverPath, recoveryRoot)) throw new Error('Unsafe recovery artwork destination.')
@@ -386,8 +389,8 @@ async function acquireInternetArchive(body) {
         acquiredAt, rightsBasis: body.authorisation.basis, confirmedBy: body.authorisation.confirmedBy || null, confirmedAt: body.authorisation.confirmedAt || null,
         archiveStatus: 'internet-archive-recovery-copy', wantedMetadata: body.wantedMetadata || null, resolvedMetadata: track,
         catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: artworkProvenance,
-        sourceAudio: { path: originalPath, quality: sourceQuality, preservedOriginal: true },
-        derivative: { path: finalPath, createdByTomify: true, operation: derivativePlan.embedded ? 'ffmpeg-stream-copy-tagging-with-attached-artwork' : 'ffmpeg-stream-copy-tagging', audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
+        sourceAudio: { path: originalPath, extension: sourceExtension, quality: sourceQuality, preservedOriginal: true },
+        derivative: { path: finalPath, extension: derivativeExtension, containerRemuxed: sourceExtension !== derivativeExtension, createdByTomify: true, operation: recoveryDerivativeOperation(sourceExtension, derivativeExtension, derivativePlan.embedded), audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
       }
       await writeFile(`${finalPath}.tomify.json`, JSON.stringify(provenance, null, 2), { encoding: 'utf8', flag: 'wx' })
       return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
