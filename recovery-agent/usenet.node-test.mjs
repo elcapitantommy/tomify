@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { downloaderConfig, downloaderStatus, findCompletedAudio, nzbIndexConfig, nzbIndexDownloadUrl, nzbIndexSearchUrl, parseIndexerConfig, parseNewznabResults, parseNzbIndexResults, searchNzbIndex, searchUsenetProviders, selectCompletedAudio, submitDownloader, usenetCapability, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
+import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, nzbIndexConfig, nzbIndexDownloadUrl, nzbIndexSearchUrl, parseIndexerConfig, parseNewznabResults, parseNzbIndexResults, searchNzbIndex, searchUsenetProviders, selectCompletedAudio, submitDownloader, usenetCapability, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
 
 function sabStatusFetch({ queue = [], history = [] }) {
   return async (requestUrl) => {
@@ -48,6 +48,18 @@ test('parses and normalizes NZBIndex collections without exposing its API key', 
   assert.doesNotMatch(JSON.stringify(result), /server-secret|\bkey\b/i)
 })
 
+test('excludes NZBIndex collections explicitly marked incomplete', () => {
+  const config = nzbIndexConfig({})
+  const results = parseNzbIndexResults({ data: { content: [
+    { id: 'incomplete-id', name: '[092/284] album.part092.rar', complete: false },
+    { id: 'complete-id', name: 'Artist - Complete Album', complete: true },
+  ] }, error: false }, config, 'release')
+  assert.deepEqual(results.map((result) => result.provenance.collectionId), ['complete-id'])
+  assert.throws(() => assertNzbIndexCandidateComplete({ complete: false }), /incomplete and cannot be acquired/)
+  assert.doesNotThrow(() => assertNzbIndexCandidateComplete({ complete: true }))
+  assert.doesNotThrow(() => assertNzbIndexCandidateComplete({}))
+})
+
 test('configures NZBIndex for anonymous use when its optional API key is unset', () => {
   const absent = nzbIndexConfig({})
   const blank = nzbIndexConfig({ TOMIFY_NZBINDEX_API_KEY: '   ' })
@@ -62,6 +74,7 @@ test('constructs anonymous NZBIndex search requests without an empty key paramet
   const url = nzbIndexSearchUrl(config, track, 'track')
   assert.equal(url.origin + url.pathname, 'https://api.nzbindex.com/api/search')
   assert.equal(url.searchParams.get('q'), 'Teardrop')
+  assert.equal(url.searchParams.get('complete'), '1')
   assert.equal(url.searchParams.has('key'), false)
   const calls = []
   await searchNzbIndex(config, track, 'track', async (requestUrl, init) => {
@@ -81,6 +94,7 @@ test('constructs NZBIndex query modes and optional authenticated server-side req
     assert.equal(url.searchParams.get('q'), query)
     assert.equal(url.searchParams.get('max'), '40')
     assert.equal(url.searchParams.get('sort'), 'agedesc')
+    assert.equal(url.searchParams.get('complete'), '1')
     assert.equal(url.searchParams.get('key'), 'server-secret')
   }
   const calls = []

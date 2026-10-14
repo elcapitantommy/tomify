@@ -104,6 +104,7 @@ export function nzbIndexSearchUrl(config, track, mode) {
   url.searchParams.set('q', usenetSearchQuery(track, mode))
   url.searchParams.set('max', '40')
   url.searchParams.set('sort', 'agedesc')
+  url.searchParams.set('complete', '1')
   if (text(config.apiKey)) url.searchParams.set('key', text(config.apiKey))
   return url
 }
@@ -111,7 +112,7 @@ export function nzbIndexSearchUrl(config, track, mode) {
 export function parseNzbIndexResults(payload, config, mode, now = Date.now()) {
   if (payload?.error) throw new Error(`NZBIndex search failed${payload.errorMessage ? `: ${text(payload.errorMessage).slice(0, 240)}` : '.'}`)
   const collections = Array.isArray(payload?.data?.content) ? payload.data.content : []
-  return collections.slice(0, 40).map((collection) => {
+  return collections.filter((collection) => collection?.complete !== false).slice(0, 40).map((collection) => {
     const collectionId = text(collection?.id).slice(0, 500)
     const title = text(collection?.name).slice(0, 500)
     if (!collectionId || !title) return null
@@ -132,6 +133,10 @@ export function parseNzbIndexResults(payload, config, mode, now = Date.now()) {
       },
     }
   }).filter(Boolean)
+}
+
+export function assertNzbIndexCandidateComplete(reference) {
+  if (reference?.complete === false) throw new Error('The selected NZBIndex collection is incomplete and cannot be acquired.')
 }
 
 export async function searchNzbIndex(config, track, mode, fetchImpl = fetch) {

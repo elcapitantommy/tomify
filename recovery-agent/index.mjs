@@ -14,7 +14,7 @@ import { deleteRecoveryArtifacts } from './deletion.mjs'
 import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './derivative.mjs'
 import { ffmpegMetadataArguments } from './metadata.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
-import { downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, validateCompletedPath } from './usenet.mjs'
+import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, validateCompletedPath } from './usenet.mjs'
 import { importUsenetCompletion } from './usenet-import.mjs'
 
 const host = process.env.TOMIFY_RECOVERY_HOST || '127.0.0.1'
@@ -452,6 +452,7 @@ async function queueUsenet(body) {
   let nzbUrl
   if (reference?.providerType === 'nzbindex') {
     if (!nzbIndex || reference.providerId !== nzbIndex.id || !reference.collectionId) throw new Error('The selected NZBIndex result is no longer valid.')
+    assertNzbIndexCandidateComplete(reference)
     provider = nzbIndex
     nzbUrl = nzbIndexDownloadUrl(nzbIndex, reference.collectionId)
   } else {
