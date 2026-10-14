@@ -781,6 +781,8 @@ export default {
       return json({ ok: true, item })
     }
 
+    if (pathname === '/api' || pathname.startsWith('/api/')) return json({ error: 'not-found' }, 404)
+
     if (pathname === '/navidrome' || pathname.startsWith('/navidrome/')) {
       const upstreamPath = pathname.slice('/navidrome'.length) || '/'
       const upstream = new URL('https://tomify.tomdixon.uk' + upstreamPath)

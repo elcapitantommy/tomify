@@ -16,13 +16,21 @@ import { ffmpegMetadataArguments } from './metadata.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
 import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, validateCompletedPath } from './usenet.mjs'
 import { importUsenetCompletion } from './usenet-import.mjs'
+import { validateRecoveryAuthConfig } from './config.mjs'
 
-const host = process.env.TOMIFY_RECOVERY_HOST || '127.0.0.1'
+let authConfiguration
+try { authConfiguration = validateRecoveryAuthConfig() }
+catch (error) {
+  process.stderr.write(`Tomify recovery agent refused to start: ${error instanceof Error ? error.message : 'invalid authentication configuration'}\n`)
+  process.exit(1)
+}
+
+const host = authConfiguration.host
 const port = Number(process.env.TOMIFY_RECOVERY_PORT || 8788)
 const recoveryRoot = resolve(process.env.TOMIFY_RECOVERY_DIR || './recovered-music')
 const masterRoot = process.env.TOMIFY_MASTER_DIR ? resolve(process.env.TOMIFY_MASTER_DIR) : null
 const youtubeCookies = process.env.TOMIFY_YOUTUBE_COOKIES ? resolve(process.env.TOMIFY_YOUTUBE_COOKIES) : null
-const token = process.env.TOMIFY_RECOVERY_TOKEN || ''
+const token = authConfiguration.token
 const ytdlp = process.env.YT_DLP_PATH || 'yt-dlp'
 const ffprobe = process.env.FFPROBE_PATH || 'ffprobe'
 const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg'
@@ -113,7 +121,7 @@ async function parseBody(request) {
 }
 
 function authorised(request) {
-  if (!token) return true
+  if (authConfiguration.insecureLoopback) return true
   const supplied = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '')
   const expectedBuffer = Buffer.from(token)
   const suppliedBuffer = Buffer.from(supplied)
