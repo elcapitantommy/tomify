@@ -60,6 +60,19 @@ test('excludes NZBIndex collections explicitly marked incomplete', () => {
   assert.doesNotThrow(() => assertNzbIndexCandidateComplete({}))
 })
 
+test('release searches exclude non-initial numbered NZBIndex fragments', () => {
+  const config = nzbIndexConfig({})
+  const payload = { data: { content: [
+    { id: 'fragment-id', name: '(poster) [092/284] - "Artist - Album.rar" yEnc', fileCount: 8, complete: true },
+    { id: 'release-id', name: '[001/109] "Artist-Album.par2"', fileCount: 109, complete: true },
+    { id: 'plain-id', name: 'Artist - Album FLAC', fileCount: 20, complete: true },
+  ] }, error: false }
+  assert.deepEqual(parseNzbIndexResults(payload, config, 'release').map((result) => result.provenance.collectionId), ['release-id', 'plain-id'])
+  assert.deepEqual(parseNzbIndexResults(payload, config, 'track').map((result) => result.provenance.collectionId), ['fragment-id', 'release-id', 'plain-id'])
+  assert.throws(() => assertNzbIndexCandidateComplete({ complete: true, searchMode: 'release', postedTitle: '(poster) [092/284] - "Artist - Album.rar" yEnc' }), /multipart fragment/)
+  assert.doesNotThrow(() => assertNzbIndexCandidateComplete({ complete: true, searchMode: 'release', postedTitle: '[001/109] "Artist-Album.par2"' }))
+})
+
 test('configures NZBIndex for anonymous use when its optional API key is unset', () => {
   const absent = nzbIndexConfig({})
   const blank = nzbIndexConfig({ TOMIFY_NZBINDEX_API_KEY: '   ' })

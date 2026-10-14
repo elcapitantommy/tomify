@@ -118,7 +118,7 @@ NZBIndex needs no account or API key for normal use. Tomify enables its document
 TOMIFY_NZBINDEX_API_KEY=
 ```
 
-No base URL is required: Tomify uses the documented `https://api.nzbindex.com/api/search` and `/api/download/{collection-id}.nzb` endpoints, and links reviews to `https://www.nzbindex.com/collection/{collection-id}`. Searches request complete collections only, explicitly incomplete results are discarded, and a stale incomplete candidate cannot be submitted to a downloader. When a non-empty optional API key is configured, Tomify attaches it as the documented `key` query parameter only to server-to-server search and NZB download requests. Newznab and NZBIndex can be used together by configuring `TOMIFY_NEWZNAB_INDEXERS_JSON`; leave it as `[]` to use NZBIndex alone.
+No base URL is required: Tomify uses the documented `https://api.nzbindex.com/api/search` and `/api/download/{collection-id}.nzb` endpoints, and links reviews to `https://www.nzbindex.com/collection/{collection-id}`. Searches request complete collections only, explicitly incomplete results are discarded, and a stale incomplete candidate cannot be submitted to a downloader. In release mode, non-initial numbered multipart entries such as `[092/284]` are also discarded because they represent one fragment rather than the complete release; initial collection entries such as `[001/109]` remain eligible. When a non-empty optional API key is configured, Tomify attaches it as the documented `key` query parameter only to server-to-server search and NZB download requests. Newznab and NZBIndex can be used together by configuring `TOMIFY_NEWZNAB_INDEXERS_JSON`; leave it as `[]` to use NZBIndex alone.
 
 Configure exactly one downloader:
 

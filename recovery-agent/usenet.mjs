@@ -8,6 +8,10 @@ const NZBINDEX_SITE_URL = 'https://www.nzbindex.com'
 
 function text(value) { return String(value ?? '').trim() }
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null }
+function isNonInitialMultipart(value) {
+  const sequence = text(value).match(/\[(\d{1,5})\s*\/\s*(\d{1,5})\]/)
+  return Boolean(sequence && Number(sequence[1]) !== 1)
+}
 function decodeXml(value) { return text(value).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&') }
 function xmlTag(value, tag) { return decodeXml(value.match(new RegExp(`<${tag}(?:\\s[^>]*)?>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</${tag}>`, 'i'))?.[1]) }
 function xmlAttr(value, name) { return decodeXml(value.match(new RegExp(`<newznab:attr\\s+[^>]*name=["']${name}["'][^>]*value=["']([^"']*)`, 'i'))?.[1]) }
@@ -112,7 +116,11 @@ export function nzbIndexSearchUrl(config, track, mode) {
 export function parseNzbIndexResults(payload, config, mode, now = Date.now()) {
   if (payload?.error) throw new Error(`NZBIndex search failed${payload.errorMessage ? `: ${text(payload.errorMessage).slice(0, 240)}` : '.'}`)
   const collections = Array.isArray(payload?.data?.content) ? payload.data.content : []
-  return collections.filter((collection) => collection?.complete !== false).slice(0, 40).map((collection) => {
+  return collections.filter((collection) => {
+    if (collection?.complete === false) return false
+    if (mode !== 'release') return true
+    return !isNonInitialMultipart(collection?.name)
+  }).slice(0, 40).map((collection) => {
     const collectionId = text(collection?.id).slice(0, 500)
     const title = text(collection?.name).slice(0, 500)
     if (!collectionId || !title) return null
@@ -137,6 +145,7 @@ export function parseNzbIndexResults(payload, config, mode, now = Date.now()) {
 
 export function assertNzbIndexCandidateComplete(reference) {
   if (reference?.complete === false) throw new Error('The selected NZBIndex collection is incomplete and cannot be acquired.')
+  if (reference?.searchMode === 'release' && isNonInitialMultipart(reference?.postedTitle)) throw new Error('The selected NZBIndex result is a numbered multipart fragment, not a complete release.')
 }
 
 export async function searchNzbIndex(config, track, mode, fetchImpl = fetch) {
