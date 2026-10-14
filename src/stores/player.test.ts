@@ -1,0 +1,5 @@
+import { beforeEach, describe, expect, it } from 'vitest'
+import { usePlayer } from './player'
+import type { Track } from '../types'
+const tracks: Track[] = [{ id: '1', title: 'One', artist: 'A', album: 'X' }, { id: '2', title: 'Two', artist: 'A', album: 'X' }, { id: '3', title: 'Three', artist: 'A', album: 'X' }]
+describe('player queue', () => { beforeEach(() => usePlayer.getState().clearQueue()); it('starts a queue and advances', () => { usePlayer.getState().playTracks(tracks); expect(usePlayer.getState().queue).toHaveLength(3); usePlayer.getState().next(); expect(usePlayer.getState().currentIndex).toBe(1) }); it('adds and removes queued tracks', () => { usePlayer.getState().playTracks([tracks[0]]); usePlayer.getState().addToQueue(tracks[1]); usePlayer.getState().removeFromQueue(0); expect(usePlayer.getState().queue).toEqual([tracks[1]]) }); it('moves entries while preserving the active track', () => { usePlayer.getState().playTracks(tracks, 1); usePlayer.getState().moveInQueue(1, 2); expect(usePlayer.getState().queue.map((t) => t.id)).toEqual(['1','3','2']); expect(usePlayer.getState().currentIndex).toBe(2) }) })

@@ -1,0 +1,4 @@
+import { describe, expect, it, vi } from 'vitest'
+import { NavidromeClient } from './navidrome'
+import { setMediaMetadata } from './mediaSession'
+describe('Media Session metadata', () => { it('updates title, artist, album and absolute artwork immediately', () => { class Metadata { constructor(value: MediaMetadataInit) { Object.assign(this, value) } }; vi.stubGlobal('MediaMetadata', Metadata); Object.defineProperty(navigator, 'mediaSession', { configurable: true, value: { metadata: null } }); const api = new NavidromeClient({ serverUrl: 'https://music.example', username: 'u', salt: 's', token: 't' }); setMediaMetadata({ id: '1', title: 'River', artist: 'Joni Mitchell', album: 'Blue', coverArt: 'art' }, api); const metadata = navigator.mediaSession.metadata!; expect(metadata.title).toBe('River'); expect(metadata.artist).toBe('Joni Mitchell'); expect(metadata.album).toBe('Blue'); expect(metadata.artwork?.[0].src).toMatch(/^https:\/\/music\.example\//) }) })

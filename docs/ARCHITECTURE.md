@@ -376,4 +376,22 @@ These should be decided by testing rather than guessing now:
 - Chromecast/AirPlay implementation.
 - Native app requirement.
 
+## 14. Phase 1 frontend decision
+
+Tomify uses React, TypeScript and Vite with `vite-plugin-pwa`. React Router provides client routes and Zustand holds playback state outside page lifecycles. This is conventional, compact and well supported by installable-PWA tooling without adding a server-side rendering layer that a private music client does not need.
+
+```text
+React views
+    │
+    ├── typed NavidromeClient ── OpenSubsonic HTTPS API
+    │
+    └── central player store ── TrackSourceResolver
+                                  ├── IndexedDB copy (next phase)
+                                  └── Navidrome stream (today)
+```
+
+The browser holds only the username plus Subsonic salt/token pair; the password is discarded after the login check. API URL construction, authentication parameters and error mapping are centralised. A single audio element lives above routed screens and updates Media Session metadata synchronously with every track change.
+
+Static assets and navigations are precached. Artwork has a bounded runtime cache. Audio deliberately bypasses service-worker caching until the IndexedDB download repository can track quality, revisions, ownership, storage and removal correctly.
+
 The architecture should let these change without touching the canonical music collection.

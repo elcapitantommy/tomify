@@ -157,3 +157,70 @@ Once the core is solid:
 ---
 
 **Working title:** Tomify. Because apparently cancelling Spotify is how software projects are born.
+
+## Tomify web app
+
+The first custom client is implemented as a **React 18 + TypeScript + Vite PWA**. This deliberately small stack keeps the interface independently deployable while leaving Navidrome responsible for accounts, library data, artwork and streams. Zustand owns persistent player/queue state; all OpenSubsonic traffic goes through one typed client.
+
+### Local development
+
+Requirements: Node.js 20 or newer and pnpm 9 or newer.
+
+```bash
+cp .env.example .env.local
+pnpm install
+pnpm dev
+```
+
+`VITE_NAVIDROME_URL` sets the default server shown on the login screen. It is not a secret. The selected server remains editable at sign-in, so local and production servers need not share a hostname. Navidrome must allow requests from the development or deployed frontend origin.
+
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
+### Implemented
+
+- Navidrome token authentication, persisted without storing the password, with logout and useful failure states.
+- Home, artists, artist detail, albums, multi-disc album detail, debounced search, playlists, favourites, downloads placeholder and settings.
+- Persistent HTML5 player with queue, seek, volume, mute, shuffle, repeat, previous/next and full-screen mobile now playing.
+- Media Session metadata (absolute artwork in six sizes), transport controls and position updates.
+- Installable manifest, app icons, standalone mode, cached app shell and cached artwork.
+- A playback source resolver boundary ready to prefer IndexedDB audio before the network in the next phase.
+- A source-aware Recovery queue with MusicBrainz metadata review, provider-ranked cover art, D1 provenance, safe recovery-copy deletion and an optional media-server acquisition agent.
+- OAuth-backed Spotify playlist import as catalogue metadata only, with Navidrome matching, ambiguous-match review, ordered pending Recovery entries, duplicate preservation, and manual refresh diffs.
+
+### Recovery imports
+
+The Recovery page accepts wanted track metadata, searches pluggable candidate backends and keeps source, match, measured quality and import status together. The media-server agent supports YouTube plus Internet Archive's public catalogue/file APIs. Both paths require an explicit source-specific authorisation confirmation, inspect the resulting file with FFprobe, preserve the original stream, tag a distinct FFmpeg stream-copy derivative and write only to the separate recovery library. Recovery files never replace verified masters automatically.
+
+See [docs/RECOVERY.md](docs/RECOVERY.md) for the agent setup, backend contract and legal/quality boundaries.
+
+### PWA and iOS notes
+
+The service worker precaches the application shell and uses a bounded cache for artwork; audio is deliberately not cached yet. On compatible iOS Safari/Home Screen PWA versions, the active track sets title, artist, album and HTTPS artwork immediately, and registers play, pause, previous, next and seek handlers. Playback uses one long-lived audio element, so navigation does not interrupt it.
+
+Apple controls which Media Session actions appear, and may omit seeking on some iOS releases. Background playback and lock-screen behaviour require verification on the actual target iPhones over HTTPS; automated desktop tests cannot prove OS-level Control Center presentation. Cross-origin artwork and audio must remain reachable while the phone is locked.
+
+### Known limitations
+
+- Offline audio downloads, favourite editing, playlist editing and drag-to-reorder are not included yet.
+- Authentication tokens live in browser local storage. This is appropriate for trusted household devices; a shared device should be signed out after use.
+- A cross-origin deployment requires correct Navidrome CORS configuration. A same-origin proxy avoids that operational edge.
+
+### Deployment recommendation
+
+Keep the working Navidrome tunnel untouched while testing Tomify at `app.tomify.tomdixon.uk`, with `VITE_NAVIDROME_URL=https://tomify.tomdixon.uk`. Once accepted, the clean final shape is:
+
+```text
+tomify.tomdixon.uk       static Tomify PWA
+api.tomify.tomdixon.uk   existing Navidrome service/tunnel
+```
+
+That split is explicit and independently deployable. Navidrome should allow the PWA origin, or an edge proxy can present `/rest`, `/stream` and `/getCoverArt` under the app origin if iOS/CORS testing shows a need. Do not change the current tunnel until the alternate hostname has been proven.
+
+### Recommended next task
+
+Implement a versioned IndexedDB download repository for track metadata, artwork and audio blobs, then add a local-first source resolver (`valid local copy → object URL; otherwise Navidrome stream`). Start with one-track download/remove/retry and airplane-mode tests before album or playlist orchestration.
