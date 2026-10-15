@@ -113,6 +113,17 @@ describe('Recovery page actions', () => {
     expect(screen.queryByRole('button', { name: 'Import rest of download' })).toBeNull()
   })
 
+  it('shows the delete confirmation directly under the action buttons, above the candidates', async () => {
+    const candidate = { id: 'candidate-1', backend: 'usenet' as const, externalId: 'x', url: 'https://www.nzbindex.com/collection/x', title: 'Candidate', channel: 'NZBIndex', official: false, matchScore: 37, selected: false }
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ candidates: [candidate] })], backends })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const prompt = screen.getByText('Delete this recovery item?').closest('.delete-confirm')
+    expect(prompt?.previousElementSibling).toHaveClass('recovery-actions')
+    expect(prompt?.nextElementSibling).toHaveClass('candidate-list')
+  })
+
   it('continues from metadata and artwork review into source authorisation without resetting choices', async () => {
     const selectedCandidate = { id: 'candidate-1', backend: 'youtube' as const, externalId: 'video-1', url: 'https://www.youtube.com/watch?v=video-1', title: 'Zara Larsson - Lush Life', channel: 'Zara Larsson', official: true, matchScore: 97, selected: true }
     vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({
