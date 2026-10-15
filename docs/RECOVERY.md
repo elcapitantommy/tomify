@@ -139,9 +139,10 @@ The recovery directory may be added to Navidrome as a separate library path afte
 It is off by default. To enable it on the server:
 
 1. Add `TOMIFY_RECOVERY_ALLOW_REBOOT=true` to `/etc/tomify/recovery-agent.env`.
-2. Allow the service account to reboot without a password with a polkit rule:
+2. Allow the service account to reboot without a password with a polkit rule. Minimal Debian installs do not include polkit, so install it first (`/etc/polkit-1/rules.d` only exists once it is installed):
 
    ```bash
+   sudo apt install polkitd
    sudo tee /etc/polkit-1/rules.d/50-tomify-reboot.rules >/dev/null <<'EOF'
    polkit.addRule(function (action, subject) {
      if ((action.id == "org.freedesktop.login1.reboot" || action.id == "org.freedesktop.login1.reboot-multiple-sessions") && subject.user == "tom") {
@@ -151,7 +152,7 @@ It is off by default. To enable it on the server:
    EOF
    ```
 
-   Use the `User=` from the `tomify-recovery` unit if it is not `tom`. The rule covers only reboots; it grants no other privileges, and the unit keeps `NoNewPrivileges=true`.
+   Check the rule without rebooting: `pkcheck --action-id org.freedesktop.login1.reboot --process $$ && echo allowed` should print `allowed`. Use the `User=` from the `tomify-recovery` unit if it is not `tom`. The rule covers only reboots; it grants no other privileges, and the unit keeps `NoNewPrivileges=true`.
 3. Copy the updated agent files (including `system.mjs`) and run `sudo systemctl restart tomify-recovery`. `/v1/status` then reports `"reboot":"enabled"`.
 
 If the agent has reboot disabled or has not been updated, the button shows the reason and nothing happens. The tunnel and the agent must still be reachable for the button to work, so it cannot help when the whole box is offline.
