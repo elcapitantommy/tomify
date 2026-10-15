@@ -38,7 +38,7 @@ export interface AlbumArtworkCandidate {
 
 export type AutoArtworkResult = 'applied' | 'unchanged' | 'manual-choice' | 'low-confidence' | 'no-match' | 'failed'
 export interface AutoArtworkOutcome { result: AutoArtworkResult | 'rate-limited'; retryAfter?: number; message?: string }
-export interface ArtworkUpgradeProgress { done: number; total: number; applied: number; unchanged: number; noMatch: number; lowConfidence: number; failed: number; waitingSeconds?: number; lastError?: string; stopped?: boolean }
+export interface ArtworkUpgradeProgress { done: number; total: number; applied: number; unchanged: number; noMatch: number; lowConfidence: number; failed: number; skipped?: number; waitingSeconds?: number; lastError?: string; stopped?: boolean }
 
 type Status = 'checking' | 'ready' | 'unavailable'
 export interface ArtworkUpgradeRun { running: boolean; progress: ArtworkUpgradeProgress | null; error: string | null }
@@ -76,6 +76,21 @@ const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve,
 // Apple's catalogue allows roughly 20 searches a minute, so the bulk run spaces albums to stay inside it.
 export const upgradeIntervalMs = 3000
 let upgradeController: AbortController | null = null
+
+// Albums the bulk run checked without finding a confident match, so a restarted run (after an update or refresh) skips them.
+const checkedKey = () => 'tomify-artwork-checked:' + (useAuth.getState().session?.username ?? '')
+const recheckAfterMs = 30 * 24 * 60 * 60 * 1000
+
+function readChecked(): Record<string, number> {
+  try {
+    const stored = JSON.parse(localStorage.getItem(checkedKey()) ?? '{}') as Record<string, number>
+    return Object.fromEntries(Object.entries(stored).filter(([, at]) => typeof at === 'number' && Date.now() - at < recheckAfterMs))
+  } catch { return {} }
+}
+
+function rememberChecked(albumId: string) {
+  try { localStorage.setItem(checkedKey(), JSON.stringify({ ...readChecked(), [albumId]: Date.now() })) } catch { /* storage unavailable: the album is simply checked again next run */ }
+}
 
 export function albumArtworkUrl(override?: AlbumArtworkOverride) {
   return override && override.provider !== 'library' && override.url ? override.url : undefined
@@ -124,9 +139,12 @@ export const useAlbumArtwork = create<AlbumArtworkState>((set, get) => ({
   },
 
   upgradeMany: async (albums, onProgress, signal) => {
-    // Albums with a manual choice are left alone; everything else is re-checked so better matches can replace earlier ones.
-    const pending = albums.filter((album) => get().overrides[album.id]?.source !== 'manual')
+    // Albums that already have artwork (upgraded or chosen by hand) or were checked recently without a match are skipped,
+    // so restarting the run after an update picks up where it left off. The album page can still look up any album.
+    const checked = readChecked()
+    const pending = albums.filter((album) => !get().overrides[album.id] && !checked[album.id])
     const progress: ArtworkUpgradeProgress = { done: 0, total: pending.length, applied: 0, unchanged: 0, noMatch: 0, lowConfidence: 0, failed: 0 }
+    if (albums.length > pending.length) progress.skipped = albums.length - pending.length
     onProgress?.({ ...progress })
     let consecutiveFailures = 0
     for (const album of pending) {
@@ -141,6 +159,7 @@ export const useAlbumArtwork = create<AlbumArtworkState>((set, get) => ({
       }
       if (signal?.aborted) break
       progress.done += 1
+      if (outcome.result === 'no-match' || outcome.result === 'low-confidence') rememberChecked(album.id)
       if (outcome.result === 'applied') progress.applied += 1
       else if (outcome.result === 'no-match') progress.noMatch += 1
       else if (outcome.result === 'low-confidence') progress.lowConfidence += 1

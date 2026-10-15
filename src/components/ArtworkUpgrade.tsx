@@ -8,7 +8,8 @@ function progressLabel(progress: ArtworkUpgradeProgress, running: boolean) {
   const stopped = progress.stopped ? ' Stopped after repeated catalogue errors.' : ''
   const remaining = running ? Math.ceil((progress.total - progress.done) * upgradeIntervalMs / 60_000) : 0
   const eta = running && remaining > 1 ? ` About ${remaining} minutes left; you can keep using Tomify meanwhile.` : ''
-  return `${running ? 'Checking' : 'Checked'} ${progress.done} of ${progress.total} albums: ${parts.join(', ')}.${waiting}${stopped}${eta}`
+  const skipped = progress.skipped ? ` Skipped ${progress.skipped} albums already upgraded or checked.` : ''
+  return `${running ? 'Checking' : 'Checked'} ${progress.done} of ${progress.total} albums: ${parts.join(', ')}.${skipped}${waiting}${stopped}${eta}`
 }
 
 export function ArtworkUpgrade() {
@@ -22,7 +23,7 @@ export function ArtworkUpgrade() {
   const sources = providers.map((provider) => ({ apple: 'Apple', deezer: 'Deezer', spotify: 'Spotify' })[provider]).join(', then ')
 
   const detail = error ?? (progress ? progressLabel(progress, running)
-    : available ? `Replaces library artwork with a confident square match of at least 600px from ${sources}. Albums where you chose artwork yourself are left alone, and nothing on the music server is changed.`
+    : available ? `Replaces library artwork with a confident square match of at least 600px from ${sources}. Albums already upgraded or chosen by hand are skipped, and nothing on the music server is changed.`
       : 'The artwork store is unavailable.')
 
   return <div className="setting-row"><ImageUp/><span><strong>Upgrade album artwork</strong><small>{detail}</small></span>
