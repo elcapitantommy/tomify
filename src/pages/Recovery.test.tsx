@@ -186,6 +186,7 @@ describe('Recovery page actions', () => {
     renderRecovery()
     fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
     const input = screen.getByRole('textbox', { name: 'Torrent link' })
+    expect(input).toHaveAttribute('placeholder', 'Paste a magnet or .torrent link')
     const add = screen.getByRole('button', { name: 'Add link' })
     fireEvent.change(input, { target: { value: 'not a link' } })
     expect(add).toBeDisabled()
