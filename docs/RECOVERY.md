@@ -182,6 +182,25 @@ It is off by default. To enable it on the server:
 
 If the agent has reboot disabled or has not been updated, the button shows the reason and nothing happens. The tunnel and the agent must still be reachable for the button to work, so it cannot help when the whole box is offline.
 
+## VPN and library scan controls in Settings
+
+Settings is only shown to Navidrome administrators: everyone else sees just a sign-out button, and the Worker and Navidrome check `adminRole` again on every admin action, so hiding the page is not the only guard.
+
+**Full library scan** calls Navidrome's `startScan` with `fullScan=true`, which rescans every file instead of only changed folders, then follows `getScanStatus` until it finishes. It needs no agent changes; Navidrome refuses it for non-administrators.
+
+**VPN** shows NordVPN's status (country, city, server and IP) and has **Connect** and **Disconnect** buttons. Connect always goes to `TOMIFY_VPN_CONNECT_TARGET` (default `United_Kingdom`); the browser cannot pick a server. Disconnecting asks first: torrents stop (qBittorrent is bound to `nordlynx`) and SABnzbd and yt-dlp use the home connection until you reconnect. Disconnecting does not turn autoconnect off, so the next reboot reconnects.
+
+Neither action touches the allowlist, Tailscale or the tunnel containers. Both are safe only because NordVPN's firewall and kill switch are off (see below): with the kill switch on, a disconnect cuts the box off the internet, and with the firewall on, Tailscale drops. The agent reads `nordvpn settings` before every change and refuses unless both read as disabled.
+
+To enable it on the box:
+
+1. Add `TOMIFY_RECOVERY_ALLOW_VPN_CONTROL=true` to `/etc/tomify/recovery-agent.env` (and optionally `TOMIFY_VPN_CONNECT_TARGET=United_Kingdom`).
+2. Let the service account talk to `nordvpnd`. The CLI needs membership of the `nordvpn` group; check with `id tom` and, if it is missing, run `sudo usermod -aG nordvpn tom` (use the unit's `User=` if it is not `tom`). No sudoers or polkit rule is needed.
+3. Copy the updated agent files (including `vpn.mjs`) and run `sudo systemctl restart tomify-recovery`; the restart also picks up the new group. `/v1/status` then reports `"vpn":"enabled"`.
+4. Check from the box, as the service account: `sudo -u tom nordvpn status` should print the status rather than a permission error.
+
+If the button shows *VPN control is turned off*, step 1 is missing; *NordVPN did not answer* usually means step 2 is missing or `nordvpnd` is not running.
+
 ## Running recovery downloads over NordVPN
 
 The recovery side (yt-dlp, Internet Archive fetches and SABnzbd) can run over NordVPN, but the box also has to keep accepting SSH from the LAN and over Tailscale, and keep its Cloudflare Tunnel up. The hosted Worker never connects to the box directly: it calls `RECOVERY_AGENT_URL`, which Cloudflare routes down a tunnel to the agent on `127.0.0.1:8788`. Two `cloudflared` Docker containers run on the box: `tomify-recovery-cloudflared` for the agent and `cloudflared` for Navidrome. `cloudflared` only makes outbound connections to Cloudflare's tunnel edge, so nothing needs to be port-forwarded, but those connections must survive the VPN.
@@ -630,7 +649,9 @@ An acquisition backend exposes:
 - `POST /v1/jobs/cancel` with `{ jobId }`, stopping a torrent job and removing the torrent and its data from qBittorrent. It waits for any import in progress and returns the `importedPaths` that import created, so they can be deleted too. Idempotent once the job is gone.
 - `POST /v1/jobs/import-remaining` with `{ jobId }`, importing the audio files a completed single-track Usenet job left in its download as a release, without downloading again. Files already imported by that job are skipped, and a job that was already imported as a release is refused.
 - `POST /v1/delete` with `{ importedPaths }`, removing only each recovery derivative, its sidecar and its matching `.tomify-source` original.
-- `POST /v1/status`, returning backend capability state, plus whether remote reboot is enabled, without secret paths or values.
+- `POST /v1/status`, returning backend capability state, plus whether remote reboot and VPN control are enabled, without secret paths or values.
+- `POST /v1/system/vpn/status`, returning NordVPN's state, location and whether its firewall and kill switch are off, or `{ control: "disabled" }` unless `TOMIFY_RECOVERY_ALLOW_VPN_CONTROL=true`.
+- `POST /v1/system/vpn` with `{ action: "connect" | "disconnect" }`, refused unless VPN control is enabled and NordVPN's firewall and kill switch are off; connect always uses `TOMIFY_VPN_CONNECT_TARGET`.
 - `POST /v1/system/reboot` with `{ confirm: "reboot" }`, returning 202 and rebooting the server shortly afterwards when `TOMIFY_RECOVERY_ALLOW_REBOOT=true`; refused otherwise.
 
 All `/v1/*` endpoints, including deletion, use the same `TOMIFY_RECOVERY_TOKEN` bearer authentication. The Worker calls deletion before removing an imported item from D1. If the agent rejects a path or any filesystem operation fails, the Worker returns an actionable error and leaves the D1 item and candidates intact so the operation can be inspected and retried.

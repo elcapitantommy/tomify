@@ -21,6 +21,7 @@ import { importRemainingUsenetFiles, importUsenetCompletion } from './usenet-imp
 import { validateRecoveryAuthConfig } from './config.mjs'
 import { createUsenetJobPoller } from './usenet-job.mjs'
 import { rebootConfig, scheduleReboot } from './system.mjs'
+import { createVpnController, vpnConfig } from './vpn.mjs'
 import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobState, torrentCandidate, torrentCapability, torrentConfig, torrentSearchCandidates } from './torrent.mjs'
 
 let authConfiguration
@@ -38,6 +39,7 @@ const youtubeCookies = process.env.TOMIFY_YOUTUBE_COOKIES ? resolve(process.env.
 const token = authConfiguration.token
 const ytdlp = process.env.YT_DLP_PATH || 'yt-dlp'
 const reboot = rebootConfig()
+const vpnSettings = vpnConfig()
 const ffprobe = process.env.FFPROBE_PATH || 'ffprobe'
 const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg'
 const configuredArchiveMaxBytes = Number(process.env.TOMIFY_ARCHIVE_MAX_BYTES || 1024 * 1024 * 1024)
@@ -674,6 +676,8 @@ async function deleteImportedRecovery(body) {
   return { deleted: results.flatMap((result) => result.deleted) }
 }
 
+const vpn = createVpnController({ config: vpnSettings, run: (command, args) => run(command, args, 60_000) })
+
 await mkdir(recoveryRoot, { recursive: true })
 await mkdir(usenetStateRoot, { recursive: true })
 
@@ -688,7 +692,7 @@ createServer(async (request, response) => {
     const body = await parseBody(request)
     if (request.url === '/v1/status') {
       const auth = await cookieStatus()
-      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenet.available, authentication: usenet.available ? 'configured' : 'not-configured', providerCount: usenet.providerCount, providers: [...(newznabIndexers.length ? ['newznab'] : []), ...(nzbIndex ? ['nzbindex'] : [])], downloader: usenetDownloader?.type || null }, { id: 'torrent', available: torrent.available, authentication: torrent.available ? 'configured' : 'not-configured', downloader: torrentDownloader?.type || null, search: torrent.available }], reboot: reboot.enabled ? 'enabled' : 'disabled' })
+      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenet.available, authentication: usenet.available ? 'configured' : 'not-configured', providerCount: usenet.providerCount, providers: [...(newznabIndexers.length ? ['newznab'] : []), ...(nzbIndex ? ['nzbindex'] : [])], downloader: usenetDownloader?.type || null }, { id: 'torrent', available: torrent.available, authentication: torrent.available ? 'configured' : 'not-configured', downloader: torrentDownloader?.type || null, search: torrent.available }], reboot: reboot.enabled ? 'enabled' : 'disabled', vpn: vpnSettings.enabled ? 'enabled' : 'disabled' })
     }
     if (request.url === '/v1/diagnostics/youtube-auth') return send(response, 200, await diagnoseAuthenticatedYouTube())
     if (request.url === '/v1/search') {
@@ -715,6 +719,8 @@ createServer(async (request, response) => {
     if (request.url === '/v1/jobs/cancel') return send(response, 200, await cancelTorrentJob(body))
     if (request.url === '/v1/jobs/import-remaining') return send(response, 200, await importRemainingUsenet(body))
     if (request.url === '/v1/delete') return send(response, 200, await deleteImportedRecovery(body))
+    if (request.url === '/v1/system/vpn/status') return send(response, 200, await vpn.status())
+    if (request.url === '/v1/system/vpn') return send(response, 200, await vpn.change(body.action))
     if (request.url === '/v1/system/reboot') return send(response, 202, scheduleReboot(body, { config: reboot, spawn }))
     return send(response, 404, { error: 'not-found' })
   } catch (error) {

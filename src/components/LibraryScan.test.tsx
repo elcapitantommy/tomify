@@ -1,0 +1,32 @@
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { NavidromeClient } from '../lib/navidrome'
+import { LibraryScan, SCAN_POLL_MS } from './LibraryScan'
+
+const api = { scanStatus: vi.fn(), startScan: vi.fn() }
+vi.mock('../lib/api-context', () => ({ useApi: () => api as unknown as NavidromeClient }))
+
+describe('LibraryScan', () => {
+  afterEach(() => { vi.useRealTimers(); api.scanStatus.mockReset(); api.startScan.mockReset() })
+
+  it('starts a full scan and follows it until Navidrome finishes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    api.scanStatus.mockResolvedValueOnce({ scanning: false, lastScan: '2026-10-15T10:00:00Z' }).mockResolvedValueOnce({ scanning: false, count: 5120 })
+    api.startScan.mockResolvedValue({ scanning: true, count: 12 })
+    render(<LibraryScan/>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Scan library' }))
+    expect(api.startScan).toHaveBeenCalledWith(true)
+    expect(await screen.findByRole('button', { name: /Scanning/ })).toBeDisabled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(SCAN_POLL_MS) })
+    expect(await screen.findByRole('button', { name: 'Scan library' })).toBeEnabled()
+    expect(api.scanStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows why Navidrome refused the scan', async () => {
+    api.scanStatus.mockResolvedValue({ scanning: false })
+    api.startScan.mockRejectedValue(new Error('User not authorized'))
+    render(<LibraryScan/>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Scan library' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('User not authorized')
+  })
+})

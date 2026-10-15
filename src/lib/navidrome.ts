@@ -1,6 +1,7 @@
 import SparkMD5 from 'spark-md5'
 import type { Album, Artist, Playlist, SearchResults, Track } from '../types'
 
+export interface ScanStatus { scanning: boolean; count?: number; folderCount?: number; lastScan?: string }
 export interface AuthSession { serverUrl: string; username: string; salt: string; token: string }
 interface SubsonicEnvelope { 'subsonic-response': Record<string, unknown> & { status: 'ok' | 'failed'; error?: { code: number; message: string } } }
 
@@ -58,6 +59,10 @@ export class NavidromeClient {
   }
 
   async ping() { await this.get('ping'); return true }
+  async isAdmin() { const r = await this.get<{ user?: { adminRole?: boolean } }>('getUser', { username: this.session.username }); return r.user?.adminRole === true }
+  // Navidrome only lets administrators start a scan; fullScan rescans every file instead of only changed folders.
+  async startScan(fullScan = true): Promise<ScanStatus> { const r = await this.get<{ scanStatus?: ScanStatus }>('startScan', { fullScan: fullScan ? 'true' : undefined }); return r.scanStatus ?? { scanning: true } }
+  async scanStatus(): Promise<ScanStatus> { const r = await this.get<{ scanStatus?: ScanStatus }>('getScanStatus'); return r.scanStatus ?? { scanning: false } }
   async artists(signal?: AbortSignal): Promise<Artist[]> { const r = await this.get<{ artists?: { index?: { artist?: Artist[] }[] } }>('getArtists', {}, signal); return r.artists?.index?.flatMap((i) => i.artist ?? []) ?? [] }
   async artist(id: string, signal?: AbortSignal): Promise<{ artist: Artist & { album?: Album[] } }> { return this.get('getArtist', { id }, signal) }
   async albums(type: 'alphabeticalByName' | 'newest' | 'recent' | 'starred' = 'alphabeticalByName', size = 100, signal?: AbortSignal): Promise<Album[]> { const r = await this.get<{ albumList2?: { album?: Album[] } }>('getAlbumList2', { type, size }, signal); return r.albumList2?.album ?? [] }

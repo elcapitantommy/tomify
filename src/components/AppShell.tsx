@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, Search, Settings, UsersRound } from 'lucide-react'
+import { Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, LogOut, Search, Settings, UsersRound } from 'lucide-react'
 import { PlayerBar } from './Player'
 import { PlayerRuntime } from './PlayerRuntime'
 import { LivePlaybackSync } from './LivePlaybackSync'
 import { usePlayer } from '../stores/player'
 import { localPlaybackDeviceId, useLivePlayback } from '../stores/livePlayback'
+import { useAuth } from '../stores/auth'
 
 const primary = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }]
 const library = [{ to: '/playlists', label: 'Playlists', icon: ListMusic }, { to: '/favourites', label: 'Favourites', icon: Heart }, { to: '/downloads', label: 'Downloads', icon: Download }, { to: '/recovery', label: 'Recovery', icon: LifeBuoy }]
@@ -27,6 +28,8 @@ export function AppShell() {
       ? live.queue[live.currentIndex]
       : undefined
   const titleTrack = remoteTrack ?? localTrack
+  const isAdmin = useAuth((state) => state.isAdmin)
+  const logout = useAuth((state) => state.logout)
 
   useEffect(() => {
     document.title = titleTrack
@@ -55,7 +58,7 @@ export function AppShell() {
   }
 
   return <div className="app-shell">
-    <aside className="sidebar"><NavLink className="logo" to="/"><img className="brand-logo small" src="/tomify-logo-192.png" alt=""/><strong>Tomify</strong></NavLink><nav>{primary.map((item) => <NavItem {...item} key={item.to}/>)}</nav><div className="nav-section"><span>Your library</span>{library.map((item) => <NavItem {...item} key={item.to}/>)}</div><NavLink className="settings-link" to="/settings"><Settings/>Settings</NavLink><div className="sidebar-user"><CircleUserRound/><span><strong>Listening as</strong><small>Your Navidrome account</small></span></div></aside>
+    <aside className="sidebar"><NavLink className="logo" to="/"><img className="brand-logo small" src="/tomify-logo-192.png" alt=""/><strong>Tomify</strong></NavLink><nav>{primary.map((item) => <NavItem {...item} key={item.to}/>)}</nav><div className="nav-section"><span>Your library</span>{library.map((item) => <NavItem {...item} key={item.to}/>)}</div>{isAdmin ? <NavLink className="settings-link" to="/settings"><Settings/>Settings</NavLink> : <button type="button" className="settings-link" onClick={logout}><LogOut/>Sign out</button>}<div className="sidebar-user"><CircleUserRound/><span><strong>Listening as</strong><small>Your Navidrome account</small></span></div></aside>
     <div className={topbarHidden ? "mobile-topbar hidden" : "mobile-topbar"}>{canGoBack ? <button type="button" className="mobile-back" onClick={goBack} aria-label="Go back"><ArrowLeft/></button> : <img className="brand-logo mobile-topbar-logo" src="/tomify-logo-192.png" alt=""/>}<strong>Tomify</strong></div>
     <main className="content" key={location.pathname}><Outlet/></main>
     <nav className="mobile-nav">{mobile.map((item) => <NavItem {...item} key={item.to}/>)}</nav>
