@@ -72,3 +72,26 @@ test('completed jobs return their persisted result without downloader or import 
   assert.equal(importCalls, 0)
   assert.equal(saveCalls, 0)
 })
+
+test('a download the downloader reports as failed keeps its reason as the job error', async () => {
+  let stored = queuedJob()
+  const poll = createUsenetJobPoller({
+    loadJob: async () => structuredClone(stored),
+    saveJob: async (job) => { stored = structuredClone(job) },
+    downloaderStatus: async () => ({ status: 'failed', progress: 0, message: 'Aborted, cannot be completed - https://sabnzbd.org/not-complete' }),
+    completeJob: async () => { throw new Error('should not import') },
+    sanitizeError: (error) => error.message,
+  })
+  const result = await poll('job-id')
+  assert.equal(result.job.status, 'failed')
+  assert.equal(result.job.error, 'Aborted, cannot be completed - https://sabnzbd.org/not-complete')
+  assert.equal((await poll('job-id')).job.error, result.job.error)
+})
+
+test('failed jobs saved before errors were recorded fall back to the downloader message', async () => {
+  const poll = createUsenetJobPoller({
+    loadJob: async () => ({ ...queuedJob(), status: 'failed', message: 'Repair failed, not enough repair blocks' }),
+    saveJob: async () => {}, downloaderStatus: async () => { throw new Error('not called') }, completeJob: async () => {}, sanitizeError: (error) => error.message,
+  })
+  assert.equal((await poll('job-id')).job.error, 'Repair failed, not enough repair blocks')
+})

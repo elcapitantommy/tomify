@@ -1,6 +1,6 @@
 function jobResponse(job) {
   if (job.status === 'completed') return { job: { id: job.id, status: 'completed', progress: 100, result: job.importResult } }
-  if (job.status === 'failed') return { job: { id: job.id, status: 'failed', progress: job.progress || 0, error: job.error } }
+  if (job.status === 'failed') return { job: { id: job.id, status: 'failed', progress: job.progress || 0, error: job.error || job.message || null } }
   return { job: { id: job.id, status: job.status, progress: job.progress || 0, message: job.message || null, error: job.error || null, result: job.importResult || null } }
 }
 
@@ -16,6 +16,8 @@ export function createUsenetJobPoller({ loadJob, saveJob, downloaderStatus, comp
       job.progress = state.progress || 0
       job.message = state.message || null
       job.updatedAt = now()
+      // Keep the downloader's own reason (e.g. missing articles, repair failed) as the job error.
+      if (state.status === 'failed') job.error = sanitizeError(new Error(state.message || 'The downloader reported the download as failed.'))
       if (state.status === 'completed') {
         job.importResult = await completeJob(job, state)
         job.status = 'completed'
