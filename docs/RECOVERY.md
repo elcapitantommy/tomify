@@ -72,7 +72,7 @@ Albums already in the Navidrome library can show catalogue artwork in place of t
 Titles are compared both as written and with trailing edition qualifiers removed (`(Remastered 2009)`, `[Deluxe]`, ` - Special Edition`), so a plain library title matches a catalogue's edition names; an exact edition match still ranks first. Any credited artist can satisfy the artist gate.
 
 - **Album page:** *Edit metadata* shows an *Album artwork* panel. *Find better artwork* lists up to six matches across all catalogues. Choosing one, or *Keep library artwork*, is a manual choice; *Undo my choice* removes it.
-- **Settings → Upgrade album artwork:** walks every library album and applies the best match only when it is a square image of at least 600px with at least 85% confidence, stopping at the first catalogue that gives one. Albums with a manual choice are skipped. Apple allows roughly 20 searches a minute, so albums are spaced three seconds apart (about 25 minutes for 500 albums); the run lives in the app, not the page, so it keeps going while you browse, and it can be stopped at any time.
+- **Settings → Upgrade album artwork:** walks every library album and applies the best match only when it is a square image of at least 600px with at least 85% confidence, stopping at the first catalogue that gives one. Albums with a manual choice are skipped, and so are albums that already have Tomify artwork and albums the run checked in the last 30 days without a confident match (remembered in this browser), so pressing Upgrade again after an app update or a stop carries on rather than starting over. Albums whose check failed are retried. Apple allows roughly 20 searches a minute, so albums are spaced three seconds apart (about 25 minutes for 500 albums); the run lives in the app, not the page, so it keeps going while you browse, and it can be stopped at any time.
 
 A catalogue that fails or rate-limits is skipped while another still answers. Only when every catalogue fails is the album reported: rate limits return HTTP 429 with the shortest `retryAfter`, which the bulk run waits out before retrying the album; other failures return 502 with each catalogue's message and count as failed. The run stops after five failures in a row.
 
@@ -109,11 +109,24 @@ Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`. Internet Archive se
 
 The agent fails closed at startup when `TOMIFY_RECOVERY_TOKEN` is missing or shorter than 32 characters. Local development without authentication requires the explicit `TOMIFY_RECOVERY_ALLOW_INSECURE_LOOPBACK=true` opt-in and is accepted only with a loopback `TOMIFY_RECOVERY_HOST` such as `127.0.0.1` or `::1`. Never enable insecure mode on the Debian service.
 
-The current deployment workflow is Windows-to-Debian rather than Git-on-Debian:
+### Updating the recovery agent
 
-1. Update and validate branch `feat/phase-1-pwa` in `C:\Users\TomDixon\Documents\tomify`.
-2. Copy the recovery-agent runtime files from that checkout to a temporary directory on Debian.
-3. Install those files into `/opt/tomify/recovery-agent` and restart `tomify-recovery`.
+The agent is not deployed with the site. Deploying the Worker updates the Recovery page and API only, so every merged change under `recovery-agent/` must also be copied to the media server. The deployment workflow is Windows-to-Debian rather than Git-on-Debian:
+
+1. Update and validate branch `feat/phase-1-pwa` in `C:\Users\TomDixon\Documents\tomify` (`git pull`).
+2. Copy the agent files to `/tmp` on the Debian host. The `tom` account cannot write `/opt/tomify/recovery-agent` directly, so a straight `scp` there fails with *Permission denied*.
+3. Install them with `sudo cp` and restart `tomify-recovery`.
+
+From PowerShell in the Windows checkout:
+
+```powershell
+scp recovery-agent\*.mjs tom@tomify:/tmp/
+ssh -t tom@tomify "sudo cp /tmp/*.mjs /opt/tomify/recovery-agent/ && sudo systemctl restart tomify-recovery"
+```
+
+The `*.node-test.mjs` files are copied too; they are harmless and never loaded by the service. To confirm the new code is live, `grep` a string from the change in the deployed file (for example `ssh tom@tomify "grep -c import-remaining /opt/tomify/recovery-agent/index.mjs"` should print a non-zero count), then check `curl -s http://127.0.0.1:8788/health` on the host.
+
+A Worker that is newer than the agent is the usual cause of Recovery errors right after a deploy. The page reports that the recovery agent is out of date when the agent has no endpoint for a request (previously this showed as `not-found`); other symptoms include *Artist and title are required.* when adding artist-only or album-only wanted music, or a Usenet search falling back to a single field. The Worker still sends the legacy `searchMode` alongside `searchFields`, so an older agent keeps its closest single-field search rather than failing outright.
 
 The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and cache directories are `/var/lib/tomify-recovery` and `/var/cache/tomify-recovery`. The systemd sandbox grants write access only to those locations, `/srv/music-recovery`, and the optional YouTube cookie file; `/opt/tomify/secrets` as a whole remains read-only. A server-side Git checkout is not part of the current deployment.
 
@@ -129,7 +142,11 @@ The candidate review links to the Archive item so the user can inspect its descr
 
 The optional Usenet backend searches one or more Newznab-compatible indexers, NZBIndex, or both, and queues an explicitly selected result in either SABnzbd or NZBGet. Searches combine any mix of artist, release/album and track title (at least one) into a single query, always ordered artist, album, track. The older single-field modes (`artist`, `track`, `release`) are still accepted. Results are shown in a provider-neutral review list with their indexer, title, advertised size, age when available, and a link to the provider's detail page. Search results are not treated as evidence of permission.
 
+While a search runs, the Recovery item shows which provider it is searching (*Searching NZB indexers…*) and its search buttons are disabled; when it finishes, the same place reports how many results were found or why the search failed.
+
 Import scope follows the fields searched. Any search that includes the track title imports only the completed audio file that best matches the wanted track. A search that includes the album but not the track title imports every valid supported audio file from the completed release into one album directory, preserving each original and creating one stream-copy derivative and provenance sidecar per track. An artist-only search for a wanted track imports only the best matching wanted track. For wanted music with no track title (just an artist), an artist-only search imports the selected download as a release, the same as an album search, so pick a single album rather than a discography bundle.
+
+When a track-level import came from a download that holds more audio (a whole album, say), the imported item offers **Import rest of download** beside its *Imported* badge. The agent re-reads the completed download, skips the files that job already imported, and imports the rest as a release without downloading again. The new tracks are added to the same Recovery item, so deleting it still removes every file it imported. The action needs an agent with the `/v1/jobs/import-remaining` endpoint; an older agent is reported as out of date.
 
 For release imports, embedded title, artist, album artist, album, track/disc number, and date tags are preferred per track. Selected release metadata supplies artist, album, date, release ID, and release-group ID only when source tags are missing. Filename order is the final fallback for title and numbering. Tomify never applies the seed track's MusicBrainz recording ID or ISRC to the other tracks. Artwork is prepared once and shared across the album, and existing artist/album directories are reused case-insensitively without renaming unrelated directories.
 
@@ -171,7 +188,7 @@ echo
 
 NZBIndex always counts as an available indexer, with or without its optional key. Usenet is available when exactly one downloader is configured and `TOMIFY_USENET_DOWNLOAD_DIR` is set; configured Newznab indexers are searched alongside NZBIndex.
 
-Acquisition is asynchronous. The UI reports queued, downloading, completed, or failed job state and progress while polling through the Worker. On completion, the agent resolves the downloader path and rejects anything outside `TOMIFY_USENET_DOWNLOAD_DIR`, symlinks, non-regular files, excessive file counts, and downloads over `TOMIFY_USENET_MAX_BYTES`. It verifies selected audio with FFprobe, preserves unchanged sources beneath `.tomify-source`, and creates Navidrome-facing derivatives through the same stream-copy and metadata pipeline as other Recovery sources. Existing recovery artifacts and canonical masters are never overwritten. A completed release job retains the backward-compatible primary `path`, `quality`, `derivative`, and `provenance` fields and also returns `importedCount`, `importedTracks`, plus release artist/album summaries.
+Acquisition is asynchronous. The UI reports queued, downloading, completed, or failed job state and progress while polling through the Worker. On completion, the agent resolves the downloader path and rejects anything outside `TOMIFY_USENET_DOWNLOAD_DIR`, symlinks, non-regular files, excessive file counts, and downloads over `TOMIFY_USENET_MAX_BYTES`. It verifies selected audio with FFprobe, preserves unchanged sources beneath `.tomify-source`, and creates Navidrome-facing derivatives through the same stream-copy and metadata pipeline as other Recovery sources. Existing recovery artifacts and canonical masters are never overwritten. When the downloader marks a job failed, its own reason (for example missing articles or a failed repair) is kept as the job error and shown on the Recovery item. A completed release job retains the backward-compatible primary `path`, `quality`, `derivative`, and `provenance` fields and also returns `importedCount`, `importedTracks`, plus release artist/album summaries.
 
 ## Optional authenticated YouTube session
 
