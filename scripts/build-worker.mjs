@@ -5,6 +5,7 @@ import { recoveryArtworkWorkerSource } from './recovery-artwork.mjs'
 import { catalogueImportWorkerSource } from './catalogue-import.mjs'
 import { catalogueWorkerSource } from './catalogue-worker.mjs'
 import { completenessWorkerSource } from './completeness-worker.mjs'
+import { albumArtworkWorkerSource } from './album-artwork-worker.mjs'
 
 const outputDirectory = new URL('../dist/', import.meta.url)
 const workerPath = new URL('../dist/server/index.js', import.meta.url)
@@ -51,6 +52,8 @@ ${catalogueImportWorkerSource}
 ${catalogueWorkerSource}
 
 ${completenessWorkerSource}
+
+${albumArtworkWorkerSource}
 
 function decode(value) {
   const binary = atob(value)
@@ -436,6 +439,8 @@ export default {
     if (catalogueResponse) return catalogueResponse
     const completenessResponse = await handleCompletenessRequest(request, env, url)
     if (completenessResponse) return completenessResponse
+    const albumArtworkResponse = await handleAlbumArtworkRequest(request, env, url)
+    if (albumArtworkResponse) return albumArtworkResponse
 
     if (pathname === '/api/recovery' && request.method === 'GET') {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
