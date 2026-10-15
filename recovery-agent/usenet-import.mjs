@@ -114,7 +114,8 @@ export async function importUsenetCompletion(job, completedFiles, options) {
     }
     inspected.push({ file, quality, metadata: searchMode === 'release' ? releaseTrackMetadata(file.path, quality, job.request.track || {}, index + 1) : { ...(job.request.track || {}) } })
   }
-  if (!inspected.length) throw new Error('The completed Usenet download contains no valid supported audio files.')
+  const torrent = job.downloader === 'qbittorrent'
+  if (!inspected.length) throw new Error(`The completed ${torrent ? 'torrent' : 'Usenet download'} contains no valid supported audio files.`)
 
   const releaseArtist = searchMode === 'release' ? mostCommon(inspected.map((item) => item.metadata.albumArtist || item.metadata.artist)) || job.request.track?.artist : job.request.track?.artist
   const releaseAlbum = searchMode === 'release' ? mostCommon(inspected.map((item) => item.metadata.album)) || job.request.track?.album : job.request.track?.album
@@ -158,7 +159,9 @@ export async function importUsenetCompletion(job, completedFiles, options) {
     for (const plan of plans) {
       const taggedPath = join(finalDirectory, `.${randomUUID()}${plan.derivativeExtension}`)
       try {
-        const comment = `Tomify authorised Usenet recovery copy; provider=${job.indexer.name}; authorisation=${job.request.authorisation.basis}`
+        const comment = torrent
+          ? `Tomify authorised torrent recovery copy; infohash=${job.torrent?.infoHash || 'unknown'}; authorisation=${job.request.authorisation.basis}`
+          : `Tomify authorised Usenet recovery copy; provider=${job.indexer.name}; authorisation=${job.request.authorisation.basis}`
         const tags = ffmpegMetadataArguments({ ...plan.metadata, sourceUrl }, comment)
         const derivativePlan = buildDerivativeArguments({ sourcePath: plan.file.path, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
         await run(ffmpeg, derivativePlan.args, 5 * 60_000)
@@ -167,12 +170,13 @@ export async function importUsenetCompletion(job, completedFiles, options) {
         await copyFile(taggedPath, plan.finalPath, fsConstants.COPYFILE_EXCL); committed.push(plan.finalPath)
         const artworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
         const provenance = {
-          source: 'usenet', sourceUrl, providerType, providerName: job.indexer.name, providerId: job.indexer.id, providerResultId: job.result.resultId || job.result.externalId, postedTitle: job.result.title, detailsUrl: job.result.detailsUrl,
+          source: torrent ? 'torrent' : 'usenet', sourceUrl, providerType, providerName: job.indexer.name, providerId: job.indexer.id, providerResultId: job.result.resultId || job.result.externalId, postedTitle: job.result.title, detailsUrl: job.result.detailsUrl,
           searchMode, postedAt: job.result.postedAt, postedSize: job.result.size, ageDaysAtDiscovery: job.result.ageDays, downloader: job.downloader,
           ...(providerType === 'newznab' ? { newznabProvider: job.indexer.name, newznabResultId: job.result.externalId, newznabTitle: job.result.title } : {}),
+          ...(torrent ? { torrentInfoHash: job.torrent?.infoHash || null, torrentLinkType: job.torrent?.linkType || null, extractedFromArchive: Boolean(job.extractedPath && inside(plan.file.path, job.extractedPath)) } : {}),
           completedFileCount: completedFiles.length, acquiredAt, rightsBasis: job.request.authorisation.basis,
           confirmedBy: job.request.authorisation.confirmedBy || null, confirmedAt: job.request.authorisation.confirmedAt || null,
-          archiveStatus: 'usenet-recovery-copy', wantedMetadata: job.request.wantedMetadata, resolvedMetadata: plan.metadata,
+          archiveStatus: torrent ? 'torrent-recovery-copy' : 'usenet-recovery-copy', wantedMetadata: job.request.wantedMetadata, resolvedMetadata: plan.metadata,
           catalogueSource: job.request.catalogueSource, metadataResolution: job.request.metadataResolution, artwork: artworkProvenance,
           releaseImport: { multiTrack: searchMode === 'release', acquisitionId: job.id, importedTrackNumber: plan.index + 1, importedTrackCount: plans.length, artist: releaseArtist || null, album: releaseAlbum || null },
           sourceAudio: { path: plan.originalPath, extension: plan.sourceExtension, quality: plan.quality, preservedOriginal: true },
@@ -213,7 +217,7 @@ export function importedUsenetSourceFiles(job, completedFiles) {
 
 // Imports the audio files a single-track Usenet job left behind, as a release, without downloading again.
 export async function importRemainingUsenetFiles(job, completedFiles, options) {
-  if (job.status !== 'completed') throw new Error('Only a completed Usenet download can have its remaining files imported.')
+  if (job.status !== 'completed') throw new Error('Only a completed download can have its remaining files imported.')
   if ((job.result?.searchMode || 'track') === 'release') throw new Error('This download was already imported as a whole release.')
   const imported = importedUsenetSourceFiles(job, completedFiles)
   const remaining = completedFiles.filter((file) => !imported.has(file.path))

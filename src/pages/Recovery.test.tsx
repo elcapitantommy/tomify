@@ -7,7 +7,7 @@ import { Recovery } from './Recovery'
 
 vi.mock('../lib/recovery-api', () => ({
   recoveryApi: {
-    list: vi.fn(), add: vi.fn(), search: vi.fn(), select: vi.fn(), acquire: vi.fn(), importRemaining: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), delete: vi.fn(),
+    list: vi.fn(), add: vi.fn(), search: vi.fn(), addTorrentLink: vi.fn(), select: vi.fn(), acquire: vi.fn(), importRemaining: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), delete: vi.fn(),
   },
 }))
 
@@ -15,6 +15,7 @@ const backends = [
   { id: 'youtube', label: 'YouTube', available: true as const },
   { id: 'internet-archive', label: 'Internet Archive', available: true as const },
   { id: 'usenet', label: 'Usenet / NZB', available: true as const },
+  { id: 'torrent', label: 'Torrent link', available: true as const },
 ]
 
 function item(overrides: Partial<RecoveryItem> = {}): RecoveryItem {
@@ -174,5 +175,51 @@ describe('Recovery page actions', () => {
     expect(await screen.findByText('Imported 19 tracks')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /lush life/i }))
     expect(screen.getAllByText('Imported 19 tracks').length).toBeGreaterThan(1)
+  })
+
+  it('adds a pasted torrent link and selects it for review straight away', async () => {
+    const link = 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Flood'
+    const torrent = { id: 'torrent-1', backend: 'torrent' as const, externalId: 't', url: link, title: 'Flood', channel: 'Torrent link', official: false, matchScore: 60, selected: false }
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item()], backends })
+    vi.mocked(recoveryApi.addTorrentLink).mockResolvedValue({ item: item({ candidates: [torrent] }) })
+    vi.mocked(recoveryApi.select).mockResolvedValue({ item: item({ candidates: [{ ...torrent, selected: true }] }) })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    const input = screen.getByRole('textbox', { name: 'Torrent link' })
+    const add = screen.getByRole('button', { name: 'Add link' })
+    fireEvent.change(input, { target: { value: 'not a link' } })
+    expect(add).toBeDisabled()
+    fireEvent.change(input, { target: { value: link } })
+    fireEvent.click(add)
+    expect(recoveryApi.addTorrentLink).toHaveBeenCalledWith('recovery-1', link)
+    await vi.waitFor(() => expect(recoveryApi.select).toHaveBeenCalledWith('recovery-1', 'torrent-1'))
+    expect(await screen.findByText(/Pasted torrent link/)).toBeInTheDocument()
+    expect(input).toHaveValue('')
+  })
+
+  it('reports a rejected torrent link on the row', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item()], backends })
+    vi.mocked(recoveryApi.addTorrentLink).mockRejectedValue(new Error('The magnet link has an invalid info hash.'))
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Torrent link' }), { target: { value: 'magnet:?xt=urn:btih:bad' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add link' }))
+    expect(await screen.findByText('The magnet link has an invalid info hash.')).toBeInTheDocument()
+    expect(recoveryApi.select).not.toHaveBeenCalled()
+  })
+
+  it('shows live torrent speed, seeds and ETA and still allows deleting a running torrent', async () => {
+    const running = { id: 'torrent-1', backend: 'torrent' as const, externalId: 't', url: 'magnet:?xt=urn:btih:abc', title: 'Flood', channel: 'Torrent link', official: false, matchScore: 60, selected: true, provenance: { job: { id: 'job-1', status: 'downloading' as const, progress: 37, details: { downloadSpeed: 2_400_000, seeds: 12, seedsInSwarm: 40, peers: 3, size: 1_100_000_000, downloaded: 412_000_000, eta: 245 } } } }
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ status: 'downloading', candidates: [running] })], backends })
+    vi.mocked(recoveryApi.pollJob).mockImplementation(() => new Promise(() => {}))
+    vi.mocked(recoveryApi.delete).mockResolvedValue({ deleted: true, filesRemoved: false })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    expect(screen.getByText('2.4 MB/s · 12 seeds (40) · 3 peers · 412 MB of 1.1 GB · 4 min left')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Search YouTube' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(screen.getByText(/stops the torrent and removes it and everything it has downloaded from qBittorrent/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }))
+    expect(recoveryApi.delete).toHaveBeenCalledWith('recovery-1')
   })
 })

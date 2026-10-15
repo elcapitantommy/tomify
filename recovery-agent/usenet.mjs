@@ -283,15 +283,16 @@ export async function validateCompletedPath(value, downloadRoot, downloaderRoot 
 export async function findCompletedAudio(completedPath, options = {}) {
   const maxBytes = options.maxBytes || 2 * 1024 * 1024 * 1024
   const maxFiles = options.maxFiles || 1000
+  const label = options.label || 'Usenet download'
   const files = []
   let totalBytes = 0
   let fileCount = 0
   let entryCount = 0
   async function visit(path) {
     entryCount += 1
-    if (entryCount > maxFiles) throw new Error('Completed Usenet download contains too many filesystem entries.')
+    if (entryCount > maxFiles) throw new Error(`Completed ${label} contains too many filesystem entries.`)
     const details = await lstat(path)
-    if (details.isSymbolicLink()) throw new Error('Symlinks are not accepted in completed Usenet downloads.')
+    if (details.isSymbolicLink()) throw new Error(`Symlinks are not accepted in a completed ${label}.`)
     if (details.isDirectory()) {
       for (const entry of await readdir(path)) { if (entry === '..' || entry === '.') continue; await visit(join(path, entry)) }
       return
@@ -299,11 +300,11 @@ export async function findCompletedAudio(completedPath, options = {}) {
     if (!details.isFile()) return
     fileCount += 1
     totalBytes += details.size
-    if (totalBytes > maxBytes) throw new Error('Completed Usenet download exceeds the configured size limit.')
+    if (totalBytes > maxBytes) throw new Error(`Completed ${label} exceeds the configured size limit.`)
     if (AUDIO_EXTENSIONS.has(extname(path).toLowerCase())) files.push({ path, size: details.size, name: basename(path) })
   }
   await visit(completedPath)
-  if (!files.length) throw new Error('Completed Usenet download contains no supported audio files.')
+  if (!files.length && !options.allowEmpty) throw new Error(`Completed ${label} contains no supported audio files.`)
   return { files, totalBytes, fileCount }
 }
 

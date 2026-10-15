@@ -422,6 +422,94 @@ test('Recovery explains an out-of-date agent instead of showing not-found', asyn
   }
 })
 
+test('Recovery hands a pasted torrent link to the agent as a torrent search', async () => {
+  const agentRequests = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/v1/search') { agentRequests.push(JSON.parse(init.body)); return Response.json({ candidates: [{ externalId: 'torrent-external', url: 'magnet:?xt=urn:btih:abc', title: 'Flood', channel: 'Torrent link', provenance: { providerType: 'torrent', searchMode: 'release' } }] }) }
+    return new Response('{}', { status: 404 })
+  }
+  try {
+    const env = { TOMIFY_DB: wantedMusicDatabase(), RECOVERY_AGENT_URL: 'https://agent.tomify.test' }
+    const headers = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }
+    const post = (path, body) => worker.fetch(new Request(`https://app.tomify.test/api/recovery${path}`, { method: 'POST', headers, body: JSON.stringify(body) }), env)
+    const { item } = await (await post('', { artist: 'They Might Be Giants', album: 'Flood' })).json()
+    const missing = await post(`/${item.id}/search`, { backend: 'torrent' })
+    assert.equal(missing.status, 400)
+    assert.equal((await missing.json()).error, 'invalid-torrent-link')
+    assert.equal((await post(`/${item.id}/search`, { backend: 'torrent', link: '  magnet:?xt=urn:btih:abc&tr=https://tracker.test/passkey  ' })).status, 200)
+    assert.equal(agentRequests.length, 1)
+    assert.equal(agentRequests[0].backend, 'torrent')
+    assert.equal(agentRequests[0].link, 'magnet:?xt=urn:btih:abc&tr=https://tracker.test/passkey')
+    assert.deepEqual(agentRequests[0].track, { artist: 'They Might Be Giants', title: '', album: 'Flood', duration: null })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+function torrentDeleteDatabase(candidate, status) {
+  const deleted = []
+  return {
+    deleted,
+    prepare: (sql) => ({
+      sql, args: [],
+      bind(...args) { this.args = args; return this },
+      async first() { return sql.startsWith('SELECT id, artist, title, album') ? { id: 'recovery-1', artist: 'They Might Be Giants', title: '', album: 'Flood', status } : null },
+      async all() { return { results: sql.includes('FROM recovery_candidates') ? [candidate] : [] } },
+      async run() { return {} },
+    }),
+    async batch(statements) { deleted.push(...statements.map((statement) => statement.sql).filter((sql) => sql.startsWith('DELETE'))); return [] },
+  }
+}
+
+test('deleting a downloading torrent item removes the torrent first, plus anything it imported meanwhile', async () => {
+  const candidate = { id: 'candidate-1', backend: 'torrent', selected: 1, importedPath: null, provenanceJson: JSON.stringify({ job: { id: 'job-1', status: 'downloading', progress: 40 } }) }
+  const db = torrentDeleteDatabase(candidate, 'downloading')
+  const agentRequests = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/v1/jobs/cancel') { agentRequests.push(['cancel', JSON.parse(init.body)]); return Response.json({ cancelled: true, torrentRemoved: true, importedPaths: ['/recovery/They Might Be Giants/Flood/01 - Theme from Flood.flac'] }) }
+    if (url.pathname === '/v1/delete') { agentRequests.push(['delete', JSON.parse(init.body)]); return Response.json({ deleted: [] }) }
+    return new Response('{}', { status: 404 })
+  }
+  try {
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1', { method: 'DELETE', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' } }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(agentRequests, [['cancel', { jobId: 'job-1' }], ['delete', { importedPaths: ['/recovery/They Might Be Giants/Flood/01 - Theme from Flood.flac'] }]])
+    assert.equal(db.deleted.length, 2)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('a torrent item is kept when qBittorrent cannot remove its torrent, and running Usenet jobs still block deletion', async () => {
+  const torrent = { id: 'candidate-1', backend: 'torrent', selected: 1, importedPath: null, provenanceJson: JSON.stringify({ job: { id: 'job-1', status: 'downloading', progress: 40 } }) }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/v1/jobs/cancel') return Response.json({ error: 'recovery-agent-error', message: 'qBittorrent rejected the configured username or password.' }, { status: 400 })
+    return new Response('{}', { status: 404 })
+  }
+  try {
+    const request = () => new Request('https://app.tomify.test/api/recovery/recovery-1', { method: 'DELETE', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' } })
+    const db = torrentDeleteDatabase(torrent, 'downloading')
+    const failed = await worker.fetch(request(), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+    assert.equal(failed.status, 502)
+    assert.match((await failed.json()).message, /torrent could not be removed from qBittorrent/)
+    assert.equal(db.deleted.length, 0)
+    const usenet = { ...torrent, backend: 'usenet' }
+    const blocked = await worker.fetch(request(), { TOMIFY_DB: torrentDeleteDatabase(usenet, 'downloading'), RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+    assert.equal(blocked.status, 409)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 async function withRebootFetch({ admin, agent }, callback) {
   const originalFetch = globalThis.fetch
   const agentRequests = []

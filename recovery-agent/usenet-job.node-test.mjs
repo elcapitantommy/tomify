@@ -95,3 +95,29 @@ test('failed jobs saved before errors were recorded fall back to the downloader 
   })
   assert.equal((await poll('job-id')).job.error, 'Repair failed, not enough repair blocks')
 })
+
+test('live transfer details from the downloader are saved and returned, and settled waits for an active poll', async () => {
+  let stored = queuedJob()
+  const seen = []
+  const gate = deferred()
+  const poll = createUsenetJobPoller({
+    loadJob: async () => structuredClone(stored),
+    saveJob: async (job) => { stored = structuredClone(job) },
+    downloaderStatus: async (remoteId, job) => { seen.push([remoteId, job.id]); await gate.promise; return { status: 'downloading', progress: 40, details: { downloadSpeed: 1000, seeds: 3 } } },
+    completeJob: async () => { throw new Error('not completed') },
+    sanitizeError: (error) => error.message,
+  })
+  const running = poll('job-id')
+  let settled = false
+  const waiting = poll.settled('job-id').then(() => { settled = true })
+  await Promise.resolve()
+  assert.equal(settled, false)
+  gate.release()
+  const { job } = await running
+  await waiting
+  assert.equal(settled, true)
+  assert.deepEqual(seen, [['remote-id', 'job-id']])
+  assert.deepEqual(job.details, { downloadSpeed: 1000, seeds: 3 })
+  assert.deepEqual(stored.details, { downloadSpeed: 1000, seeds: 3 })
+  await poll.settled('no-active-poll')
+})

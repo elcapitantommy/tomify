@@ -113,6 +113,21 @@ test('single-track mode preserves the existing one-result payload shape', async 
   assert.equal((await readdir(join(recoveryRoot, 'they might be giants', 'flood'))).filter((name) => name.endsWith('.mp3')).length, 1)
 })
 
+test('torrent imports record torrent provenance, including files unpacked from an archive', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-torrent-import-test-'))
+  const extracted = await mkdtemp(join(tmpdir(), 'tomify-torrent-extracted-test-'))
+  const file = join(extracted, '001', '07 - Birdhouse in Your Soul.flac')
+  await mkdir(join(extracted, '001'), { recursive: true }); await writeFile(file, 'audio')
+  const torrentJob = { ...job('track'), downloader: 'qbittorrent', indexer: { type: 'torrent', id: 'torrent-link', name: 'Torrent link' }, torrent: { infoHash: 'abc123', linkType: 'magnet' }, extractedPath: extracted }
+  torrentJob.result = { ...torrentJob.result, detailsUrl: 'magnet:?xt=urn:btih:abc123' }
+  const result = await importUsenetCompletion(torrentJob, [{ name: basename(file), path: file }], { recoveryRoot, ...harness({}, false) })
+  assert.equal(result.provenance.source, 'torrent')
+  assert.equal(result.provenance.archiveStatus, 'torrent-recovery-copy')
+  assert.equal(result.provenance.torrentInfoHash, 'abc123')
+  assert.equal(result.provenance.extractedFromArchive, true)
+  assert.equal(result.provenance.sourceUrl, 'magnet:?xt=urn:btih:abc123')
+})
+
 test('rejects a symlinked preserved-original directory outside the recovery root', async () => {
   const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-output-symlink-test-'))
   const albumDirectory = join(recoveryRoot, 'they might be giants', 'flood')

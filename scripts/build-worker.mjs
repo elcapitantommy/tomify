@@ -491,6 +491,7 @@ export default {
         { id: 'youtube', label: 'YouTube', available: configured, authentication: configured ? 'unavailable' : 'not-configured', reason: configured ? null : 'The media-server recovery agent has not been connected yet.' },
         { id: 'internet-archive', label: 'Internet Archive', available: configured, authentication: 'not-required', reason: configured ? null : 'The media-server recovery agent has not been connected yet.' },
         { id: 'usenet', label: 'Usenet / NZB', available: false, authentication: 'not-configured', reason: configured ? 'Configure SABnzbd or NZBGet and its download directory on the recovery agent.' : 'The media-server recovery agent has not been connected yet.' },
+        { id: 'torrent', label: 'Torrent link', available: false, authentication: 'not-configured', reason: configured ? 'Configure qBittorrent and its download directory on the recovery agent.' : 'The media-server recovery agent has not been connected yet.' },
       ]
       if (env.RECOVERY_AGENT_URL) {
         try {
@@ -529,8 +530,21 @@ export default {
       await ensureRecoveryTables(env.TOMIFY_DB)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       if (!item) return json({ error: 'recovery-item-not-found' }, 404)
-      if (item.status === 'queued' || item.status === 'downloading') return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before deleting this item.' }, 409)
+      // Torrent jobs can be deleted at any point: the agent stops the torrent and removes it and its data from qBittorrent.
+      const torrentJobIds = [...new Set(item.candidates.filter((candidate) => candidate.backend === 'torrent' && candidate.provenance?.job?.id).map((candidate) => candidate.provenance.job.id))]
+      const activeCandidate = item.candidates.find((candidate) => candidate.selected && candidate.provenance?.job?.id)
+      if ((item.status === 'queued' || item.status === 'downloading') && activeCandidate?.backend !== 'torrent') return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before deleting this item.' }, 409)
       const importedPaths = [...new Set(item.candidates.flatMap((candidate) => [candidate.importedPath, ...(Array.isArray(candidate.provenance?.importedTracks) ? candidate.provenance.importedTracks.map((track) => track?.path) : [])]).filter((path) => typeof path === 'string' && path.length > 0))]
+      for (const jobId of torrentJobIds) {
+        try {
+          const cancelled = await callRecoveryAgent(env, '/v1/jobs/cancel', { jobId })
+          // A torrent that finished importing while it was being deleted still has its files removed below.
+          for (const path of Array.isArray(cancelled?.importedPaths) ? cancelled.importedPaths : []) if (typeof path === 'string' && path && !importedPaths.includes(path)) importedPaths.push(path)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Torrent removal failed.'
+          return json({ error: 'recovery-delete-failed', message: 'The torrent could not be removed from qBittorrent. The queue item was kept. ' + message }, 502)
+        }
+      }
       if (importedPaths.length) {
         try {
           await callRecoveryAgent(env, '/v1/delete', { importedPaths })
@@ -568,21 +582,24 @@ export default {
       if (!item) return json({ error: 'recovery-item-not-found' }, 404)
       if (item.status === 'queued' || item.status === 'downloading') return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before searching again.' }, 409)
       const body = await request.json().catch(() => ({}))
-      const backend = body?.backend === 'internet-archive' ? 'internet-archive' : body?.backend === 'youtube' ? 'youtube' : body?.backend === 'usenet' ? 'usenet' : null
+      const backend = ['internet-archive', 'youtube', 'usenet', 'torrent'].includes(body?.backend) ? body.backend : null
       if (!backend) return json({ error: 'unsupported-recovery-backend' }, 400)
+      // A torrent "search" is a pasted magnet or .torrent link; the agent validates it and returns it as one candidate.
+      const link = typeof body?.link === 'string' ? body.link.trim() : ''
+      if (backend === 'torrent' && (!link || link.length > 8000)) return json({ error: 'invalid-torrent-link', message: 'Paste a magnet link or a link to a .torrent file.' }, 400)
       const usenetFields = ['artist', 'album', 'track']
       const searchFields = Array.isArray(body?.searchFields) ? usenetFields.filter((field) => body.searchFields.includes(field)) : null
       if (backend === 'usenet' && searchFields && !searchFields.length) return json({ error: 'invalid-search-fields', message: 'Choose at least one of artist, album or track to search Usenet.' }, 400)
       // The legacy searchMode rides along so a recovery agent older than searchFields still runs its closest single-field search.
       const searchMode = searchFields ? (searchFields.includes('track') ? 'track' : searchFields.includes('album') ? 'release' : 'artist') : ['artist', 'track', 'release'].includes(body?.searchMode) ? body.searchMode : 'track'
       try {
-        const result = await callRecoveryAgent(env, '/v1/search', { backend, searchMode, ...(searchFields ? { searchFields } : {}), track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
+        const result = await callRecoveryAgent(env, '/v1/search', { backend, searchMode, ...(searchFields ? { searchFields } : {}), ...(backend === 'torrent' ? { link } : {}), track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
         const candidates = Array.isArray(result.candidates) ? result.candidates.slice(0, 12) : []
         await env.TOMIFY_DB.prepare('DELETE FROM recovery_candidates WHERE recovery_id = ? AND backend = ? AND imported_path IS NULL').bind(item.id, backend).run()
         const inserts = candidates.filter((candidate) => candidate && typeof candidate.url === 'string' && typeof candidate.externalId === 'string').map((candidate) => {
           const scored = scoreRecoveryCandidate(item, candidate)
           return env.TOMIFY_DB.prepare('INSERT INTO recovery_candidates (id, recovery_id, backend, external_id, url, title, channel, channel_id, duration, official, match_score, thumbnail, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-            .bind(crypto.randomUUID(), item.id, backend, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || (backend === 'youtube' ? 'Unknown channel' : backend === 'usenet' ? 'Newznab indexer' : 'Internet Archive')).slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend, searchMode: candidate.provenance?.searchMode || searchMode, searchFields: candidate.provenance?.searchFields || searchFields, raw: candidate.provenance || null }))
+            .bind(crypto.randomUUID(), item.id, backend, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || (backend === 'youtube' ? 'Unknown channel' : backend === 'usenet' ? 'Newznab indexer' : backend === 'torrent' ? 'Torrent link' : 'Internet Archive')).slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend, searchMode: candidate.provenance?.searchMode || searchMode, searchFields: candidate.provenance?.searchFields || searchFields, raw: candidate.provenance || null }))
         })
         if (inserts.length) await env.TOMIFY_DB.batch(inserts)
         const retainedSelection = item.candidates.find((candidate) => candidate.selected && (candidate.backend !== backend || candidate.importedPath))
@@ -630,12 +647,12 @@ export default {
       try {
         const result = await callRecoveryAgent(env, '/v1/jobs/status', { jobId: candidate.provenance.job.id })
         const job = result.job || {}
-        const provenance = { ...candidate.provenance, job: { ...candidate.provenance.job, id: candidate.provenance.job.id, status: job.status || 'queued', progress: Number.isFinite(job.progress) ? job.progress : 0, message: job.message || null, error: job.error || null } }
+        const provenance = { ...candidate.provenance, job: { ...candidate.provenance.job, id: candidate.provenance.job.id, status: job.status || 'queued', progress: Number.isFinite(job.progress) ? job.progress : 0, message: job.message || null, error: job.error || null, details: job.details && typeof job.details === 'object' ? job.details : null } }
         if (job.status === 'completed' && job.result) {
           const quality = job.result.quality || {}
           const importedTracks = Array.isArray(job.result.importedTracks) ? job.result.importedTracks.map((track) => ({ path: track?.path || null, originalPath: track?.originalPath || null, artist: track?.artist || null, albumArtist: track?.albumArtist || null, album: track?.album || null, title: track?.title || null, trackNumber: track?.trackNumber || null, discNumber: track?.discNumber || null, quality: track?.quality || null, derivative: track?.derivative || null })) : []
           const importedCount = Number.isInteger(job.result.importedCount) ? job.result.importedCount : importedTracks.length || 1
-          const finalProvenance = { ...provenance, ...(job.result.provenance || {}), source: 'usenet', job: provenance.job, importedAt: new Date().toISOString(), importedCount, importedTracks, importedRelease: importedCount > 1 ? { artist: job.result.artist || null, album: job.result.album || null } : null }
+          const finalProvenance = { ...provenance, ...(job.result.provenance || {}), source: job.result.provenance?.source || (candidate.backend === 'torrent' ? 'torrent' : 'usenet'), job: provenance.job, importedAt: new Date().toISOString(), importedCount, importedTracks, importedRelease: importedCount > 1 ? { artist: job.result.artist || null, album: job.result.album || null } : null }
           await env.TOMIFY_DB.batch([
             env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, provenance_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(quality.codec || null, quality.container || null, Number.isFinite(quality.bitrate) ? quality.bitrate : null, Number.isFinite(quality.sampleRate) ? quality.sampleRate : null, Number.isFinite(quality.channels) ? quality.channels : null, Number.isFinite(quality.duration) ? quality.duration : null, String(job.result.path || '').slice(0, 1000), JSON.stringify(finalProvenance), candidate.id),
             env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'needs-upgrade', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(item.id, username),
@@ -643,7 +660,7 @@ export default {
         } else if (job.status === 'failed') {
           await env.TOMIFY_DB.batch([
             env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET provenance_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(JSON.stringify(provenance), candidate.id),
-            env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(String(job.error || 'Usenet recovery failed.').slice(0, 500), item.id, username),
+            env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(String(job.error || 'The download failed.').slice(0, 500), item.id, username),
           ])
         } else {
           const status = job.status === 'downloading' ? 'downloading' : 'queued'
@@ -654,7 +671,7 @@ export default {
         }
         return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Could not poll the Usenet recovery job.'
+        const message = error instanceof Error ? error.message : 'Could not poll the recovery download job.'
         return json({ error: 'recovery-job-poll-failed', message }, 502)
       }
     }
