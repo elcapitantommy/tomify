@@ -491,7 +491,7 @@ export default {
         { id: 'youtube', label: 'YouTube', available: configured, authentication: configured ? 'unavailable' : 'not-configured', reason: configured ? null : 'The media-server recovery agent has not been connected yet.' },
         { id: 'internet-archive', label: 'Internet Archive', available: configured, authentication: 'not-required', reason: configured ? null : 'The media-server recovery agent has not been connected yet.' },
         { id: 'usenet', label: 'Usenet / NZB', available: false, authentication: 'not-configured', reason: configured ? 'Configure SABnzbd or NZBGet and its download directory on the recovery agent.' : 'The media-server recovery agent has not been connected yet.' },
-        { id: 'torrent', label: 'Torrent link', available: false, authentication: 'not-configured', reason: configured ? 'Configure qBittorrent and its download directory on the recovery agent.' : 'The media-server recovery agent has not been connected yet.' },
+        { id: 'torrent', label: 'Torrents', available: false, search: false, authentication: 'not-configured', reason: configured ? 'Configure qBittorrent and its download directory on the recovery agent.' : 'The media-server recovery agent has not been connected yet.' },
       ]
       if (env.RECOVERY_AGENT_URL) {
         try {
@@ -500,6 +500,8 @@ export default {
             const remote = Array.isArray(status.backends) ? status.backends.find((value) => value?.id === backend.id) : null
             backend.available = Boolean(remote && remote.available !== false)
             backend.authentication = remote?.authentication || backend.authentication
+            // Agents older than torrent search only accept pasted links.
+            if (backend.id === 'torrent') backend.search = backend.available && remote?.search === true
           }
         } catch { backendState.forEach((backend) => { backend.available = false; backend.authentication = backend.id === 'internet-archive' ? 'not-required' : 'unavailable' }) }
       }
@@ -584,22 +586,23 @@ export default {
       const body = await request.json().catch(() => ({}))
       const backend = ['internet-archive', 'youtube', 'usenet', 'torrent'].includes(body?.backend) ? body.backend : null
       if (!backend) return json({ error: 'unsupported-recovery-backend' }, 400)
-      // A torrent "search" is a pasted magnet or .torrent link; the agent validates it and returns it as one candidate.
+      // A torrent search either sends a pasted magnet or .torrent link, which the agent validates and returns as one
+      // candidate, or no link, which searches qBittorrent's search plugins for results that have seeds.
       const link = typeof body?.link === 'string' ? body.link.trim() : ''
-      if (backend === 'torrent' && (!link || link.length > 8000)) return json({ error: 'invalid-torrent-link', message: 'Paste a magnet link or a link to a .torrent file.' }, 400)
+      if (backend === 'torrent' && ((typeof body?.link === 'string' && !link) || link.length > 8000)) return json({ error: 'invalid-torrent-link', message: 'Paste a magnet link or a link to a .torrent file.' }, 400)
       const usenetFields = ['artist', 'album', 'track']
       const searchFields = Array.isArray(body?.searchFields) ? usenetFields.filter((field) => body.searchFields.includes(field)) : null
-      if (backend === 'usenet' && searchFields && !searchFields.length) return json({ error: 'invalid-search-fields', message: 'Choose at least one of artist, album or track to search Usenet.' }, 400)
+      if ((backend === 'usenet' || backend === 'torrent' && !link) && searchFields && !searchFields.length) return json({ error: 'invalid-search-fields', message: backend === 'torrent' ? 'Choose at least one of artist, album or track to search torrents.' : 'Choose at least one of artist, album or track to search Usenet.' }, 400)
       // The legacy searchMode rides along so a recovery agent older than searchFields still runs its closest single-field search.
       const searchMode = searchFields ? (searchFields.includes('track') ? 'track' : searchFields.includes('album') ? 'release' : 'artist') : ['artist', 'track', 'release'].includes(body?.searchMode) ? body.searchMode : 'track'
       try {
-        const result = await callRecoveryAgent(env, '/v1/search', { backend, searchMode, ...(searchFields ? { searchFields } : {}), ...(backend === 'torrent' ? { link } : {}), track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
+        const result = await callRecoveryAgent(env, '/v1/search', { backend, searchMode, ...(searchFields ? { searchFields } : {}), ...(backend === 'torrent' && link ? { link } : {}), track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
         const candidates = Array.isArray(result.candidates) ? result.candidates.slice(0, 12) : []
         await env.TOMIFY_DB.prepare('DELETE FROM recovery_candidates WHERE recovery_id = ? AND backend = ? AND imported_path IS NULL').bind(item.id, backend).run()
         const inserts = candidates.filter((candidate) => candidate && typeof candidate.url === 'string' && typeof candidate.externalId === 'string').map((candidate) => {
           const scored = scoreRecoveryCandidate(item, candidate)
           return env.TOMIFY_DB.prepare('INSERT INTO recovery_candidates (id, recovery_id, backend, external_id, url, title, channel, channel_id, duration, official, match_score, thumbnail, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-            .bind(crypto.randomUUID(), item.id, backend, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || (backend === 'youtube' ? 'Unknown channel' : backend === 'usenet' ? 'Newznab indexer' : backend === 'torrent' ? 'Torrent link' : 'Internet Archive')).slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend, searchMode: candidate.provenance?.searchMode || searchMode, searchFields: candidate.provenance?.searchFields || searchFields, raw: candidate.provenance || null }))
+            .bind(crypto.randomUUID(), item.id, backend, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || (backend === 'youtube' ? 'Unknown channel' : backend === 'usenet' ? 'Newznab indexer' : backend === 'torrent' ? (link ? 'Torrent link' : 'Torrent search') : 'Internet Archive')).slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend, searchMode: candidate.provenance?.searchMode || searchMode, searchFields: candidate.provenance?.searchFields || searchFields, raw: candidate.provenance || null }))
         })
         if (inserts.length) await env.TOMIFY_DB.batch(inserts)
         const retainedSelection = item.candidates.find((candidate) => candidate.selected && (candidate.backend !== backend || candidate.importedPath))

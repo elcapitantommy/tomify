@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtemp, mkdir, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { checkArchiveListing, createQbittorrentClient, extractArchives, findArchives, isExtractableArchive, parseTorrentLink, qbittorrentJobState, torrentCandidate, torrentConfig, torrentTransferDetails } from './torrent.mjs'
+import { checkArchiveListing, createQbittorrentClient, extractArchives, findArchives, isExtractableArchive, parseTorrentLink, qbittorrentJobState, torrentCandidate, torrentConfig, torrentSearchCandidates, torrentTransferDetails } from './torrent.mjs'
 
 const hash = '0123456789abcdef0123456789abcdef01234567'
 
@@ -150,4 +150,72 @@ test('archives in a completed torrent are extracted into a separate folder', { s
   assert.deepEqual(extracted, [join(root, 'extracted', '001')])
   assert.deepEqual(await readdir(extracted[0]), ['01 - Theme from Flood.flac'])
   await assert.rejects(extractArchives(archives, join(root, 'missing'), { run, sevenZip: join(root, 'no-such-7z'), maxBytes: 1024 }), /7-Zip is not installed/)
+})
+
+test('torrent search keeps only seeded results with safe links, best-seeded first', () => {
+  const other = 'fedcba9876543210fedcba9876543210fedcba98'
+  const results = [
+    { fileName: 'Flood (1990) MP3', fileUrl: `magnet:?xt=urn:btih:${other}&dn=Flood`, fileSize: 90_000_000, nbSeeders: 3, nbLeechers: 1, siteUrl: 'https://www.limetorrents.lol', descrLink: 'https://www.limetorrents.lol/flood' },
+    { fileName: 'Flood (1990) FLAC', fileUrl: `magnet:?xt=urn:btih:${hash}&dn=Flood&tr=https%3A%2F%2Ftracker.test%2Fannounce`, fileSize: 400_000_000, nbSeeders: 42, nbLeechers: 5, siteUrl: 'https://thepiratebay.org', descrLink: 'https://thepiratebay.org/description.php?id=1' },
+    { fileName: 'Flood dead', fileUrl: 'magnet:?xt=urn:btih:1111111111111111111111111111111111111111', nbSeeders: 0, nbLeechers: 9 },
+    { fileName: 'Flood unknown', fileUrl: 'magnet:?xt=urn:btih:2222222222222222222222222222222222222222', nbSeeders: -1 },
+    { fileName: 'Flood local', fileUrl: 'http://192.168.1.4/flood.torrent', nbSeeders: 50 },
+    { fileName: 'Flood duplicate', fileUrl: `magnet:?xt=urn:btih:${hash.toUpperCase()}`, nbSeeders: 10 },
+  ]
+  const candidates = torrentSearchCandidates(results, { artist: 'They Might Be Giants', album: 'Flood', title: '' }, ['artist', 'album'])
+  assert.deepEqual(candidates.map((candidate) => candidate.title), ['Flood (1990) FLAC', 'Flood (1990) MP3'])
+  const [best] = candidates
+  assert.equal(best.url, 'https://thepiratebay.org/description.php?id=1')
+  assert.equal(best.channel, 'thepiratebay.org')
+  assert.equal(best.externalId, torrentCandidate(`magnet:?xt=urn:btih:${hash}`, {}).externalId)
+  assert.deepEqual({ providerId: best.provenance.providerId, seeds: best.provenance.seeds, peers: best.provenance.peers, size: best.provenance.size, searchMode: best.provenance.searchMode, searchFields: best.provenance.searchFields }, { providerId: 'qbittorrent-search', seeds: 42, peers: 5, size: 400_000_000, searchMode: 'release', searchFields: ['artist', 'album'] })
+  assert.match(best.provenance.link, /tracker\.test/)
+  assert.equal(candidates[1].channel, 'limetorrents.lol')
+})
+
+function fakeSearch({ connection = 'connected', plugins = [{ name: 'piratebay', enabled: true }], statuses = ['Running', 'Stopped'], results = [] } = {}) {
+  const calls = []
+  let polls = 0
+  const fetchImpl = async (input, init = {}) => {
+    const url = new URL(String(input))
+    const body = init.body ? Object.fromEntries(new URLSearchParams(String(init.body))) : null
+    calls.push({ path: url.pathname, query: Object.fromEntries(url.searchParams), body })
+    if (url.pathname === '/api/v2/auth/login') return new Response('Ok.', { headers: { 'set-cookie': 'SID=abc123; path=/' } })
+    if (url.pathname === '/api/v2/transfer/info') return Response.json({ connection_status: connection })
+    if (url.pathname === '/api/v2/search/plugins') return Response.json(plugins)
+    if (url.pathname === '/api/v2/search/start') return Response.json({ id: 7 })
+    if (url.pathname === '/api/v2/search/status') return Response.json([{ id: 7, status: statuses[Math.min(polls++, statuses.length - 1)], total: results.length }])
+    if (url.pathname === '/api/v2/search/results') return Response.json({ results, status: 'Stopped', total: results.length })
+    if (url.pathname === '/api/v2/search/stop' || url.pathname === '/api/v2/search/delete') return new Response('')
+    return new Response('', { status: 404 })
+  }
+  return { calls, fetchImpl }
+}
+
+const searchConfig = { url: 'http://127.0.0.1:8081', username: 'tomify', password: 'secret', category: 'tomify' }
+
+test('qBittorrent search runs the enabled plugins in the music category, waits for them and cleans up', async () => {
+  const results = [{ fileName: 'Flood', fileUrl: `magnet:?xt=urn:btih:${hash}`, nbSeeders: 4 }]
+  const qbt = fakeSearch({ results })
+  const sleeps = []
+  const found = await createQbittorrentClient(searchConfig, qbt.fetchImpl).search('They Might Be Giants Flood', { sleep: async (ms) => { sleeps.push(ms) } })
+  assert.deepEqual(found, results)
+  assert.deepEqual(qbt.calls.find((call) => call.path === '/api/v2/search/start').body, { pattern: 'They Might Be Giants Flood', plugins: 'enabled', category: 'music' })
+  assert.equal(qbt.calls.filter((call) => call.path === '/api/v2/search/status').length, 2)
+  assert.equal(sleeps.length, 1)
+  assert.deepEqual(qbt.calls.slice(-2).map((call) => [call.path, call.body.id]), [['/api/v2/search/stop', '7'], ['/api/v2/search/delete', '7']])
+})
+
+test('qBittorrent search stops at its time limit and returns what it has', async () => {
+  const qbt = fakeSearch({ statuses: ['Running'], results: [] })
+  assert.deepEqual(await createQbittorrentClient(searchConfig, qbt.fetchImpl).search('Flood', { timeoutMs: 0 }), [])
+  assert.ok(qbt.calls.some((call) => call.path === '/api/v2/search/delete'))
+})
+
+test('qBittorrent search refuses to run while offline or without plugins', async () => {
+  const offline = fakeSearch({ connection: 'disconnected' })
+  await assert.rejects(createQbittorrentClient(searchConfig, offline.fetchImpl).search('Flood'), /NordVPN is connected/)
+  assert.equal(offline.calls.some((call) => call.path === '/api/v2/search/start'), false)
+  const noPlugins = fakeSearch({ plugins: [{ name: 'piratebay', enabled: false }] })
+  await assert.rejects(createQbittorrentClient(searchConfig, noPlugins.fetchImpl).search('Flood'), /no search plugins enabled/)
 })

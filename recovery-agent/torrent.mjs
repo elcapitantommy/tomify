@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { lstat, readdir } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { isIP } from 'node:net'
+import { usenetSearchQuery, usenetSearchSpec } from './usenet.mjs'
 
 const ARCHIVE_EXTENSIONS = new Set(['.zip', '.rar', '.7z'])
 // qBittorrent states for a torrent whose data is fully downloaded (4.x names, plus the 5.x "stopped" rename).
@@ -10,6 +11,8 @@ const PAUSED_STATES = new Set(['pausedDL', 'stoppedDL'])
 const FAILED_STATES = new Set(['error', 'missingFiles'])
 // A freshly added magnet can take a moment to appear in qBittorrent's list.
 const MISSING_GRACE_MS = 2 * 60_000
+const SEARCH_RESULT_LIMIT = 12
+const SEARCH_TIMEOUT_MS = 25_000
 
 function text(value) { return String(value ?? '').trim() }
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null }
@@ -82,6 +85,40 @@ export function torrentCandidate(value, track) {
     title: parsed.name || (parsed.infoHash ? `Torrent ${parsed.infoHash.slice(0, 12)}` : 'Torrent file link'), channel: 'Torrent link', duration: null, thumbnail: null,
     provenance: { providerType: 'torrent', providerId: 'torrent-link', providerName: 'Torrent link', resultId, linkType: parsed.type, infoHash: parsed.infoHash, link: parsed.link, displayUrl: parsed.displayUrl, postedTitle: parsed.name, searchMode, searchFields: null },
   }
+}
+
+function siteName(value) {
+  try { return new URL(text(value)).hostname.replace(/^www\./, '') || null } catch { return null }
+}
+
+// Turns qBittorrent search-plugin results into Recovery candidates. Only results with at least one seed are kept
+// (plugins report -1 when they do not know), the best-seeded come first, and links qBittorrent could not be
+// given safely (private hosts, credentials, plugin-only URLs) are dropped.
+export function torrentSearchCandidates(results, track, input) {
+  const { fields: searchFields, mode: searchMode } = usenetSearchSpec(input, track)
+  const seen = new Set()
+  const candidates = []
+  for (const result of Array.isArray(results) ? results : []) {
+    const seeds = number(result?.nbSeeders)
+    if (seeds === null || seeds < 1) continue
+    let parsed
+    try { parsed = parseTorrentLink(result?.fileUrl) } catch { continue }
+    const resultId = parsed.infoHash || createHash('sha256').update(parsed.link).digest('hex')
+    if (seen.has(resultId)) continue
+    seen.add(resultId)
+    let detailsUrl = null
+    try { const details = new URL(text(result?.descrLink)); if (['http:', 'https:'].includes(details.protocol) && !details.username && !details.password) detailsUrl = details.toString() } catch { /* The plugin gave no details page. */ }
+    const leechers = number(result?.nbLeechers)
+    const size = number(result?.fileSize)
+    const site = siteName(result?.siteUrl) || siteName(detailsUrl) || 'Torrent search'
+    const title = text(result?.fileName).slice(0, 500) || parsed.name || `Torrent ${resultId.slice(0, 12)}`
+    candidates.push({
+      externalId: createHash('sha256').update(`torrent\0${resultId}`).digest('hex'), url: detailsUrl || parsed.displayUrl,
+      title, channel: site, duration: null, thumbnail: null,
+      provenance: { providerType: 'torrent', providerId: 'qbittorrent-search', providerName: site, resultId, linkType: parsed.type, infoHash: parsed.infoHash, link: parsed.link, displayUrl: parsed.displayUrl, detailsUrl, postedTitle: title, searchMode, searchFields, seeds, peers: leechers !== null && leechers >= 0 ? leechers : null, size: size !== null && size > 0 ? size : null },
+    })
+  }
+  return candidates.sort((a, b) => b.provenance.seeds - a.provenance.seeds).slice(0, SEARCH_RESULT_LIMIT)
 }
 
 export function torrentConfig(env = process.env) {
@@ -201,6 +238,41 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
       const torrents = await response.json()
       // Older qBittorrent releases ignore the tag filter, so match the tag here too.
       return (Array.isArray(torrents) ? torrents : []).find((torrent) => text(torrent?.tags).split(',').map(text).includes(tag)) || null
+    },
+    // Runs a search across qBittorrent's enabled search plugins (Music category) and returns the raw results.
+    // Plugins run inside qBittorrent on the media server; the search is refused while qBittorrent reports it is
+    // offline, which is what it reports when the VPN interface it is bound to is down.
+    async search(pattern, { timeoutMs = SEARCH_TIMEOUT_MS, pollMs = 1000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+      const cookie = await session()
+      const get = async (path, params = {}) => {
+        const url = new URL(`${config.url}/api/v2/${path}`)
+        for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value))
+        const response = await fetchImpl(url, { headers: cookie ? { cookie } : {}, signal: AbortSignal.timeout(30_000) })
+        if (!response.ok) throw new Error(`qBittorrent ${path} returned HTTP ${response.status}.`)
+        return response.json()
+      }
+      const transfer = await get('transfer/info')
+      if (text(transfer?.connection_status) === 'disconnected') throw new Error('qBittorrent is offline, so torrent search is paused. Check that NordVPN is connected on the media server.')
+      const plugins = await get('search/plugins')
+      if (!(Array.isArray(plugins) ? plugins : []).some((plugin) => plugin?.enabled)) throw new Error('qBittorrent has no search plugins enabled. Install them as described in docs/RECOVERY.md.')
+      const started = await call(cookie, 'search/start', { pattern, plugins: 'enabled', category: 'music' }, 'qBittorrent search')
+      if (started.response.status === 409) throw new Error('qBittorrent is already running too many searches. Try again in a moment.')
+      if (!started.response.ok) throw new Error(`qBittorrent search returned HTTP ${started.response.status}.`)
+      const id = number(JSON.parse(started.body || '{}')?.id)
+      if (id === null) throw new Error('qBittorrent did not return a search id.')
+      try {
+        const deadline = Date.now() + timeoutMs
+        while (Date.now() < deadline) {
+          const status = await get('search/status', { id })
+          if (text((Array.isArray(status) ? status[0] : status)?.status) === 'Stopped') break
+          await sleep(pollMs)
+        }
+        const found = await get('search/results', { id, limit: 500 })
+        return Array.isArray(found?.results) ? found.results : []
+      } finally {
+        await call(cookie, 'search/stop', { id }, 'qBittorrent search stop').catch(() => {})
+        await call(cookie, 'search/delete', { id }, 'qBittorrent search delete').catch(() => {})
+      }
     },
     async remove(hash, deleteFiles) {
       const cookie = await session()

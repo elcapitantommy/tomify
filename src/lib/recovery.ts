@@ -103,6 +103,26 @@ export function torrentTransferSummary(details: TorrentTransferDetails | null | 
   return parts.length ? parts.join(' · ') : null
 }
 
+/** True for a torrent candidate found by qBittorrent's search plugins rather than a pasted link. */
+export function isTorrentSearchResult(candidate: { backend: string; provenance?: RecoveryProvenance | null }) {
+  return candidate.backend === 'torrent' && candidate.provenance?.raw?.providerId === 'qbittorrent-search'
+}
+
+/** Swarm and size figures for a torrent search result, e.g. "42 seeds · 3 peers · 512 MB". */
+export function torrentResultSummary(raw: Record<string, unknown> | null | undefined) {
+  if (!raw) return null
+  const whole = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : null
+  const seeds = whole(raw.seeds)
+  const peers = whole(raw.peers)
+  const size = whole(raw.size)
+  const parts = [
+    seeds != null ? `${seeds} seed${seeds === 1 ? '' : 's'}` : null,
+    peers != null ? `${peers} peer${peers === 1 ? '' : 's'}` : null,
+    size ? formatBytes(size) : null,
+  ].filter(Boolean)
+  return parts.length ? parts.join(' · ') : null
+}
+
 export interface RecoveryProvenance {
   source?: string
   acquisitionMode?: 'anonymous-youtube' | 'authenticated-youtube-session'

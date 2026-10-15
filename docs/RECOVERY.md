@@ -28,7 +28,7 @@ Tomify Recovery is a queue for rebuilding missing tracks without confusing a con
 - Marks every YouTube result `lossy-recovery-copy` and initially `needs-upgrade`; it is never promoted to an archival master automatically.
 - Sets any import from any source to `recovered` when its audio is lossless (FLAC, ALAC, WAV/PCM and similar) and `needs-upgrade` when it is lossy. Either way the files stay recovery copies, never verified masters. Items imported before this rule can be cleared with Mark acceptable.
 - Marks Internet Archive imports `internet-archive-recovery-copy`. A lossless file is still a recovery source, not proof of an archival master.
-- Accepts a pasted magnet or `.torrent` link per item, downloads it with qBittorrent-nox over NordVPN, shows live speed, seeds, peers and time left, unpacks archives, imports the audio and then removes the torrent and its data. See [Torrent links and qBittorrent](#torrent-links-and-qbittorrent).
+- Searches torrents through qBittorrent's search plugins, showing only results that have seeds, or accepts a pasted magnet or `.torrent` link per item. Either way it downloads the torrent with qBittorrent-nox over NordVPN, shows live speed, seeds, peers and time left, unpacks archives, imports the audio and then removes the torrent and its data. See [Torrent links and qBittorrent](#torrent-links-and-qbittorrent) and [Torrent search](#torrent-search).
 
 Tomify does not capture credentials, accept Google passwords, circumvent DRM or bypass access controls. Exported cookies are sensitive session credentials: they stay entirely on the media server and are never stored in D1, browser storage, frontend code, Worker assets, logs or API responses.
 
@@ -151,7 +151,7 @@ ssh -t tom@tomify "sudo cp /tmp/*.mjs /opt/tomify/recovery-agent/ && sudo system
 
 The `*.node-test.mjs` files are copied too; they are harmless and never loaded by the service. To confirm the new code is live, `grep` a string from the change in the deployed file (for example `ssh tom@tomify "grep -c import-remaining /opt/tomify/recovery-agent/index.mjs"` should print a non-zero count), then check `curl -s http://127.0.0.1:8788/health` on the host.
 
-A Worker that is newer than the agent is the usual cause of Recovery errors right after a deploy. The page reports that the recovery agent is out of date when the agent has no endpoint for a request (previously this showed as `not-found`); other symptoms include *Artist and title are required.* when adding artist-only or album-only wanted music, a Usenet search falling back to a single field, or *Unsupported recovery backend.* when adding a torrent link. The Worker still sends the legacy `searchMode` alongside `searchFields`, so an older agent keeps its closest single-field search rather than failing outright.
+A Worker that is newer than the agent is the usual cause of Recovery errors right after a deploy. The page reports that the recovery agent is out of date when the agent has no endpoint for a request (previously this showed as `not-found`); other symptoms include *Artist and title are required.* when adding artist-only or album-only wanted music, a Usenet search falling back to a single field, *Unsupported recovery backend.* when adding a torrent link, or **Search torrents** staying greyed out (its tooltip says to update the agent). The Worker still sends the legacy `searchMode` alongside `searchFields`, so an older agent keeps its closest single-field search rather than failing outright.
 
 The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and cache directories are `/var/lib/tomify-recovery` and `/var/cache/tomify-recovery`. The systemd sandbox grants write access only to those locations, `/srv/music-recovery`, and the optional YouTube cookie file; `/opt/tomify/secrets` as a whole remains read-only. A server-side Git checkout is not part of the current deployment.
 
@@ -301,7 +301,7 @@ After a reboot, `sudo journalctl -b -u tailscale-after-nordvpn` shows when it ra
 
 ### What goes over the VPN
 
-With this setup everything the box starts outbound goes through NordVPN except LAN traffic, inbound SSH and the tunnel: yt-dlp, Internet Archive downloads, NZBIndex and Newznab searches, SABnzbd's connections to the Usenet provider, artwork fetches and MusicBrainz lookups from the agent. Playback and the Worker's calls to the agent keep using the tunnel, so their speed is unchanged. If SABnzbd runs in Docker its traffic is routed the same way; if downloads stall after connecting, check that the container can still resolve DNS (`docker exec <container> getent hosts nzbindex.com`).
+With this setup everything the box starts outbound goes through NordVPN except LAN traffic, inbound SSH and the tunnel: yt-dlp, Internet Archive downloads, NZBIndex and Newznab searches, qBittorrent's torrent searches, SABnzbd's connections to the Usenet provider, artwork fetches and MusicBrainz lookups from the agent. Playback and the Worker's calls to the agent keep using the tunnel, so their speed is unchanged. If SABnzbd runs in Docker its traffic is routed the same way; if downloads stall after connecting, check that the container can still resolve DNS (`docker exec <container> getent hosts nzbindex.com`).
 
 ## Internet Archive backend
 
@@ -419,6 +419,29 @@ Links are validated on the agent: magnet links need a BitTorrent info hash, and 
 When a torrent downloads but its import fails, the torrent and its data stay in qBittorrent. To retry, paste the same link again, select it and confirm the import: the agent finds that torrent (by its info hash, or for a `.torrent` file link by the earlier failed job for the same link), moves it over to the new job, and imports it straight away without downloading again. It only does this for a torrent Tomify added that no other job is still using; otherwise qBittorrent refuses the duplicate as before. Deleting the failed item instead removes the torrent and its data.
 
 The same lawful-recovery rules as Usenet apply: only retrieve content you are authorised to copy.
+
+## Torrent search
+
+**Search torrents** sits next to **Search NZB** and uses the same Artist / Album / Track boxes. The agent asks qBittorrent-nox to run all its enabled search plugins in the Music category, waits up to 25 seconds for them, and returns up to 12 results. Only results with at least one seed are kept (plugins that cannot tell report no seed count, and those results are dropped too), sorted by seeds. Each result shows the site, seeds, peers and size, links to the site's details page, and is imported exactly like a pasted link once selected. Links to private addresses or with embedded credentials are dropped. A new torrent search replaces earlier torrent results and pasted links on that item that have not been imported.
+
+The search itself runs inside qBittorrent on the media server, so it leaves through NordVPN with the rest of the box's traffic. The agent first checks qBittorrent's connection status and refuses to search while qBittorrent reports it is offline, which is what happens when `nordlynx` (the interface it is bound to) is down. Search plugins are small Python scripts that fetch the search sites directly; they are not bound to `nordlynx` the way BitTorrent traffic is.
+
+### Installing search plugins
+
+qBittorrent needs Python 3 to run search plugins, and qBittorrent-nox may start with none installed. On the box:
+
+```bash
+sudo apt install python3
+QBT_PASSWORD=$(sudo grep -oP '^TOMIFY_QBITTORRENT_PASSWORD=\K.*' /etc/tomify/recovery-agent.env)
+curl -s -c /tmp/qbt.cookie --data-urlencode username=tomify --data-urlencode "password=$QBT_PASSWORD" http://127.0.0.1:8081/api/v2/auth/login; echo   # Ok.
+BASE=https://raw.githubusercontent.com/qbittorrent/search-plugins/master/nova3/engines
+curl -s -b /tmp/qbt.cookie --data-urlencode "sources=$BASE/piratebay.py|$BASE/limetorrents.py|$BASE/solidtorrents.py|$BASE/torrentscsv.py" http://127.0.0.1:8081/api/v2/search/installPlugin
+sleep 10
+curl -s -b /tmp/qbt.cookie http://127.0.0.1:8081/api/v2/search/plugins; echo   # each plugin listed with "enabled":true
+rm -f /tmp/qbt.cookie; unset QBT_PASSWORD
+```
+
+These are plugins from qBittorrent's official search-plugins repository; add or remove others the same way (`search/uninstallPlugin` with `names=`). No agent setting changes: once the updated agent is deployed, **Search torrents** is enabled whenever torrent links are. If a search reports *qBittorrent has no search plugins enabled*, rerun the commands above; *qBittorrent is offline* means NordVPN is not connected.
 
 ### Installing qBittorrent-nox on the Debian box
 
@@ -574,7 +597,7 @@ The result reports only whether the cookie session is configured and extraction 
 
 An acquisition backend exposes:
 
-- `POST /v1/search` with `{ backend, track, searchFields? }`, where `searchFields` is any non-empty subset of `artist`, `album` and `track` (legacy `searchMode` is still accepted), returning `{ candidates }`. For `backend: "torrent"` the body carries `link` instead, and the one candidate returned is that validated link.
+- `POST /v1/search` with `{ backend, track, searchFields? }`, where `searchFields` is any non-empty subset of `artist`, `album` and `track` (legacy `searchMode` is still accepted), returning `{ candidates }`. For `backend: "torrent"` the body either carries `link`, and the one candidate returned is that validated link, or no link, in which case qBittorrent's enabled search plugins are searched with the chosen fields and up to 12 results with at least one seed come back, best-seeded first (`provenance.seeds`, `peers`, `size`, `providerId: "qbittorrent-search"`). The torrent entry in `/v1/status` has `search: true` when the agent supports this.
 - `POST /v1/acquire` with `{ backend, candidate, track, artwork, authorisation }`, returning `{ path, quality, artwork, provenance }`.
 - For asynchronous Usenet and torrent acquisition, `POST /v1/acquire` returns an opaque job and `POST /v1/jobs/status` reports queued/downloading/completed/failed state, progress, and the final import result. Torrent jobs also report `details` (`downloadSpeed`, `uploadSpeed`, `seeds`, `seedsInSwarm`, `peers`, `peersInSwarm`, `eta`, `size`, `downloaded`).
 - `POST /v1/jobs/cancel` with `{ jobId }`, stopping a torrent job and removing the torrent and its data from qBittorrent. It waits for any import in progress and returns the `importedPaths` that import created, so they can be deleted too. Idempotent once the job is gone.

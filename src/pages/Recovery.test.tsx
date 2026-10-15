@@ -15,7 +15,7 @@ const backends = [
   { id: 'youtube', label: 'YouTube', available: true as const },
   { id: 'internet-archive', label: 'Internet Archive', available: true as const },
   { id: 'usenet', label: 'Usenet / NZB', available: true as const },
-  { id: 'torrent', label: 'Torrent link', available: true as const },
+  { id: 'torrent', label: 'Torrents', available: true as const, search: true },
 ]
 
 function item(overrides: Partial<RecoveryItem> = {}): RecoveryItem {
@@ -55,7 +55,7 @@ describe('Recovery page actions', () => {
     vi.mocked(recoveryApi.search).mockImplementation(() => new Promise(() => {}))
     renderRecovery()
     fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
-    const fields = screen.getByRole('group', { name: 'Usenet search fields' })
+    const fields = screen.getByRole('group', { name: 'NZB and torrent search fields' })
     const artist = within(fields).getByRole('checkbox', { name: 'Artist' })
     const album = within(fields).getByRole('checkbox', { name: 'Album' })
     const track = within(fields).getByRole('checkbox', { name: 'Track' })
@@ -71,7 +71,7 @@ describe('Recovery page actions', () => {
     vi.mocked(recoveryApi.search).mockImplementation(() => new Promise(() => {}))
     renderRecovery()
     fireEvent.click(await screen.findByRole('button', { name: /flood/i }))
-    const fields = screen.getByRole('group', { name: 'Usenet search fields' })
+    const fields = screen.getByRole('group', { name: 'NZB and torrent search fields' })
     expect(within(fields).getByRole('checkbox', { name: 'Track' })).toBeDisabled()
     const artist = within(fields).getByRole('checkbox', { name: 'Artist' })
     const album = within(fields).getByRole('checkbox', { name: 'Album' })
@@ -175,6 +175,27 @@ describe('Recovery page actions', () => {
     expect(await screen.findByText('Imported 19 tracks')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /lush life/i }))
     expect(screen.getAllByText('Imported 19 tracks').length).toBeGreaterThan(1)
+  })
+
+  it('searches torrents with the chosen fields and shows seeds, peers and size on each result', async () => {
+    const result = { id: 'torrent-2', backend: 'torrent' as const, externalId: 's', url: 'https://thepiratebay.org/description.php?id=1', title: 'Zara Larsson - Lush Life FLAC', channel: 'thepiratebay.org', official: false, matchScore: 80, selected: false, provenance: { raw: { providerId: 'qbittorrent-search', seeds: 42, peers: 3, size: 512_000_000 } } }
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item()], backends })
+    vi.mocked(recoveryApi.search).mockResolvedValue({ item: item({ candidates: [result] }) })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Search torrents' }))
+    expect(recoveryApi.search).toHaveBeenCalledWith('recovery-1', 'torrent', ['artist', 'track'])
+    expect(await screen.findByText('Torrent search found 1 result.')).toBeInTheDocument()
+    expect(screen.getByText(/42 seeds · 3 peers · 512 MB/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open candidate on the torrent site' })).toHaveAttribute('href', result.url)
+  })
+
+  it('keeps torrent search off when the recovery agent only accepts pasted links', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item()], backends: backends.map((backend) => backend.id === 'torrent' ? { ...backend, search: false } : backend) })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    expect(screen.getByRole('button', { name: 'Search torrents' })).toBeDisabled()
+    expect(screen.getByRole('textbox', { name: 'Torrent link' })).toBeEnabled()
   })
 
   it('adds a pasted torrent link and selects it for review straight away', async () => {
