@@ -65,6 +65,15 @@ For MP4/M4A, MP3 and FLAC, FFmpeg maps the preserved audio stream with `-c:a cop
 
 Artwork provenance records the provider and provider ID, original and final fetched URLs, fetched and final dimensions, source and final MIME types, acquisition time, `cover.jpg` path, storage mode and whether the derivative received embedded art.
 
+## Library album artwork
+
+Albums already in the Navidrome library can show Spotify artwork in place of their library cover. This uses the same Spotify client-credentials search as Recovery, but it never downloads the image or writes to the music server: Tomify stores the chosen Spotify image URL per Navidrome album ID in the D1 `album_artwork` table and draws it wherever that album, or a track from it, appears in Tomify (cards, album page, player, queue, now playing and the Media Session). If the Spotify image fails to load, the library cover is shown. Other Subsonic clients keep seeing the library cover. Because nothing is retained, this needs only `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, not `SPOTIFY_ARTWORK_EMBEDDING_ENABLED`.
+
+- **Album page:** *Edit metadata* shows an *Album artwork* panel. *Find Spotify artwork* lists up to six matches (artist and album similarity gates as above, with a retry that drops trailing edition or remaster brackets). Choosing one, or *Keep library artwork*, is a manual choice; *Undo my choice* removes it.
+- **Settings → Upgrade album artwork from Spotify:** walks every library album and applies the best match only when it is a square Spotify image of at least 600px with at least 85% confidence. Albums with a manual choice are skipped, and the run can be stopped at any time.
+
+API: `GET /api/album-artwork` (all overrides), `POST /api/album-artwork/lookup`, `/auto`, `/select` and `/reset`, each with `{ albumId, name, artist, year }` as needed. `/select` accepts only HTTPS Spotify image hosts.
+
 ## Components
 
 ```text

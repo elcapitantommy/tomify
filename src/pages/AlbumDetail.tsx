@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, Pencil, Play, Shuffle, X } from 'lucide-react'
 import { useParams } from 'react-router-dom'
+import { AlbumArtworkPicker } from '../components/AlbumArtworkPicker'
 import { AlbumCompleteness } from '../components/AlbumCompleteness'
 import { Artwork } from '../components/Artwork'
 import { ErrorState, SkeletonGrid } from '../components/States'
@@ -11,6 +12,7 @@ import { formatHours } from '../lib/format'
 import { collapseReleaseVariants, releaseDateInputValue, releaseDateLabel, releaseFamilyTitle, releaseTypeLabels, resolvedReleaseType, type ReleaseType } from '../lib/release-metadata'
 import { usePlayer } from '../stores/player'
 import { useReleaseMetadata } from '../stores/releaseMetadata'
+import { useAlbumArtwork } from '../stores/albumArtwork'
 
 export function AlbumDetail() {
   const { id = '' } = useParams()
@@ -19,6 +21,7 @@ export function AlbumDetail() {
   const saveRelease = useReleaseMetadata((state) => state.save)
   const enrichRelease = useReleaseMetadata((state) => state.enrich)
   const cloudStatus = useReleaseMetadata((state) => state.cloudStatus)
+  const artworkStatus = useAlbumArtwork((state) => state.status)
   const [editingMetadata, setEditingMetadata] = useState(false)
   const [savingMetadata, setSavingMetadata] = useState(false)
   const [refreshingMetadata, setRefreshingMetadata] = useState(false)
@@ -82,7 +85,7 @@ export function AlbumDetail() {
   if (!album) return null
 
   return <div className="page detail-page">
-    <header className="detail-hero"><Artwork id={album.coverArt ?? album.id} alt={groupTitle} size={1000}/><div><span className="eyebrow">{releaseTypeLabels[releaseType]}</span><h1>{groupTitle}</h1><p className="detail-artist">{album.artist}</p><p>{releaseDate && `${releaseDate} · `}{fullVersions.length > 1 ? `${fullVersions.length} versions · ` : ''}{allTracks.length} songs · {formatHours(allTracks.reduce((sum, t) => sum + (t.duration ?? 0), 0))}</p>{override?.source === 'musicbrainz' && <p className="metadata-source">MusicBrainz classified · {override.musicBrainzId ?? 'matched release'}</p>}<div className="hero-actions"><button className="button primary" onClick={() => playAllVersions()}><Play fill="currentColor"/>Play</button><button className="button secondary" onClick={() => playAllVersions(true)}><Shuffle/>Shuffle</button>{cloudStatus === 'cloud' && <button className="button secondary" onClick={() => setEditingMetadata((value) => !value)}>{editingMetadata ? <X/> : <Pencil/>}{editingMetadata ? 'Close metadata' : 'Edit metadata'}</button>}</div></div></header>
+    <header className="detail-hero"><Artwork id={album.coverArt ?? album.id} albumId={album.id} alt={groupTitle} size={1000}/><div><span className="eyebrow">{releaseTypeLabels[releaseType]}</span><h1>{groupTitle}</h1><p className="detail-artist">{album.artist}</p><p>{releaseDate && `${releaseDate} · `}{fullVersions.length > 1 ? `${fullVersions.length} versions · ` : ''}{allTracks.length} songs · {formatHours(allTracks.reduce((sum, t) => sum + (t.duration ?? 0), 0))}</p>{override?.source === 'musicbrainz' && <p className="metadata-source">MusicBrainz classified · {override.musicBrainzId ?? 'matched release'}</p>}<div className="hero-actions"><button className="button primary" onClick={() => playAllVersions()}><Play fill="currentColor"/>Play</button><button className="button secondary" onClick={() => playAllVersions(true)}><Shuffle/>Shuffle</button>{cloudStatus === 'cloud' && <button className="button secondary" onClick={() => setEditingMetadata((value) => !value)}>{editingMetadata ? <X/> : <Pencil/>}{editingMetadata ? 'Close metadata' : 'Edit metadata'}</button>}</div></div></header>
 
     {editingMetadata && cloudStatus === 'cloud' && <section className="release-editor cloud-only" aria-label="Release metadata">
       <div className="release-editor-title"><Check/><div><strong>Release metadata</strong><small>{override?.source === 'musicbrainz' ? 'Automatically matched from MusicBrainz and saved to Tomify.' : override?.source === 'manual' ? 'Manual override saved to Tomify.' : 'No cloud classification yet.'}</small></div></div>
@@ -90,6 +93,7 @@ export function AlbumDetail() {
       <label><span>Release date</span><input disabled={savingMetadata} type="date" value={releaseDateInputValue(album, override)} onChange={(event) => void saveDate(event.target.value)}/></label>
       <div className="release-editor-actions"><button className="button secondary" disabled={refreshingMetadata || savingMetadata} onClick={() => void refreshMetadata()}>{refreshingMetadata ? 'Checking MusicBrainz…' : override?.source === 'manual' ? 'Replace with MusicBrainz' : 'Refresh from MusicBrainz'}</button></div>
     </section>}
+    {editingMetadata && artworkStatus === 'ready' && <AlbumArtworkPicker album={album}/>}
 
     {!versionsLoading && cloudStatus === 'cloud' && <AlbumCompleteness album={album} tracks={allTracks}/>}
 
