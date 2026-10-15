@@ -26,6 +26,7 @@ export const recoveryApi = {
   select: (id: string, candidateId: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/select`, { method: 'POST', body: JSON.stringify({ candidateId }) }),
   acquire: (id: string, candidateId: string, rightsBasis: string, metadataChoices: RecoveryMetadataChoices, artworkCandidateId: string | null) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/acquire`, { method: 'POST', body: JSON.stringify({ candidateId, rightsBasis, metadataChoices, artworkCandidateId, confirmedAuthorised: true }) }),
   updateStatus: (id: string, status: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  importRemaining: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/import-remaining`, { method: 'POST' }),
   pollJob: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/job`),
   delete: (id: string) => request<{ deleted: true; filesRemoved: boolean }>(`/api/recovery/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }

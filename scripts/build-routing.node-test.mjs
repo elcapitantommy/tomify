@@ -186,10 +186,52 @@ test('Recovery accepts wanted music from any mix of artist, album and track and 
     assert.equal((await post(`/${item.id}/search`, { backend: 'usenet', searchFields: ['album', 'artist'] })).status, 200)
     assert.equal((await post(`/${item.id}/search`, { backend: 'usenet', searchMode: 'release' })).status, 200)
     assert.deepEqual(agentRequests.map(({ searchFields, searchMode }) => ({ searchFields, searchMode })), [
-      { searchFields: ['artist', 'album'], searchMode: undefined },
+      { searchFields: ['artist', 'album'], searchMode: 'release' },
       { searchFields: undefined, searchMode: 'release' },
     ])
     assert.deepEqual(agentRequests[0].track, { artist: 'They Might Be Giants', title: '', album: 'Flood', duration: null })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Recovery imports the rest of a single-track Usenet download and keeps every track for deletion', async () => {
+  const candidate = { id: 'candidate-1', backend: 'usenet', selected: 1, importedPath: '/recovery/Recovered Tracks/Birdhouse in Your Soul.mp3', provenanceJson: JSON.stringify({ source: 'usenet', searchMode: 'track', job: { id: 'job-1', status: 'completed', progress: 100 }, importedCount: 1, importedTracks: [{ path: '/recovery/Recovered Tracks/Birdhouse in Your Soul.mp3' }] }) }
+  const updates = []
+  const db = {
+    prepare: (sql) => ({
+      sql, args: [],
+      bind(...args) { this.args = args; return this },
+      async first() { return sql.startsWith('SELECT id, artist, title, album') ? { id: 'recovery-1', artist: 'They Might Be Giants', title: 'Birdhouse in Your Soul', status: 'needs-upgrade' } : null },
+      async all() { return { results: sql.includes('FROM recovery_candidates') ? [candidate] : [] } },
+      async run() { if (sql.startsWith('UPDATE recovery_candidates SET provenance_json')) { updates.push(this.args); candidate.provenanceJson = this.args[0] } return {} },
+    }),
+    async batch() { return [] },
+  }
+  const agentRequests = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/v1/jobs/import-remaining') {
+      agentRequests.push(JSON.parse(init.body))
+      return Response.json({ result: { importedCount: 2, artist: 'They Might Be Giants', album: 'Flood', importedTracks: [{ path: '/recovery/They Might Be Giants/Flood/01 - Theme from Flood.mp3', title: 'Theme from Flood' }, { path: '/recovery/They Might Be Giants/Flood/03 - Lucky Ball and Chain.mp3', title: 'Lucky Ball and Chain' }] } })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  try {
+    const env = { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' }
+    const headers = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' }
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/import-remaining', { method: 'POST', headers }), env)
+    assert.equal(response.status, 200)
+    assert.deepEqual(agentRequests, [{ jobId: 'job-1' }])
+    const provenance = JSON.parse(updates[0][0])
+    assert.equal(provenance.importedCount, 3)
+    assert.deepEqual(provenance.importedTracks.map((track) => track.path.split('/').pop()), ['Birdhouse in Your Soul.mp3', '01 - Theme from Flood.mp3', '03 - Lucky Ball and Chain.mp3'])
+    assert.deepEqual(provenance.importedRelease, { artist: 'They Might Be Giants', album: 'Flood' })
+    assert.equal(typeof provenance.remainingImportedAt, 'string')
+    const { item } = await response.json()
+    assert.equal(item.candidates[0].provenance.importedCount, 3)
   } finally {
     globalThis.fetch = originalFetch
   }

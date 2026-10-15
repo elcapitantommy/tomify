@@ -69,6 +69,8 @@ export interface RecoveryProvenance {
   importedCount?: number
   importedTracks?: Array<{ path?: string | null; originalPath?: string | null; artist?: string | null; albumArtist?: string | null; album?: string | null; title?: string | null; trackNumber?: number | null; discNumber?: number | null; quality?: AudioQuality | null }>
   importedRelease?: { artist?: string | null; album?: string | null } | null
+  remainingImportedAt?: string | null
+  searchMode?: RecoverySearchMode
   job?: { id: string; status: 'queued' | 'downloading' | 'completed' | 'failed'; progress: number; provider?: string; downloader?: string; message?: string | null; error?: string | null } | null
   [key: string]: unknown
 }
@@ -207,4 +209,11 @@ export function scoreRecoveryCandidate(
 export function qualityLabel(candidate: AudioQuality): string {
   const values = [candidate.codec?.toUpperCase(), candidate.bitrate ? `${Math.round(candidate.bitrate / 1000)} kbps` : null, candidate.sampleRate ? `${(candidate.sampleRate / 1000).toFixed(1)} kHz` : null, candidate.channels ? `${candidate.channels} ch` : null]
   return values.filter(Boolean).join(' · ') || 'Quality measured after import'
+}
+
+/** A Usenet import that took one track from a download that may hold more, e.g. a whole album. */
+export function canImportRestOfDownload(candidate: RecoveryCandidate) {
+  const provenance = candidate.provenance
+  return candidate.backend === 'usenet' && candidate.selected && Boolean(candidate.importedPath) && Boolean(provenance?.job?.id)
+    && provenance?.searchMode !== 'release' && !provenance?.remainingImportedAt && Number(provenance?.importedCount || 1) <= 1
 }

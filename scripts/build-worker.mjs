@@ -480,7 +480,7 @@ export default {
       return json({ item: await recoveryItem(env.TOMIFY_DB, username, id) }, 201)
     }
 
-    const recoveryMatch = pathname.match(/^\\/api\\/recovery\\/([^/]+)(?:\\/(search|select|acquire|job))?$/)
+    const recoveryMatch = pathname.match(/^\\/api\\/recovery\\/([^/]+)(?:\\/(search|select|acquire|job|import-remaining))?$/)
     if (recoveryMatch && request.method === 'DELETE' && !recoveryMatch[2]) {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request)
@@ -532,9 +532,10 @@ export default {
       const usenetFields = ['artist', 'album', 'track']
       const searchFields = Array.isArray(body?.searchFields) ? usenetFields.filter((field) => body.searchFields.includes(field)) : null
       if (backend === 'usenet' && searchFields && !searchFields.length) return json({ error: 'invalid-search-fields', message: 'Choose at least one of artist, album or track to search Usenet.' }, 400)
-      const searchMode = searchFields ? null : ['artist', 'track', 'release'].includes(body?.searchMode) ? body.searchMode : 'track'
+      // The legacy searchMode rides along so a recovery agent older than searchFields still runs its closest single-field search.
+      const searchMode = searchFields ? (searchFields.includes('track') ? 'track' : searchFields.includes('album') ? 'release' : 'artist') : ['artist', 'track', 'release'].includes(body?.searchMode) ? body.searchMode : 'track'
       try {
-        const result = await callRecoveryAgent(env, '/v1/search', { backend, ...(searchFields ? { searchFields } : { searchMode }), track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
+        const result = await callRecoveryAgent(env, '/v1/search', { backend, searchMode, ...(searchFields ? { searchFields } : {}), track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
         const candidates = Array.isArray(result.candidates) ? result.candidates.slice(0, 12) : []
         await env.TOMIFY_DB.prepare('DELETE FROM recovery_candidates WHERE recovery_id = ? AND backend = ? AND imported_path IS NULL').bind(item.id, backend).run()
         const inserts = candidates.filter((candidate) => candidate && typeof candidate.url === 'string' && typeof candidate.externalId === 'string').map((candidate) => {
@@ -614,6 +615,28 @@ export default {
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Could not poll the Usenet recovery job.'
         return json({ error: 'recovery-job-poll-failed', message }, 502)
+      }
+    }
+
+    if (recoveryMatch && recoveryMatch[2] === 'import-remaining' && request.method === 'POST') {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      await ensureRecoveryTables(env.TOMIFY_DB)
+      const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
+      const candidate = item?.candidates.find((value) => value.selected && value.backend === 'usenet' && value.importedPath && value.provenance?.job?.id)
+      if (!item || !candidate) return json({ error: 'recovery-download-not-found', message: 'Only a completed Usenet import can have the rest of its download imported.' }, 404)
+      try {
+        const { result } = await callRecoveryAgent(env, '/v1/jobs/import-remaining', { jobId: candidate.provenance.job.id })
+        const added = Array.isArray(result?.importedTracks) ? result.importedTracks.map((track) => ({ path: track?.path || null, originalPath: track?.originalPath || null, artist: track?.artist || null, albumArtist: track?.albumArtist || null, album: track?.album || null, title: track?.title || null, trackNumber: track?.trackNumber || null, discNumber: track?.discNumber || null, quality: track?.quality || null, derivative: track?.derivative || null })) : []
+        // Keep the added tracks on the candidate so deleting the item also removes them.
+        const importedTracks = [...(Array.isArray(candidate.provenance.importedTracks) ? candidate.provenance.importedTracks : []), ...added]
+        const provenance = { ...candidate.provenance, importedTracks, importedCount: Math.max(importedTracks.length, Number(candidate.provenance.importedCount) || 1), importedRelease: { artist: result?.artist || null, album: result?.album || null }, remainingImportedAt: new Date().toISOString() }
+        await env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET provenance_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(JSON.stringify(provenance), candidate.id).run()
+        return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not import the rest of the download.'
+        return json({ error: 'recovery-import-remaining-failed', message }, 502)
       }
     }
 
