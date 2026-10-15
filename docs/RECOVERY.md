@@ -127,7 +127,7 @@ Connecting the NordVPN Linux client with default settings breaks both: its firew
 
 ### If you are locked out
 
-A power cycle alone is not enough when autoconnect is on, because NordVPN reconnects during boot. Use a keyboard and monitor on the box if you can. Otherwise, start this loop on the Windows PC before powering the box back on; it retries until SSH answers in the gap before NordVPN connects:
+If `nordvpnd` is disabled at boot (`sudo systemctl disable nordvpnd`, as the steps below do until the setup is proven), a power cycle brings the box back with the VPN off. If it is still enabled and autoconnect is on, a power cycle alone is not enough, because NordVPN reconnects during boot. Use a keyboard and monitor on the box if you can. Otherwise, from the LAN, start this loop on the Windows PC before powering the box back on; it retries until SSH answers in the gap before NordVPN connects:
 
 ```powershell
 while ($true) { ssh -o ConnectTimeout=3 -t tom@tomify "sudo systemctl stop nordvpnd" ; if ($LASTEXITCODE -eq 0) { break } ; Start-Sleep 1 }
@@ -136,8 +136,9 @@ while ($true) { ssh -o ConnectTimeout=3 -t tom@tomify "sudo systemctl stop nordv
 Once you have a shell, stop NordVPN from taking the box again before changing anything else:
 
 ```bash
+sudo systemctl disable nordvpnd  # never start NordVPN at boot until the setup below is proven
 sudo systemctl stop nordvpnd     # drops the VPN and its firewall rules (skip if the loop above already did this)
-sudo systemctl start nordvpnd
+sudo systemctl start nordvpnd    # runs it for this session only, disconnected
 nordvpn disconnect
 nordvpn set autoconnect off
 nordvpn set killswitch off
@@ -179,14 +180,15 @@ Tailscale addresses (`100.x.y.z`) sit in the carrier-grade NAT range, which LAN 
 
 ### Connect with a fail-safe
 
-Arm an automatic stop before the first connection, so a mistake undoes itself after ten minutes instead of needing another power cycle:
+Arm an automatic reboot before the first connection, so a mistake undoes itself after ten minutes instead of needing someone at the box. With `nordvpnd` disabled at boot, the reboot always comes back with the VPN off; stopping the service alone has been seen to leave Tailscale unreachable:
 
 ```bash
-sudo systemd-run --on-active=10min --unit=nordvpn-failsafe /bin/systemctl stop nordvpnd
+systemctl is-enabled nordvpnd                   # must say disabled, or the reboot reconnects the VPN
+sudo systemd-run --on-active=10min --unit=nordvpn-failsafe /bin/systemctl reboot
 nordvpn connect
 ```
 
-From another terminal on the Windows PC, check that a **new** SSH session opens (`ssh tom@tomify`), then on the box:
+From another terminal on the Windows PC, check that a **new** SSH session opens (`ssh tom@tomify`; if that name resolves to the box's Tailscale address this also proves Tailscale works), then on the box:
 
 ```bash
 nordvpn status                                  # Connected
@@ -200,6 +202,7 @@ Finally open Recovery on the site and run a search. If everything works, cancel 
 
 ```bash
 sudo systemctl stop nordvpn-failsafe.timer
+sudo systemctl enable nordvpnd
 nordvpn set autoconnect on
 nordvpn set killswitch on        # optional: blocks downloads if the VPN drops; the allowlist still applies
 ```
