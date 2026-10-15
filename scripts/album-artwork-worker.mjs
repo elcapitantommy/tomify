@@ -1,22 +1,27 @@
-// Album artwork overrides: looks up Spotify artwork for albums already in the Navidrome
-// library and stores the chosen image per album in D1. Navidrome's own files are never
-// touched; Tomify shows the override instead of getCoverArt wherever it draws that album.
-// The pure helpers are exported for tests; handleAlbumArtworkRequest relies on Worker
-// globals (authenticate, json, spotifyAccessToken, spotifyTokenCache, rankArtworkCandidates,
-// metadataTextSimilarity, artworkYearScore, cleanReleaseTitle, selectRelease, ensureReleaseTable).
+// Album artwork overrides: looks up catalogue artwork (Apple, then Deezer, then Spotify when
+// it is configured and permitted) for albums already in the Navidrome library and stores the
+// chosen image URL per album in D1. Navidrome's own files are never touched; Tomify shows the
+// override instead of getCoverArt wherever it draws that album. The pure helpers are exported
+// for tests; handleAlbumArtworkRequest relies on Worker globals (authenticate, json,
+// spotifyAccessToken, spotifyTokenCache, spotifyUserToken, rankArtworkCandidates,
+// metadataTextSimilarity, artworkYearScore, cleanReleaseTitle, selectRelease,
+// ensureReleaseTable).
 
 export const albumArtworkHosts = ['i.scdn.co', 'mosaic.scdn.co', 'image-cdn-ak.spotifycdn.com', 'image-cdn-fa.spotifycdn.com']
+export const albumArtworkHostSuffixes = ['.mzstatic.com', '.dzcdn.net']
+export const albumArtworkProviders = ['apple', 'deezer', 'spotify']
 
 export function isAlbumArtworkUrl(value) {
   try {
     const url = new URL(String(value || ''))
-    return url.protocol === 'https:' && albumArtworkHosts.includes(url.hostname.toLowerCase())
+    const hostname = url.hostname.toLowerCase()
+    return url.protocol === 'https:' && (albumArtworkHosts.includes(hostname) || albumArtworkHostSuffixes.some((suffix) => hostname.endsWith(suffix)))
   } catch {
     return false
   }
 }
 
-// Spotify often names the edition ("Abbey Road (Remastered 2009)", "Flood - Deluxe Edition")
+// Catalogues often name the edition ("Abbey Road (Remastered 2009)", "Flood - Deluxe Edition")
 // while a library folder does not, or the other way round, so titles are also compared
 // with trailing bracketed or dashed edition qualifiers removed.
 export function baseAlbumTitle(name) {
@@ -36,25 +41,41 @@ export function albumArtworkSearchQueries(album, artist) {
   return [...new Set([`album:${base} artist:${artist}`, `${base} ${artist}`])]
 }
 
-// Scores one Spotify album search result against a library album. `similarity` and
-// `yearScore` are the Worker's metadataTextSimilarity and artworkYearScore.
-export function spotifyAlbumCandidate(wanted, album, similarity, yearScore) {
-  const artists = (Array.isArray(album?.artists) ? album.artists : []).map((artist) => artist?.name).filter(Boolean)
-  const artistSimilarity = Math.max(0, similarity(wanted.artist, artists.join(' ')), ...artists.map((name) => similarity(wanted.artist, name)))
-  // An exact edition match ranks slightly above a match on the base title alone.
-  const albumSimilarity = Math.max(similarity(wanted.album, album?.name), similarity(baseAlbumTitle(wanted.album), baseAlbumTitle(album?.name)) * 0.96)
-  if (artistSimilarity < 0.82 || albumSimilarity < 0.8) return null
-  const image = (Array.isArray(album.images) ? album.images : []).slice().sort((left, right) => Number(right.width || 0) - Number(left.width || 0))[0]
-  if (!isAlbumArtworkUrl(image?.url)) return null
-  const confidence = Math.round(artistSimilarity * 50 + albumSimilarity * 40 + yearScore(wanted.releaseDate, album.release_date) * 10)
-  return { id: 'spotify:' + album.id, provider: 'spotify', providerLabel: 'Spotify', providerId: album.id, url: image.url, previewUrl: image.url, width: image.width || null, height: image.height || null, confidence, artist: artists.join(', ') || null, album: album.name || null, releaseDate: album.release_date || null, storeUrl: album.external_urls?.spotify || null, selectable: true, unavailableReason: null }
+// Each catalogue's search result is mapped to one shape before scoring.
+export function spotifyAlbumResult(album) {
+  const image = (Array.isArray(album?.images) ? album.images : []).slice().sort((left, right) => Number(right.width || 0) - Number(left.width || 0))[0]
+  return { provider: 'spotify', providerLabel: 'Spotify', id: album?.id, name: album?.name, artists: (Array.isArray(album?.artists) ? album.artists : []).map((artist) => artist?.name), releaseDate: album?.release_date, image: image ? { url: image.url, width: image.width, height: image.height } : null, storeUrl: album?.external_urls?.spotify }
 }
 
-// Automatic replacement only takes a confident, clean square Spotify image of at least 600px.
+// Apple serves any size up to the original from the same path, so the 100px search thumbnail is rewritten to 1200px.
+export function appleAlbumResult(result) {
+  const thumbnail = String(result?.artworkUrl100 || '')
+  const url = thumbnail.replace(/^http:/, 'https:').replace(/\d+x\d+(?=[^/]*\.(?:jpg|jpeg|png|webp)(?:\?|$))/i, '1200x1200')
+  return { provider: 'apple', providerLabel: 'Apple', id: result?.collectionId == null ? null : String(result.collectionId), name: result?.collectionName, artists: [result?.artistName], releaseDate: result?.releaseDate, image: thumbnail ? { url, width: 1200, height: 1200 } : null, storeUrl: result?.collectionViewUrl }
+}
+
+export function deezerAlbumResult(album) {
+  return { provider: 'deezer', providerLabel: 'Deezer', id: album?.id == null ? null : String(album.id), name: album?.title, artists: [album?.artist?.name], releaseDate: album?.release_date, image: album?.cover_xl ? { url: album.cover_xl, width: 1000, height: 1000 } : null, storeUrl: album?.link }
+}
+
+// Scores one mapped search result against a library album. `similarity` and `yearScore`
+// are the Worker's metadataTextSimilarity and artworkYearScore.
+export function albumArtworkCandidate(wanted, result, similarity, yearScore) {
+  const artists = (Array.isArray(result?.artists) ? result.artists : []).filter(Boolean)
+  if (!result?.id || !artists.length) return null
+  const artistSimilarity = Math.max(similarity(wanted.artist, artists.join(' ')), ...artists.map((name) => similarity(wanted.artist, name)))
+  // An exact edition match ranks slightly above a match on the base title alone.
+  const albumSimilarity = Math.max(similarity(wanted.album, result.name), similarity(baseAlbumTitle(wanted.album), baseAlbumTitle(result.name)) * 0.96)
+  if (artistSimilarity < 0.82 || albumSimilarity < 0.8 || !isAlbumArtworkUrl(result.image?.url)) return null
+  const confidence = Math.round(artistSimilarity * 50 + albumSimilarity * 40 + yearScore(wanted.releaseDate, result.releaseDate) * 10)
+  return { id: result.provider + ':' + result.id, provider: result.provider, providerLabel: result.providerLabel, providerId: result.id, url: result.image.url, previewUrl: result.image.url, width: Number(result.image.width) || null, height: Number(result.image.height) || null, confidence, artist: artists.join(', '), album: result.name || null, releaseDate: result.releaseDate || null, storeUrl: result.storeUrl || null, selectable: true, unavailableReason: null }
+}
+
+// Automatic replacement only takes a confident, clean square catalogue image of at least 600px.
 // Anything weaker is left for the album page, where a person can pick or decline it.
 export function chooseAutomaticAlbumArtwork(candidates, minimumConfidence = 85) {
   return (Array.isArray(candidates) ? candidates : []).find((candidate) =>
-    candidate?.provider === 'spotify' && isAlbumArtworkUrl(candidate.url) && candidate.square && Number(candidate.minimumDimension || 0) >= 600 && Number(candidate.confidence || 0) >= minimumConfidence) || null
+    albumArtworkProviders.includes(candidate?.provider) && isAlbumArtworkUrl(candidate.url) && candidate.square && Number(candidate.minimumDimension || 0) >= 600 && Number(candidate.confidence || 0) >= minimumConfidence) || null
 }
 
 export function albumArtworkRow(row) {
@@ -79,13 +100,22 @@ async function selectAlbumArtwork(db, albumId) {
 
 async function saveAlbumArtwork(db, albumId, artwork, source, username) {
   await db.prepare('INSERT INTO album_artwork (album_id, provider, provider_id, url, width, height, confidence, source, provider_album, provider_artist, store_url, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?) ON CONFLICT(album_id) DO UPDATE SET provider = excluded.provider, provider_id = excluded.provider_id, url = excluded.url, width = excluded.width, height = excluded.height, confidence = excluded.confidence, source = excluded.source, provider_album = excluded.provider_album, provider_artist = excluded.provider_artist, store_url = excluded.store_url, updated_at = CURRENT_TIMESTAMP, updated_by = excluded.updated_by')
-    .bind(albumId, artwork.provider, artwork.providerId || null, artwork.url || null, Number(artwork.width) || null, Number(artwork.height) || null, artwork.confidence == null ? null : Math.round(Number(artwork.confidence)) || null, source, artwork.album ? String(artwork.album).slice(0, 240) : null, artwork.artist ? String(artwork.artist).slice(0, 240) : null, /^https:\/\/open\.spotify\.com\//.test(String(artwork.storeUrl || '')) ? artwork.storeUrl : null, username).run()
+    .bind(albumId, artwork.provider, artwork.providerId || null, artwork.url || null, Number(artwork.width) || null, Number(artwork.height) || null, artwork.confidence == null ? null : Math.round(Number(artwork.confidence)) || null, source, artwork.album ? String(artwork.album).slice(0, 240) : null, artwork.artist ? String(artwork.artist).slice(0, 240) : null, /^https:\/\/(?:open\.spotify\.com|music\.apple\.com|www\.deezer\.com)\//.test(String(artwork.storeUrl || '')) ? artwork.storeUrl : null, username).run()
   return selectAlbumArtwork(db, albumId)
 }
 
-async function searchSpotifyAlbums(env, query) {
+// Spotify's 2026 Development Mode rules can refuse app-only (client credentials) tokens for
+// search, so the connected Spotify account from playlist import is preferred when there is one.
+async function spotifySearchToken(env, db, username, forceRefresh) {
+  try { return { token: await spotifyUserToken(env, db, username, forceRefresh), account: true } }
+  catch { /* not connected, or token storage unavailable */ }
   const token = await spotifyAccessToken(env)
   if (!token) throw Object.assign(new Error('Spotify rejected the server credentials.'), { code: 'spotify-auth-failed' })
+  return { token, account: false }
+}
+
+async function searchSpotifyAlbums(env, db, username, query, refreshed = false) {
+  const { token, account } = await spotifySearchToken(env, db, username, refreshed)
   const url = new URL('https://api.spotify.com/v1/search')
   url.searchParams.set('q', query)
   url.searchParams.set('type', 'album')
@@ -93,21 +123,80 @@ async function searchSpotifyAlbums(env, query) {
   url.searchParams.set('market', String(env.SPOTIFY_MARKET || 'GB').slice(0, 2).toUpperCase())
   const response = await fetch(url, { headers: { authorization: 'Bearer ' + token, accept: 'application/json' } })
   if (response.status === 429) throw Object.assign(new Error('Spotify is rate limiting Tomify.'), { code: 'spotify-rate-limited', retryAfter: Math.min(120, Math.max(1, Number(response.headers.get('retry-after')) || 5)) })
-  if (response.status === 401) spotifyTokenCache = null
-  if (!response.ok) throw Object.assign(new Error('Spotify search returned HTTP ' + response.status + '.'), { code: 'spotify-error' })
-  const body = await response.json()
+  if (response.status === 401 && !refreshed) { if (!account) spotifyTokenCache = null; return searchSpotifyAlbums(env, db, username, query, true) }
+  const body = await response.json().catch(() => null)
+  if (!response.ok) {
+    const detail = typeof body?.error?.message === 'string' ? ': ' + body.error.message.slice(0, 200).replace(/[.\s]+$/, '') : ''
+    const hint = response.status === 403 ? (account ? ' Since March 2026 Spotify refuses Development Mode apps whose owner has no Premium subscription.' : ' Connect Spotify under Playlists > Import so Tomify can search as your account.') : ''
+    throw Object.assign(new Error('Spotify search returned HTTP ' + response.status + detail + '.' + hint), { code: response.status === 403 ? 'spotify-forbidden' : 'spotify-error' })
+  }
   return Array.isArray(body?.albums?.items) ? body.albums.items.filter(Boolean) : []
 }
 
-async function lookupAlbumArtwork(env, db, album) {
-  const releaseDate = (await selectRelease(db, album.albumId))?.releaseDate || (album.year ? String(album.year) : null)
-  const wanted = { artist: album.artist, album: cleanReleaseTitle(album.name), releaseDate }
-  for (const query of albumArtworkSearchQueries(wanted.album, wanted.artist)) {
-    const items = await searchSpotifyAlbums(env, query)
-    const candidates = rankArtworkCandidates(items.map((item) => spotifyAlbumCandidate(wanted, item, metadataTextSimilarity, artworkYearScore)).filter(Boolean)).slice(0, 6)
-    if (candidates.length) return candidates
+async function searchAppleAlbums(env, wanted) {
+  const url = new URL('https://itunes.apple.com/search')
+  url.searchParams.set('term', baseAlbumTitle(wanted.album) + ' ' + wanted.artist)
+  url.searchParams.set('media', 'music')
+  url.searchParams.set('entity', 'album')
+  url.searchParams.set('limit', '25')
+  url.searchParams.set('country', String(env.APPLE_CATALOGUE_COUNTRY || 'GB').slice(0, 2).toUpperCase())
+  const response = await fetch(url, { headers: { accept: 'application/json' } })
+  // Apple allows roughly 20 searches a minute and answers 403 or 429 beyond that.
+  if (response.status === 403 || response.status === 429) throw Object.assign(new Error('Apple is rate limiting Tomify.'), { code: 'rate-limited', retryAfter: 60 })
+  if (!response.ok) throw Object.assign(new Error('Apple search returned HTTP ' + response.status + '.'), { code: 'apple-error' })
+  const body = await response.json().catch(() => null)
+  return (Array.isArray(body?.results) ? body.results : []).map(appleAlbumResult)
+}
+
+async function searchDeezerAlbums(env, wanted) {
+  const base = baseAlbumTitle(wanted.album)
+  for (const query of [`artist:"${wanted.artist.replace(/"/g, '')}" album:"${base.replace(/"/g, '')}"`, `${base} ${wanted.artist}`]) {
+    const url = new URL('https://api.deezer.com/search/album')
+    url.searchParams.set('q', query)
+    url.searchParams.set('limit', '25')
+    const response = await fetch(url, { headers: { accept: 'application/json' } })
+    if (response.status === 429) throw Object.assign(new Error('Deezer is rate limiting Tomify.'), { code: 'rate-limited', retryAfter: 5 })
+    if (!response.ok) throw Object.assign(new Error('Deezer search returned HTTP ' + response.status + '.'), { code: 'deezer-error' })
+    const body = await response.json().catch(() => null)
+    // Deezer reports its quota as an error object inside a 200 response.
+    if (body?.error) throw Object.assign(new Error('Deezer search failed: ' + String(body.error.message || body.error.type || 'unknown error').slice(0, 200)), body.error.code === 4 ? { code: 'rate-limited', retryAfter: 5 } : { code: 'deezer-error' })
+    const results = (Array.isArray(body?.data) ? body.data : []).map(deezerAlbumResult)
+    if (results.length) return results
   }
   return []
+}
+
+async function searchSpotifyArtwork(env, db, username, wanted) {
+  for (const query of albumArtworkSearchQueries(wanted.album, wanted.artist)) {
+    const results = (await searchSpotifyAlbums(env, db, username, query)).map(spotifyAlbumResult)
+    if (results.length) return results
+  }
+  return []
+}
+
+// Providers are tried in order. A provider that fails is skipped while another still
+// answers; only when every provider fails is the error reported, a rate limit first.
+async function lookupAlbumArtwork(env, db, username, album, { stopAtConfident = false } = {}) {
+  const releaseDate = (await selectRelease(db, album.albumId))?.releaseDate || (album.year ? String(album.year) : null)
+  const wanted = { artist: album.artist, album: cleanReleaseTitle(album.name), releaseDate }
+  const searches = [() => searchAppleAlbums(env, wanted), () => searchDeezerAlbums(env, wanted)]
+  if (env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET) searches.push(() => searchSpotifyArtwork(env, db, username, wanted))
+  let candidates = []
+  const errors = []
+  for (const search of searches) {
+    try {
+      const found = (await search()).map((result) => albumArtworkCandidate(wanted, result, metadataTextSimilarity, artworkYearScore)).filter(Boolean)
+      candidates = rankArtworkCandidates([...candidates, ...found]).slice(0, 6)
+    } catch (error) { errors.push(error) }
+    if (stopAtConfident && chooseAutomaticAlbumArtwork(candidates)) break
+  }
+  if (!candidates.length && errors.length === searches.length) {
+    // When every catalogue is rate limiting, retry as soon as the first one allows it.
+    const limited = errors.filter((error) => error?.code === 'rate-limited' || error?.code === 'spotify-rate-limited')
+    if (limited.length === errors.length) throw Object.assign(new Error(limited.map((error) => error.message).join(' ')), { code: 'rate-limited', retryAfter: Math.min(...limited.map((error) => Number(error.retryAfter) || 5)) })
+    throw Object.assign(new Error(errors.map((error) => error?.message || 'Search failed.').join(' ')), { code: errors.find((error) => error?.code && !String(error.code).includes('rate-limited'))?.code || 'artwork-unavailable' })
+  }
+  return candidates
 }
 
 async function handleAlbumArtworkRequest(request, env, url) {
@@ -120,7 +209,7 @@ async function handleAlbumArtworkRequest(request, env, url) {
 
   if (url.pathname === '/api/album-artwork' && request.method === 'GET') {
     const rows = await db.prepare('SELECT ' + albumArtworkColumns + ' FROM album_artwork ORDER BY album_id').all()
-    return json({ items: (rows.results || []).map(albumArtworkRow), spotifyAvailable: Boolean(env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET) })
+    return json({ items: (rows.results || []).map(albumArtworkRow), providers: Boolean(env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET) ? albumArtworkProviders : albumArtworkProviders.filter((provider) => provider !== 'spotify') })
   }
 
   if (request.method !== 'POST') return json({ error: 'not-found' }, 404)
@@ -129,7 +218,6 @@ async function handleAlbumArtworkRequest(request, env, url) {
   if (!albumId) return json({ error: 'invalid-album' }, 400)
 
   if (url.pathname === '/api/album-artwork/lookup' || url.pathname === '/api/album-artwork/auto') {
-    if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) return json({ error: 'spotify-unavailable', message: 'Spotify is not configured on the server.' }, 503)
     const album = { albumId, name: String(body.name || '').slice(0, 240), artist: String(body.artist || '').slice(0, 240), year: Number(body.year) || null }
     if (!album.name || !album.artist) return json({ error: 'invalid-album' }, 400)
     await ensureReleaseTable(db)
@@ -137,10 +225,10 @@ async function handleAlbumArtworkRequest(request, env, url) {
     // A person's own choice, including keeping the library image, is never replaced automatically.
     if (url.pathname === '/api/album-artwork/auto' && existing?.source === 'manual') return json({ item: existing, applied: false, reason: 'manual-choice' })
     let candidates
-    try { candidates = await lookupAlbumArtwork(env, db, album) }
+    try { candidates = await lookupAlbumArtwork(env, db, username, album, { stopAtConfident: url.pathname === '/api/album-artwork/auto' }) }
     catch (error) {
-      if (error?.code === 'spotify-rate-limited') return json({ error: error.code, message: 'Spotify asked Tomify to slow down.', retryAfter: error.retryAfter }, 429)
-      return json({ error: error?.code || 'spotify-unavailable', message: error?.code ? error.message : 'Spotify could not be reached. Try again shortly.' }, 502)
+      if (error?.code === 'rate-limited' || error?.code === 'spotify-rate-limited') return json({ error: 'rate-limited', message: error.message, retryAfter: error.retryAfter }, 429)
+      return json({ error: error?.code || 'artwork-unavailable', message: error?.code ? error.message : 'Artwork catalogues could not be reached. Try again shortly.' }, 502)
     }
     if (url.pathname === '/api/album-artwork/lookup') return json({ candidates, item: existing })
     const chosen = chooseAutomaticAlbumArtwork(candidates)
@@ -152,7 +240,7 @@ async function handleAlbumArtworkRequest(request, env, url) {
   if (url.pathname === '/api/album-artwork/select') {
     if (body.provider === 'library') return json({ item: await saveAlbumArtwork(db, albumId, { provider: 'library' }, 'manual', username) })
     const candidate = body.candidate
-    if (candidate?.provider !== 'spotify' || !isAlbumArtworkUrl(candidate.url)) return json({ error: 'invalid-artwork', message: 'Only Spotify artwork can be selected.' }, 400)
+    if (!albumArtworkProviders.includes(candidate?.provider) || !isAlbumArtworkUrl(candidate.url)) return json({ error: 'invalid-artwork', message: 'Only Apple, Deezer or Spotify artwork can be selected.' }, 400)
     return json({ item: await saveAlbumArtwork(db, albumId, candidate, 'manual', username) })
   }
 
@@ -164,4 +252,4 @@ async function handleAlbumArtworkRequest(request, env, url) {
   return json({ error: 'not-found' }, 404)
 }
 
-export const albumArtworkWorkerSource = `const albumArtworkHosts = ${JSON.stringify(albumArtworkHosts)}\nconst albumArtworkColumns = ${JSON.stringify(albumArtworkColumns)}\n\n` + [isAlbumArtworkUrl, baseAlbumTitle, albumArtworkSearchQueries, spotifyAlbumCandidate, chooseAutomaticAlbumArtwork, albumArtworkRow, ensureAlbumArtworkTable, selectAlbumArtwork, saveAlbumArtwork, searchSpotifyAlbums, lookupAlbumArtwork, handleAlbumArtworkRequest].map((fn) => fn.toString()).join('\n\n')
+export const albumArtworkWorkerSource = `const albumArtworkHosts = ${JSON.stringify(albumArtworkHosts)}\nconst albumArtworkHostSuffixes = ${JSON.stringify(albumArtworkHostSuffixes)}\nconst albumArtworkProviders = ${JSON.stringify(albumArtworkProviders)}\nconst albumArtworkColumns = ${JSON.stringify(albumArtworkColumns)}\n\n` + [isAlbumArtworkUrl, baseAlbumTitle, albumArtworkSearchQueries, spotifyAlbumResult, appleAlbumResult, deezerAlbumResult, albumArtworkCandidate, chooseAutomaticAlbumArtwork, albumArtworkRow, ensureAlbumArtworkTable, selectAlbumArtwork, saveAlbumArtwork, spotifySearchToken, searchSpotifyAlbums, searchAppleAlbums, searchDeezerAlbums, searchSpotifyArtwork, lookupAlbumArtwork, handleAlbumArtworkRequest].map((fn) => fn.toString()).join('\n\n')

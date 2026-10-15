@@ -1,16 +1,19 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { albumArtworkSearchQueries, baseAlbumTitle, chooseAutomaticAlbumArtwork, isAlbumArtworkUrl, spotifyAlbumCandidate } from './album-artwork-worker.mjs'
+import { albumArtworkCandidate, albumArtworkSearchQueries, appleAlbumResult, baseAlbumTitle, chooseAutomaticAlbumArtwork, deezerAlbumResult, isAlbumArtworkUrl, spotifyAlbumResult } from './album-artwork-worker.mjs'
 import { metadataTextSimilarity } from './recovery-metadata.mjs'
 
 const candidate = (patch = {}) => ({ id: 'spotify:1', provider: 'spotify', url: 'https://i.scdn.co/image/ab67616d0000b273', confidence: 96, square: true, minimumDimension: 640, ...patch })
 
-test('only HTTPS Spotify image hosts are accepted as album artwork', () => {
+test('only HTTPS Apple, Deezer and Spotify image hosts are accepted as album artwork', () => {
   assert.equal(isAlbumArtworkUrl('https://i.scdn.co/image/abc'), true)
   assert.equal(isAlbumArtworkUrl('http://i.scdn.co/image/abc'), false)
   assert.equal(isAlbumArtworkUrl('https://i.scdn.co.evil.example/image/abc'), false)
   assert.equal(isAlbumArtworkUrl('https://coverartarchive.org/release/x/front'), false)
   assert.equal(isAlbumArtworkUrl('not a url'), false)
+  assert.equal(isAlbumArtworkUrl('https://is1-ssl.mzstatic.com/image/thumb/a/1200x1200bb.jpg'), true)
+  assert.equal(isAlbumArtworkUrl('https://e-cdns-images.dzcdn.net/images/cover/a/1000x1000.jpg'), true)
+  assert.equal(isAlbumArtworkUrl('https://mzstatic.com.evil.example/a.jpg'), false)
 })
 
 test('base titles drop trailing edition and remaster qualifiers but keep leading brackets', () => {
@@ -24,7 +27,7 @@ test('base titles drop trailing edition and remaster qualifiers but keep leading
 })
 
 const spotifyAlbum = (name, patch = {}) => ({ id: 'sp1', name, release_date: '1977-02-04', artists: [{ name: 'Fleetwood Mac' }], images: [{ url: 'https://i.scdn.co/image/64', width: 64, height: 64 }, { url: 'https://i.scdn.co/image/640', width: 640, height: 640 }], ...patch })
-const score = (album, item) => spotifyAlbumCandidate({ artist: 'Fleetwood Mac', album, releaseDate: '1977' }, item, metadataTextSimilarity, (expected, actual) => String(expected).slice(0, 4) === String(actual).slice(0, 4) ? 1 : 0)
+const score = (album, item) => albumArtworkCandidate({ artist: 'Fleetwood Mac', album, releaseDate: '1977' }, spotifyAlbumResult(item), metadataTextSimilarity, (expected, actual) => String(expected).slice(0, 4) === String(actual).slice(0, 4) ? 1 : 0)
 
 test('Spotify editions match a plain library title confidently, and exact editions rank higher', () => {
   const deluxe = score('Rumours', spotifyAlbum('Rumours (Super Deluxe)'))
@@ -47,8 +50,20 @@ test('automatic replacement takes only a confident, square Spotify image of at l
   assert.equal(chooseAutomaticAlbumArtwork([candidate({ confidence: 80 })]), null)
   assert.equal(chooseAutomaticAlbumArtwork([candidate({ square: false })]), null)
   assert.equal(chooseAutomaticAlbumArtwork([candidate({ minimumDimension: 300 })]), null)
-  assert.equal(chooseAutomaticAlbumArtwork([candidate({ provider: 'apple' })]), null)
+  assert.equal(chooseAutomaticAlbumArtwork([candidate({ provider: 'youtube' })]), null)
   assert.equal(chooseAutomaticAlbumArtwork([candidate({ url: 'https://example.com/a.jpg' })]), null)
   assert.equal(chooseAutomaticAlbumArtwork([candidate({ id: 'weak', confidence: 70 }), candidate({ id: 'strong' })])?.id, 'strong')
   assert.equal(chooseAutomaticAlbumArtwork(null), null)
+})
+
+test('Apple and Deezer results map to their largest artwork and score like Spotify', () => {
+  const apple = appleAlbumResult({ collectionId: 1, collectionName: 'Rumours', artistName: 'Fleetwood Mac', releaseDate: '1977-02-04T08:00:00Z', artworkUrl100: 'http://is1-ssl.mzstatic.com/image/thumb/Music/x/100x100bb.jpg', collectionViewUrl: 'https://music.apple.com/gb/album/rumours/1' })
+  assert.deepEqual(apple.image, { url: 'https://is1-ssl.mzstatic.com/image/thumb/Music/x/1200x1200bb.jpg', width: 1200, height: 1200 })
+  const deezer = deezerAlbumResult({ id: 2, title: 'Rumours (Super Deluxe)', link: 'https://www.deezer.com/album/2', cover_xl: 'https://e-cdns-images.dzcdn.net/images/cover/x/1000x1000.jpg', artist: { name: 'Fleetwood Mac' } })
+  const wanted = { artist: 'Fleetwood Mac', album: 'Rumours', releaseDate: '1977' }
+  const year = (expected, actual) => !actual ? 0.5 : String(expected).slice(0, 4) === String(actual).slice(0, 4) ? 1 : 0
+  assert.equal(albumArtworkCandidate(wanted, apple, metadataTextSimilarity, year).confidence, 100)
+  assert.ok(albumArtworkCandidate(wanted, deezer, metadataTextSimilarity, year).confidence >= 85)
+  assert.equal(albumArtworkCandidate(wanted, deezerAlbumResult({ ...deezer, id: 3, title: 'Tusk' }), metadataTextSimilarity, year), null)
+  assert.equal(albumArtworkCandidate(wanted, appleAlbumResult({ collectionId: 4, collectionName: 'Rumours', artistName: 'Fleetwood Mac' }), metadataTextSimilarity, year), null, 'no artwork, no candidate')
 })
