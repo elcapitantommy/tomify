@@ -305,7 +305,7 @@ The optional Usenet backend searches one or more Newznab-compatible indexers, NZ
 
 While a search runs, the Recovery item shows which provider it is searching (*Searching NZB indexers…*) and its search buttons are disabled; when it finishes, the same place reports how many results were found or why the search failed.
 
-Import scope follows the fields searched. Any search that includes the track title imports only the completed audio file that best matches the wanted track. A search that includes the album but not the track title imports every valid supported audio file from the completed release into its album directory, preserving each original and creating one stream-copy derivative and provenance sidecar per track. An artist-only search for a wanted track imports only the best matching wanted track. For wanted music with no track title (just an artist), an artist-only search imports the selected download as a release, the same as an album search. A download that holds several albums (a discography) is split by album: each album goes into its own `Artist/Album` folder, using the album tag, or for untagged files the folder they sit in (a `CD1` or `Disc 2` folder names the disc and its parent the album, and trailing notes such as `[FLAC]` are dropped).
+Import scope follows the fields searched. Any search that includes the track title imports only the completed audio file that best matches the wanted track. A search that includes the album but not the track title imports every valid supported audio file from the completed release into its album directory, preserving each original and creating one stream-copy derivative and provenance sidecar per track. An artist-only search for a wanted track imports only the best matching wanted track. For wanted music with no track title (just an artist), an artist-only search imports the selected download as a release, the same as an album search. The release's own artist is written with one spelling on every track, even when the download's tags spell it several ways (`Earth Wind & Fire`, `Earth, Wind And Fire`…), so Navidrome lists one artist. Names are compared ignoring case, accents, punctuation, `&` versus `and` and a leading `The`; the spelling of a matching artist folder in `TOMIFY_MASTER_DIR` wins, otherwise the download's most common spelling. Guest and collaboration credits (`… with The Emotions`) are left as tagged. Every track of an album gets the same album artist, so Navidrome keeps the album whole: an album-artist tag in the download wins; without one, the release's artist when it appears on the album (so a guest track keeps its own artist but stays on the album), else an artist on more than half the tracks, else `Various Artists`. A download that holds several albums (a discography) is split by album: each album goes into its own `Artist/Album` folder, using the album tag, or for untagged files the folder they sit in (a `CD1` or `Disc 2` folder names the disc and its parent the album, and trailing notes such as `[FLAC]` are dropped).
 
 When a track-level import came from a download that holds more audio (a whole album, say), the imported item offers **Import rest of download** beside its *Imported* badge. The agent re-reads the completed download, skips the files that job already imported, and imports the rest as a release without downloading again. The new tracks are added to the same Recovery item, so deleting it still removes every file it imported. The action needs an agent with the `/v1/jobs/import-remaining` endpoint; an older agent is reported as out of date.
 
@@ -350,6 +350,43 @@ If the restored name is spelled differently from an artist you already have (for
 sudo find "/srv/music-recovery/<Artist folder>/<Album folder>" -maxdepth 1 -name '*.flac' \
   -exec metaflac --no-utf8-convert --remove-tag=ARTIST --remove-tag=ALBUMARTIST --set-tag='ARTIST=Motley Crue' --set-tag='ALBUMARTIST=Motley Crue' {} +
 ```
+
+### Merging an artist imported under several spellings
+
+Agents older than the artist-spelling fix kept each track's own artist tag, so a discography whose tags spelled the band several ways shows up in Navidrome as several artists (`Earth Wind & Fire`, `Earth, Wind And Fire`, …). Older agents also used a track's own artist as its album artist when the album-artist tag was missing, so a guest track (`Deniece Williams` on an Earth, Wind & Fire compilation) split off as its own album. The script below fixes both: in every recovered album folder where the artist appears, it sets every track's album artist to one spelling, and every artist tag that is a spelling of the same name (compared the way the agent does). Guest track artists and albums by other artists or collaborations are left alone. It is safe to run more than once. It needs `metaflac` from the `flac` package:
+
+```bash
+cat > /tmp/merge-artist.py <<'EOF'
+import re, subprocess, sys, unicodedata
+from collections import defaultdict
+from pathlib import Path
+canonical, root = sys.argv[1], Path(sys.argv[2] if len(sys.argv) > 2 else '/srv/music-recovery')
+def key(value):
+    words = re.sub(r'[^a-z0-9 ]', ' ', unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode().lower().replace('&', ' and ')).split()
+    return ''.join(words[1:] if words[:1] == ['the'] else words)
+def tags(path):
+    lines = subprocess.run(['metaflac', '--no-utf8-convert', '--export-tags-to=-', str(path)], capture_output=True, text=True).stdout.splitlines()
+    return [(name, value) for name, _, value in (line.partition('=') for line in lines)]
+target = key(canonical)
+albums = defaultdict(list)
+for path in sorted(root.rglob('*.flac')):
+    if '.tomify-source' not in path.parts: albums[path.parent].append((path, tags(path)))
+for folder, tracks in albums.items():
+    # Only albums where the artist appears; every track there takes it as album artist so the album stays whole.
+    if not any(name.upper() in ('ARTIST', 'ALBUMARTIST', 'ALBUM_ARTIST') and key(value) == target for _, found in tracks for name, value in found): continue
+    for path, found in tracks:
+        album_artist = [value for name, value in found if name.upper() in ('ALBUMARTIST', 'ALBUM_ARTIST')]
+        artist_names = sorted({name for name, value in found if name.upper() == 'ARTIST' and key(value) == target and value != canonical})
+        if album_artist == [canonical] and not artist_names: continue
+        args = ['metaflac', '--no-utf8-convert', '--remove-tag=ALBUMARTIST', '--remove-tag=ALBUM_ARTIST', '--remove-tag=album_artist', f'--set-tag=ALBUMARTIST={canonical}']
+        args += [f'--remove-tag={name}' for name in artist_names] + [f'--set-tag={name}={canonical}' for name in artist_names]
+        subprocess.run(args + [str(path)], check=True)
+        print('Fixed', path)
+EOF
+sudo python3 /tmp/merge-artist.py 'Earth, Wind & Fire'
+```
+
+Then run a full scan in Navidrome. The album folders stay where they are (the Recovery item records those paths), which Navidrome does not mind: it groups artists by tag, not by folder.
 
 This backend is for lawful recovery only. The operator must retrieve only content they are authorised to copy. Tomify does not bypass subscriptions, authentication, takedowns, encryption, or other access controls. Acquisition remains disabled until the existing source-specific authorisation confirmation is completed for the selected result.
 
