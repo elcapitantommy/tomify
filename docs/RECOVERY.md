@@ -268,40 +268,30 @@ Finally open Recovery on the site and run a search. If everything works, cancel 
 ```bash
 sudo systemctl stop nordvpn-failsafe.timer
 sudo systemctl enable nordvpnd
-nordvpn set autoconnect on
-nordvpn set killswitch on        # optional: blocks downloads if the VPN drops; the allowlist still applies
+nordvpn set autoconnect on United_Kingdom
+nordvpn set firewall off         # required for Tailscale; see below
+nordvpn set killswitch off       # the kill switch needs NordVPN's firewall
 ```
 
-Before enabling autoconnect, install the boot-order fix below; without it Tailscale SSH fails after every reboot (confirmed on the Debian box, and fixed by the unit below). Then reboot once (Settings → Restart media server, or `sudo reboot`) and repeat the SSH, tunnel container and Recovery checks to confirm autoconnect comes up with the allowlist in place. If SSH does not come back, revoke the NordVPN token in your Nord Account and press **Restart media server** again: autoconnect cannot log in, so the box boots with the VPN off.
+Then reboot once (Settings → Restart media server, or `sudo reboot`) and repeat the SSH, tunnel container and Recovery checks to confirm autoconnect comes up with the allowlist in place. If SSH does not come back, revoke the NordVPN token in your Nord Account and press **Restart media server** again: autoconnect cannot log in, so the box boots with the VPN off.
 
-### Tailscale after an autoconnect boot
+### Tailscale and NordVPN's firewall
 
-At boot `tailscaled` starts before NordVPN connects, and the routes NordVPN installs when it connects leave Tailscale unreachable until `tailscaled` is restarted, even with the allowlist above. This one-shot unit waits until `nordvpn status` reports *Connected*, then restarts Tailscale. Waiting for the `nordlynx` interface alone is not enough: NordVPN creates it a few seconds into boot, before Wi-Fi has a DHCP lease and before the tunnel is up, so a restart at that point can leave Tailscale logged out and unreachable until the next reboot (seen on the Debian box, which is on Wi-Fi).
+`tailscaled` marks its own traffic (fwmark `0x80000`) and routes it outside every VPN through the main table (`ip rule` priority 5210). NordVPN's firewall drops that traffic. A `tailscaled` that logged in before NordVPN connected keeps its existing connections and appears to work, but as soon as it restarts or has to reconnect to Tailscale's servers it stays logged out (`fetch control key ... cannot assign requested address` in `journalctl -u tailscaled`) and Tailscale SSH is gone until the next reboot. Restarting `tailscaled` after NordVPN connects makes this worse, not better. An earlier `tailscale-after-nordvpn` unit did exactly that and caused drops about five minutes after each boot.
+
+The fix is to turn NordVPN's firewall off: `nordvpn set firewall off`. NordVPN's routing still sends all traffic through the tunnel, and the allowlist still keeps the LAN, SSH and the Cloudflare tunnel off it. A restarted `tailscaled` logs straight back in (confirmed on the Debian box, 2026-10-15). The trade-off is what happens if the VPN drops. qBittorrent stops, because it is bound to `nordlynx`. SABnzbd, yt-dlp and Internet Archive downloads use the home connection until NordVPN reconnects. If you installed the old unit, remove it:
 
 ```bash
-sudo tee /etc/systemd/system/tailscale-after-nordvpn.service >/dev/null <<'EOF'
-[Unit]
-Description=Restart Tailscale once NordVPN has connected
-After=nordvpnd.service tailscaled.service
-Wants=nordvpnd.service
-
-[Service]
-Type=oneshot
-TimeoutStartSec=6min
-ExecStart=/bin/sh -c 'for i in $(seq 1 300); do nordvpn status 2>/dev/null | grep -q "Status: Connected" && break; sleep 1; done; sleep 10; systemctl restart tailscaled'
-
-[Install]
-WantedBy=multi-user.target
-EOF
+sudo systemctl disable --now tailscale-after-nordvpn.service
+sudo rm /etc/systemd/system/tailscale-after-nordvpn.service
 sudo systemctl daemon-reload
-sudo systemctl enable tailscale-after-nordvpn.service
 ```
 
-After a reboot, `sudo journalctl -b -u tailscale-after-nordvpn` shows when it ran. Tailscale SSH is normally back within a minute of boot; if it is not back after five minutes, press **Restart media server**. Autoconnect may pick a distant server; pin it with `nordvpn set autoconnect on United_Kingdom` (or another country). If NordVPN uses OpenVPN rather than NordLynx, replace `nordlynx` with `nordtun`.
+`tailscale status` should list the box without `offline`. If NordVPN uses OpenVPN rather than NordLynx, the qBittorrent interface is `nordtun` instead of `nordlynx`.
 
 ### What goes over the VPN
 
-With this setup everything the box starts outbound goes through NordVPN except LAN traffic, inbound SSH and the tunnel: yt-dlp, Internet Archive downloads, NZBIndex and Newznab searches, qBittorrent's torrent searches, SABnzbd's connections to the Usenet provider, artwork fetches and MusicBrainz lookups from the agent. Playback and the Worker's calls to the agent keep using the tunnel, so their speed is unchanged. If SABnzbd runs in Docker its traffic is routed the same way; if downloads stall after connecting, check that the container can still resolve DNS (`docker exec <container> getent hosts nzbindex.com`).
+With this setup everything the box starts outbound goes through NordVPN except LAN traffic, inbound SSH, the tunnel and Tailscale's own connections: yt-dlp, Internet Archive downloads, NZBIndex and Newznab searches, qBittorrent's torrent searches, SABnzbd's connections to the Usenet provider, artwork fetches and MusicBrainz lookups from the agent. Playback and the Worker's calls to the agent keep using the tunnel, so their speed is unchanged. If SABnzbd runs in Docker its traffic is routed the same way; if downloads stall after connecting, check that the container can still resolve DNS (`docker exec <container> getent hosts nzbindex.com`).
 
 ## Internet Archive backend
 
