@@ -137,8 +137,9 @@ function send(response, status, body) {
 async function searchYouTube(track) {
   const artist = String(track?.artist || '').trim().slice(0, 240)
   const title = String(track?.title || '').trim().slice(0, 240)
-  if (!artist || !title) throw new Error('Artist and title are required.')
-  const query = `${artist} ${title} official audio`
+  const album = String(track?.album || '').trim().slice(0, 240)
+  if (!artist && !title && !album) throw new Error('An artist, album or title is required.')
+  const query = title ? `${[artist, title].filter(Boolean).join(' ')} official audio` : `${[artist, album].filter(Boolean).join(' ')} full album`
   const search = await withAnonymousFallback(async (authenticated) => {
     const { stdout } = await run(ytdlp, ['--ignore-config', '--no-playlist', '--skip-download', '--dump-single-json', '--no-warnings', ...cookieArguments(authenticated), `ytsearch8:${query}`])
     return JSON.parse(stdout)
@@ -478,7 +479,7 @@ async function queueUsenet(body) {
     id, version: 1, status: 'queued', progress: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     downloader: submitted.downloader, remoteId: submitted.remoteId,
     indexer: { type: provider.type, id: provider.id, name: provider.name },
-    result: { externalId: body.candidate.externalId || null, resultId: reference.resultId || reference.collectionId || reference.guid || null, title: body.candidate.title || null, detailsUrl: body.candidate.url || null, postedAt: reference.postedAt || null, searchMode: reference.searchMode || 'track', size: reference.size || null, ageDays: reference.ageDays || null },
+    result: { externalId: body.candidate.externalId || null, resultId: reference.resultId || reference.collectionId || reference.guid || null, title: body.candidate.title || null, detailsUrl: body.candidate.url || null, postedAt: reference.postedAt || null, searchMode: reference.searchMode || 'track', searchFields: Array.isArray(reference.searchFields) ? reference.searchFields : null, size: reference.size || null, ageDays: reference.ageDays || null },
     request: { track: body.track || {}, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
   }
   await saveUsenetJob(job)
@@ -535,7 +536,7 @@ createServer(async (request, response) => {
     if (request.url === '/v1/search') {
       if (body.backend === 'youtube') return send(response, 200, { candidates: await searchYouTube(body.track) })
       if (body.backend === 'internet-archive') return send(response, 200, { candidates: await searchInternetArchive(body.track) })
-      if (body.backend === 'usenet') return send(response, 200, { candidates: await searchUsenet(body.track, body.searchMode) })
+      if (body.backend === 'usenet') return send(response, 200, { candidates: await searchUsenet(body.track, body.searchFields ?? body.searchMode ?? 'track') })
       throw new Error('Unsupported recovery backend.')
     }
     if (request.url === '/v1/acquire') {

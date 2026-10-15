@@ -164,7 +164,7 @@ function recoveryTokenScore(expected, actual) {
 }
 
 function scoreRecoveryCandidate(item, candidate) {
-  const title = recoveryTokenScore(item.title, candidate.title)
+  const title = recoveryTokenScore(item.title || item.album, candidate.title)
   const artist = Math.max(recoveryTokenScore(item.artist, candidate.title), recoveryTokenScore(item.artist, candidate.channel))
   const difference = item.duration && candidate.duration ? Math.abs(Number(item.duration) - Number(candidate.duration)) : null
   const duration = difference == null ? 0.5 : difference <= 2 ? 1 : difference <= 5 ? 0.8 : difference <= 12 ? 0.35 : 0
@@ -474,11 +474,14 @@ export default {
       const username = await authenticate(request)
       if (!username) return json({ error: 'unauthorized' }, 401)
       const body = await request.json()
-      if (!body || typeof body.artist !== 'string' || !body.artist.trim() || typeof body.title !== 'string' || !body.title.trim()) return json({ error: 'invalid-wanted-track' }, 400)
+      const wantedText = (value) => typeof value === 'string' ? value.trim().slice(0, 240) : ''
+      // Wanted music can be any mix of artist, album and track; artist and title stay NOT NULL, so blanks are stored as ''.
+      const wanted = { artist: wantedText(body?.artist), title: wantedText(body?.title), album: wantedText(body?.album) }
+      if (!body || (!wanted.artist && !wanted.title && !wanted.album)) return json({ error: 'invalid-wanted-music', message: 'Enter at least one of artist, album or track.' }, 400)
       await ensureRecoveryTables(env.TOMIFY_DB)
       const id = crypto.randomUUID()
       await env.TOMIFY_DB.prepare("INSERT INTO recovery_items (id, username, artist, title, album, duration, track_number, disc_number, musicbrainz_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'missing')")
-        .bind(id, username, body.artist.trim().slice(0, 240), body.title.trim().slice(0, 240), typeof body.album === 'string' ? body.album.trim().slice(0, 240) || null : null, Number.isFinite(body.duration) && body.duration > 0 ? body.duration : null, Number.isInteger(body.trackNumber) && body.trackNumber > 0 ? body.trackNumber : null, Number.isInteger(body.discNumber) && body.discNumber > 0 ? body.discNumber : null, typeof body.musicBrainzId === 'string' ? body.musicBrainzId.slice(0, 64) : null).run()
+        .bind(id, username, wanted.artist, wanted.title, wanted.album || null, Number.isFinite(body.duration) && body.duration > 0 ? body.duration : null, Number.isInteger(body.trackNumber) && body.trackNumber > 0 ? body.trackNumber : null, Number.isInteger(body.discNumber) && body.discNumber > 0 ? body.discNumber : null, typeof body.musicBrainzId === 'string' ? body.musicBrainzId.slice(0, 64) : null).run()
       return json({ item: await recoveryItem(env.TOMIFY_DB, username, id) }, 201)
     }
 
@@ -531,15 +534,18 @@ export default {
       const body = await request.json().catch(() => ({}))
       const backend = body?.backend === 'internet-archive' ? 'internet-archive' : body?.backend === 'youtube' ? 'youtube' : body?.backend === 'usenet' ? 'usenet' : null
       if (!backend) return json({ error: 'unsupported-recovery-backend' }, 400)
-      const searchMode = ['artist', 'track', 'release'].includes(body?.searchMode) ? body.searchMode : 'track'
+      const usenetFields = ['artist', 'album', 'track']
+      const searchFields = Array.isArray(body?.searchFields) ? usenetFields.filter((field) => body.searchFields.includes(field)) : null
+      if (backend === 'usenet' && searchFields && !searchFields.length) return json({ error: 'invalid-search-fields', message: 'Choose at least one of artist, album or track to search Usenet.' }, 400)
+      const searchMode = searchFields ? null : ['artist', 'track', 'release'].includes(body?.searchMode) ? body.searchMode : 'track'
       try {
-        const result = await callRecoveryAgent(env, '/v1/search', { backend, searchMode, track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
+        const result = await callRecoveryAgent(env, '/v1/search', { backend, ...(searchFields ? { searchFields } : { searchMode }), track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
         const candidates = Array.isArray(result.candidates) ? result.candidates.slice(0, 12) : []
         await env.TOMIFY_DB.prepare('DELETE FROM recovery_candidates WHERE recovery_id = ? AND backend = ? AND imported_path IS NULL').bind(item.id, backend).run()
         const inserts = candidates.filter((candidate) => candidate && typeof candidate.url === 'string' && typeof candidate.externalId === 'string').map((candidate) => {
           const scored = scoreRecoveryCandidate(item, candidate)
           return env.TOMIFY_DB.prepare('INSERT INTO recovery_candidates (id, recovery_id, backend, external_id, url, title, channel, channel_id, duration, official, match_score, thumbnail, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-            .bind(crypto.randomUUID(), item.id, backend, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || (backend === 'youtube' ? 'Unknown channel' : backend === 'usenet' ? 'Newznab indexer' : 'Internet Archive')).slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend, searchMode, raw: candidate.provenance || null }))
+            .bind(crypto.randomUUID(), item.id, backend, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || (backend === 'youtube' ? 'Unknown channel' : backend === 'usenet' ? 'Newznab indexer' : 'Internet Archive')).slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend, searchMode: candidate.provenance?.searchMode || searchMode, searchFields: candidate.provenance?.searchFields || searchFields, raw: candidate.provenance || null }))
         })
         if (inserts.length) await env.TOMIFY_DB.batch(inserts)
         const retainedSelection = item.candidates.find((candidate) => candidate.selected && (candidate.backend !== backend || candidate.importedPath))

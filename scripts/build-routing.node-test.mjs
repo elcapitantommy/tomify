@@ -141,6 +141,60 @@ test('album completeness reports an unreachable MusicBrainz as a JSON 502', asyn
   }
 })
 
+function wantedMusicDatabase() {
+  const rows = new Map()
+  const statement = (sql) => ({
+    sql, args: [],
+    bind(...args) { this.args = args; return this },
+    async first() { return sql.startsWith('SELECT id, artist, title, album') ? rows.get(this.args[1]) || null : null },
+    async all() { return { results: [] } },
+    async run() {
+      if (sql.startsWith('INSERT INTO recovery_items')) {
+        const [id, username, artist, title, album] = this.args
+        rows.set(id, { id, username, artist, title, album, status: 'missing' })
+      }
+      return {}
+    },
+  })
+  return { rows, prepare: statement, async batch() { return [] } }
+}
+
+test('Recovery accepts wanted music from any mix of artist, album and track and searches Usenet with combined fields', async () => {
+  const agentRequests = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/v1/search') { agentRequests.push(JSON.parse(init.body)); return Response.json({ candidates: [] }) }
+    return new Response('{}', { status: 404 })
+  }
+  try {
+    const env = { TOMIFY_DB: wantedMusicDatabase(), RECOVERY_AGENT_URL: 'https://agent.tomify.test' }
+    const headers = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }
+    const post = (path, body) => worker.fetch(new Request(`https://app.tomify.test/api/recovery${path}`, { method: 'POST', headers, body: JSON.stringify(body) }), env)
+
+    const empty = await post('', { artist: ' ', title: '', album: '' })
+    assert.equal(empty.status, 400)
+    assert.equal((await empty.json()).error, 'invalid-wanted-music')
+
+    const added = await post('', { artist: 'They Might Be Giants', album: 'Flood' })
+    assert.equal(added.status, 201)
+    const { item } = await added.json()
+    assert.deepEqual({ artist: item.artist, title: item.title, album: item.album }, { artist: 'They Might Be Giants', title: '', album: 'Flood' })
+
+    assert.equal((await post(`/${item.id}/search`, { backend: 'usenet', searchFields: ['genre'] })).status, 400)
+    assert.equal((await post(`/${item.id}/search`, { backend: 'usenet', searchFields: ['album', 'artist'] })).status, 200)
+    assert.equal((await post(`/${item.id}/search`, { backend: 'usenet', searchMode: 'release' })).status, 200)
+    assert.deepEqual(agentRequests.map(({ searchFields, searchMode }) => ({ searchFields, searchMode })), [
+      { searchFields: ['artist', 'album'], searchMode: undefined },
+      { searchFields: undefined, searchMode: 'release' },
+    ])
+    assert.deepEqual(agentRequests[0].track, { artist: 'They Might Be Giants', title: '', album: 'Flood', duration: null })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 function artworkDatabase() {
   const rows = new Map()
   const statement = (sql) => ({
