@@ -107,11 +107,32 @@ Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`, plus qBittorrent-no
 
 1. Copy `recovery-agent/recovery-agent.env.example` to `/etc/tomify/recovery-agent.env` and set a random `TOMIFY_RECOVERY_TOKEN` containing at least 32 characters.
 2. Keep `TOMIFY_RECOVERY_DIR=/srv/music-recovery` separate from `TOMIFY_MASTER_DIR=/srv/music`.
+   On the current box, recovered files physically live on the library SSD at `/srv/music/_Recovery` (so Navidrome sees them under the library), and `/srv/music-recovery` is a bind mount of that folder. The agent still only writes through `/srv/music-recovery`, never anywhere else under the master tree. See [Recovery files on the library SSD](#recovery-files-on-the-library-ssd).
 3. Copy the recovery-agent runtime from the primary Windows checkout at `C:\Users\TomDixon\Documents\tomify` to `/opt/tomify/recovery-agent` on Debian, then install the example systemd unit. The current Debian deployment does not contain a Git checkout and does not use `/srv/tomify/app`.
 4. Put the agent behind an authenticated HTTPS reverse proxy that the hosted Tomify Worker can reach. The current deployment uses a Cloudflare Tunnel, run by the `tomify-recovery-cloudflared` Docker container on the box, which forwards `RECOVERY_AGENT_URL` to `127.0.0.1:8788`. Do not expose the unauthenticated loopback service directly. To run downloads over a VPN without breaking the tunnel or SSH, see [Running recovery downloads over NordVPN](#running-recovery-downloads-over-nordvpn).
 5. Set hosted secrets `RECOVERY_AGENT_URL` and `RECOVERY_AGENT_TOKEN` for the Tomify Site, plus any optional artwork-provider configuration above, then redeploy.
 
 The agent fails closed at startup when `TOMIFY_RECOVERY_TOKEN` is missing or shorter than 32 characters. Local development without authentication requires the explicit `TOMIFY_RECOVERY_ALLOW_INSECURE_LOOPBACK=true` opt-in and is accepted only with a loopback `TOMIFY_RECOVERY_HOST` such as `127.0.0.1` or `::1`. Never enable insecure mode on the Debian service.
+
+### Recovery files on the library SSD
+
+The 1.8 TB SSD (`/dev/sda1`) is mounted at `/srv/music` and holds all music, recovered files included. The NVMe system disk only holds in-progress torrent downloads (`/srv/torrents`), which are deleted after import. `/etc/fstab` contains:
+
+```
+UUID=0a4c05dc-3e2f-422f-8b0c-8c6e64639f8c /srv/music ext4 defaults,noatime 0 2
+/srv/music/_Recovery /srv/music-recovery none bind,nofail,x-systemd.requires-mounts-for=/srv/music 0 0
+```
+
+`findmnt /srv/music-recovery` should show `SOURCE /dev/sda1[/_Recovery]`. If it shows an `nvme` source, the SSD is not mounted, or an older bind is still stacked on `/srv/music/_Recovery`. Stop `tomify-recovery` and Navidrome, run `sudo umount` on `/srv/music-recovery` and then on `/srv/music/_Recovery` until `findmnt /srv/music/_Recovery` prints nothing (unmount `/srv/music-mp3` first if it reports busy), then `sudo mount /srv/music-recovery` and `sudo mount /srv/music-mp3`.
+
+Earlier deployments did it the other way round: the files sat on the NVMe at `/srv/music-recovery` and were bind-mounted into `/srv/music/_Recovery`. To move such a box over, arm a reboot fail-safe first (`sudo systemd-run --on-active=20min --unit=ssd-failsafe /bin/systemctl reboot`). Then:
+
+1. Stop the agent and Navidrome, and unmount the old bind as above.
+2. Copy the files with `sudo rsync -aHAX /srv/music-recovery/ /srv/music/_Recovery/` and check the sizes match with `du -sh`.
+3. Move the old folder aside with `sudo mv /srv/music-recovery /srv/music-recovery.old`, then create an empty mount point with `sudo install -d -o tom -g tom /srv/music-recovery`.
+4. Replace the old fstab line with the bind line above, run `sudo systemctl daemon-reload` and mount it.
+5. Start the agent and Navidrome again.
+6. Cancel the fail-safe (`sudo systemctl stop ssd-failsafe.timer`) and reboot once. Check `findmnt` again before deleting `/srv/music-recovery.old`.
 
 ### Updating the recovery agent
 
