@@ -247,7 +247,7 @@ nordvpn set autoconnect on
 nordvpn set killswitch on        # optional: blocks downloads if the VPN drops; the allowlist still applies
 ```
 
-Before enabling autoconnect, install the boot-order fix below; without it Tailscale SSH can fail after every reboot. Then reboot once (Settings → Restart media server, or `sudo reboot`) and repeat the SSH, tunnel container and Recovery checks to confirm autoconnect comes up with the allowlist in place. If SSH does not come back, revoke the NordVPN token in your Nord Account and press **Restart media server** again: autoconnect cannot log in, so the box boots with the VPN off.
+Before enabling autoconnect, install the boot-order fix below; without it Tailscale SSH fails after every reboot (confirmed on the Debian box, and fixed by the unit below). Then reboot once (Settings → Restart media server, or `sudo reboot`) and repeat the SSH, tunnel container and Recovery checks to confirm autoconnect comes up with the allowlist in place. If SSH does not come back, revoke the NordVPN token in your Nord Account and press **Restart media server** again: autoconnect cannot log in, so the box boots with the VPN off.
 
 ### Tailscale after an autoconnect boot
 
@@ -271,7 +271,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable tailscale-after-nordvpn.service
 ```
 
-After a reboot, `journalctl -b -u tailscale-after-nordvpn` shows when it ran. If NordVPN uses OpenVPN rather than NordLynx, replace `nordlynx` with `nordtun`.
+After a reboot, `sudo journalctl -b -u tailscale-after-nordvpn` shows when it ran. Autoconnect may pick a distant server; pin it with `nordvpn set autoconnect on United_Kingdom` (or another country). If NordVPN uses OpenVPN rather than NordLynx, replace `nordlynx` with `nordtun`.
 
 ### What goes over the VPN
 
