@@ -17,6 +17,7 @@ import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, dete
 import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, validateCompletedPath } from './usenet.mjs'
 import { importUsenetCompletion } from './usenet-import.mjs'
 import { validateRecoveryAuthConfig } from './config.mjs'
+import { createUsenetJobPoller } from './usenet-job.mjs'
 
 let authConfiguration
 try { authConfiguration = validateRecoveryAuthConfig() }
@@ -484,25 +485,17 @@ async function queueUsenet(body) {
   return { job: { id, status: 'queued', progress: 0, provider: provider.name, downloader: submitted.downloader } }
 }
 
-async function pollUsenetJob(id) {
-  const job = await loadUsenetJob(id)
-  if (job.status === 'completed') return { job: { id: job.id, status: job.status, progress: 100, result: job.importResult } }
-  if (job.status === 'failed') return { job: { id: job.id, status: job.status, progress: job.progress || 0, error: job.error } }
-  try {
-    const state = await downloaderStatus(usenetDownloader, job.remoteId)
-    job.status = state.status; job.progress = state.progress || 0; job.message = state.message || null; job.updatedAt = new Date().toISOString()
-    if (state.status === 'completed') {
-      const completedPath = await validateCompletedPath(state.completedPath, usenetDownloadRoot, usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null)
-      const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
-      job.importResult = await importUsenetCompletion(job, discovered.files, { recoveryRoot, probe, prepareArtwork, run, ffmpeg })
-      job.status = 'completed'; job.progress = 100
-    }
-  } catch (error) {
-    job.status = 'failed'; job.error = sanitizeToolError(error instanceof Error ? error.message : 'Usenet recovery failed.', [])
-  }
-  await saveUsenetJob(job)
-  return { job: { id: job.id, status: job.status, progress: job.progress || 0, message: job.message || null, error: job.error || null, result: job.importResult || null } }
-}
+const pollUsenetJob = createUsenetJobPoller({
+  loadJob: loadUsenetJob,
+  saveJob: saveUsenetJob,
+  downloaderStatus: (remoteId) => downloaderStatus(usenetDownloader, remoteId),
+  completeJob: async (job, state) => {
+    const completedPath = await validateCompletedPath(state.completedPath, usenetDownloadRoot, usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null)
+    const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
+    return importUsenetCompletion(job, discovered.files, { recoveryRoot, probe, prepareArtwork, run, ffmpeg })
+  },
+  sanitizeError: (error) => sanitizeToolError(error instanceof Error ? error.message : 'Usenet recovery failed.', []),
+})
 
 async function diagnoseAuthenticatedYouTube() {
   const status = await cookieStatus()
