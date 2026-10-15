@@ -421,3 +421,51 @@ test('Recovery explains an out-of-date agent instead of showing not-found', asyn
     globalThis.fetch = originalFetch
   }
 })
+
+async function withRebootFetch({ admin, agent }, callback) {
+  const originalFetch = globalThis.fetch
+  const agentRequests = []
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { username: url.searchParams.get('username'), adminRole: admin } } })
+    agentRequests.push({ url: url.href, authorization: init?.headers?.authorization, body: JSON.parse(init?.body || '{}') })
+    return agent()
+  }
+  try { await callback(agentRequests) } finally { globalThis.fetch = originalFetch }
+}
+
+const rebootEnv = { RECOVERY_AGENT_URL: 'https://agent.tomify.test', RECOVERY_AGENT_TOKEN: 'agent-token' }
+const rebootRequest = (body) => new Request('https://app.tomify.test/api/system/reboot', { method: 'POST', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+test('Media server reboot requires a signed-in Navidrome administrator', async () => {
+  const unauthenticated = await worker.fetch(new Request('https://app.tomify.test/api/system/reboot', { method: 'POST', body: '{"confirm":"reboot"}' }), rebootEnv)
+  assert.equal(unauthenticated.status, 401)
+  await withRebootFetch({ admin: false, agent: () => Response.json({ rebooting: true }, { status: 202 }) }, async (agentRequests) => {
+    const response = await worker.fetch(rebootRequest({ confirm: 'reboot' }), rebootEnv)
+    assert.equal(response.status, 403)
+    assert.match((await response.json()).message, /Navidrome administrator/)
+    assert.equal(agentRequests.length, 0)
+  })
+})
+
+test('Media server reboot requires confirmation and forwards it to the agent', async () => {
+  await withRebootFetch({ admin: true, agent: () => Response.json({ rebooting: true, scheduledAt: '2026-10-15T12:00:03.000Z' }, { status: 202 }) }, async (agentRequests) => {
+    const unconfirmed = await worker.fetch(rebootRequest({}), rebootEnv)
+    assert.equal(unconfirmed.status, 400)
+    assert.equal(agentRequests.length, 0)
+
+    const response = await worker.fetch(rebootRequest({ confirm: 'reboot' }), rebootEnv)
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), { rebooting: true, scheduledAt: '2026-10-15T12:00:03.000Z' })
+    assert.deepEqual(agentRequests, [{ url: 'https://agent.tomify.test/v1/system/reboot', authorization: 'Bearer agent-token', body: { confirm: 'reboot' } }])
+  })
+})
+
+test('Media server reboot reports an agent that has reboot disabled', async () => {
+  await withRebootFetch({ admin: true, agent: () => Response.json({ error: 'recovery-agent-error', message: 'Remote reboot is disabled on this server.' }, { status: 400 }) }, async () => {
+    const response = await worker.fetch(rebootRequest({ confirm: 'reboot' }), rebootEnv)
+    assert.equal(response.status, 502)
+    assert.match((await response.json()).message, /Remote reboot is disabled/)
+  })
+})

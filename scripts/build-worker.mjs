@@ -97,6 +97,27 @@ async function authenticate(request) {
   }
 }
 
+// Only Navidrome administrators may reboot the media server.
+async function isNavidromeAdmin(request, username) {
+  try {
+    const lookup = new URL('https://tomify.tomdixon.uk/rest/getUser.view')
+    lookup.searchParams.set('u', username)
+    lookup.searchParams.set('t', request.headers.get('x-tomify-token') || '')
+    lookup.searchParams.set('s', request.headers.get('x-tomify-salt') || '')
+    lookup.searchParams.set('v', '1.16.1')
+    lookup.searchParams.set('c', 'Tomify')
+    lookup.searchParams.set('f', 'json')
+    lookup.searchParams.set('username', username)
+    const response = await fetch(lookup, { headers: { accept: 'application/json' } })
+    if (!response.ok) return false
+    const body = await response.json()
+    const subsonic = body && body['subsonic-response']
+    return Boolean(subsonic && subsonic.status === 'ok' && subsonic.user && subsonic.user.adminRole === true)
+  } catch {
+    return false
+  }
+}
+
 async function ensureLivePlaybackTable(db) {
   await db.prepare("CREATE TABLE IF NOT EXISTS live_playback (username TEXT PRIMARY KEY, device_id TEXT NOT NULL, device_name TEXT NOT NULL, state_json TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, command_json TEXT, command_revision INTEGER NOT NULL DEFAULT 0, command_target_device TEXT, command_updated_at INTEGER)").run()
 }
@@ -443,6 +464,19 @@ export default {
     if (completenessResponse) return completenessResponse
     const albumArtworkResponse = await handleAlbumArtworkRequest(request, env, url)
     if (albumArtworkResponse) return albumArtworkResponse
+
+    if (pathname === '/api/system/reboot' && request.method === 'POST') {
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can restart the media server.' }, 403)
+      const body = await request.json().catch(() => ({}))
+      if (!body || body.confirm !== 'reboot') return json({ error: 'confirmation-required', message: 'Confirm the restart first.' }, 400)
+      try {
+        return json(await callRecoveryAgent(env, '/v1/system/reboot', { confirm: 'reboot' }), 202)
+      } catch (error) {
+        return json({ error: 'reboot-failed', message: error instanceof Error ? error.message : 'The media server could not be restarted.' }, 502)
+      }
+    }
 
     if (pathname === '/api/recovery' && request.method === 'GET') {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)

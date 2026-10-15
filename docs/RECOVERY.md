@@ -132,6 +132,30 @@ The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and
 
 The recovery directory may be added to Navidrome as a separate library path after review. It should not be merged over `/srv/music` by an automated job.
 
+## Restarting the media server from Tomify
+
+**Settings → Restart media server** reboots the Debian box through the recovery agent's tunnel, for when SSH cannot reach it (for example after a VPN change). The button asks for confirmation, only Navidrome administrators may use it (the Worker checks `adminRole` with Navidrome's `getUser` API), and the agent waits three seconds after answering before running `systemctl reboot`. Playback, downloads and imports in progress stop, and the site is unavailable until the box and its tunnel containers are back.
+
+It is off by default. To enable it on the server:
+
+1. Add `TOMIFY_RECOVERY_ALLOW_REBOOT=true` to `/etc/tomify/recovery-agent.env`.
+2. Allow the service account to reboot without a password with a polkit rule:
+
+   ```bash
+   sudo tee /etc/polkit-1/rules.d/50-tomify-reboot.rules >/dev/null <<'EOF'
+   polkit.addRule(function (action, subject) {
+     if ((action.id == "org.freedesktop.login1.reboot" || action.id == "org.freedesktop.login1.reboot-multiple-sessions") && subject.user == "tom") {
+       return polkit.Result.YES
+     }
+   })
+   EOF
+   ```
+
+   Use the `User=` from the `tomify-recovery` unit if it is not `tom`. The rule covers only reboots; it grants no other privileges, and the unit keeps `NoNewPrivileges=true`.
+3. Copy the updated agent files (including `system.mjs`) and run `sudo systemctl restart tomify-recovery`. `/v1/status` then reports `"reboot":"enabled"`.
+
+If the agent has reboot disabled or has not been updated, the button shows the reason and nothing happens. The tunnel and the agent must still be reachable for the button to work, so it cannot help when the whole box is offline.
+
 ## Running recovery downloads over NordVPN
 
 The recovery side (yt-dlp, Internet Archive fetches and SABnzbd) can run over NordVPN, but the box also has to keep accepting SSH from the LAN and over Tailscale, and keep its Cloudflare Tunnel up. The hosted Worker never connects to the box directly: it calls `RECOVERY_AGENT_URL`, which Cloudflare routes down a tunnel to the agent on `127.0.0.1:8788`. Two `cloudflared` Docker containers run on the box: `tomify-recovery-cloudflared` for the agent and `cloudflared` for Navidrome. `cloudflared` only makes outbound connections to Cloudflare's tunnel edge, so nothing needs to be port-forwarded, but those connections must survive the VPN.
@@ -139,6 +163,8 @@ The recovery side (yt-dlp, Internet Archive fetches and SABnzbd) can run over No
 Connecting the NordVPN Linux client with default settings breaks both: its firewall drops inbound LAN traffic, so SSH stops answering, and the tunnel's edge connections are torn down when the default route moves into the VPN. With autoconnect or the kill switch on, this persists across reboots. The setup below keeps the whole box on the VPN, with three exceptions: the LAN, inbound SSH, and Cloudflare's tunnel edge.
 
 ### If you are locked out
+
+If the site still works, use **Settings → Restart media server** (see [Restarting the media server from Tomify](#restarting-the-media-server-from-tomify)); with `nordvpnd` disabled at boot the box returns with the VPN off. Otherwise:
 
 If `nordvpnd` is disabled at boot (`sudo systemctl disable nordvpnd`, as the steps below do until the setup is proven), a power cycle brings the box back with the VPN off. If it is still enabled and autoconnect is on, a power cycle alone is not enough, because NordVPN reconnects during boot. Use a keyboard and monitor on the box if you can. Otherwise, from the LAN, start this loop on the Windows PC before powering the box back on; it retries until SSH answers in the gap before NordVPN connects:
 
@@ -334,7 +360,8 @@ An acquisition backend exposes:
 - For asynchronous Usenet acquisition, `POST /v1/acquire` returns an opaque job and `POST /v1/jobs/status` reports queued/downloading/completed/failed state, progress, and the final import result.
 - `POST /v1/jobs/import-remaining` with `{ jobId }`, importing the audio files a completed single-track Usenet job left in its download as a release, without downloading again. Files already imported by that job are skipped, and a job that was already imported as a release is refused.
 - `POST /v1/delete` with `{ importedPaths }`, removing only each recovery derivative, its sidecar and its matching `.tomify-source` original.
-- `POST /v1/status`, returning backend capability state without secret paths or values.
+- `POST /v1/status`, returning backend capability state, plus whether remote reboot is enabled, without secret paths or values.
+- `POST /v1/system/reboot` with `{ confirm: "reboot" }`, returning 202 and rebooting the server shortly afterwards when `TOMIFY_RECOVERY_ALLOW_REBOOT=true`; refused otherwise.
 
 All `/v1/*` endpoints, including deletion, use the same `TOMIFY_RECOVERY_TOKEN` bearer authentication. The Worker calls deletion before removing an imported item from D1. If the agent rejects a path or any filesystem operation fails, the Worker returns an actionable error and leaves the D1 item and candidates intact so the operation can be inspected and retried.
 

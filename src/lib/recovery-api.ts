@@ -30,3 +30,7 @@ export const recoveryApi = {
   pollJob: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/job`),
   delete: (id: string) => request<{ deleted: true; filesRemoved: boolean }>(`/api/recovery/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }
+
+export const systemApi = {
+  restartServer: () => request<{ rebooting: true; scheduledAt: string }>('/api/system/reboot', { method: 'POST', body: JSON.stringify({ confirm: 'reboot' }) }),
+}

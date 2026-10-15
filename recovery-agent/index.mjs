@@ -18,6 +18,7 @@ import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, fi
 import { importRemainingUsenetFiles, importUsenetCompletion } from './usenet-import.mjs'
 import { validateRecoveryAuthConfig } from './config.mjs'
 import { createUsenetJobPoller } from './usenet-job.mjs'
+import { rebootConfig, scheduleReboot } from './system.mjs'
 
 let authConfiguration
 try { authConfiguration = validateRecoveryAuthConfig() }
@@ -33,6 +34,7 @@ const masterRoot = process.env.TOMIFY_MASTER_DIR ? resolve(process.env.TOMIFY_MA
 const youtubeCookies = process.env.TOMIFY_YOUTUBE_COOKIES ? resolve(process.env.TOMIFY_YOUTUBE_COOKIES) : null
 const token = authConfiguration.token
 const ytdlp = process.env.YT_DLP_PATH || 'yt-dlp'
+const reboot = rebootConfig()
 const ffprobe = process.env.FFPROBE_PATH || 'ffprobe'
 const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg'
 const configuredArchiveMaxBytes = Number(process.env.TOMIFY_ARCHIVE_MAX_BYTES || 1024 * 1024 * 1024)
@@ -560,7 +562,7 @@ createServer(async (request, response) => {
     const body = await parseBody(request)
     if (request.url === '/v1/status') {
       const auth = await cookieStatus()
-      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenet.available, authentication: usenet.available ? 'configured' : 'not-configured', providerCount: usenet.providerCount, providers: [...(newznabIndexers.length ? ['newznab'] : []), ...(nzbIndex ? ['nzbindex'] : [])], downloader: usenetDownloader?.type || null }] })
+      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenet.available, authentication: usenet.available ? 'configured' : 'not-configured', providerCount: usenet.providerCount, providers: [...(newznabIndexers.length ? ['newznab'] : []), ...(nzbIndex ? ['nzbindex'] : [])], downloader: usenetDownloader?.type || null }], reboot: reboot.enabled ? 'enabled' : 'disabled' })
     }
     if (request.url === '/v1/diagnostics/youtube-auth') return send(response, 200, await diagnoseAuthenticatedYouTube())
     if (request.url === '/v1/search') {
@@ -578,6 +580,7 @@ createServer(async (request, response) => {
     if (request.url === '/v1/jobs/status') return send(response, 200, await pollUsenetJob(body.jobId))
     if (request.url === '/v1/jobs/import-remaining') return send(response, 200, await importRemainingUsenet(body))
     if (request.url === '/v1/delete') return send(response, 200, await deleteImportedRecovery(body))
+    if (request.url === '/v1/system/reboot') return send(response, 202, scheduleReboot(body, { config: reboot, spawn }))
     return send(response, 404, { error: 'not-found' })
   } catch (error) {
     const message = sanitizeToolError(error instanceof Error ? error.message : 'Recovery agent failed.', [youtubeCookies])
