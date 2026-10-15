@@ -260,13 +260,15 @@ function artworkDatabase() {
   return { rows, prepare: statement, async batch() { return [] } }
 }
 
-test('album artwork applies a confident Spotify match automatically but never replaces a manual choice', async () => {
+test('album artwork falls back to Spotify, applies a confident match and never replaces a manual choice', async () => {
   const spotifySearches = []
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input) => {
     const url = new URL(String(input))
     if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
     if (url.hostname === 'accounts.spotify.com') return Response.json({ access_token: 'spotify-token', expires_in: 3600 })
+    if (url.hostname === 'itunes.apple.com') return Response.json({ results: [] })
+    if (url.hostname === 'api.deezer.com') return Response.json({ data: [] })
     if (url.hostname === 'api.spotify.com') {
       spotifySearches.push(url.searchParams.get('q'))
       const items = url.searchParams.get('q')?.startsWith('album:Flood ') ? [{ id: 'sp-flood', name: 'Flood (Deluxe Edition)', release_date: '1990-01-15', artists: [{ name: 'They Might Be Giants' }], images: [{ url: 'https://i.scdn.co/image/flood-640', width: 640, height: 640 }, { url: 'https://i.scdn.co/image/flood-64', width: 64, height: 64 }], external_urls: { spotify: 'https://open.spotify.com/album/sp-flood' } }] : []
@@ -306,7 +308,7 @@ test('album artwork applies a confident Spotify match automatically but never re
     assert.equal((await call('select', { albumId: 'album-1', candidate: { provider: 'spotify', url: 'https://evil.example/cover.jpg' } })).status, 400)
 
     const listed = await worker.fetch(new Request('https://app.tomify.test/api/album-artwork', { headers }), env).then((response) => response.json())
-    assert.equal(listed.spotifyAvailable, true)
+    assert.deepEqual(listed.providers, ['apple', 'deezer', 'spotify'])
     assert.deepEqual(listed.items.map((item) => [item.albumId, item.provider]), [['album-1', 'library']])
 
     await call('reset', { albumId: 'album-1' })
@@ -320,73 +322,85 @@ test('album artwork applies a confident Spotify match automatically but never re
   }
 })
 
-test('album artwork lookups report a missing Spotify configuration', async () => {
-  const originalFetch = globalThis.fetch
-  globalThis.fetch = async () => Response.json({ 'subsonic-response': { status: 'ok' } })
-  try {
-    const response = await worker.fetch(new Request('https://app.tomify.test/api/album-artwork/lookup', { method: 'POST', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' }, body: JSON.stringify({ albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' }) }), { TOMIFY_DB: artworkDatabase() })
-    assert.equal(response.status, 503)
-    assert.equal((await response.json()).error, 'spotify-unavailable')
-  } finally {
-    globalThis.fetch = originalFetch
-  }
-})
+const artworkHeaders = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }
+const artworkCall = (env, path, body) => worker.fetch(new Request(`https://app.tomify.test/api/album-artwork/${path}`, { method: 'POST', headers: artworkHeaders, body: JSON.stringify(body) }), env)
+const floodApple = { collectionId: 123, collectionName: 'Flood', artistName: 'They Might Be Giants', releaseDate: '1990-01-15T08:00:00Z', artworkUrl100: 'https://is1-ssl.mzstatic.com/image/thumb/Music/flood/100x100bb.jpg', collectionViewUrl: 'https://music.apple.com/gb/album/flood/123' }
+const floodDeezer = { id: 456, title: 'Flood', link: 'https://www.deezer.com/album/456', cover_xl: 'https://e-cdns-images.dzcdn.net/images/cover/flood/1000x1000-000000-80-0-0.jpg', artist: { name: 'They Might Be Giants' } }
 
-test('album artwork reports Spotify rate limits and errors instead of treating them as no match', async () => {
+async function withArtworkFetch(routes, run) {
+  const requested = []
   const originalFetch = globalThis.fetch
-  let status = 429
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
     if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
-    if (url.hostname === 'accounts.spotify.com') return Response.json({ access_token: 'spotify-token', expires_in: 3600 })
-    return new Response('{}', { status, headers: status === 429 ? { 'retry-after': '7' } : {} })
+    if (url.hostname === 'accounts.spotify.com') return Response.json({ access_token: 'app-token', expires_in: 3600 })
+    requested.push({ host: url.hostname, query: url.searchParams.get('q') || url.searchParams.get('term'), authorization: init?.headers?.authorization })
+    return routes[url.hostname]?.(url) ?? new Response('{}', { status: 404 })
   }
-  try {
-    const env = { TOMIFY_DB: artworkDatabase(), SPOTIFY_CLIENT_ID: 'id', SPOTIFY_CLIENT_SECRET: 'secret' }
-    const call = () => worker.fetch(new Request('https://app.tomify.test/api/album-artwork/auto', { method: 'POST', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' }, body: JSON.stringify({ albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' }) }), env)
-    const limited = await call()
-    assert.equal(limited.status, 429)
-    assert.deepEqual(await limited.json().then(({ error, retryAfter }) => ({ error, retryAfter })), { error: 'spotify-rate-limited', retryAfter: 7 })
-    status = 500
-    const failed = await call()
-    assert.equal(failed.status, 502)
-    assert.equal((await failed.json()).error, 'spotify-error')
-    assert.equal(env.TOMIFY_DB.rows.size, 0)
-  } finally {
-    globalThis.fetch = originalFetch
-  }
+  try { await run(requested) } finally { globalThis.fetch = originalFetch }
+}
+
+test('album artwork prefers Apple at 1200px without Spotify credentials and stops before Deezer', async () => {
+  await withArtworkFetch({ 'itunes.apple.com': () => Response.json({ results: [floodApple] }), 'api.deezer.com': () => Response.json({ data: [floodDeezer] }) }, async (requested) => {
+    const env = { TOMIFY_DB: artworkDatabase() }
+    const listed = await worker.fetch(new Request('https://app.tomify.test/api/album-artwork', { headers: artworkHeaders }), env).then((response) => response.json())
+    assert.deepEqual(listed.providers, ['apple', 'deezer'])
+    const body = await artworkCall(env, 'auto', { albumId: 'album-1', name: 'Flood (Deluxe)', artist: 'They Might Be Giants', year: 1990 }).then((response) => response.json())
+    assert.equal(body.applied, true)
+    assert.equal(body.item.provider, 'apple')
+    assert.equal(body.item.url, 'https://is1-ssl.mzstatic.com/image/thumb/Music/flood/1200x1200bb.jpg')
+    assert.equal(body.item.storeUrl, 'https://music.apple.com/gb/album/flood/123')
+    assert.deepEqual(requested.map(({ host, query }) => [host, query]), [['itunes.apple.com', 'Flood They Might Be Giants']])
+
+    const lookup = await artworkCall(env, 'lookup', { albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' }).then((response) => response.json())
+    assert.deepEqual(lookup.candidates.map((candidate) => candidate.provider), ['apple', 'deezer'], 'the album page sees every catalogue, Apple first')
+    assert.equal((await artworkCall(env, 'select', { albumId: 'album-1', candidate: lookup.candidates[1] }).then((response) => response.json())).item.provider, 'deezer')
+  })
 })
 
-test('album artwork searches as the connected Spotify account and explains a 403', async () => {
+test('album artwork uses Deezer when Apple is rate limiting or has no match', async () => {
+  let appleStatus = 403
+  await withArtworkFetch({ 'itunes.apple.com': () => appleStatus === 403 ? new Response('', { status: 403 }) : Response.json({ results: [] }), 'api.deezer.com': () => Response.json({ data: [floodDeezer] }) }, async (requested) => {
+    const env = { TOMIFY_DB: artworkDatabase() }
+    const throttled = await artworkCall(env, 'auto', { albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' }).then((response) => response.json())
+    assert.deepEqual([throttled.applied, throttled.item.provider, throttled.item.url], [true, 'deezer', floodDeezer.cover_xl])
+    appleStatus = 200
+    const missing = await artworkCall(env, 'auto', { albumId: 'album-2', name: 'Flood', artist: 'They Might Be Giants' }).then((response) => response.json())
+    assert.equal(missing.item.provider, 'deezer')
+    assert.deepEqual(requested.filter(({ host }) => host === 'api.deezer.com').map(({ query }) => query)[0], 'artist:"They Might Be Giants" album:"Flood"')
+  })
+})
+
+test('album artwork reports rate limits and errors only when every catalogue fails', async () => {
+  let failing = 'rate'
+  const fail = (headers) => () => failing === 'rate' ? new Response('{}', { status: 429, headers }) : new Response('{}', { status: 500 })
+  await withArtworkFetch({ 'itunes.apple.com': () => new Response('', { status: failing === 'rate' ? 403 : 500 }), 'api.deezer.com': fail({}), 'api.spotify.com': fail({ 'retry-after': '7' }) }, async () => {
+    const env = { TOMIFY_DB: artworkDatabase(), SPOTIFY_CLIENT_ID: 'id', SPOTIFY_CLIENT_SECRET: 'secret' }
+    const limited = await artworkCall(env, 'auto', { albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' })
+    assert.equal(limited.status, 429)
+    assert.deepEqual(await limited.json().then(({ error, retryAfter }) => ({ error, retryAfter })), { error: 'rate-limited', retryAfter: 5 }, 'retries as soon as the quickest catalogue allows')
+    failing = 'error'
+    const failed = await artworkCall(env, 'auto', { albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' })
+    assert.equal(failed.status, 502)
+    const body = await failed.json()
+    assert.equal(body.error, 'apple-error')
+    assert.match(body.message, /Apple search returned HTTP 500\. Deezer search returned HTTP 500\. Spotify search returned HTTP 500\./)
+    assert.equal(env.TOMIFY_DB.rows.size, 0)
+  })
+})
+
+test('album artwork searches Spotify as the connected account and explains a 403', async () => {
   const env = { SPOTIFY_CLIENT_ID: 'id', SPOTIFY_CLIENT_SECRET: 'secret', SPOTIFY_TOKEN_ENCRYPTION_KEY: 'test-key' }
   const { encryptCatalogueToken } = new Function(catalogueWorkerSource + '\nreturn { encryptCatalogueToken }')()
   const encryptedToken = await encryptCatalogueToken(env, { accessToken: 'user-token', refreshToken: 'refresh', expiresAt: Date.now() + 3_600_000 })
   const database = artworkDatabase()
   const prepare = database.prepare
   database.prepare = (sql) => sql.includes('FROM catalogue_provider_tokens') ? { bind() { return this }, async first() { return { encryptedToken } } } : prepare(sql)
-  const authorizations = []
-  let status = 403
-  const originalFetch = globalThis.fetch
-  globalThis.fetch = async (input, init) => {
-    const url = new URL(String(input))
-    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
-    if (url.hostname === 'accounts.spotify.com') return Response.json({ access_token: 'app-token', expires_in: 3600 })
-    authorizations.push(init?.headers?.authorization)
-    if (status === 403) return Response.json({ error: { status: 403, message: 'Active premium subscription required for the owner of the app.' } }, { status: 403 })
-    return Response.json({ albums: { items: [] } })
-  }
-  try {
-    const call = () => worker.fetch(new Request('https://app.tomify.test/api/album-artwork/auto', { method: 'POST', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' }, body: JSON.stringify({ albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' }) }), { ...env, TOMIFY_DB: database })
-    const forbidden = await call()
-    assert.equal(forbidden.status, 502)
-    const body = await forbidden.json()
-    assert.equal(body.error, 'spotify-forbidden')
-    assert.equal(body.message, 'Spotify search returned HTTP 403: Active premium subscription required for the owner of the app. Since March 2026 Spotify refuses Development Mode apps whose owner has no Premium subscription.')
-    assert.deepEqual(authorizations, ['Bearer user-token'])
-    status = 200
-    assert.equal((await call()).status, 200)
-    assert.ok(authorizations.slice(1).every((value) => value === 'Bearer user-token'), 'every search uses the connected account token')
-  } finally {
-    globalThis.fetch = originalFetch
-  }
+  const unavailable = () => new Response('{}', { status: 500 })
+  await withArtworkFetch({ 'itunes.apple.com': unavailable, 'api.deezer.com': unavailable, 'api.spotify.com': () => Response.json({ error: { status: 403, message: 'Active premium subscription required for the owner of the app.' } }, { status: 403 }) }, async (requested) => {
+    const response = await artworkCall({ ...env, TOMIFY_DB: database }, 'auto', { albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' })
+    assert.equal(response.status, 502)
+    assert.match((await response.json()).message, /Spotify search returned HTTP 403: Active premium subscription required for the owner of the app\. Since March 2026 Spotify refuses Development Mode apps whose owner has no Premium subscription\./)
+    assert.deepEqual(requested.filter(({ host }) => host === 'api.spotify.com').map(({ authorization }) => authorization), ['Bearer user-token'])
+  })
 })

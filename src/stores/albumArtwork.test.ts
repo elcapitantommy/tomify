@@ -12,7 +12,7 @@ const session = { serverUrl: 'https://music.example', username: 'tom', salt: 's'
 const album = (id: string): Album => ({ id, name: `Album ${id}`, artist: 'Artist' })
 
 describe('album artwork store', () => {
-  beforeEach(() => { useAuth.setState({ session }); useAlbumArtwork.setState({ overrides: {}, status: 'ready', spotifyAvailable: true }) })
+  beforeEach(() => { useAuth.setState({ session }); useAlbumArtwork.setState({ overrides: {}, status: 'ready', providers: ['apple', 'deezer'] }) })
   afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
   it('upgrades albums in turn, skipping manual choices, waiting out rate limits and counting each outcome', async () => {
@@ -24,7 +24,7 @@ describe('album artwork store', () => {
       requested.push(albumId)
       if (albumId === 'a') return Response.json({ applied: true, item: { albumId: 'a', provider: 'spotify', url: 'https://i.scdn.co/image/a', source: 'auto' } })
       if (albumId === 'b') return Response.json({ applied: false, reason: 'low-confidence' })
-      if (albumId === 'c' && requested.filter((id) => id === 'c').length === 1) return Response.json({ error: 'spotify-rate-limited', retryAfter: 2 }, { status: 429 })
+      if (albumId === 'c' && requested.filter((id) => id === 'c').length === 1) return Response.json({ error: 'rate-limited', retryAfter: 2 }, { status: 429 })
       if (albumId === 'c') return Response.json({ applied: false, reason: 'no-match' })
       return Response.json({ error: 'spotify-error', message: 'Spotify search returned HTTP 500.' }, { status: 502 })
     }))

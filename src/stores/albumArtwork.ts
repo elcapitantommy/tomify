@@ -2,9 +2,11 @@ import { create } from 'zustand'
 import type { Album } from '../types'
 import { useAuth } from './auth'
 
+export type ArtworkProvider = 'apple' | 'deezer' | 'spotify'
+
 export interface AlbumArtworkOverride {
   albumId: string
-  provider: 'spotify' | 'library'
+  provider: ArtworkProvider | 'library'
   providerId?: string | null
   url?: string | null
   width?: number | null
@@ -19,7 +21,8 @@ export interface AlbumArtworkOverride {
 
 export interface AlbumArtworkCandidate {
   id: string
-  provider: 'spotify'
+  provider: ArtworkProvider
+  providerLabel?: string
   providerId: string
   url: string
   previewUrl?: string
@@ -38,17 +41,21 @@ export interface AutoArtworkOutcome { result: AutoArtworkResult | 'rate-limited'
 export interface ArtworkUpgradeProgress { done: number; total: number; applied: number; unchanged: number; noMatch: number; lowConfidence: number; failed: number; waitingSeconds?: number; lastError?: string; stopped?: boolean }
 
 type Status = 'checking' | 'ready' | 'unavailable'
+export interface ArtworkUpgradeRun { running: boolean; progress: ArtworkUpgradeProgress | null; error: string | null }
 
 interface AlbumArtworkState {
   overrides: Record<string, AlbumArtworkOverride>
   status: Status
-  spotifyAvailable: boolean
+  providers: ArtworkProvider[]
+  upgrade: ArtworkUpgradeRun
   load(): Promise<void>
   lookup(album: Album): Promise<AlbumArtworkCandidate[]>
   select(albumId: string, candidate: AlbumArtworkCandidate | 'library'): Promise<void>
   reset(albumId: string): Promise<void>
   auto(album: Album): Promise<AutoArtworkOutcome>
   upgradeMany(albums: Album[], onProgress?: (progress: ArtworkUpgradeProgress) => void, signal?: AbortSignal): Promise<ArtworkUpgradeProgress>
+  startUpgrade(loadAlbums: (signal: AbortSignal) => Promise<Album[]>): Promise<void>
+  stopUpgrade(): void
 }
 
 function headers(): Record<string, string> {
@@ -66,25 +73,29 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 
 const albumInput = (album: Album) => ({ albumId: album.id, name: album.name, artist: album.artist, year: album.year })
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
+// Apple's catalogue allows roughly 20 searches a minute, so the bulk run spaces albums to stay inside it.
+export const upgradeIntervalMs = 3000
+let upgradeController: AbortController | null = null
 
 export function albumArtworkUrl(override?: AlbumArtworkOverride) {
-  return override?.provider === 'spotify' && override.url ? override.url : undefined
+  return override && override.provider !== 'library' && override.url ? override.url : undefined
 }
 
 export const useAlbumArtwork = create<AlbumArtworkState>((set, get) => ({
   overrides: {},
   status: 'checking',
-  spotifyAvailable: false,
+  providers: [],
+  upgrade: { running: false, progress: null, error: null },
 
   load: async () => {
     set({ status: 'checking' })
     try {
       const response = await window.fetch('/api/album-artwork', { headers: headers() })
-      if (!response.ok) { set({ overrides: {}, status: 'unavailable', spotifyAvailable: false }); return }
-      const body = await response.json() as { items?: AlbumArtworkOverride[]; spotifyAvailable?: boolean }
-      set({ overrides: Object.fromEntries((body.items ?? []).map((item) => [item.albumId, item])), status: 'ready', spotifyAvailable: Boolean(body.spotifyAvailable) })
+      if (!response.ok) { set({ overrides: {}, status: 'unavailable', providers: [] }); return }
+      const body = await response.json() as { items?: AlbumArtworkOverride[]; providers?: ArtworkProvider[] }
+      set({ overrides: Object.fromEntries((body.items ?? []).map((item) => [item.albumId, item])), status: 'ready', providers: body.providers ?? [] })
     } catch {
-      set({ overrides: {}, status: 'unavailable', spotifyAvailable: false })
+      set({ overrides: {}, status: 'unavailable', providers: [] })
     }
   },
 
@@ -107,7 +118,7 @@ export const useAlbumArtwork = create<AlbumArtworkState>((set, get) => ({
       return { result: result.applied ? 'applied' : result.reason ?? 'no-match' }
     } catch (error) {
       const failure = error as Error & { code?: string; retryAfter?: number }
-      if (failure.code === 'spotify-rate-limited') return { result: 'rate-limited', retryAfter: failure.retryAfter ?? 5 }
+      if (failure.code === 'rate-limited') return { result: 'rate-limited', retryAfter: failure.retryAfter ?? 5 }
       return { result: 'failed', message: failure.message }
     }
   },
@@ -121,7 +132,7 @@ export const useAlbumArtwork = create<AlbumArtworkState>((set, get) => ({
     for (const album of pending) {
       if (signal?.aborted) break
       let outcome = await get().auto(album)
-      // Spotify rate limits are waited out and the same album retried, rather than counted as misses.
+      // Catalogue rate limits are waited out and the same album retried, rather than counted as misses.
       for (let attempt = 0; outcome.result === 'rate-limited' && attempt < 5 && !signal?.aborted; attempt += 1) {
         const seconds = Math.min(60, outcome.retryAfter ?? 5)
         onProgress?.({ ...progress, waitingSeconds: seconds })
@@ -134,13 +145,36 @@ export const useAlbumArtwork = create<AlbumArtworkState>((set, get) => ({
       else if (outcome.result === 'no-match') progress.noMatch += 1
       else if (outcome.result === 'low-confidence') progress.lowConfidence += 1
       else if (outcome.result === 'unchanged' || outcome.result === 'manual-choice') progress.unchanged += 1
-      else { progress.failed += 1; progress.lastError = outcome.message ?? 'Spotify kept rate limiting Tomify.' }
+      else { progress.failed += 1; progress.lastError = outcome.message ?? 'The artwork catalogues kept rate limiting Tomify.' }
       consecutiveFailures = outcome.result === 'failed' || outcome.result === 'rate-limited' ? consecutiveFailures + 1 : 0
       onProgress?.({ ...progress })
-      // Five failures in a row means Spotify is refusing every request; stop instead of failing the whole library.
+      // Five failures in a row means the catalogues are refusing every request; stop instead of failing the whole library.
       if (consecutiveFailures >= 5) { progress.stopped = true; break }
-      await wait(350)
+      await wait(upgradeIntervalMs)
     }
     return progress
+  },
+
+  // The run lives in the store, not the Settings page, so it keeps going while you browse.
+  startUpgrade: async (loadAlbums) => {
+    if (get().upgrade.running) return
+    upgradeController = new AbortController()
+    const { signal } = upgradeController
+    set({ upgrade: { running: true, progress: null, error: null } })
+    try {
+      const albums = await loadAlbums(signal)
+      const progress = await get().upgradeMany(albums, (next) => set({ upgrade: { running: true, progress: next, error: null } }), signal)
+      set({ upgrade: { running: false, progress, error: null } })
+    } catch (reason) {
+      const aborted = reason instanceof DOMException && reason.name === 'AbortError'
+      set((state) => ({ upgrade: { running: false, progress: state.upgrade.progress, error: aborted ? null : reason instanceof Error ? reason.message : 'The artwork upgrade stopped.' } }))
+    } finally {
+      upgradeController = null
+    }
+  },
+
+  stopUpgrade: () => {
+    upgradeController?.abort()
+    set((state) => ({ upgrade: { ...state.upgrade, running: false } }))
   },
 }))
