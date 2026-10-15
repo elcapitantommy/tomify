@@ -78,11 +78,25 @@ describe('Recovery page actions', () => {
     expect(album).toBeChecked()
 
     fireEvent.click(album)
-    expect(screen.getByRole('button', { name: 'Search NZB' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Search NZB' })).toBeEnabled()
     fireEvent.click(artist)
+    expect(screen.getByRole('button', { name: 'Search NZB' })).toBeDisabled()
     fireEvent.click(album)
     fireEvent.click(screen.getByRole('button', { name: 'Search NZB' }))
     expect(recoveryApi.search).toHaveBeenCalledWith('recovery-1', 'usenet', ['album'])
+    expect(screen.getByRole('status')).toHaveTextContent('Searching NZB indexers…')
+  })
+
+  it('allows an artist-only NZB search for wanted music by an artist and reports the outcome on the row', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ title: '', artist: 'They Might Be Giants', album: '' })], backends })
+    vi.mocked(recoveryApi.search).mockRejectedValueOnce(new Error('NZBIndex search failed.')).mockResolvedValueOnce({ item: item({ title: '', artist: 'They Might Be Giants', album: '' }) })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /they might be giants/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Search NZB' }))
+    expect(recoveryApi.search).toHaveBeenCalledWith('recovery-1', 'usenet', ['artist'])
+    expect(await screen.findByText('NZBIndex search failed.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Search NZB' }))
+    expect(await screen.findByText('NZB search found no results.')).toBeInTheDocument()
   })
 
   it('adds wanted music from any one of artist, album or track', async () => {

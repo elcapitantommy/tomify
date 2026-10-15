@@ -39,9 +39,11 @@ test('derives the import mode from the combined search fields', () => {
   assert.deepEqual(usenetSearchSpec(['album', 'artist']), { fields: ['artist', 'album'], mode: 'release' })
   assert.deepEqual(usenetSearchSpec(['artist', 'album', 'track']), { fields: ['artist', 'album', 'track'], mode: 'track' })
   assert.equal(usenetSearchQuery(album, ['artist', 'album']), 'They Might Be Giants Flood')
-  // Artist-only searches import a single matching track, so they need a title to match against.
+  // Artist-only searches import the best matching track when there is a title, otherwise the whole download.
   assert.equal(usenetSearchQuery(track, ['artist']), 'They Might Be Giants')
-  assert.throws(() => usenetSearchQuery(album, ['artist']), /Include the album/)
+  assert.equal(usenetSearchQuery({ artist: 'They Might Be Giants', title: '', album: '' }, ['artist']), 'They Might Be Giants')
+  assert.deepEqual(usenetSearchSpec(['artist'], track), { fields: ['artist'], mode: 'artist' })
+  assert.deepEqual(usenetSearchSpec(['artist'], album), { fields: ['artist'], mode: 'release' })
   assert.deepEqual(usenetSearchSpec({ fields: ['artist'], mode: 'release' }), { fields: ['artist'], mode: 'release' })
 })
 
