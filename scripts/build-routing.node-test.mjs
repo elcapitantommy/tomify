@@ -355,3 +355,20 @@ test('album artwork reports Spotify rate limits and errors instead of treating t
     globalThis.fetch = originalFetch
   }
 })
+
+test('Recovery explains an out-of-date agent instead of showing not-found', async () => {
+  const candidate = { id: 'candidate-1', backend: 'usenet', selected: 1, importedPath: '/recovery/track.mp3', provenanceJson: JSON.stringify({ job: { id: 'job-1', status: 'completed', progress: 100 }, importedTracks: [{ path: '/recovery/track.mp3' }] }) }
+  const db = {
+    prepare: (sql) => ({ sql, bind() { return this }, async first() { return sql.startsWith('SELECT id, artist, title, album') ? { id: 'recovery-1', artist: 'A', title: 'T', status: 'needs-upgrade' } : null }, async all() { return { results: sql.includes('FROM recovery_candidates') ? [candidate] : [] } }, async run() { return {} } }),
+    async batch() { return [] },
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => new URL(String(input)).pathname === '/rest/ping.view' ? Response.json({ 'subsonic-response': { status: 'ok' } }) : Response.json({ error: 'not-found' }, { status: 404 })
+  try {
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/import-remaining', { method: 'POST', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' } }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+    assert.equal(response.status, 502)
+    assert.match((await response.json()).message, /recovery agent is out of date/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
