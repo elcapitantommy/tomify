@@ -12,7 +12,7 @@ const session = { serverUrl: 'https://music.example', username: 'tom', salt: 's'
 const album = (id: string): Album => ({ id, name: `Album ${id}`, artist: 'Artist' })
 
 describe('album artwork store', () => {
-  beforeEach(() => { useAuth.setState({ session }); useAlbumArtwork.setState({ overrides: {}, status: 'ready', providers: ['apple', 'deezer'] }) })
+  beforeEach(() => { localStorage.clear(); useAuth.setState({ session }); useAlbumArtwork.setState({ overrides: {}, status: 'ready', providers: ['apple', 'deezer'] }) })
   afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
   it('upgrades albums in turn, skipping manual choices, waiting out rate limits and counting each outcome', async () => {
@@ -31,10 +31,34 @@ describe('album artwork store', () => {
     const updates: Array<[number, number | undefined]> = []
     const run = useAlbumArtwork.getState().upgradeMany([album('a'), album('kept'), album('b'), album('c'), album('d')], (progress) => updates.push([progress.done, progress.waitingSeconds]))
     await vi.runAllTimersAsync()
-    expect(await run).toEqual({ done: 4, total: 4, applied: 1, unchanged: 0, noMatch: 1, lowConfidence: 1, failed: 1, lastError: 'Spotify search returned HTTP 500.' })
+    expect(await run).toEqual({ done: 4, total: 4, applied: 1, unchanged: 0, noMatch: 1, lowConfidence: 1, failed: 1, skipped: 1, lastError: 'Spotify search returned HTTP 500.' })
     expect(requested).toEqual(['a', 'b', 'c', 'c', 'd'])
     expect(updates).toEqual([[0, undefined], [1, undefined], [2, undefined], [2, 2], [3, undefined], [4, undefined]])
     expect(useAlbumArtwork.getState().overrides.a.url).toBe('https://i.scdn.co/image/a')
+  })
+
+  it('skips albums already upgraded or checked when the run is restarted', async () => {
+    vi.useFakeTimers()
+    useAlbumArtwork.setState({ overrides: { done: { albumId: 'done', provider: 'apple', url: 'https://is1-ssl.mzstatic.com/a.jpg', source: 'auto' } } })
+    const requested: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_path: string, init: RequestInit) => {
+      const { albumId } = JSON.parse(String(init.body)) as { albumId: string }
+      requested.push(albumId)
+      if (albumId === 'missing') return Response.json({ applied: false, reason: 'no-match' })
+      if (albumId === 'unsure') return Response.json({ applied: false, reason: 'low-confidence' })
+      if (albumId === 'new') return Response.json({ applied: true, item: { albumId: 'new', provider: 'deezer', url: 'https://cdn-images.dzcdn.net/new.jpg', source: 'auto' } })
+      return Response.json({ error: 'deezer-error', message: 'Deezer search returned HTTP 500.' }, { status: 502 })
+    }))
+    const albums = ['done', 'missing', 'unsure', 'new', 'broken'].map(album)
+    const first = useAlbumArtwork.getState().upgradeMany(albums)
+    await vi.runAllTimersAsync()
+    expect(await first).toMatchObject({ done: 4, total: 4, skipped: 1 })
+
+    requested.length = 0
+    const second = useAlbumArtwork.getState().upgradeMany(albums)
+    await vi.runAllTimersAsync()
+    expect(await second).toMatchObject({ done: 1, total: 1, skipped: 4, failed: 1 })
+    expect(requested).toEqual(['broken'])
   })
 
   it('draws the Spotify replacement and falls back to the library artwork if it fails to load', () => {
