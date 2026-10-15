@@ -104,7 +104,7 @@ Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`. Internet Archive se
 1. Copy `recovery-agent/recovery-agent.env.example` to `/etc/tomify/recovery-agent.env` and set a random `TOMIFY_RECOVERY_TOKEN` containing at least 32 characters.
 2. Keep `TOMIFY_RECOVERY_DIR=/srv/music-recovery` separate from `TOMIFY_MASTER_DIR=/srv/music`.
 3. Copy the recovery-agent runtime from the primary Windows checkout at `C:\Users\TomDixon\Documents\tomify` to `/opt/tomify/recovery-agent` on Debian, then install the example systemd unit. The current Debian deployment does not contain a Git checkout and does not use `/srv/tomify/app`.
-4. Put the agent behind an authenticated HTTPS reverse proxy that the hosted Tomify Worker can reach. Do not expose the unauthenticated loopback service directly.
+4. Put the agent behind an authenticated HTTPS reverse proxy that the hosted Tomify Worker can reach. The current deployment uses the box's Cloudflare Tunnel (`cloudflared`), which forwards `RECOVERY_AGENT_URL` to `127.0.0.1:8788`. Do not expose the unauthenticated loopback service directly. To run downloads over a VPN without breaking the tunnel or SSH, see [Running recovery downloads over NordVPN](#running-recovery-downloads-over-nordvpn).
 5. Set hosted secrets `RECOVERY_AGENT_URL` and `RECOVERY_AGENT_TOKEN` for the Tomify Site, plus any optional artwork-provider configuration above, then redeploy.
 
 The agent fails closed at startup when `TOMIFY_RECOVERY_TOKEN` is missing or shorter than 32 characters. Local development without authentication requires the explicit `TOMIFY_RECOVERY_ALLOW_INSECURE_LOOPBACK=true` opt-in and is accepted only with a loopback `TOMIFY_RECOVERY_HOST` such as `127.0.0.1` or `::1`. Never enable insecure mode on the Debian service.
@@ -118,6 +118,94 @@ The current deployment workflow is Windows-to-Debian rather than Git-on-Debian:
 The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and cache directories are `/var/lib/tomify-recovery` and `/var/cache/tomify-recovery`. The systemd sandbox grants write access only to those locations, `/srv/music-recovery`, and the optional YouTube cookie file; `/opt/tomify/secrets` as a whole remains read-only. A server-side Git checkout is not part of the current deployment.
 
 The recovery directory may be added to Navidrome as a separate library path after review. It should not be merged over `/srv/music` by an automated job.
+
+## Running recovery downloads over NordVPN
+
+The recovery side (yt-dlp, Internet Archive fetches and SABnzbd) can run over NordVPN, but the box also has to keep accepting SSH from the LAN and keep its Cloudflare Tunnel up. The hosted Worker never connects to the box directly: it calls `RECOVERY_AGENT_URL`, which Cloudflare routes down the `cloudflared` tunnel to the agent on `127.0.0.1:8788`. Navidrome is published through the same tunnel. `cloudflared` only makes outbound connections to Cloudflare's tunnel edge, so nothing needs to be port-forwarded, but those connections must survive the VPN.
+
+Connecting the NordVPN Linux client with default settings breaks both: its firewall drops inbound LAN traffic, so SSH stops answering, and the tunnel's edge connections are torn down when the default route moves into the VPN. With autoconnect or the kill switch on, this persists across reboots. The setup below keeps the whole box on the VPN, with three exceptions: the LAN, inbound SSH, and Cloudflare's tunnel edge.
+
+### If you are locked out
+
+A power cycle alone is not enough when autoconnect is on, because NordVPN reconnects during boot. Use a keyboard and monitor on the box if you can. Otherwise, start this loop on the Windows PC before powering the box back on; it retries until SSH answers in the gap before NordVPN connects:
+
+```powershell
+while ($true) { ssh -o ConnectTimeout=3 -t tom@tomify "sudo systemctl stop nordvpnd" ; if ($LASTEXITCODE -eq 0) { break } ; Start-Sleep 1 }
+```
+
+Once you have a shell, stop NordVPN from taking the box again before changing anything else:
+
+```bash
+sudo systemctl stop nordvpnd     # drops the VPN and its firewall rules (skip if the loop above already did this)
+sudo systemctl start nordvpnd
+nordvpn disconnect
+nordvpn set autoconnect off
+nordvpn set killswitch off
+nordvpn settings                 # confirm both are now disabled
+```
+
+Then confirm the site's link to the agent is back:
+
+```bash
+systemctl status cloudflared --no-pager     # or: systemctl list-units | grep -i cloudflared
+systemctl status tomify-recovery --no-pager
+curl -s http://127.0.0.1:8788/health; echo
+```
+
+If `cloudflared` is not running, `sudo systemctl restart cloudflared`. The account running `nordvpn` must be in the `nordvpn` group (`sudo usermod -aG nordvpn tom`, then log in again).
+
+### Allowlist the LAN, SSH and the tunnel
+
+Find the LAN subnet first (the `/24`-style network on the interface that carries the default route):
+
+```bash
+ip -4 route show default          # e.g. "default via 192.168.1.1 dev enp3s0"
+ip -4 -br addr show               # e.g. "enp3s0 UP 192.168.1.20/24" means 192.168.1.0/24
+```
+
+Then, with NordVPN still disconnected:
+
+```bash
+nordvpn set lan-discovery enable                 # keeps private LAN ranges reachable
+nordvpn allowlist add subnet 192.168.1.0/24      # use your subnet from above
+nordvpn allowlist add port 22 protocol TCP       # inbound SSH
+nordvpn allowlist add subnet 198.41.192.0/19     # Cloudflare Tunnel edge (region1 and region2)
+nordvpn settings                                 # check the allowlist
+```
+
+Allowlisted subnets are routed outside the VPN, so the tunnel keeps connecting from the home connection, just as it did before. `198.41.192.0/19` covers the IPv4 addresses behind `region1.v2.argotunnel.com` and `region2.v2.argotunnel.com` used by both tunnel protocols (QUIC and HTTP/2 on port 7844). To make sure `cloudflared` does not try IPv6 edges, which the allowlist above does not cover, add `edge-ip-version: "4"` to its config (usually `/etc/cloudflared/config.yml`) and restart it.
+
+### Connect with a fail-safe
+
+Arm an automatic stop before the first connection, so a mistake undoes itself after ten minutes instead of needing another power cycle:
+
+```bash
+sudo systemd-run --on-active=10min --unit=nordvpn-failsafe /bin/systemctl stop nordvpnd
+nordvpn connect
+```
+
+From another terminal on the Windows PC, check that a **new** SSH session opens (`ssh tom@tomify`), then on the box:
+
+```bash
+nordvpn status                                  # Connected
+curl -s https://api.ipify.org; echo             # a NordVPN address, not your home IP
+journalctl -u cloudflared -n 20 --no-pager      # "Registered tunnel connection", no repeated errors
+curl -s http://127.0.0.1:8788/health; echo
+```
+
+Finally open Recovery on the site and run a search. If everything works, cancel the fail-safe and only then make it persistent:
+
+```bash
+sudo systemctl stop nordvpn-failsafe.timer
+nordvpn set autoconnect on
+nordvpn set killswitch on        # optional: blocks downloads if the VPN drops; the allowlist still applies
+```
+
+Reboot once and repeat the SSH, `cloudflared` and Recovery checks to confirm autoconnect comes up with the allowlist in place.
+
+### What goes over the VPN
+
+With this setup everything the box starts outbound goes through NordVPN except LAN traffic, inbound SSH and the tunnel: yt-dlp, Internet Archive downloads, NZBIndex and Newznab searches, SABnzbd's connections to the Usenet provider, artwork fetches and MusicBrainz lookups from the agent. Playback and the Worker's calls to the agent keep using the tunnel, so their speed is unchanged. If SABnzbd runs in Docker its traffic is routed the same way; if downloads stall after connecting, check that the container can still resolve DNS (`docker exec <container> getent hosts nzbindex.com`).
 
 ## Internet Archive backend
 
