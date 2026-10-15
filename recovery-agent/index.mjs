@@ -12,7 +12,8 @@ import { audioFormatSummary, sanitizeToolError, selectBestAudioFormat } from './
 import { archiveCandidate, archiveDownloadUrl, archiveMetadataUrl, archiveSearchUrl, selectArchiveAudioFiles, validateArchiveDownloadUrl } from './internet-archive.mjs'
 import { deleteRecoveryArtifacts } from './deletion.mjs'
 import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './derivative.mjs'
-import { ffmpegMetadataArguments } from './metadata.mjs'
+import { ffmpegMetadataArguments, ffprobeTagJsonFormat } from './metadata.mjs'
+import { decodeToolOutput } from './text-encoding.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
 import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, validateCompletedPath } from './usenet.mjs'
 import { importRemainingUsenetFiles, importUsenetCompletion } from './usenet-import.mjs'
@@ -80,15 +81,18 @@ function youtubeUrl(value) {
 function run(command, args, timeoutMs = 120_000) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
-    let stdout = ''
+    // Keep raw bytes until the end: decoding per chunk splits multi-byte characters, and tag
+    // values may not be valid UTF-8 at all (see decodeToolOutput).
+    const stdoutChunks = []
+    let stdoutBytes = 0
     let stderr = ''
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${basename(command)} timed out.`)) }, timeoutMs)
-    child.stdout.on('data', (chunk) => { stdout += chunk; if (stdout.length > 8_000_000) child.kill('SIGKILL') })
+    child.stdout.on('data', (chunk) => { stdoutChunks.push(chunk); stdoutBytes += chunk.length; if (stdoutBytes > 8_000_000) child.kill('SIGKILL') })
     child.stderr.on('data', (chunk) => { stderr += chunk; if (stderr.length > 2_000_000) child.kill('SIGKILL') })
     child.on('error', (error) => { clearTimeout(timer); reject(error) })
     child.on('close', (code) => {
       clearTimeout(timer)
-      if (code === 0) resolvePromise({ stdout: stdout.trim(), stderr: stderr.trim() })
+      if (code === 0) resolvePromise({ stdout: decodeToolOutput(Buffer.concat(stdoutChunks)).trim(), stderr: stderr.trim() })
       else reject(new Error(`${basename(command)} failed: ${sanitizeToolError(stderr || `exit ${code}`, [youtubeCookies])}`))
     })
   })
@@ -222,7 +226,7 @@ async function fetchArchiveFile(url, destination, expectedHashes = {}) {
 }
 
 async function probe(path) {
-  const { stdout } = await run(ffprobe, ['-v', 'error', '-show_entries', 'format=format_name,duration,bit_rate:format_tags:stream=codec_type,codec_name,sample_rate,channels,bit_rate:stream_tags', '-of', 'json', path])
+  const { stdout } = await run(ffprobe, ['-v', 'error', '-show_entries', 'format=format_name,duration,bit_rate:format_tags:stream=codec_type,codec_name,sample_rate,channels,bit_rate:stream_tags', '-of', ffprobeTagJsonFormat, path])
   const value = JSON.parse(stdout)
   const audio = (value.streams || []).find((stream) => stream.codec_type === 'audio') || {}
   return { codec: audio.codec_name || null, container: value.format?.format_name || extname(path).slice(1) || null, bitrate: Number(audio.bit_rate || value.format?.bit_rate) || null, sampleRate: Number(audio.sample_rate) || null, channels: Number(audio.channels) || null, duration: Number(value.format?.duration) || null, tags: { ...(audio.tags || {}), ...(value.format?.tags || {}) } }
