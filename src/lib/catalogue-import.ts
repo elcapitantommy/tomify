@@ -15,7 +15,7 @@ export interface CataloguePlaylistItem {
 }
 export interface CataloguePlaylistDraft { provider: 'spotify'; providerPlaylistId: string; name: string; description?: string | null; sourceUrl: string; snapshotId?: string | null; artwork: CatalogueArtwork[]; items: CataloguePlaylistItem[] }
 export interface CataloguePlaylistSummary { id: string; name: string; provider: string; providerPlaylistId: string; sourceUrl: string; snapshotId?: string | null; artworkUrl?: string | null; createdAt: string; updatedAt: string; counts: { total: number; available: number; missing: number; review: number; unavailable: number } }
-export interface CataloguePlaylist extends CataloguePlaylistSummary { items: CataloguePlaylistItem[] }
+export interface CataloguePlaylist extends CataloguePlaylistSummary { items: CataloguePlaylistItem[]; owner?: string; sharedWithMe?: boolean }
 export interface CataloguePlaylistDiff { added: string[]; removed: string[]; reordered: boolean }
 
 function normalise(value?: string | null) { return String(value || '').toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[’']/g, '').replace(/[^a-z0-9]+/g, ' ').trim() }

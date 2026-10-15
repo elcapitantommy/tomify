@@ -24,6 +24,8 @@ export function createAuthSession(serverUrl: string, username: string, password:
   return { serverUrl: normaliseServerUrl(serverUrl), username: username.trim(), salt, token: SparkMD5.hash(password + salt) }
 }
 
+export function sameAccount(left: string | undefined, right: string | undefined) { return Boolean(left && right) && left!.trim().toLowerCase() === right!.trim().toLowerCase() }
+
 export class NavidromeClient {
   constructor(readonly session: AuthSession, private readonly fetcher: typeof fetch = window.fetch.bind(window)) {}
 
@@ -62,10 +64,13 @@ export class NavidromeClient {
   async allAlbums(signal?: AbortSignal): Promise<Album[]> { const albums: Album[] = []; for (let offset = 0; ; offset += 500) { const r = await this.get<{ albumList2?: { album?: Album[] } }>('getAlbumList2', { type: 'alphabeticalByName', size: 500, offset }, signal); const page = r.albumList2?.album ?? []; albums.push(...page); if (page.length < 500) return albums } }
   async album(id: string, signal?: AbortSignal): Promise<Album & { song?: Track[] }> { const r = await this.get<{ album: Album & { song?: Track[] } }>('getAlbum', { id }, signal); return r.album }
   async search(query: string, signal?: AbortSignal): Promise<SearchResults> { const r = await this.get<{ searchResult3?: { artist?: Artist[]; album?: Album[]; song?: Track[] } }>('search3', { query, artistCount: 20, albumCount: 20, songCount: 50 }, signal); const s = r.searchResult3; return { artists: s?.artist ?? [], albums: s?.album ?? [], tracks: s?.song ?? [] } }
-  // Navidrome returns every user's playlists to admins and other users' public playlists to everyone; Tomify only shows the signed-in account's own.
+  // Navidrome returns every user's playlists to admins and other users' public playlists to everyone; Tomify only lists the signed-in account's own.
+  // Playlists other accounts shared through Tomify are opened with `sharedBy`, the owner named on the share.
   async playlists(signal?: AbortSignal): Promise<Playlist[]> { const r = await this.get<{ playlists?: { playlist?: Playlist[] } }>('getPlaylists', {}, signal); return (r.playlists?.playlist ?? []).filter((playlist) => this.ownsPlaylist(playlist)) }
-  async playlist(id: string, signal?: AbortSignal): Promise<Playlist> { const r = await this.get<{ playlist: Playlist }>('getPlaylist', { id }, signal); if (!this.ownsPlaylist(r.playlist)) throw new NavidromeError('Playlist not found.', 70); return r.playlist }
-  private ownsPlaylist(playlist: Playlist) { return playlist.owner?.toLowerCase() === this.session.username.toLowerCase() }
+  async playlist(id: string, signal?: AbortSignal, sharedBy?: string): Promise<Playlist> { const r = await this.get<{ playlist: Playlist }>('getPlaylist', { id }, signal); if (!this.ownsPlaylist(r.playlist) && !(sharedBy && sameAccount(r.playlist.owner, sharedBy))) throw new NavidromeError('Playlist not found.', 70); return r.playlist }
+  // Sharing needs the playlist public in Navidrome so recipients' own credentials can read it.
+  async setPlaylistPublic(id: string, isPublic: boolean) { await this.get('updatePlaylist', { playlistId: id, public: String(isPublic) }) }
+  ownsPlaylist(playlist: Pick<Playlist, 'owner'>) { return sameAccount(playlist.owner, this.session.username) }
   async starred(signal?: AbortSignal): Promise<SearchResults> { const r = await this.get<{ starred2?: { artist?: Artist[]; album?: Album[]; song?: Track[] } }>('getStarred2', {}, signal); const s = r.starred2; return { artists: s?.artist ?? [], albums: s?.album ?? [], tracks: s?.song ?? [] } }
   async scrobble(id: string, submission = true) { await this.get('scrobble', { id, submission: submission ? 'true' : 'false' }); return true }
   coverArtUrl(id?: string, size = 600) { return id ? this.url('getCoverArt', { id, size }).toString() : '' }
