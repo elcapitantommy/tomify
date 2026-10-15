@@ -4,7 +4,7 @@ import { access, mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from 'n
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { findCompletedAudio } from './usenet.mjs'
-import { importRemainingUsenetFiles, importUsenetCompletion, importedUsenetSourceFiles, releaseTrackMetadata, selectUsenetImportFiles } from './usenet-import.mjs'
+import { folderAlbum, importRemainingUsenetFiles, importUsenetCompletion, importedUsenetSourceFiles, releaseTrackMetadata, selectUsenetImportFiles } from './usenet-import.mjs'
 
 function job(searchMode, track = {}) {
   return {
@@ -136,6 +136,67 @@ test('single-track mode preserves the existing one-result payload shape', async 
   assert.equal(result.path, result.importedTracks[0].path)
   assert.equal(result.provenance.searchMode, 'track')
   assert.equal((await readdir(join(recoveryRoot, 'they might be giants', 'flood'))).filter((name) => name.endsWith('.mp3')).length, 1)
+})
+
+test('a discography torrent imports each album into its own folder instead of failing on clashing track names', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-discography-import-test-'))
+  const completed = await mkdtemp(join(tmpdir(), 'tomify-discography-completed-test-'))
+  const albums = { '1975 - That\'s the Way of the World [FLAC]': 'That\'s the Way of the World', '1977 - All \'n All [FLAC]': 'All \'n All' }
+  const qualities = {}
+  for (const [folder, album] of Object.entries(albums)) {
+    await mkdir(join(completed, folder), { recursive: true })
+    for (const [number, title] of [[1, 'Intro'], [2, 'Shining Star']]) {
+      const path = join(completed, folder, `0${number} - ${title}.flac`)
+      await writeFile(path, `${album} ${title}`)
+      qualities[path] = { codec: 'flac', container: 'flac', duration: 200, tags: { title, artist: 'Earth, Wind & Fire', album, track: String(number) } }
+    }
+  }
+  const discovered = await findCompletedAudio(completed)
+  assert.equal(discovered.files.length, 4)
+  const torrentJob = { ...job('release', { artist: 'Earth, Wind & Fire', album: null, releaseId: 'wanted-release-id' }), downloader: 'qbittorrent', indexer: { type: 'torrent', id: 'torrent-link', name: 'Torrent link' }, torrent: { infoHash: 'abc123', linkType: 'magnet' } }
+  const tools = { ...harness(), probe: async (path) => qualities[path] || { codec: 'flac', container: 'flac', duration: 200, tags: {} } }
+  const result = await importUsenetCompletion(torrentJob, discovered.files, { recoveryRoot, ...tools })
+
+  assert.equal(result.importedCount, 4)
+  assert.equal(result.artist, 'Earth, Wind & Fire')
+  assert.equal(result.album, null)
+  assert.deepEqual(result.albums.map((value) => value.album).sort(), ['All \'n All', 'That\'s the Way of the World'])
+  assert.deepEqual((await readdir(join(recoveryRoot, 'Earth, Wind & Fire'))).sort(), ['All \'n All', 'That\'s the Way of the World'])
+  for (const album of Object.values(albums)) {
+    const files = (await readdir(join(recoveryRoot, 'Earth, Wind & Fire', album))).filter((name) => name.endsWith('.flac')).sort()
+    assert.deepEqual(files, ['01 - Intro.flac', '02 - Shining Star.flac'])
+  }
+  // The wanted item names no album, so the chosen artwork and release id are not stamped on any of them.
+  assert.equal(tools.artworkCalls, 0)
+  assert.equal(result.importedTracks.every((track) => track.provenance.resolvedMetadata.releaseId === null), true)
+  assert.equal(result.importedTracks[0].provenance.releaseImport.albumCount, 2)
+})
+
+test('untagged discography files take their album from their folder, and repeated names are kept side by side', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-untagged-discography-test-'))
+  const completed = await mkdtemp(join(tmpdir(), 'tomify-untagged-discography-completed-test-'))
+  for (const path of ['Head to the Sky/01 - Intro.flac', 'Faces/CD1/01 - Intro.flac', 'Faces/CD2/01 - Intro.flac', 'Spirit/01 - Intro.flac', 'Spirit/Bonus/01 - Intro.flac']) {
+    await mkdir(join(completed, path, '..'), { recursive: true })
+    await writeFile(join(completed, path), path)
+  }
+  const discovered = await findCompletedAudio(completed)
+  const qualities = Object.fromEntries(discovered.files.map((file) => [file.path, { codec: 'flac', container: 'flac', duration: 200, tags: file.path.includes('Spirit') ? { album: 'Spirit', title: 'Intro', track: '1' } : {} }]))
+  const result = await importUsenetCompletion(job('release', { artist: 'Earth, Wind & Fire', album: 'Spirit' }), discovered.files, { recoveryRoot, ...harness(), probe: async (path) => qualities[path] })
+
+  assert.equal(result.importedCount, 5)
+  const artistFolder = join(recoveryRoot, 'Earth, Wind & Fire')
+  assert.deepEqual((await readdir(artistFolder)).sort(), ['Faces', 'Head to the Sky', 'Spirit'])
+  assert.deepEqual((await readdir(join(artistFolder, 'Faces'))).filter((name) => name.endsWith('.mp3') || name.endsWith('.flac')).sort(), ['01-01 - Intro.flac', '02-01 - Intro.flac'])
+  assert.deepEqual((await readdir(join(artistFolder, 'Spirit'))).filter((name) => name.endsWith('.flac')).sort(), ['01 - Intro (2).flac', '01 - Intro.flac'])
+  // Only the wanted album gets the chosen cover.
+  await access(join(artistFolder, 'Spirit', 'cover.jpg'))
+  await assert.rejects(access(join(artistFolder, 'Faces', 'cover.jpg')))
+})
+
+test('reads the album and disc from a release folder name', () => {
+  assert.deepEqual(folderAlbum('/download/Discography/1975 - Gratitude (FLAC 24bit) [WEB]/01 - Shining Star.flac'), { album: '1975 - Gratitude', discNumber: null })
+  assert.deepEqual(folderAlbum('/download/Faces/Disc 2/01 - Intro.flac'), { album: 'Faces', discNumber: 2 })
+  assert.deepEqual(folderAlbum('/download/Open Our Eyes (1974)/01.flac'), { album: 'Open Our Eyes (1974)', discNumber: null })
 })
 
 test('torrent imports record torrent provenance, including files unpacked from an archive', async () => {

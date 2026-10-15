@@ -2,13 +2,14 @@ import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
 import { createWriteStream } from 'node:fs'
-import { access, copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { access, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { audioFormatSummary, sanitizeToolError, selectBestAudioFormat } from './youtube.mjs'
+import { findReusableTorrent } from './torrent.mjs'
 import { archiveCandidate, archiveDownloadUrl, archiveMetadataUrl, archiveSearchUrl, selectArchiveAudioFiles, validateArchiveDownloadUrl } from './internet-archive.mjs'
 import { deleteRecoveryArtifacts } from './deletion.mjs'
 import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './derivative.mjs'
@@ -500,6 +501,17 @@ async function queueUsenet(body) {
   return { job: { id, status: 'queued', progress: 0, provider: provider.name, downloader: submitted.downloader } }
 }
 
+// Every saved job, for finding an earlier failed torrent job for the same link.
+async function savedUsenetJobs() {
+  const names = await readdir(usenetStateRoot).catch(() => [])
+  const jobs = []
+  for (const name of names.filter((value) => /^[a-f0-9-]{36}\.json$/.test(value))) {
+    const job = await loadUsenetJob(name.slice(0, -5)).catch(() => null)
+    if (job) jobs.push(job)
+  }
+  return jobs
+}
+
 async function queueTorrent(body) {
   if (body?.authorisation?.confirmed !== true || !body.authorisation.basis) throw new Error('Explicit source authorisation is required.')
   if (!torrent.available) throw new Error('Torrent downloads are not configured on the recovery agent.')
@@ -509,7 +521,10 @@ async function queueTorrent(body) {
   const candidate = torrentCandidate(reference.link, body.track)
   const id = crypto.randomUUID()
   const tag = `tomify-${id}`
-  const submitted = await qbittorrent.add(candidate.provenance.link, { tag, savePath: torrentDownloader.downloadRoot || torrentDownloadRoot })
+  const reusable = await findReusableTorrent(candidate.provenance, { client: qbittorrent, loadJob: (jobId) => loadUsenetJob(jobId).catch(() => null), savedJobs: savedUsenetJobs })
+  const submitted = reusable
+    ? await qbittorrent.retag(reusable.hash, { tag, previousTags: reusable.tags })
+    : await qbittorrent.add(candidate.provenance.link, { tag, savePath: torrentDownloader.downloadRoot || torrentDownloadRoot })
   const searchMode = ['track', 'release'].includes(reference.searchMode) ? reference.searchMode : candidate.provenance.searchMode
   const job = {
     id, version: 1, status: 'queued', progress: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
