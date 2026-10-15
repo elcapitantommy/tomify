@@ -4,7 +4,7 @@ Tomify Recovery is a queue for rebuilding missing tracks without confusing a con
 
 ## What v1 does
 
-- Adds wanted tracks with artist, title, release, duration and track number.
+- Adds wanted music from any combination of artist, album and track (at least one), plus optional duration and track number. Leaving the track blank asks for the whole album.
 - Searches YouTube or Internet Archive through the same pluggable backend contract and ranks candidates by title, artist and duration evidence.
 - Penalises likely live, remix, karaoke, nightcore, sped-up, slowed and cover versions unless those words are part of the wanted title.
 - Shows the channel, duration, match confidence and source URL before selection.
@@ -112,9 +112,9 @@ The candidate review links to the Archive item so the user can inspect its descr
 
 ## Newznab, NZBIndex and Usenet backend
 
-The optional Usenet backend searches one or more Newznab-compatible indexers, NZBIndex, or both, and queues an explicitly selected result in either SABnzbd or NZBGet. It supports three independent query modes: artist, track title, or release/album. Results are shown in a provider-neutral review list with their indexer, title, advertised size, age when available, and a link to the provider's detail page. Search results are not treated as evidence of permission.
+The optional Usenet backend searches one or more Newznab-compatible indexers, NZBIndex, or both, and queues an explicitly selected result in either SABnzbd or NZBGet. Searches combine any mix of artist, release/album and track title (at least one) into a single query, always ordered artist, album, track. The older single-field modes (`artist`, `track`, `release`) are still accepted. Results are shown in a provider-neutral review list with their indexer, title, advertised size, age when available, and a link to the provider's detail page. Search results are not treated as evidence of permission.
 
-Import scope follows the selected search mode. Track-title mode imports only the completed audio file that best matches the wanted track. Release/album mode imports every valid supported audio file from the completed release into one album directory, preserving each original and creating one stream-copy derivative and provenance sidecar per track. Artist mode remains intentionally conservative and imports only the best matching wanted track; an artist search does not authorise Tomify to ingest every file in an arbitrary artist bundle.
+Import scope follows the fields searched. Any search that includes the track title imports only the completed audio file that best matches the wanted track. A search that includes the album but not the track title imports every valid supported audio file from the completed release into one album directory, preserving each original and creating one stream-copy derivative and provenance sidecar per track. An artist-only search remains intentionally conservative and imports only the best matching wanted track, so it is only offered for wanted items that have a track title; an artist search does not authorise Tomify to ingest every file in an arbitrary artist bundle.
 
 For release imports, embedded title, artist, album artist, album, track/disc number, and date tags are preferred per track. Selected release metadata supplies artist, album, date, release ID, and release-group ID only when source tags are missing. Filename order is the final fallback for title and numbering. Tomify never applies the seed track's MusicBrainz recording ID or ISRC to the other tracks. Artwork is prepared once and shared across the album, and existing artist/album directories are reused case-insensitively without renaming unrelated directories.
 
@@ -203,7 +203,7 @@ The result reports only whether the cookie session is configured and extraction 
 
 An acquisition backend exposes:
 
-- `POST /v1/search` with `{ backend, track, searchMode? }`, returning `{ candidates }`.
+- `POST /v1/search` with `{ backend, track, searchFields? }`, where `searchFields` is any non-empty subset of `artist`, `album` and `track` (legacy `searchMode` is still accepted), returning `{ candidates }`.
 - `POST /v1/acquire` with `{ backend, candidate, track, artwork, authorisation }`, returning `{ path, quality, artwork, provenance }`.
 - For asynchronous Usenet acquisition, `POST /v1/acquire` returns an opaque job and `POST /v1/jobs/status` reports queued/downloading/completed/failed state, progress, and the final import result.
 - `POST /v1/delete` with `{ importedPaths }`, removing only each recovery derivative, its sidecar and its matching `.tomify-source` original.
