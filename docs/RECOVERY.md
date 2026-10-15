@@ -26,6 +26,7 @@ Tomify Recovery is a queue for rebuilding missing tracks without confusing a con
 - Writes only into a dedicated recovery directory. Existing files are not overwritten and the configured FLAC master tree must be separate.
 - Deletes queue-only items directly from D1. For imported items, deletion first removes the recovery derivative, its `.tomify.json` sidecar and the matching preserved original under `.tomify-source`; D1 state is retained if that filesystem cleanup fails.
 - Marks every YouTube result `lossy-recovery-copy` and initially `needs-upgrade`; it is never promoted to an archival master automatically.
+- Sets any import from any source to `recovered` when its audio is lossless (FLAC, ALAC, WAV/PCM and similar) and `needs-upgrade` when it is lossy. Either way the files stay recovery copies, never verified masters. Items imported before this rule can be cleared with Mark acceptable.
 - Marks Internet Archive imports `internet-archive-recovery-copy`. A lossless file is still a recovery source, not proof of an archival master.
 - Accepts a pasted magnet or `.torrent` link per item, downloads it with qBittorrent-nox over NordVPN, shows live speed, seeds, peers and time left, unpacks archives, imports the audio and then removes the torrent and its data. See [Torrent links and qBittorrent](#torrent-links-and-qbittorrent).
 

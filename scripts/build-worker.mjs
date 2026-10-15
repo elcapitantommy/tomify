@@ -655,7 +655,7 @@ export default {
           const finalProvenance = { ...provenance, ...(job.result.provenance || {}), source: job.result.provenance?.source || (candidate.backend === 'torrent' ? 'torrent' : 'usenet'), job: provenance.job, importedAt: new Date().toISOString(), importedCount, importedTracks, importedRelease: importedCount > 1 ? { artist: job.result.artist || null, album: job.result.album || null } : null }
           await env.TOMIFY_DB.batch([
             env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, provenance_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(quality.codec || null, quality.container || null, Number.isFinite(quality.bitrate) ? quality.bitrate : null, Number.isFinite(quality.sampleRate) ? quality.sampleRate : null, Number.isFinite(quality.channels) ? quality.channels : null, Number.isFinite(quality.duration) ? quality.duration : null, String(job.result.path || '').slice(0, 1000), JSON.stringify(finalProvenance), candidate.id),
-            env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'needs-upgrade', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(item.id, username),
+            env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(recoveryImportStatus(quality), item.id, username),
           ])
         } else if (job.status === 'failed') {
           await env.TOMIFY_DB.batch([
@@ -730,7 +730,7 @@ export default {
         }
         await env.TOMIFY_DB.batch([
           env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, provenance_json = ?, rights_basis = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(quality.codec || null, quality.container || null, Number.isFinite(quality.bitrate) ? quality.bitrate : null, Number.isFinite(quality.sampleRate) ? quality.sampleRate : null, Number.isFinite(quality.channels) ? quality.channels : null, Number.isFinite(quality.duration) ? quality.duration : null, String(result.path || '').slice(0, 1000), JSON.stringify(provenance), body.rightsBasis, candidate.id),
-          env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, status = 'needs-upgrade', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(candidate.id, item.id, username),
+          env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(candidate.id, recoveryImportStatus(quality), item.id, username),
         ])
         return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
       } catch (error) {
