@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, Pencil, Play, Shuffle, X } from 'lucide-react'
 import { useParams } from 'react-router-dom'
+import { AlbumCompleteness } from '../components/AlbumCompleteness'
 import { Artwork } from '../components/Artwork'
 import { ErrorState, SkeletonGrid } from '../components/States'
 import { TrackList } from '../components/TrackList'
@@ -89,6 +90,8 @@ export function AlbumDetail() {
       <label><span>Release date</span><input disabled={savingMetadata} type="date" value={releaseDateInputValue(album, override)} onChange={(event) => void saveDate(event.target.value)}/></label>
       <div className="release-editor-actions"><button className="button secondary" disabled={refreshingMetadata || savingMetadata} onClick={() => void refreshMetadata()}>{refreshingMetadata ? 'Checking MusicBrainz…' : override?.source === 'manual' ? 'Replace with MusicBrainz' : 'Refresh from MusicBrainz'}</button></div>
     </section>}
+
+    {!versionsLoading && cloudStatus === 'cloud' && <AlbumCompleteness album={album} tracks={allTracks}/>}
 
     {versionsLoading && album && <><TrackList tracks={album.song ?? []} discAware/><p className="variant-loading">Checking for other editions…</p></>}
     {!versionsLoading && fullVersions.length === 1 && <TrackList tracks={fullVersions[0].song ?? []} discAware/>}

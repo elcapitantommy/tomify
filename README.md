@@ -191,6 +191,7 @@ pnpm build
 - A playback source resolver boundary ready to prefer IndexedDB audio before the network in the next phase.
 - A source-aware Recovery queue with MusicBrainz metadata review, provider-ranked cover art, D1 provenance, safe recovery-copy deletion and an optional media-server acquisition agent.
 - OAuth-backed Spotify playlist import as catalogue metadata only, with Navidrome matching, ambiguous-match review, ordered pending Recovery entries, duplicate preservation, and manual refresh diffs.
+- Album completeness against the MusicBrainz tracklist, with edition choice, duplicate-copy and extra-track notes, and one-click "add missing to Recovery".
 
 ### Recovery imports
 

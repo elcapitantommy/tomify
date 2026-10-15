@@ -2,19 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Check, ChevronDown, ChevronUp, CircleGauge, ExternalLink, FileAudio, Landmark, LoaderCircle, Plus, Search, Server, ShieldCheck, Trash2, Youtube } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { recoveryApi } from '../lib/recovery-api'
-import { qualityLabel, type RecoveryBackend, type RecoveryItem, type RecoveryMetadataChoices, type RecoverySearchMode, type RecoveryStatus } from '../lib/recovery'
+import { qualityLabel, recoveryStatusLabels as statusLabels, type RecoveryBackend, type RecoveryItem, type RecoveryMetadataChoices, type RecoverySearchMode, type RecoveryStatus } from '../lib/recovery'
 import { formatDuration } from '../lib/format'
-
-const statusLabels: Record<RecoveryStatus, string> = {
-  missing: 'Missing',
-  'candidate-found': 'Review candidate',
-  importing: 'Importing',
-  queued: 'Queued',
-  downloading: 'Downloading',
-  recovered: 'Recovered',
-  'needs-upgrade': 'Needs upgrade',
-  failed: 'Failed',
-}
 
 type RecoveryBusyAction = 'add' | 'search-youtube' | 'search-internet-archive' | 'search-usenet' | 'select' | 'acquire' | 'status' | 'delete'
 type RecoveryBusyState = { id: string; action: RecoveryBusyAction } | null
