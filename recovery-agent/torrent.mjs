@@ -172,6 +172,26 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
       if (/^fails/i.test(text(body))) throw new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).')
       return { downloader: 'qbittorrent', remoteId: tag }
     },
+    async findByHash(hash) {
+      const cookie = await session()
+      const url = new URL(`${config.url}/api/v2/torrents/info`)
+      url.searchParams.set('hashes', hash)
+      const response = await fetchImpl(url, { headers: cookie ? { cookie } : {}, signal: AbortSignal.timeout(30_000) })
+      if (!response.ok) throw new Error(`qBittorrent returned HTTP ${response.status}.`)
+      const torrents = await response.json()
+      return (Array.isArray(torrents) ? torrents : []).find((torrent) => text(torrent?.hash).toLowerCase() === hash.toLowerCase()) || null
+    },
+    // Hands a torrent qBittorrent already has to a new job: adds the job's tag and drops the old jobs' tags.
+    async retag(hash, { tag, previousTags = [] }) {
+      const cookie = await session()
+      const added = await call(cookie, 'torrents/addTags', { hashes: hash, tags: tag }, 'qBittorrent tag')
+      if (!added.response.ok) throw new Error(`qBittorrent tag returned HTTP ${added.response.status}.`)
+      if (previousTags.length) {
+        const removed = await call(cookie, 'torrents/removeTags', { hashes: hash, tags: previousTags.join(',') }, 'qBittorrent untag')
+        if (!removed.response.ok) throw new Error(`qBittorrent untag returned HTTP ${removed.response.status}.`)
+      }
+      return { downloader: 'qbittorrent', remoteId: tag }
+    },
     async info(tag) {
       const cookie = await session()
       const url = new URL(`${config.url}/api/v2/torrents/info`)
@@ -249,4 +269,26 @@ export async function extractArchives(archives, destination, { run, sevenZip = '
     extracted.push(target)
   }
   return extracted
+}
+
+// A torrent whose import failed stays in qBittorrent with its data. Adding the same link again reuses it, so the
+// retry imports straight away instead of downloading again. Only a torrent Tomify added, and that no live job is
+// using, is reused; anything else is added as normal (and qBittorrent refuses a duplicate as before).
+export async function findReusableTorrent(provenance, { client, loadJob, savedJobs }) {
+  let hash = provenance?.infoHash || null
+  // A .torrent file link carries no info hash, so look for it on an earlier failed job for the same link.
+  if (!hash && provenance?.resultId) {
+    const earlier = (await savedJobs()).find((job) => job?.downloader === 'qbittorrent' && job.status === 'failed' && job.result?.resultId === provenance.resultId && /^[a-f0-9]{40}$/.test(job.torrent?.infoHash || ''))
+    hash = earlier?.torrent.infoHash || null
+  }
+  if (!hash) return null
+  const info = await client.findByHash(hash)
+  if (!info) return null
+  const tags = text(info.tags).split(',').map(text).filter((value) => value.startsWith('tomify-'))
+  if (!tags.length) return null
+  for (const tag of tags) {
+    const job = await loadJob(tag.slice('tomify-'.length))
+    if (job && job.status !== 'failed') return null
+  }
+  return { hash: text(info.hash).toLowerCase(), tags }
 }

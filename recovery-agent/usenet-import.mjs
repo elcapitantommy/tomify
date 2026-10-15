@@ -1,6 +1,6 @@
 import { constants as fsConstants } from 'node:fs'
 import { access, copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises'
-import { basename, extname, join, resolve, sep } from 'node:path'
+import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { buildArtworkProvenance, buildDerivativeArguments } from './artwork.mjs'
@@ -46,6 +46,47 @@ function mostCommon(values) {
     counts.set(key, current)
   }
   return [...counts.values()].sort((left, right) => right.count - left.count || left.value.localeCompare(right.value))[0]?.value || null
+}
+
+// The album a file's folder names, for releases whose files carry no album tag. A "CD1" or "Disc 2" folder
+// names the disc, and its parent names the album.
+export function folderAlbum(path) {
+  let directory = dirname(path)
+  const disc = basename(directory).match(/^(?:cd|disc|disk)\s*[-_.]?\s*(\d{1,2})$/i)
+  if (disc) directory = dirname(directory)
+  let album = basename(directory).trim()
+  // Drop trailing format notes such as "[FLAC]" or "(FLAC 24bit)"; they are not part of the album title.
+  for (let previous = ''; previous !== album;) { previous = album; album = album.replace(/\s*[[(][^\])]*\b(?:flac|mp3|alac|aac|ogg|opus|wav|lossless|\d+\s*kbps|\d+\s*bit|web)\b[^\])]*[\])]$/i, '').trim() }
+  return { album: album || null, discNumber: disc ? Number(disc[1]) : null }
+}
+
+// Splits a release into one group per album, so a discography imports into one folder per album rather than
+// mixing every album's tracks (and their clashing "01 - Intro" names) into one. Files with no album tag fall
+// back to their folder's name when the release spans several folders.
+export function releaseAlbumGroups(inspected, requested) {
+  const folders = inspected.map((item) => folderAlbum(item.file.path))
+  const multipleFolders = new Set(folders.map((folder) => foldName(folder.album || ''))).size > 1
+  const groups = new Map()
+  for (const [index, item] of inspected.entries()) {
+    if (multipleFolders && !item.hasAlbumTag && folders[index].album) {
+      item.metadata = { ...item.metadata, album: folders[index].album, discNumber: item.metadata.discNumber || folders[index].discNumber }
+    }
+    const key = foldName(item.metadata.album || '')
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(item)
+  }
+  const requestedAlbum = foldName(requested.album || '')
+  const list = [...groups.entries()].map(([key, items]) => ({
+    items,
+    artist: mostCommon(items.map((item) => item.metadata.albumArtist || item.metadata.artist)) || requested.artist,
+    album: mostCommon(items.map((item) => item.metadata.album)) || requested.album || null,
+    requested: groups.size === 1 || (Boolean(requestedAlbum) && key === requestedAlbum),
+  }))
+  // MusicBrainz release ids and dates from the wanted item only describe the wanted album.
+  for (const group of list.filter((value) => !value.requested)) {
+    for (const item of group.items) item.metadata = { ...item.metadata, releaseId: null, releaseGroupId: null, releaseDate: item.hasDateTag ? item.metadata.releaseDate : null }
+  }
+  return list
 }
 
 export function releaseTrackMetadata(sourcePath, quality, releaseFallback, fallbackTrackNumber) {
@@ -113,36 +154,48 @@ export async function importUsenetCompletion(job, completedFiles, options) {
       if (searchMode === 'release') continue
       throw new Error('The selected completed file is not valid audio.')
     }
-    inspected.push({ file, quality, metadata: searchMode === 'release' ? releaseTrackMetadata(file.path, quality, job.request.track || {}, index + 1) : { ...(job.request.track || {}) } })
+    const tags = sourceTags(quality)
+    inspected.push({ file, quality, hasAlbumTag: Boolean(tags.album), hasDateTag: Boolean(tags.date || tags.year), metadata: searchMode === 'release' ? releaseTrackMetadata(file.path, quality, job.request.track || {}, index + 1) : { ...(job.request.track || {}) } })
   }
   const torrent = job.downloader === 'qbittorrent'
   if (!inspected.length) throw new Error(`The completed ${torrent ? 'torrent' : 'Usenet download'} contains no valid supported audio files.`)
 
+  const groups = searchMode === 'release' ? releaseAlbumGroups(inspected, job.request.track || {}) : [{ items: inspected, artist: job.request.track?.artist, album: job.request.track?.album, requested: true }]
   const releaseArtist = searchMode === 'release' ? mostCommon(inspected.map((item) => item.metadata.albumArtist || item.metadata.artist)) || job.request.track?.artist : job.request.track?.artist
-  const releaseAlbum = searchMode === 'release' ? mostCommon(inspected.map((item) => item.metadata.album)) || job.request.track?.album : job.request.track?.album
-  const finalDirectory = await resolveReleaseDirectory(recoveryRoot, releaseArtist, releaseAlbum)
+  const releaseAlbum = groups.length === 1 ? groups[0].album : null
+  await mkdir(resolve(recoveryRoot), { recursive: true })
   const canonicalRecoveryRoot = await realpath(resolve(recoveryRoot))
-  let sourceDirectory = resolve(finalDirectory, '.tomify-source')
-  if (!inside(sourceDirectory, canonicalRecoveryRoot)) throw new Error('Unsafe recovery destination.')
-  await mkdir(sourceDirectory, { recursive: true })
-  if ((await lstat(sourceDirectory)).isSymbolicLink()) throw new Error('Unsafe recovery destination.')
-  sourceDirectory = await realpath(sourceDirectory)
-  if (!inside(sourceDirectory, canonicalRecoveryRoot)) throw new Error('Unsafe recovery destination.')
+  const plans = []
+  const usedStems = new Set()
+  for (const group of groups) {
+    const finalDirectory = await resolveReleaseDirectory(recoveryRoot, group.artist, group.album)
+    let sourceDirectory = resolve(finalDirectory, '.tomify-source')
+    if (!inside(sourceDirectory, canonicalRecoveryRoot)) throw new Error('Unsafe recovery destination.')
+    await mkdir(sourceDirectory, { recursive: true })
+    if ((await lstat(sourceDirectory)).isSymbolicLink()) throw new Error('Unsafe recovery destination.')
+    sourceDirectory = await realpath(sourceDirectory)
+    if (!inside(sourceDirectory, canonicalRecoveryRoot)) throw new Error('Unsafe recovery destination.')
+    group.finalDirectory = finalDirectory
 
-  const discNumbers = new Set(inspected.map((item) => item.metadata.discNumber).filter((value) => Number.isInteger(value) && value > 0))
-  const includeDiscInStem = discNumbers.size > 1 || [...discNumbers].some((value) => value > 1)
-  const plans = inspected.map((item, index) => {
-    const sourceExtension = extname(item.file.path).toLowerCase() || '.mka'
-    const derivativeExtension = recoveryDerivativeExtension(item.file.path, item.quality)
-    const trackPrefix = Number.isInteger(item.metadata.trackNumber) && item.metadata.trackNumber > 0 ? String(item.metadata.trackNumber).padStart(2, '0') : ''
-    const discPrefix = includeDiscInStem && Number.isInteger(item.metadata.discNumber) && item.metadata.discNumber > 0 ? `${String(item.metadata.discNumber).padStart(2, '0')}-` : ''
-    const prefix = trackPrefix ? `${discPrefix}${trackPrefix} - ` : ''
-    const stem = `${prefix}${safeName(item.metadata.title, basename(item.file.path, sourceExtension))}`
-    const finalPath = resolve(finalDirectory, `${stem}${derivativeExtension}`)
-    const originalPath = resolve(sourceDirectory, `${stem}${sourceExtension}`)
-    if (!inside(finalPath, canonicalRecoveryRoot) || !inside(originalPath, canonicalRecoveryRoot)) throw new Error('Unsafe recovery destination.')
-    return { ...item, index, sourceExtension, derivativeExtension, finalPath, originalPath, sidecarPath: `${finalPath}.tomify.json` }
-  })
+    const discNumbers = new Set(group.items.map((item) => item.metadata.discNumber).filter((value) => Number.isInteger(value) && value > 0))
+    const includeDiscInStem = discNumbers.size > 1 || [...discNumbers].some((value) => value > 1)
+    for (const item of group.items) {
+      const sourceExtension = extname(item.file.path).toLowerCase() || '.mka'
+      const derivativeExtension = recoveryDerivativeExtension(item.file.path, item.quality)
+      const trackPrefix = Number.isInteger(item.metadata.trackNumber) && item.metadata.trackNumber > 0 ? String(item.metadata.trackNumber).padStart(2, '0') : ''
+      const discPrefix = includeDiscInStem && Number.isInteger(item.metadata.discNumber) && item.metadata.discNumber > 0 ? `${String(item.metadata.discNumber).padStart(2, '0')}-` : ''
+      const prefix = trackPrefix ? `${discPrefix}${trackPrefix} - ` : ''
+      const baseStem = `${prefix}${safeName(item.metadata.title, basename(item.file.path, sourceExtension))}`
+      // Two files that still land on the same name (a repeated track, or two copies of one album) are both kept.
+      let stem = baseStem
+      for (let copy = 2; usedStems.has(join(finalDirectory, stem).toLocaleLowerCase('en')); copy += 1) stem = `${baseStem} (${copy})`
+      usedStems.add(join(finalDirectory, stem).toLocaleLowerCase('en'))
+      const finalPath = resolve(finalDirectory, `${stem}${derivativeExtension}`)
+      const originalPath = resolve(sourceDirectory, `${stem}${sourceExtension}`)
+      if (!inside(finalPath, canonicalRecoveryRoot) || !inside(originalPath, canonicalRecoveryRoot)) throw new Error('Unsafe recovery destination.')
+      plans.push({ ...item, group, index: plans.length, sourceExtension, derivativeExtension, finalPath, originalPath, sidecarPath: `${finalPath}.tomify.json` })
+    }
+  }
   const destinations = plans.flatMap((plan) => [plan.finalPath, plan.originalPath, plan.sidecarPath])
   if (new Set(destinations.map((path) => path.toLocaleLowerCase('en'))).size !== destinations.length) throw new Error('The completed release contains duplicate destination track names.')
   await ensureAbsent(destinations)
@@ -150,26 +203,27 @@ export async function importUsenetCompletion(job, completedFiles, options) {
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'tomify-recovery-'))
   const committed = []
   const importedTracks = []
-  const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
-  let coverCreated = false
+  const createdCovers = []
   try {
-    const artwork = await prepareArtwork(job.request.artwork, temporaryRoot)
+    const artwork = groups.some((group) => group.requested) ? await prepareArtwork(job.request.artwork, temporaryRoot) : null
     const providerType = job.indexer.type || 'newznab'
     const sourceUrl = job.result.detailsUrl || `${providerType}:${job.indexer.id}:${job.result.externalId || 'result'}`
     const acquiredAt = new Date().toISOString()
     for (const plan of plans) {
-      const taggedPath = join(finalDirectory, `.${randomUUID()}${plan.derivativeExtension}`)
+      const taggedPath = join(plan.group.finalDirectory, `.${randomUUID()}${plan.derivativeExtension}`)
       try {
         const comment = torrent
           ? `Tomify authorised torrent recovery copy; infohash=${job.torrent?.infoHash || 'unknown'}; authorisation=${job.request.authorisation.basis}`
           : `Tomify authorised Usenet recovery copy; provider=${job.indexer.name}; authorisation=${job.request.authorisation.basis}`
         const tags = ffmpegMetadataArguments({ ...plan.metadata, sourceUrl }, comment)
-        const derivativePlan = buildDerivativeArguments({ sourcePath: plan.file.path, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
+        // The chosen artwork belongs to the wanted album, so other albums in a discography keep none.
+        const planArtwork = plan.group.requested ? artwork : null
+        const derivativePlan = buildDerivativeArguments({ sourcePath: plan.file.path, outputPath: taggedPath, coverPath: planArtwork?.coverPath || null, tags })
         await run(ffmpeg, derivativePlan.args, 5 * 60_000)
         const derivativeQuality = await probe(taggedPath)
         await copyFile(plan.file.path, plan.originalPath, fsConstants.COPYFILE_EXCL); committed.push(plan.originalPath)
         await copyFile(taggedPath, plan.finalPath, fsConstants.COPYFILE_EXCL); committed.push(plan.finalPath)
-        const artworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+        const artworkProvenance = buildArtworkProvenance(planArtwork, derivativePlan, resolve(plan.group.finalDirectory, 'cover.jpg'))
         const provenance = {
           source: torrent ? 'torrent' : 'usenet', sourceUrl, providerType, providerName: job.indexer.name, providerId: job.indexer.id, providerResultId: job.result.resultId || job.result.externalId, postedTitle: job.result.title, detailsUrl: job.result.detailsUrl,
           searchMode, postedAt: job.result.postedAt, postedSize: job.result.size, ageDaysAtDiscovery: job.result.ageDays, downloader: job.downloader,
@@ -179,7 +233,7 @@ export async function importUsenetCompletion(job, completedFiles, options) {
           confirmedBy: job.request.authorisation.confirmedBy || null, confirmedAt: job.request.authorisation.confirmedAt || null,
           archiveStatus: torrent ? 'torrent-recovery-copy' : 'usenet-recovery-copy', wantedMetadata: job.request.wantedMetadata, resolvedMetadata: plan.metadata,
           catalogueSource: job.request.catalogueSource, metadataResolution: job.request.metadataResolution, artwork: artworkProvenance,
-          releaseImport: { multiTrack: searchMode === 'release', acquisitionId: job.id, importedTrackNumber: plan.index + 1, importedTrackCount: plans.length, artist: releaseArtist || null, album: releaseAlbum || null },
+          releaseImport: { multiTrack: searchMode === 'release', acquisitionId: job.id, importedTrackNumber: plan.index + 1, importedTrackCount: plans.length, albumCount: groups.length, artist: plan.group.artist || releaseArtist || null, album: plan.group.album || null },
           sourceAudio: { path: plan.originalPath, extension: plan.sourceExtension, quality: plan.quality, preservedOriginal: true },
           derivative: { path: plan.finalPath, extension: plan.derivativeExtension, containerRemuxed: plan.sourceExtension !== plan.derivativeExtension, createdByTomify: true, operation: recoveryDerivativeOperation(plan.sourceExtension, plan.derivativeExtension, derivativePlan.embedded), audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
         }
@@ -189,18 +243,20 @@ export async function importUsenetCompletion(job, completedFiles, options) {
         await unlink(taggedPath).catch(() => {})
       }
     }
-    if (artwork) {
+    for (const group of artwork ? groups.filter((value) => value.requested) : []) {
+      const releaseCoverPath = resolve(group.finalDirectory, 'cover.jpg')
       try { await access(releaseCoverPath) } catch (error) {
         if (error?.code !== 'ENOENT') throw error
-        const stagedCoverPath = join(finalDirectory, `.${randomUUID()}.cover.jpg`)
-        try { await copyFile(artwork.coverPath, stagedCoverPath, fsConstants.COPYFILE_EXCL); await rename(stagedCoverPath, releaseCoverPath); coverCreated = true } finally { await unlink(stagedCoverPath).catch(() => {}) }
+        const stagedCoverPath = join(group.finalDirectory, `.${randomUUID()}.cover.jpg`)
+        try { await copyFile(artwork.coverPath, stagedCoverPath, fsConstants.COPYFILE_EXCL); await rename(stagedCoverPath, releaseCoverPath); createdCovers.push(releaseCoverPath) } finally { await unlink(stagedCoverPath).catch(() => {}) }
       }
     }
     const first = importedTracks[0]
-    return { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, artwork: first.artwork, sourceFiles: plans.map((plan) => plan.file.path) }
+    const albums = groups.map((group) => ({ artist: group.artist || null, album: group.album || null, trackCount: group.items.length }))
+    return { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, albums, artwork: first.artwork, sourceFiles: plans.map((plan) => plan.file.path) }
   } catch (error) {
     for (const path of committed.reverse()) await unlink(path).catch(() => {})
-    if (coverCreated) await unlink(releaseCoverPath).catch(() => {})
+    for (const path of createdCovers) await unlink(path).catch(() => {})
     throw error
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
