@@ -2,8 +2,8 @@
 // library and stores the chosen image per album in D1. Navidrome's own files are never
 // touched; Tomify shows the override instead of getCoverArt wherever it draws that album.
 // The pure helpers are exported for tests; handleAlbumArtworkRequest relies on Worker
-// globals (authenticate, json, spotifyArtworkCandidates, rankArtworkCandidates,
-// cleanReleaseTitle, selectRelease, ensureReleaseTable).
+// globals (authenticate, json, spotifyAccessToken, spotifyTokenCache, rankArtworkCandidates,
+// metadataTextSimilarity, artworkYearScore, cleanReleaseTitle, selectRelease, ensureReleaseTable).
 
 export const albumArtworkHosts = ['i.scdn.co', 'mosaic.scdn.co', 'image-cdn-ak.spotifycdn.com', 'image-cdn-fa.spotifycdn.com']
 
@@ -16,12 +16,38 @@ export function isAlbumArtworkUrl(value) {
   }
 }
 
-// Library folders often carry edition or remaster suffixes that Spotify spells differently,
-// so a second search drops trailing bracketed qualifiers before giving up.
-export function albumArtworkSearchTitles(name) {
+// Spotify often names the edition ("Abbey Road (Remastered 2009)", "Flood - Deluxe Edition")
+// while a library folder does not, or the other way round, so titles are also compared
+// with trailing bracketed or dashed edition qualifiers removed.
+export function baseAlbumTitle(name) {
   const original = String(name || '').trim()
-  const stripped = original.replace(/(?:\s*[([][^()[\]]*[)\]])+\s*$/g, '').trim()
-  return [...new Set([original, stripped].filter(Boolean))]
+  let title = original
+  let previous = ''
+  while (title && title !== previous) {
+    previous = title
+    title = title.replace(/\s*[([][^()[\]]*[)\]]\s*$/, '').trim()
+    title = title.replace(/\s+[-\u2013\u2014]\s+[^-\u2013\u2014]*\b(?:remaster\w*|deluxe|edition|expanded|anniversary|reissue|version|mono|stereo|bonus)\b[^-\u2013\u2014]*$/i, '').trim()
+  }
+  return title || original
+}
+
+export function albumArtworkSearchQueries(album, artist) {
+  const base = baseAlbumTitle(album)
+  return [...new Set([`album:${base} artist:${artist}`, `${base} ${artist}`])]
+}
+
+// Scores one Spotify album search result against a library album. `similarity` and
+// `yearScore` are the Worker's metadataTextSimilarity and artworkYearScore.
+export function spotifyAlbumCandidate(wanted, album, similarity, yearScore) {
+  const artists = (Array.isArray(album?.artists) ? album.artists : []).map((artist) => artist?.name).filter(Boolean)
+  const artistSimilarity = Math.max(0, similarity(wanted.artist, artists.join(' ')), ...artists.map((name) => similarity(wanted.artist, name)))
+  // An exact edition match ranks slightly above a match on the base title alone.
+  const albumSimilarity = Math.max(similarity(wanted.album, album?.name), similarity(baseAlbumTitle(wanted.album), baseAlbumTitle(album?.name)) * 0.96)
+  if (artistSimilarity < 0.82 || albumSimilarity < 0.8) return null
+  const image = (Array.isArray(album.images) ? album.images : []).slice().sort((left, right) => Number(right.width || 0) - Number(left.width || 0))[0]
+  if (!isAlbumArtworkUrl(image?.url)) return null
+  const confidence = Math.round(artistSimilarity * 50 + albumSimilarity * 40 + yearScore(wanted.releaseDate, album.release_date) * 10)
+  return { id: 'spotify:' + album.id, provider: 'spotify', providerLabel: 'Spotify', providerId: album.id, url: image.url, previewUrl: image.url, width: image.width || null, height: image.height || null, confidence, artist: artists.join(', ') || null, album: album.name || null, releaseDate: album.release_date || null, storeUrl: album.external_urls?.spotify || null, selectable: true, unavailableReason: null }
 }
 
 // Automatic replacement only takes a confident, clean square Spotify image of at least 600px.
@@ -57,10 +83,28 @@ async function saveAlbumArtwork(db, albumId, artwork, source, username) {
   return selectAlbumArtwork(db, albumId)
 }
 
+async function searchSpotifyAlbums(env, query) {
+  const token = await spotifyAccessToken(env)
+  if (!token) throw Object.assign(new Error('Spotify rejected the server credentials.'), { code: 'spotify-auth-failed' })
+  const url = new URL('https://api.spotify.com/v1/search')
+  url.searchParams.set('q', query)
+  url.searchParams.set('type', 'album')
+  url.searchParams.set('limit', '10')
+  url.searchParams.set('market', String(env.SPOTIFY_MARKET || 'GB').slice(0, 2).toUpperCase())
+  const response = await fetch(url, { headers: { authorization: 'Bearer ' + token, accept: 'application/json' } })
+  if (response.status === 429) throw Object.assign(new Error('Spotify is rate limiting Tomify.'), { code: 'spotify-rate-limited', retryAfter: Math.min(120, Math.max(1, Number(response.headers.get('retry-after')) || 5)) })
+  if (response.status === 401) spotifyTokenCache = null
+  if (!response.ok) throw Object.assign(new Error('Spotify search returned HTTP ' + response.status + '.'), { code: 'spotify-error' })
+  const body = await response.json()
+  return Array.isArray(body?.albums?.items) ? body.albums.items.filter(Boolean) : []
+}
+
 async function lookupAlbumArtwork(env, db, album) {
   const releaseDate = (await selectRelease(db, album.albumId))?.releaseDate || (album.year ? String(album.year) : null)
-  for (const title of albumArtworkSearchTitles(cleanReleaseTitle(album.name))) {
-    const candidates = rankArtworkCandidates((await spotifyArtworkCandidates(env, { artist: album.artist, album: title, releaseDate })).filter((candidate) => isAlbumArtworkUrl(candidate.url))).slice(0, 6)
+  const wanted = { artist: album.artist, album: cleanReleaseTitle(album.name), releaseDate }
+  for (const query of albumArtworkSearchQueries(wanted.album, wanted.artist)) {
+    const items = await searchSpotifyAlbums(env, query)
+    const candidates = rankArtworkCandidates(items.map((item) => spotifyAlbumCandidate(wanted, item, metadataTextSimilarity, artworkYearScore)).filter(Boolean)).slice(0, 6)
     if (candidates.length) return candidates
   }
   return []
@@ -94,7 +138,10 @@ async function handleAlbumArtworkRequest(request, env, url) {
     if (url.pathname === '/api/album-artwork/auto' && existing?.source === 'manual') return json({ item: existing, applied: false, reason: 'manual-choice' })
     let candidates
     try { candidates = await lookupAlbumArtwork(env, db, album) }
-    catch { return json({ error: 'spotify-unavailable', message: 'Spotify could not be reached. Try again shortly.' }, 502) }
+    catch (error) {
+      if (error?.code === 'spotify-rate-limited') return json({ error: error.code, message: 'Spotify asked Tomify to slow down.', retryAfter: error.retryAfter }, 429)
+      return json({ error: error?.code || 'spotify-unavailable', message: error?.code ? error.message : 'Spotify could not be reached. Try again shortly.' }, 502)
+    }
     if (url.pathname === '/api/album-artwork/lookup') return json({ candidates, item: existing })
     const chosen = chooseAutomaticAlbumArtwork(candidates)
     if (!chosen) return json({ item: existing, applied: false, reason: candidates.length ? 'low-confidence' : 'no-match' })
@@ -117,4 +164,4 @@ async function handleAlbumArtworkRequest(request, env, url) {
   return json({ error: 'not-found' }, 404)
 }
 
-export const albumArtworkWorkerSource = `const albumArtworkHosts = ${JSON.stringify(albumArtworkHosts)}\nconst albumArtworkColumns = ${JSON.stringify(albumArtworkColumns)}\n\n` + [isAlbumArtworkUrl, albumArtworkSearchTitles, chooseAutomaticAlbumArtwork, albumArtworkRow, ensureAlbumArtworkTable, selectAlbumArtwork, saveAlbumArtwork, lookupAlbumArtwork, handleAlbumArtworkRequest].map((fn) => fn.toString()).join('\n\n')
+export const albumArtworkWorkerSource = `const albumArtworkHosts = ${JSON.stringify(albumArtworkHosts)}\nconst albumArtworkColumns = ${JSON.stringify(albumArtworkColumns)}\n\n` + [isAlbumArtworkUrl, baseAlbumTitle, albumArtworkSearchQueries, spotifyAlbumCandidate, chooseAutomaticAlbumArtwork, albumArtworkRow, ensureAlbumArtworkTable, selectAlbumArtwork, saveAlbumArtwork, searchSpotifyAlbums, lookupAlbumArtwork, handleAlbumArtworkRequest].map((fn) => fn.toString()).join('\n\n')
