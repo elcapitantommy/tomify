@@ -436,14 +436,42 @@ test('Recovery hands a pasted torrent link to the agent as a torrent search', as
     const headers = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }
     const post = (path, body) => worker.fetch(new Request(`https://app.tomify.test/api/recovery${path}`, { method: 'POST', headers, body: JSON.stringify(body) }), env)
     const { item } = await (await post('', { artist: 'They Might Be Giants', album: 'Flood' })).json()
-    const missing = await post(`/${item.id}/search`, { backend: 'torrent' })
-    assert.equal(missing.status, 400)
-    assert.equal((await missing.json()).error, 'invalid-torrent-link')
+    const blank = await post(`/${item.id}/search`, { backend: 'torrent', link: '   ' })
+    assert.equal(blank.status, 400)
+    assert.equal((await blank.json()).error, 'invalid-torrent-link')
     assert.equal((await post(`/${item.id}/search`, { backend: 'torrent', link: '  magnet:?xt=urn:btih:abc&tr=https://tracker.test/passkey  ' })).status, 200)
     assert.equal(agentRequests.length, 1)
     assert.equal(agentRequests[0].backend, 'torrent')
     assert.equal(agentRequests[0].link, 'magnet:?xt=urn:btih:abc&tr=https://tracker.test/passkey')
     assert.deepEqual(agentRequests[0].track, { artist: 'They Might Be Giants', title: '', album: 'Flood', duration: null })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Recovery searches torrents by the chosen fields when no link is pasted', async () => {
+  const agentRequests = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/v1/search') { agentRequests.push(JSON.parse(init.body)); return Response.json({ candidates: [{ externalId: 'torrent-search', url: 'https://thepiratebay.org/description.php?id=1', title: 'They Might Be Giants - Flood (1990) FLAC', channel: 'thepiratebay.org', provenance: { providerType: 'torrent', providerId: 'qbittorrent-search', seeds: 42, searchMode: 'release' } }] }) }
+    return new Response('{}', { status: 404 })
+  }
+  try {
+    const env = { TOMIFY_DB: wantedMusicDatabase(), RECOVERY_AGENT_URL: 'https://agent.tomify.test' }
+    const headers = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }
+    const post = (path, body) => worker.fetch(new Request(`https://app.tomify.test/api/recovery${path}`, { method: 'POST', headers, body: JSON.stringify(body) }), env)
+    const { item } = await (await post('', { artist: 'They Might Be Giants', album: 'Flood' })).json()
+    const none = await post(`/${item.id}/search`, { backend: 'torrent', searchFields: [] })
+    assert.equal(none.status, 400)
+    assert.match((await none.json()).message, /search torrents/)
+    assert.equal((await post(`/${item.id}/search`, { backend: 'torrent', searchFields: ['artist', 'album'] })).status, 200)
+    assert.equal(agentRequests.length, 1)
+    assert.equal(agentRequests[0].backend, 'torrent')
+    assert.equal('link' in agentRequests[0], false)
+    assert.deepEqual(agentRequests[0].searchFields, ['artist', 'album'])
+    assert.equal(agentRequests[0].searchMode, 'release')
   } finally {
     globalThis.fetch = originalFetch
   }

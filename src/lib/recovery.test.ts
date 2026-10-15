@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { looksLikeTorrentLink, qualityLabel, scoreRecoveryCandidate, torrentTransferSummary } from './recovery'
+import { isTorrentSearchResult, looksLikeTorrentLink, qualityLabel, scoreRecoveryCandidate, torrentResultSummary, torrentTransferSummary } from './recovery'
 
 describe('recovery candidate matching', () => {
   it('favours an official, duration-matched upload', () => {
@@ -23,6 +23,14 @@ describe('torrent links', () => {
     expect(looksLikeTorrentLink('https://example.com/flood.torrent')).toBe(true)
     expect(looksLikeTorrentLink('magnet:?dn=Flood')).toBe(false)
     expect(looksLikeTorrentLink('Flood FLAC')).toBe(false)
+  })
+
+  it('summarises a torrent search result and tells it apart from a pasted link', () => {
+    expect(torrentResultSummary({ seeds: 1, peers: 0, size: 1_500_000_000 })).toBe('1 seed · 0 peers · 1.5 GB')
+    expect(torrentResultSummary({ seeds: 12 })).toBe('12 seeds')
+    expect(torrentResultSummary({})).toBeNull()
+    expect(isTorrentSearchResult({ backend: 'torrent', provenance: { raw: { providerId: 'qbittorrent-search' } } })).toBe(true)
+    expect(isTorrentSearchResult({ backend: 'torrent', provenance: { raw: { providerId: 'torrent-link' } } })).toBe(false)
   })
 
   it('summarises live torrent figures and leaves out what qBittorrent does not know', () => {

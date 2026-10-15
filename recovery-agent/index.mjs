@@ -15,12 +15,12 @@ import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './deri
 import { ffmpegMetadataArguments, ffprobeTagJsonFormat } from './metadata.mjs'
 import { decodeToolOutput } from './text-encoding.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
-import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, validateCompletedPath } from './usenet.mjs'
+import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
 import { importRemainingUsenetFiles, importUsenetCompletion } from './usenet-import.mjs'
 import { validateRecoveryAuthConfig } from './config.mjs'
 import { createUsenetJobPoller } from './usenet-job.mjs'
 import { rebootConfig, scheduleReboot } from './system.mjs'
-import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobState, torrentCandidate, torrentCapability, torrentConfig } from './torrent.mjs'
+import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobState, torrentCandidate, torrentCapability, torrentConfig, torrentSearchCandidates } from './torrent.mjs'
 
 let authConfiguration
 try { authConfiguration = validateRecoveryAuthConfig() }
@@ -514,13 +514,13 @@ async function queueTorrent(body) {
   const job = {
     id, version: 1, status: 'queued', progress: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     downloader: submitted.downloader, remoteId: submitted.remoteId,
-    indexer: { type: 'torrent', id: 'torrent-link', name: 'Torrent link' },
+    indexer: reference.providerId === 'qbittorrent-search' ? { type: 'torrent', id: 'qbittorrent-search', name: String(reference.providerName || 'Torrent search').slice(0, 120) } : { type: 'torrent', id: 'torrent-link', name: 'Torrent link' },
     torrent: { infoHash: candidate.provenance.infoHash, linkType: candidate.provenance.linkType },
-    result: { externalId: body.candidate.externalId || null, resultId: candidate.provenance.resultId, title: body.candidate.title || null, detailsUrl: candidate.provenance.displayUrl, postedAt: null, searchMode, searchFields: null, size: null, ageDays: null },
+    result: { externalId: body.candidate.externalId || null, resultId: candidate.provenance.resultId, title: body.candidate.title || null, detailsUrl: candidate.provenance.displayUrl, postedAt: null, searchMode, searchFields: Array.isArray(reference.searchFields) ? reference.searchFields : null, size: Number.isFinite(reference.size) ? reference.size : null, ageDays: null },
     request: { track: body.track || {}, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
   }
   await saveUsenetJob(job)
-  return { job: { id, status: 'queued', progress: 0, provider: 'Torrent link', downloader: submitted.downloader } }
+  return { job: { id, status: 'queued', progress: 0, provider: job.indexer.name, downloader: submitted.downloader } }
 }
 
 async function torrentStatus(job) {
@@ -673,7 +673,7 @@ createServer(async (request, response) => {
     const body = await parseBody(request)
     if (request.url === '/v1/status') {
       const auth = await cookieStatus()
-      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenet.available, authentication: usenet.available ? 'configured' : 'not-configured', providerCount: usenet.providerCount, providers: [...(newznabIndexers.length ? ['newznab'] : []), ...(nzbIndex ? ['nzbindex'] : [])], downloader: usenetDownloader?.type || null }, { id: 'torrent', available: torrent.available, authentication: torrent.available ? 'configured' : 'not-configured', downloader: torrentDownloader?.type || null }], reboot: reboot.enabled ? 'enabled' : 'disabled' })
+      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenet.available, authentication: usenet.available ? 'configured' : 'not-configured', providerCount: usenet.providerCount, providers: [...(newznabIndexers.length ? ['newznab'] : []), ...(nzbIndex ? ['nzbindex'] : [])], downloader: usenetDownloader?.type || null }, { id: 'torrent', available: torrent.available, authentication: torrent.available ? 'configured' : 'not-configured', downloader: torrentDownloader?.type || null, search: torrent.available }], reboot: reboot.enabled ? 'enabled' : 'disabled' })
     }
     if (request.url === '/v1/diagnostics/youtube-auth') return send(response, 200, await diagnoseAuthenticatedYouTube())
     if (request.url === '/v1/search') {
@@ -682,7 +682,10 @@ createServer(async (request, response) => {
       if (body.backend === 'usenet') return send(response, 200, { candidates: await searchUsenet(body.track, body.searchFields ?? body.searchMode ?? 'track') })
       if (body.backend === 'torrent') {
         if (!torrent.available) throw new Error('Torrent downloads are not configured on the recovery agent.')
-        return send(response, 200, { candidates: [torrentCandidate(body.link, body.track)] })
+        // A pasted link becomes one candidate; without one, qBittorrent's search plugins are searched for seeded results.
+        if (body.link) return send(response, 200, { candidates: [torrentCandidate(body.link, body.track)] })
+        const searchInput = body.searchFields ?? body.searchMode ?? 'track'
+        return send(response, 200, { candidates: torrentSearchCandidates(await qbittorrent.search(usenetSearchQuery(body.track, searchInput)), body.track, searchInput) })
       }
       throw new Error('Unsupported recovery backend.')
     }
