@@ -185,6 +185,7 @@ pnpm build
 
 - Navidrome token authentication, persisted without storing the password, with logout and useful failure states.
 - Home, artists, artist detail, albums, multi-disc album detail, debounced search, playlists, favourites, downloads placeholder and settings.
+- Playlists are per account: the Playlists page shows only the signed-in user's own Navidrome playlists (Navidrome itself would also hand admins every user's playlists and everyone other users' public ones), and imported Spotify playlists are stored per Navidrome username.
 - Persistent HTML5 player with queue, seek, volume, mute, shuffle, repeat, previous/next and full-screen mobile now playing.
 - Media Session metadata (absolute artwork in six sizes), transport controls and position updates.
 - Installable manifest, app icons, standalone mode, cached app shell and cached artwork.
