@@ -276,7 +276,7 @@ Before enabling autoconnect, install the boot-order fix below; without it Tailsc
 
 ### Tailscale after an autoconnect boot
 
-At boot `tailscaled` starts before NordVPN connects, and the routes NordVPN installs when it connects leave Tailscale unreachable until `tailscaled` is restarted, even with the allowlist above. This one-shot unit waits for the `nordlynx` interface, then restarts Tailscale:
+At boot `tailscaled` starts before NordVPN connects, and the routes NordVPN installs when it connects leave Tailscale unreachable until `tailscaled` is restarted, even with the allowlist above. This one-shot unit waits until `nordvpn status` reports *Connected*, then restarts Tailscale. Waiting for the `nordlynx` interface alone is not enough: NordVPN creates it a few seconds into boot, before Wi-Fi has a DHCP lease and before the tunnel is up, so a restart at that point can leave Tailscale logged out and unreachable until the next reboot (seen on the Debian box, which is on Wi-Fi).
 
 ```bash
 sudo tee /etc/systemd/system/tailscale-after-nordvpn.service >/dev/null <<'EOF'
@@ -287,7 +287,8 @@ Wants=nordvpnd.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'for i in $(seq 1 120); do ip link show nordlynx >/dev/null 2>&1 && break; sleep 1; done; sleep 5; systemctl restart tailscaled'
+TimeoutStartSec=6min
+ExecStart=/bin/sh -c 'for i in $(seq 1 300); do nordvpn status 2>/dev/null | grep -q "Status: Connected" && break; sleep 1; done; sleep 10; systemctl restart tailscaled'
 
 [Install]
 WantedBy=multi-user.target
@@ -296,7 +297,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable tailscale-after-nordvpn.service
 ```
 
-After a reboot, `sudo journalctl -b -u tailscale-after-nordvpn` shows when it ran. Tailscale SSH can be unreachable for the first few minutes after a boot, until NordVPN has connected and this service has restarted `tailscaled`, so wait about five minutes before treating it as a lockout. Autoconnect may pick a distant server; pin it with `nordvpn set autoconnect on United_Kingdom` (or another country). If NordVPN uses OpenVPN rather than NordLynx, replace `nordlynx` with `nordtun`.
+After a reboot, `sudo journalctl -b -u tailscale-after-nordvpn` shows when it ran. Tailscale SSH is normally back within a minute of boot; if it is not back after five minutes, press **Restart media server**. Autoconnect may pick a distant server; pin it with `nordvpn set autoconnect on United_Kingdom` (or another country). If NordVPN uses OpenVPN rather than NordLynx, replace `nordlynx` with `nordtun`.
 
 ### What goes over the VPN
 
