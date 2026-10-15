@@ -4,6 +4,7 @@ import { recoveryMetadataWorkerSource } from './recovery-metadata.mjs'
 import { recoveryArtworkWorkerSource } from './recovery-artwork.mjs'
 import { catalogueImportWorkerSource } from './catalogue-import.mjs'
 import { catalogueWorkerSource } from './catalogue-worker.mjs'
+import { completenessWorkerSource } from './completeness-worker.mjs'
 
 const outputDirectory = new URL('../dist/', import.meta.url)
 const workerPath = new URL('../dist/server/index.js', import.meta.url)
@@ -48,6 +49,8 @@ ${recoveryArtworkWorkerSource}
 ${catalogueImportWorkerSource}
 
 ${catalogueWorkerSource}
+
+${completenessWorkerSource}
 
 function decode(value) {
   const binary = atob(value)
@@ -241,14 +244,15 @@ async function musicBrainzJson(url) {
 async function resolveMusicBrainzRecovery(item, candidateId) {
   const title = normaliseMetadataText(item.title)
   const artist = normaliseMetadataText(item.artist)
-  const isrc = String(item.catalogueSource?.spotifyISRC || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+  const isrc = String(item.catalogueSource?.spotifyISRC || item.catalogueSource?.isrc || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase()
   if (!title || !artist) return { authority: 'musicbrainz', status: 'not-found', confidence: 0, strong: false, metadata: null, candidateId, resolvedAt: new Date().toISOString() }
   const url = new URL('https://musicbrainz.org/ws/2/recording/')
-  url.searchParams.set('query', isrc ? 'isrc:' + isrc : 'recording:(' + title + ') AND artist:(' + artist + ')')
+  const recordingId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(item.musicBrainzId || '')) ? item.musicBrainzId : ''
+  url.searchParams.set('query', recordingId ? 'rid:' + recordingId : isrc ? 'isrc:' + isrc : 'recording:(' + title + ') AND artist:(' + artist + ')')
   url.searchParams.set('limit', '15')
   url.searchParams.set('fmt', 'json')
   let result = await musicBrainzJson(url)
-  if (isrc && (!Array.isArray(result?.recordings) || !result.recordings.length)) {
+  if ((recordingId || isrc) && (!Array.isArray(result?.recordings) || !result.recordings.length)) {
     url.searchParams.set('query', 'recording:(' + title + ') AND artist:(' + artist + ')')
     result = await musicBrainzJson(url)
   }
@@ -430,6 +434,8 @@ export default {
     let pathname = decodeURIComponent(url.pathname)
     const catalogueResponse = await handleCatalogueRequest(request, env, url)
     if (catalogueResponse) return catalogueResponse
+    const completenessResponse = await handleCompletenessRequest(request, env, url)
+    if (completenessResponse) return completenessResponse
 
     if (pathname === '/api/recovery' && request.method === 'GET') {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)

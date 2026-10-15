@@ -1,4 +1,16 @@
 export type RecoveryStatus = 'missing' | 'candidate-found' | 'importing' | 'queued' | 'downloading' | 'recovered' | 'needs-upgrade' | 'failed'
+
+export const recoveryStatusLabels: Record<RecoveryStatus, string> = {
+  missing: 'Missing',
+  'candidate-found': 'Review candidate',
+  importing: 'Importing',
+  queued: 'Queued',
+  downloading: 'Downloading',
+  recovered: 'Recovered',
+  'needs-upgrade': 'Needs upgrade',
+  failed: 'Failed',
+}
+
 export type RecoveryBackend = 'youtube' | 'internet-archive' | 'usenet'
 export type RecoverySearchMode = 'artist' | 'track' | 'release'
 
