@@ -616,7 +616,7 @@ const pollUsenetJob = createUsenetJobPoller({
   saveJob: saveUsenetJob,
   downloaderStatus: (remoteId, job) => job?.downloader === 'qbittorrent' ? torrentStatus(job) : downloaderStatus(usenetDownloader, remoteId),
   completeJob: async (job, state) => {
-    const options = { recoveryRoot, probe, prepareArtwork, run, ffmpeg }
+    const options = { recoveryRoot, masterRoot, probe, prepareArtwork, run, ffmpeg }
     if (job.downloader === 'qbittorrent') return completeTorrentJob(job, state, (files) => importUsenetCompletion(job, files, options))
     const completedPath = await validateCompletedPath(state.completedPath, usenetDownloadRoot, usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null)
     const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
@@ -645,7 +645,7 @@ async function importRemainingUsenet(body) {
     const downloaderRoot = !job.completedPath && usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null
     const completedPath = await validateCompletedPath(reportedPath, usenetDownloadRoot, downloaderRoot)
     const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
-    const result = await importRemainingUsenetFiles(job, discovered.files, { recoveryRoot, probe, prepareArtwork, run, ffmpeg })
+    const result = await importRemainingUsenetFiles(job, discovered.files, { recoveryRoot, masterRoot, probe, prepareArtwork, run, ffmpeg })
     job.completedPath = completedPath
     job.additionalImports = [...(job.additionalImports || []), { importedAt: new Date().toISOString(), importedCount: result.importedCount, sourceFiles: result.sourceFiles }]
     job.updatedAt = new Date().toISOString()

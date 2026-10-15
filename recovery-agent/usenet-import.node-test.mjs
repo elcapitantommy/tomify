@@ -4,7 +4,7 @@ import { access, mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from 'n
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { findCompletedAudio } from './usenet.mjs'
-import { folderAlbum, importRemainingUsenetFiles, importUsenetCompletion, importedUsenetSourceFiles, releaseTrackMetadata, selectUsenetImportFiles } from './usenet-import.mjs'
+import { folderAlbum, looseArtistKey, importRemainingUsenetFiles, importUsenetCompletion, importedUsenetSourceFiles, releaseTrackMetadata, selectUsenetImportFiles } from './usenet-import.mjs'
 
 function job(searchMode, track = {}) {
   return {
@@ -191,6 +191,48 @@ test('untagged discography files take their album from their folder, and repeate
   // Only the wanted album gets the chosen cover.
   await access(join(artistFolder, 'Spirit', 'cover.jpg'))
   await assert.rejects(access(join(artistFolder, 'Faces', 'cover.jpg')))
+})
+
+test('a discography that spells the band several ways imports under one artist, preferring the library spelling', async () => {
+  const masterRoot = await mkdtemp(join(tmpdir(), 'tomify-master-test-'))
+  await mkdir(join(masterRoot, 'Earth, Wind & Fire'))
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-artist-variants-test-'))
+  const completed = await mkdtemp(join(tmpdir(), 'tomify-artist-variants-completed-test-'))
+  const albums = [['Gratitude', 'Earth Wind And Fire'], ['Spirit', 'Earth, Wind And Fire'], ['Faces', 'Earth Wind & Fire'], ['Boogie Wonderland', 'Earth, Wind & Fire with The Emotions']]
+  const qualities = {}
+  for (const [album, artist] of albums) {
+    await mkdir(join(completed, album))
+    const path = join(completed, album, '01 - Song.flac')
+    await writeFile(path, album)
+    qualities[path] = { codec: 'flac', container: 'flac', duration: 200, tags: { title: 'Song', track: '1', album, artist, album_artist: artist } }
+  }
+  const discovered = await findCompletedAudio(completed)
+  const tools = { ...harness({}, false), probe: async (path) => qualities[path] }
+  const result = await importUsenetCompletion(job('release', { artist: 'Earth, Wind, and Fire', album: null }), discovered.files, { recoveryRoot, masterRoot, ...tools })
+
+  assert.equal(result.artist, 'Earth, Wind & Fire')
+  assert.deepEqual((await readdir(recoveryRoot)).sort(), ['Earth, Wind & Fire', 'Earth, Wind & Fire with The Emotions'])
+  const byAlbum = Object.fromEntries(result.importedTracks.map((track) => [track.album, track]))
+  for (const album of ['Gratitude', 'Spirit', 'Faces']) {
+    assert.equal(byAlbum[album].albumArtist, 'Earth, Wind & Fire')
+    assert.equal(byAlbum[album].artist, 'Earth, Wind & Fire')
+  }
+  // A collaboration keeps its own credit.
+  assert.equal(byAlbum['Boogie Wonderland'].albumArtist, 'Earth, Wind & Fire with The Emotions')
+  assert.equal(tools.ffmpegCalls.filter((args) => args.includes('album_artist=Earth, Wind & Fire')).length, 3)
+
+  // Without a library folder the release's most common spelling wins.
+  const second = await mkdtemp(join(tmpdir(), 'tomify-artist-variants-second-test-'))
+  const fallback = await importUsenetCompletion(job('release', { artist: 'Earth, Wind, and Fire', album: null }), discovered.files, { recoveryRoot: second, ...tools })
+  assert.equal(fallback.artist, 'Earth Wind & Fire')
+})
+
+test('loose artist keys ignore punctuation, "&" versus "and", accents and a leading "The"', () => {
+  assert.equal(looseArtistKey('Earth, Wind & Fire'), looseArtistKey('earth wind and fire'))
+  assert.equal(looseArtistKey('Earth, Wind, and Fire'), looseArtistKey('Earth Wind And Fire'))
+  assert.equal(looseArtistKey('The Beatles'), looseArtistKey('Beatles'))
+  assert.equal(looseArtistKey('Mötley Crüe'), looseArtistKey('Motley Crue'))
+  assert.notEqual(looseArtistKey('Earth, Wind & Fire with The Emotions'), looseArtistKey('Earth, Wind & Fire'))
 })
 
 test('reads the album and disc from a release folder name', () => {

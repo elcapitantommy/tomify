@@ -60,6 +60,32 @@ export function folderAlbum(path) {
   return { album: album || null, discNumber: disc ? Number(disc[1]) : null }
 }
 
+// Compares artist names ignoring case, accents, punctuation, "&" versus "and" and a leading "The", so
+// "Earth, Wind & Fire", "Earth Wind And Fire" and "Earth, Wind, and Fire" are one artist.
+export function looseArtistKey(value) {
+  return foldName(value).replace(/&/g, ' and ').replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim().replace(/^the /, '').replace(/ /g, '')
+}
+
+// One spelling for the release's own artist across every track, so Navidrome lists a discography whose tags
+// spell the band several ways as one artist. Prefers the spelling of an artist folder already in the master
+// library, then the release's most common spelling. Other artists (guests, collaborations) are left as tagged.
+export async function unifyReleaseArtist(inspected, requested, masterRoot) {
+  const names = inspected.flatMap((item) => [item.metadata.albumArtist, item.metadata.artist]).filter(Boolean)
+  const key = looseArtistKey(requested.artist || mostCommon(inspected.map((item) => item.metadata.albumArtist || item.metadata.artist)))
+  if (!key) return null
+  const libraryNames = masterRoot ? (await readdir(masterRoot, { withFileTypes: true }).catch(() => [])).filter((entry) => entry.isDirectory()).map((entry) => entry.name) : []
+  const canonical = libraryNames.filter((name) => looseArtistKey(name) === key).sort((left, right) => left.localeCompare(right, 'en'))[0]
+    || mostCommon(names.filter((name) => looseArtistKey(name) === key))
+    || requested.artist
+  for (const item of inspected) {
+    const metadata = { ...item.metadata }
+    if (looseArtistKey(metadata.albumArtist) === key) metadata.albumArtist = canonical
+    if (looseArtistKey(metadata.artist) === key) metadata.artist = canonical
+    item.metadata = metadata
+  }
+  return canonical
+}
+
 // Splits a release into one group per album, so a discography imports into one folder per album rather than
 // mixing every album's tracks (and their clashing "01 - Intro" names) into one. Files with no album tag fall
 // back to their folder's name when the release spans several folders.
@@ -143,7 +169,7 @@ async function ensureAbsent(paths) {
 }
 
 export async function importUsenetCompletion(job, completedFiles, options) {
-  const { recoveryRoot, probe, prepareArtwork, run, ffmpeg } = options
+  const { recoveryRoot, masterRoot = null, probe, prepareArtwork, run, ffmpeg } = options
   const searchMode = job.result.searchMode || 'track'
   const selectedFiles = selectUsenetImportFiles(completedFiles, job.request.track || {}, searchMode)
   if (!selectedFiles.length) throw new Error('No completed audio file matched the wanted track.')
@@ -160,6 +186,7 @@ export async function importUsenetCompletion(job, completedFiles, options) {
   const torrent = job.downloader === 'qbittorrent'
   if (!inspected.length) throw new Error(`The completed ${torrent ? 'torrent' : 'Usenet download'} contains no valid supported audio files.`)
 
+  if (searchMode === 'release') await unifyReleaseArtist(inspected, job.request.track || {}, masterRoot)
   const groups = searchMode === 'release' ? releaseAlbumGroups(inspected, job.request.track || {}) : [{ items: inspected, artist: job.request.track?.artist, album: job.request.track?.album, requested: true }]
   const releaseArtist = searchMode === 'release' ? mostCommon(inspected.map((item) => item.metadata.albumArtist || item.metadata.artist)) || job.request.track?.artist : job.request.track?.artist
   const releaseAlbum = groups.length === 1 ? groups[0].album : null
