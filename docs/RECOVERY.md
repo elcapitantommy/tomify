@@ -167,14 +167,13 @@ Then, with NordVPN still disconnected:
 
 ```bash
 sudo systemctl start nordvpnd                    # the settings below need the service running; it stays disconnected
-nordvpn set lan-discovery enable                 # keeps private LAN ranges reachable
-nordvpn allowlist add subnet 192.168.1.0/24      # use your subnet from above
+nordvpn set lan-discovery enable                 # keeps all private LAN ranges reachable, including yours
 nordvpn allowlist add port 22 protocol TCP       # inbound SSH
 nordvpn allowlist add subnet 198.41.192.0/19     # Cloudflare Tunnel edge (region1 and region2)
 nordvpn settings                                 # check the allowlist
 ```
 
-Allowlisted subnets are routed outside the VPN, so the tunnel keeps connecting from the home connection, just as it did before. `198.41.192.0/19` covers the IPv4 addresses behind `region1.v2.argotunnel.com` and `region2.v2.argotunnel.com` used by both tunnel protocols (QUIC and HTTP/2 on port 7844). To make sure `cloudflared` does not try IPv6 edges, which the allowlist above does not cover, set `TUNNEL_EDGE_IP_VERSION=4` in both containers' environment (or add `--edge-ip-version 4` to their `tunnel run` command) and recreate them.
+LAN discovery replaces allowlisting your LAN subnet by hand; NordVPN refuses to allowlist a private subnet while it is on, so knowing the subnet is only useful for checking that it is a private range (192.168.x.x, 10.x.x.x or 172.16–31.x.x). Allowlisted subnets are routed outside the VPN, so the tunnel keeps connecting from the home connection, just as it did before. `198.41.192.0/19` covers the IPv4 addresses behind `region1.v2.argotunnel.com` and `region2.v2.argotunnel.com` used by both tunnel protocols (QUIC and HTTP/2 on port 7844). To make sure `cloudflared` does not try IPv6 edges, which the allowlist above does not cover, set `TUNNEL_EDGE_IP_VERSION=4` in both containers' environment (or add `--edge-ip-version 4` to their `tunnel run` command) and recreate them.
 
 ### Connect with a fail-safe
 
