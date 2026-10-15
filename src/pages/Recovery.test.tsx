@@ -7,7 +7,7 @@ import { Recovery } from './Recovery'
 
 vi.mock('../lib/recovery-api', () => ({
   recoveryApi: {
-    list: vi.fn(), add: vi.fn(), search: vi.fn(), select: vi.fn(), acquire: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), delete: vi.fn(),
+    list: vi.fn(), add: vi.fn(), search: vi.fn(), select: vi.fn(), acquire: vi.fn(), importRemaining: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), delete: vi.fn(),
   },
 }))
 
@@ -98,6 +98,19 @@ describe('Recovery page actions', () => {
     fireEvent.click(submit)
     expect(recoveryApi.add).toHaveBeenCalledWith({ artist: undefined, title: undefined, album: 'Flood', duration: undefined, trackNumber: undefined })
     expect(await screen.findByText('Whole album')).toBeInTheDocument()
+  })
+
+  it('offers to import the rest of a single-track Usenet download once', async () => {
+    const imported = { id: 'candidate-1', backend: 'usenet' as const, externalId: 'flood', url: 'https://www.nzbindex.com/collection/flood', title: '[1/6] "They Might Be Giants - Flood.zip" - yEnc', channel: 'NZBIndex', official: false, matchScore: 37, selected: true, importedPath: '/recovery/Birdhouse in Your Soul.mp3', provenance: { searchMode: 'track' as const, importedCount: 1, job: { id: 'job-1', status: 'completed' as const, progress: 100 } } }
+    const completed = { ...imported, provenance: { ...imported.provenance, importedCount: 3, remainingImportedAt: '2026-10-15T00:00:00.000Z' } }
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ title: 'Birdhouse in Your Soul', artist: 'They Might Be Giants', status: 'needs-upgrade', candidates: [imported] })], backends })
+    vi.mocked(recoveryApi.importRemaining).mockResolvedValue({ item: item({ title: 'Birdhouse in Your Soul', artist: 'They Might Be Giants', status: 'needs-upgrade', candidates: [completed] }) })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /birdhouse/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Import rest of download' }))
+    expect(recoveryApi.importRemaining).toHaveBeenCalledWith('recovery-1')
+    expect((await screen.findAllByText('Imported 3 tracks')).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: 'Import rest of download' })).toBeNull()
   })
 
   it('continues from metadata and artwork review into source authorisation without resetting choices', async () => {
