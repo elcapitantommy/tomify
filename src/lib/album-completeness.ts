@@ -3,12 +3,12 @@ import type { Track } from '../types'
 export interface TracklistTrack { key: string; disc: number; number: number; title: string; artist: string | null; length: number | null; recordingId: string | null; isrc?: string | null }
 export interface AlbumTracklist {
   albumId: string; releaseId: string; releaseGroupId: string | null; title: string; artist: string | null; date: string | null; country: string | null
-  format: string | null; status: string | null; disambiguation: string | null; discCount: number; source: 'tagged' | 'auto' | 'manual'; fetchedAt: string; tracks: TracklistTrack[]
+  format: string | null; status: string | null; disambiguation: string | null; discCount: number; source: 'tagged' | 'auto' | 'manual'; fetchedAt: string; tracks: TracklistTrack[]; localTrackCount?: number
 }
 export interface ReleaseEdition { id: string; title: string; date: string | null; country: string | null; status: string | null; disambiguation: string | null; format: string | null; trackCount: number; discCount: number }
 export interface RecoveryLink { id: string; status: string }
 export interface TrackMatch { track: TracklistTrack; local: Track[] }
-export interface CompletenessResult { total: number; present: number; complete: boolean; matches: TrackMatch[]; missing: TracklistTrack[]; extras: Track[]; duplicated: number }
+export interface CompletenessResult { total: number; present: number; complete: boolean; editionMismatch: boolean; matches: TrackMatch[]; missing: TracklistTrack[]; extras: Track[]; duplicated: number }
 
 const versionSuffix = /\s*(?:-\s+[^-]*\b(?:remaster(?:ed)?|version|mono|stereo|mix|edit)\b[^-]*|[[(][^\])]*\b(?:remaster(?:ed)?|version|mono|stereo|mix|edit)\b[^\])]*[\])])\s*$/i
 
@@ -65,10 +65,13 @@ export function assessAlbumCompleteness(tracklist: Pick<AlbumTracklist, 'tracks'
     .sort((left, right) => Number(left.match.local.length > 0) - Number(right.match.local.length > 0) || right.score - left.score)[0]?.match)
 
   const present = matches.filter((match) => match.local.length > 0).length
+  // More unmatched local tracks than matched ones means the edition is not this album (e.g. its same-titled single).
+  const editionMismatch = distinctLocalTrackCount(remaining) > present
   return {
     total: matches.length,
     present,
-    complete: matches.length > 0 && present === matches.length,
+    complete: matches.length > 0 && present === matches.length && !editionMismatch,
+    editionMismatch,
     matches,
     missing: matches.filter((match) => match.local.length === 0).map((match) => match.track),
     extras: remaining,

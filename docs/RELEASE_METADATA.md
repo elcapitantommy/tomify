@@ -105,6 +105,10 @@ The Worker resolves one MusicBrainz release per Navidrome album:
 2. Otherwise, a MusicBrainz release ID from the album's own file tags (`source: tagged`).
 3. Otherwise, a release from the album's release group (from the release-type enrichment above, or a strict title and artist search), chosen by `chooseReleaseEdition` (`source: auto`). Official releases with the most common track count are preferred, so a partial album such as one surviving track is compared with the standard edition rather than with whichever release has the fewest tracks. A library that already holds at least 80% of the standard count is matched to the edition closest to its own size, which picks up deluxe editions.
 
+An automatic or tagged edition must fit the local album: with four or more local tracks it needs at least half as many tracks (`editionFitsLocal`). When it does not, which usually means the album shares its title with a single (Audioslave's *Out of Exile* and its one-track CD-R promo), the Worker skips the tagged release, searches release groups again with the local track count, and uses that group if one of its editions fits. The release-group search itself also weighs the primary type against the track count (`releaseGroupTypeFit`), so five or more tracks prefer an Album group and one to three prefer a Single; release-type enrichment sends the album's song count for the same reason. A cached automatic tracklist that does not fit is resolved again once on the next load, so no refresh is needed. A manually chosen edition is never replaced.
+
+If the compared edition still leaves more local tracks unmatched than matched, the panel shows **Edition does not match** instead of **Complete** and suggests choosing another edition or refreshing.
+
 The tracklist and the list of editions are cached in the D1 table `release_tracklists` (migration `0005_release_tracklists.sql`; the Worker also creates it on demand). Each album therefore costs two or three MusicBrainz requests once, through the same 1.1 second request spacing as enrichment. The refresh button fetches it again.
 
 ### Matching local tracks

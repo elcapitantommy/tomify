@@ -51,6 +51,15 @@ describe('AlbumCompleteness', () => {
     expect(screen.queryByRole('button', { name: /missing to Recovery/ })).not.toBeInTheDocument()
   })
 
+  it('does not call an album complete when it was compared with a much smaller same-titled release', async () => {
+    const titles = ['Your Time Has Come', 'Out Of Exile', 'Be Yourself', 'Doesnt Remind Me', 'Drown Me Slowly']
+    const local: Track[] = titles.map((title, index) => ({ id: `t${index}`, title, artist: 'Audioslave', album: 'Out Of Exile', track: index + 1 }))
+    vi.mocked(completenessApi.tracklist).mockResolvedValue({ ...response, tracklist: { ...response.tracklist, title: 'Out of Exile', format: 'CD-R', tracks: [{ key: '1-1', disc: 1, number: 1, title: 'Out of Exile', artist: 'Audioslave', length: null, recordingId: null }] } })
+    render(<MemoryRouter><AlbumCompleteness album={{ ...album, name: 'Out Of Exile', artist: 'Audioslave' }} tracks={local}/></MemoryRouter>)
+    expect(await screen.findByText('Edition does not match · 1 of 1 tracks')).toBeInTheDocument()
+    expect(screen.getByText(/probably a different release with the same title/)).toBeInTheDocument()
+  })
+
   it('explains when MusicBrainz has no tracklist', async () => {
     vi.mocked(completenessApi.tracklist).mockRejectedValue(Object.assign(new Error('MusicBrainz has no confident tracklist for this album.'), { code: 'tracklist-unavailable' }))
     renderCompleteness()

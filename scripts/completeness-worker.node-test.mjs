@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chooseReleaseEdition, completenessText, mapReleaseTracklist, matchRecoveryItems, summariseReleaseEditions } from './completeness-worker.mjs'
+import { chooseReleaseEdition, completenessText, editionFitsLocal, mapReleaseTracklist, matchRecoveryItems, releaseGroupTypeFit, releaseTrackCount, summariseReleaseEditions } from './completeness-worker.mjs'
 
 const mbid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
 const release = (id, trackCount, patch = {}) => ({ id: mbid(id), title: 'Flood', status: 'Official', date: '1990-01-15', country: 'US', media: [{ format: 'CD', 'track-count': trackCount }], ...patch })
@@ -48,4 +48,22 @@ test('existing Recovery items are found by recording ID, then by normalised arti
 test('text normalisation keeps non-Latin characters so unrelated titles never collapse to empty strings', () => {
   assert.equal(completenessText('Sigur Rós — Ágætis byrjun'), 'sigur ros agætis byrjun')
   assert.notEqual(completenessText('残酷な天使のテーゼ'), '')
+})
+
+test('an edition far smaller than a full local album does not fit it, but partial local albums are left alone', () => {
+  assert.equal(editionFitsLocal(1, 12), false)
+  assert.equal(editionFitsLocal(12, 12), true)
+  assert.equal(editionFitsLocal(6, 12), true)
+  assert.equal(editionFitsLocal(19, 1), true)
+  assert.equal(editionFitsLocal(1, 3), true)
+  assert.equal(releaseTrackCount({ media: [{ 'track-count': 10 }, { tracks: [{}, {}] }] }), 12)
+})
+
+test('release group type fit prefers albums for many local tracks and singles for one or two', () => {
+  const album = { 'primary-type': 'Album' }
+  const single = { 'primary-type': 'Single' }
+  assert.ok(releaseGroupTypeFit(album, 12) > releaseGroupTypeFit(single, 12))
+  assert.ok(releaseGroupTypeFit(single, 1) > releaseGroupTypeFit(album, 1))
+  assert.equal(releaseGroupTypeFit(single, 0), 0)
+  assert.equal(releaseGroupTypeFit({}, 12), 0)
 })

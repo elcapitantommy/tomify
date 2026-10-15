@@ -112,6 +112,7 @@ export const useReleaseMetadata = create<ReleaseMetadataState>((set, get) => ({
           artist: album.artist,
           musicBrainzId: album.musicBrainzId,
           year: album.year,
+          trackCount: album.songCount,
           force,
           replaceManual,
         }),
