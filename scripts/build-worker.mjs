@@ -97,7 +97,7 @@ async function authenticate(request) {
   }
 }
 
-// Only Navidrome administrators may reboot the media server.
+// Only Navidrome administrators may reboot the media server or change its VPN.
 async function isNavidromeAdmin(request, username) {
   try {
     const lookup = new URL('https://tomify.tomdixon.uk/rest/getUser.view')
@@ -475,6 +475,21 @@ export default {
         return json(await callRecoveryAgent(env, '/v1/system/reboot', { confirm: 'reboot' }), 202)
       } catch (error) {
         return json({ error: 'reboot-failed', message: error instanceof Error ? error.message : 'The media server could not be restarted.' }, 502)
+      }
+    }
+
+    if (pathname === '/api/system/vpn' && (request.method === 'GET' || request.method === 'POST')) {
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can manage the VPN.' }, 403)
+      try {
+        if (request.method === 'GET') return json(await callRecoveryAgent(env, '/v1/system/vpn/status', {}))
+        const body = await request.json().catch(() => ({}))
+        const action = body && body.action
+        if (action !== 'connect' && action !== 'disconnect') return json({ error: 'invalid-action', message: 'Choose connect or disconnect.' }, 400)
+        return json(await callRecoveryAgent(env, '/v1/system/vpn', { action }))
+      } catch (error) {
+        return json({ error: 'vpn-failed', message: error instanceof Error ? error.message : 'The VPN could not be changed.' }, 502)
       }
     }
 

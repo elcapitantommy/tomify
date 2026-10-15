@@ -57,3 +57,4 @@
 .recovery-search-status.error{color:#ffb0aa}.recovery-search-status.error svg{color:var(--danger)}
 /* The torrent link gets its own full-width row under the search buttons. */
 .torrent-link-control{display:flex;align-items:stretch;flex:1 1 100%;order:1;min-width:0;min-height:42px}.torrent-link-control input{flex:1;min-width:0;background:#101210;color:var(--text);border:1px solid #3a3f3a;border-right:0;border-radius:8px 0 0 8px;padding:0 14px;font:inherit;font-size:.82rem}.torrent-link-control input:disabled{opacity:.55}.torrent-link-control .button{border-radius:0 8px 8px 0}.recovery-job-transfer{color:var(--text)}
+button.settings-link{border:0;background:none;width:100%;font:inherit;font-weight:600;font-size:.9rem;text-align:left}

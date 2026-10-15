@@ -193,7 +193,7 @@ pnpm build
 - OAuth-backed Spotify playlist import as catalogue metadata only, with Navidrome matching, ambiguous-match review, ordered pending Recovery entries, duplicate preservation, and manual refresh diffs.
 - Album completeness against the MusicBrainz tracklist, with edition choice, duplicate-copy and extra-track notes, and one-click "add missing to Recovery".
 - Library album artwork upgrades from Apple (1200px) and Deezer (1000px), with Spotify optional, chosen per album or in a resumable bulk run from Settings.
-- An administrator-only **Restart media server** button in Settings that reboots the home server through the recovery agent when SSH cannot reach it (off until enabled on the server; see docs/RECOVERY.md).
+- Settings is shown only to Navidrome administrators. It has a **Restart media server** button that reboots the home server through the recovery agent when SSH cannot reach it, NordVPN status with **Connect**/**Disconnect** buttons, and a **Full library scan** button (reboot and VPN control are off until enabled on the server; see docs/RECOVERY.md).
 - Usenet recovery through NZBIndex and/or Newznab indexers and SABnzbd or NZBGet, searching any mix of artist, album and track.
 - Torrent recovery from a torrent search (qBittorrent's search plugins, seeded results only) or a pasted magnet or `.torrent` link, downloaded by qBittorrent-nox over the box's VPN with live speed, seeds and time left, archives unpacked, audio imported, and the torrent removed afterwards (or when the item is deleted).
 

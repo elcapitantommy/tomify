@@ -585,3 +585,44 @@ test('Media server reboot reports an agent that has reboot disabled', async () =
     assert.match((await response.json()).message, /Remote reboot is disabled/)
   })
 })
+
+const vpnRequest = (method, body) => new Request('https://app.tomify.test/api/system/vpn', { method, headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) })
+
+test('VPN status and changes require a signed-in Navidrome administrator', async () => {
+  const unauthenticated = await worker.fetch(new Request('https://app.tomify.test/api/system/vpn'), rebootEnv)
+  assert.equal(unauthenticated.status, 401)
+  await withRebootFetch({ admin: false, agent: () => Response.json({ state: 'connected' }) }, async (agentRequests) => {
+    for (const request of [vpnRequest('GET'), vpnRequest('POST', { action: 'disconnect' })]) {
+      const response = await worker.fetch(request, rebootEnv)
+      assert.equal(response.status, 403)
+      assert.match((await response.json()).message, /Navidrome administrator/)
+    }
+    assert.equal(agentRequests.length, 0)
+  })
+})
+
+test('VPN status and changes are forwarded to the agent, and only connect or disconnect is accepted', async () => {
+  await withRebootFetch({ admin: true, agent: () => Response.json({ control: 'enabled', state: 'connected', country: 'United Kingdom' }) }, async (agentRequests) => {
+    const status = await worker.fetch(vpnRequest('GET'), rebootEnv)
+    assert.equal(status.status, 200)
+    assert.equal((await status.json()).country, 'United Kingdom')
+
+    const invalid = await worker.fetch(vpnRequest('POST', { action: 'connect Germany' }), rebootEnv)
+    assert.equal(invalid.status, 400)
+
+    const changed = await worker.fetch(vpnRequest('POST', { action: 'disconnect', target: 'Germany' }), rebootEnv)
+    assert.equal(changed.status, 200)
+    assert.deepEqual(agentRequests, [
+      { url: 'https://agent.tomify.test/v1/system/vpn/status', authorization: 'Bearer agent-token', body: {} },
+      { url: 'https://agent.tomify.test/v1/system/vpn', authorization: 'Bearer agent-token', body: { action: 'disconnect' } },
+    ])
+  })
+})
+
+test('VPN changes report a refusal from the agent', async () => {
+  await withRebootFetch({ admin: true, agent: () => Response.json({ error: 'recovery-agent-error', message: 'NordVPN\'s kill switch is not off.' }, { status: 400 }) }, async () => {
+    const response = await worker.fetch(vpnRequest('POST', { action: 'connect' }), rebootEnv)
+    assert.equal(response.status, 502)
+    assert.match((await response.json()).message, /kill switch/)
+  })
+})
