@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyRecoveryMetadataChoices, resolveRecoveryMetadata } from './recovery-metadata.mjs'
+import { applyRecoveryMetadataChoices, recoveryImportStatus, resolveRecoveryMetadata } from './recovery-metadata.mjs'
 
 function recording(overrides = {}) {
   return {
@@ -50,4 +50,13 @@ test('user can opt out of one suggested correction', () => {
   assert.equal(used.artist, 'Zara Larson')
   assert.equal(used.title, 'Lush Life')
   assert.equal(used.trackNumber, 2)
+})
+
+test('lossless imports count as recovered while lossy ones still need a better copy', () => {
+  assert.equal(recoveryImportStatus({ codec: 'flac', sampleRate: 96000 }), 'recovered')
+  assert.equal(recoveryImportStatus({ codec: 'ALAC' }), 'recovered')
+  assert.equal(recoveryImportStatus({ codec: 'pcm_s16le' }), 'recovered')
+  assert.equal(recoveryImportStatus({ codec: 'opus' }), 'needs-upgrade')
+  assert.equal(recoveryImportStatus({ codec: 'mp3' }), 'needs-upgrade')
+  assert.equal(recoveryImportStatus(null), 'needs-upgrade')
 })
