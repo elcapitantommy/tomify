@@ -201,6 +201,8 @@ To enable it on the box:
 
 If the button shows *VPN control is turned off*, step 1 is missing; *NordVPN did not answer* usually means step 2 is missing or `nordvpnd` is not running.
 
+The agent's unit hides `/home` (`ProtectHome=true`), so the agent gives the `nordvpn` CLI its own home under the state directory (`<TOMIFY_RECOVERY_STATE_DIR>/nordvpn-cli`). An older agent fails with `mkdir /home/tom: permission denied`; copying the current agent files fixes it.
+
 ## Running recovery downloads over NordVPN
 
 The recovery side (yt-dlp, Internet Archive fetches and SABnzbd) can run over NordVPN, but the box also has to keep accepting SSH from the LAN and over Tailscale, and keep its Cloudflare Tunnel up. The hosted Worker never connects to the box directly: it calls `RECOVERY_AGENT_URL`, which Cloudflare routes down a tunnel to the agent on `127.0.0.1:8788`. Two `cloudflared` Docker containers run on the box: `tomify-recovery-cloudflared` for the agent and `cloudflared` for Navidrome. `cloudflared` only makes outbound connections to Cloudflare's tunnel edge, so nothing needs to be port-forwarded, but those connections must survive the VPN.

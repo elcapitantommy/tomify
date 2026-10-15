@@ -21,7 +21,7 @@ import { importRemainingUsenetFiles, importUsenetCompletion } from './usenet-imp
 import { validateRecoveryAuthConfig } from './config.mjs'
 import { createUsenetJobPoller } from './usenet-job.mjs'
 import { rebootConfig, scheduleReboot } from './system.mjs'
-import { createVpnController, vpnConfig } from './vpn.mjs'
+import { createVpnController, nordvpnEnvironment, vpnConfig } from './vpn.mjs'
 import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobState, torrentCandidate, torrentCapability, torrentConfig, torrentSearchCandidates } from './torrent.mjs'
 
 let authConfiguration
@@ -81,9 +81,9 @@ function youtubeUrl(value) {
   return url.toString()
 }
 
-function run(command, args, timeoutMs = 120_000) {
+function run(command, args, timeoutMs = 120_000, env = process.env) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(command, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env })
     // Keep raw bytes until the end: decoding per chunk splits multi-byte characters, and tag
     // values may not be valid UTF-8 at all (see decodeToolOutput).
     const stdoutChunks = []
@@ -676,7 +676,10 @@ async function deleteImportedRecovery(body) {
   return { deleted: results.flatMap((result) => result.deleted) }
 }
 
-const vpn = createVpnController({ config: vpnSettings, run: (command, args) => run(command, args, 60_000) })
+// The unit's ProtectHome hides /home, and the nordvpn CLI exits unless it can create its config folder.
+const nordvpnHome = join(usenetStateRoot, 'nordvpn-cli')
+await mkdir(nordvpnHome, { recursive: true, mode: 0o700 })
+const vpn = createVpnController({ config: vpnSettings, run: (command, args) => run(command, args, 60_000, nordvpnEnvironment(process.env, nordvpnHome)) })
 
 await mkdir(recoveryRoot, { recursive: true })
 await mkdir(usenetStateRoot, { recursive: true })
