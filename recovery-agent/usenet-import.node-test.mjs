@@ -4,7 +4,7 @@ import { access, mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from 'n
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { findCompletedAudio } from './usenet.mjs'
-import { folderAlbum, looseArtistKey, importRemainingUsenetFiles, importUsenetCompletion, importedUsenetSourceFiles, releaseTrackMetadata, selectUsenetImportFiles } from './usenet-import.mjs'
+import { albumArtistFor, folderAlbum, looseArtistKey, importRemainingUsenetFiles, importUsenetCompletion, importedUsenetSourceFiles, releaseTrackMetadata, selectUsenetImportFiles } from './usenet-import.mjs'
 
 function job(searchMode, track = {}) {
   return {
@@ -225,6 +225,29 @@ test('a discography that spells the band several ways imports under one artist, 
   const second = await mkdtemp(join(tmpdir(), 'tomify-artist-variants-second-test-'))
   const fallback = await importUsenetCompletion(job('release', { artist: 'Earth, Wind, and Fire', album: null }), discovered.files, { recoveryRoot: second, ...tools })
   assert.equal(fallback.artist, 'Earth Wind & Fire')
+})
+
+test('tracks with a guest artist and no album-artist tag stay on their album under the release artist', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-guest-artist-test-'))
+  const completed = await mkdtemp(join(tmpdir(), 'tomify-guest-artist-completed-test-'))
+  await mkdir(join(completed, '50 Years Anniversary Album'))
+  const qualities = {}
+  for (const [number, artist] of [[1, 'Earth, Wind & Fire'], [2, 'Deniece Williams'], [3, 'Earth, Wind & Fire']]) {
+    const path = join(completed, '50 Years Anniversary Album', `0${number} - Song ${number}.flac`)
+    await writeFile(path, artist)
+    qualities[path] = { codec: 'flac', container: 'flac', duration: 200, tags: { title: `Song ${number}`, track: String(number), album: '50 Years Anniversary Album', artist } }
+  }
+  const discovered = await findCompletedAudio(completed)
+  const result = await importUsenetCompletion(job('release', { artist: 'Earth, Wind, and Fire', album: null }), discovered.files, { recoveryRoot, ...harness({}, false), probe: async (path) => qualities[path] })
+  assert.deepEqual(result.importedTracks.map((track) => track.albumArtist), ['Earth, Wind & Fire', 'Earth, Wind & Fire', 'Earth, Wind & Fire'])
+  assert.deepEqual(result.importedTracks.map((track) => track.artist), ['Earth, Wind & Fire', 'Deniece Williams', 'Earth, Wind & Fire'])
+})
+
+test('an album with no album-artist tag and no artist on most tracks is Various Artists', () => {
+  const items = ['A', 'B', 'C'].map((artist) => ({ hasAlbumArtistTag: false, metadata: { artist } }))
+  assert.equal(albumArtistFor(items, null), 'Various Artists')
+  assert.equal(albumArtistFor([...items, { hasAlbumArtistTag: true, metadata: { artist: 'A', albumArtist: 'Compiler' } }], null), 'Compiler')
+  assert.equal(albumArtistFor([{ hasAlbumArtistTag: false, metadata: { artist: 'A' } }, { hasAlbumArtistTag: false, metadata: { artist: 'A' } }, { hasAlbumArtistTag: false, metadata: { artist: 'B' } }], null), 'A')
 })
 
 test('loose artist keys ignore punctuation, "&" versus "and", accents and a leading "The"', () => {
