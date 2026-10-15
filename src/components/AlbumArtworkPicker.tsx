@@ -41,7 +41,7 @@ export function AlbumArtworkPicker({ album }: { album: Album }) {
     {state.status === 'error' && <p className="artwork-picker-note">{state.message}</p>}
     {error && <p className="artwork-picker-note">{error}</p>}
     {state.status === 'ready' && !state.candidates.length && <p className="artwork-picker-note">Apple, Deezer and Spotify have no confident match for this album.</p>}
-    {state.status === 'ready' && state.candidates.length > 0 && <ul className="artwork-candidates">{state.candidates.map((candidate) => {
+    {state.status === 'ready' && state.candidates.length > 0 && <ul className="artwork-picker-candidates">{state.candidates.map((candidate) => {
       const current = override?.provider === 'spotify' && override.url === candidate.url
       return <li key={candidate.id}><button className={current ? 'active' : ''} disabled={saving || current} onClick={() => void run(() => select(album.id, candidate))} aria-label={`Use ${candidate.providerLabel ?? candidate.provider} artwork from ${candidate.album ?? 'this release'}`}>
         <img src={candidate.previewUrl || candidate.url} alt="" loading="lazy"/>
