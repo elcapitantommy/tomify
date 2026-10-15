@@ -121,7 +121,7 @@ The recovery directory may be added to Navidrome as a separate library path afte
 
 ## Running recovery downloads over NordVPN
 
-The recovery side (yt-dlp, Internet Archive fetches and SABnzbd) can run over NordVPN, but the box also has to keep accepting SSH from the LAN and keep its Cloudflare Tunnel up. The hosted Worker never connects to the box directly: it calls `RECOVERY_AGENT_URL`, which Cloudflare routes down a tunnel to the agent on `127.0.0.1:8788`. Two `cloudflared` Docker containers run on the box: `tomify-recovery-cloudflared` for the agent and `cloudflared` for Navidrome. `cloudflared` only makes outbound connections to Cloudflare's tunnel edge, so nothing needs to be port-forwarded, but those connections must survive the VPN.
+The recovery side (yt-dlp, Internet Archive fetches and SABnzbd) can run over NordVPN, but the box also has to keep accepting SSH from the LAN and over Tailscale, and keep its Cloudflare Tunnel up. The hosted Worker never connects to the box directly: it calls `RECOVERY_AGENT_URL`, which Cloudflare routes down a tunnel to the agent on `127.0.0.1:8788`. Two `cloudflared` Docker containers run on the box: `tomify-recovery-cloudflared` for the agent and `cloudflared` for Navidrome. `cloudflared` only makes outbound connections to Cloudflare's tunnel edge, so nothing needs to be port-forwarded, but those connections must survive the VPN.
 
 Connecting the NordVPN Linux client with default settings breaks both: its firewall drops inbound LAN traffic, so SSH stops answering, and the tunnel's edge connections are torn down when the default route moves into the VPN. With autoconnect or the kill switch on, this persists across reboots. The setup below keeps the whole box on the VPN, with three exceptions: the LAN, inbound SSH, and Cloudflare's tunnel edge.
 
@@ -170,10 +170,12 @@ sudo systemctl start nordvpnd                    # the settings below need the s
 nordvpn set lan-discovery enable                 # keeps all private LAN ranges reachable, including yours
 nordvpn allowlist add port 22 protocol TCP       # inbound SSH
 nordvpn allowlist add subnet 198.41.192.0/19     # Cloudflare Tunnel edge (region1 and region2)
+nordvpn allowlist add subnet 100.64.0.0/10       # Tailscale addresses (SSH over the tailnet)
+nordvpn allowlist add port 41641 protocol UDP    # Tailscale direct connections stay outside the VPN
 nordvpn settings                                 # check the allowlist
 ```
 
-LAN discovery replaces allowlisting your LAN subnet by hand; NordVPN refuses to allowlist a private subnet while it is on, so knowing the subnet is only useful for checking that it is a private range (192.168.x.x, 10.x.x.x or 172.16–31.x.x). Allowlisted subnets are routed outside the VPN, so the tunnel keeps connecting from the home connection, just as it did before. `198.41.192.0/19` covers the IPv4 addresses behind `region1.v2.argotunnel.com` and `region2.v2.argotunnel.com` used by both tunnel protocols (QUIC and HTTP/2 on port 7844). To make sure `cloudflared` does not try IPv6 edges, which the allowlist above does not cover, set `TUNNEL_EDGE_IP_VERSION=4` in both containers' environment (or add `--edge-ip-version 4` to their `tunnel run` command) and recreate them.
+Tailscale addresses (`100.x.y.z`) sit in the carrier-grade NAT range, which LAN discovery does not treat as local, so SSH over Tailscale needs the two Tailscale lines above; restart `tailscaled` after adding them if the box is already connected. LAN discovery replaces allowlisting your LAN subnet by hand; NordVPN refuses to allowlist a private subnet while it is on, so knowing the subnet is only useful for checking that it is a private range (192.168.x.x, 10.x.x.x or 172.16–31.x.x). Allowlisted subnets are routed outside the VPN, so the tunnel keeps connecting from the home connection, just as it did before. `198.41.192.0/19` covers the IPv4 addresses behind `region1.v2.argotunnel.com` and `region2.v2.argotunnel.com` used by both tunnel protocols (QUIC and HTTP/2 on port 7844). To make sure `cloudflared` does not try IPv6 edges, which the allowlist above does not cover, set `TUNNEL_EDGE_IP_VERSION=4` in both containers' environment (or add `--edge-ip-version 4` to their `tunnel run` command) and recreate them.
 
 ### Connect with a fail-safe
 
