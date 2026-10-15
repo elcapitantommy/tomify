@@ -192,12 +192,16 @@ pnpm build
 - A source-aware Recovery queue with MusicBrainz metadata review, provider-ranked cover art, D1 provenance, safe recovery-copy deletion and an optional media-server acquisition agent.
 - OAuth-backed Spotify playlist import as catalogue metadata only, with Navidrome matching, ambiguous-match review, ordered pending Recovery entries, duplicate preservation, and manual refresh diffs.
 - Album completeness against the MusicBrainz tracklist, with edition choice, duplicate-copy and extra-track notes, and one-click "add missing to Recovery".
+- Library album artwork upgrades from Apple (1200px) and Deezer (1000px), with Spotify optional, chosen per album or in a resumable bulk run from Settings.
+- Usenet recovery through NZBIndex and/or Newznab indexers and SABnzbd or NZBGet, searching any mix of artist, album and track.
 
 ### Recovery imports
 
-The Recovery page accepts wanted track metadata, searches pluggable candidate backends and keeps source, match, measured quality and import status together. The media-server agent supports YouTube plus Internet Archive's public catalogue/file APIs. Both paths require an explicit source-specific authorisation confirmation, inspect the resulting file with FFprobe, preserve the original stream, tag a distinct FFmpeg stream-copy derivative and write only to the separate recovery library. Recovery files never replace verified masters automatically.
+The Recovery page accepts wanted music from any mix of artist, album and track (at least one; leave the track blank to ask for a whole album), searches pluggable candidate backends and keeps source, match, measured quality and import status together. The media-server agent supports YouTube, Internet Archive's public catalogue/file APIs and Usenet (NZBIndex and Newznab indexers, downloading through SABnzbd or NZBGet). A Usenet search can combine artist, album and track in one query; an album search imports the whole release, and a single-track import from a larger download offers **Import rest of download** to take the remaining tracks without downloading again. All paths require an explicit source-specific authorisation confirmation, inspect the resulting file with FFprobe, preserve the original stream, tag a distinct FFmpeg stream-copy derivative and write only to the separate recovery library. Recovery files never replace verified masters automatically.
 
 See [docs/RECOVERY.md](docs/RECOVERY.md) for the agent setup, backend contract and legal/quality boundaries.
+
+The recovery agent is deployed separately from the site. After any change under `recovery-agent/` is merged, copy it to the media server and restart it (see [Updating the recovery agent](docs/RECOVERY.md#updating-the-recovery-agent)); an out-of-date agent makes newer Recovery features fail.
 
 ### PWA and iOS notes
 
