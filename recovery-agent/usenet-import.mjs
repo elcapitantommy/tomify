@@ -192,7 +192,7 @@ export async function importUsenetCompletion(job, completedFiles, options) {
       }
     }
     const first = importedTracks[0]
-    return { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, artwork: first.artwork }
+    return { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, artwork: first.artwork, sourceFiles: plans.map((plan) => plan.file.path) }
   } catch (error) {
     for (const path of committed.reverse()) await unlink(path).catch(() => {})
     if (coverCreated) await unlink(releaseCoverPath).catch(() => {})
@@ -200,4 +200,23 @@ export async function importUsenetCompletion(job, completedFiles, options) {
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
   }
+}
+
+// Downloaded files a completed job has already imported. Jobs from before sourceFiles was recorded
+// fall back to re-running the first import's deterministic file selection.
+export function importedUsenetSourceFiles(job, completedFiles) {
+  const recorded = [job.importResult, ...(job.additionalImports || [])].flatMap((result) => Array.isArray(result?.sourceFiles) ? result.sourceFiles : [])
+  if (Array.isArray(job.importResult?.sourceFiles)) return new Set(recorded)
+  const firstImport = selectUsenetImportFiles(completedFiles, job.request?.track || {}, job.result?.searchMode || 'track')
+  return new Set([...recorded, ...firstImport.map((file) => file.path)])
+}
+
+// Imports the audio files a single-track Usenet job left behind, as a release, without downloading again.
+export async function importRemainingUsenetFiles(job, completedFiles, options) {
+  if (job.status !== 'completed') throw new Error('Only a completed Usenet download can have its remaining files imported.')
+  if ((job.result?.searchMode || 'track') === 'release') throw new Error('This download was already imported as a whole release.')
+  const imported = importedUsenetSourceFiles(job, completedFiles)
+  const remaining = completedFiles.filter((file) => !imported.has(file.path))
+  if (!remaining.length) throw new Error('Every audio file in this download has already been imported.')
+  return importUsenetCompletion({ ...job, result: { ...job.result, searchMode: 'release' } }, remaining, options)
 }

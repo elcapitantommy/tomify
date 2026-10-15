@@ -15,7 +15,7 @@ import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './deri
 import { ffmpegMetadataArguments } from './metadata.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
 import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, validateCompletedPath } from './usenet.mjs'
-import { importUsenetCompletion } from './usenet-import.mjs'
+import { importRemainingUsenetFiles, importUsenetCompletion } from './usenet-import.mjs'
 import { validateRecoveryAuthConfig } from './config.mjs'
 import { createUsenetJobPoller } from './usenet-job.mjs'
 
@@ -493,10 +493,40 @@ const pollUsenetJob = createUsenetJobPoller({
   completeJob: async (job, state) => {
     const completedPath = await validateCompletedPath(state.completedPath, usenetDownloadRoot, usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null)
     const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
+    job.completedPath = completedPath
     return importUsenetCompletion(job, discovered.files, { recoveryRoot, probe, prepareArtwork, run, ffmpeg })
   },
   sanitizeError: (error) => sanitizeToolError(error instanceof Error ? error.message : 'Usenet recovery failed.', []),
 })
+
+const remainingImports = new Map()
+
+async function importRemainingUsenet(body) {
+  const key = String(body?.jobId || '')
+  if (remainingImports.has(key)) throw new Error('The remaining files from this download are already being imported.')
+  const operation = (async () => {
+    const job = await loadUsenetJob(key)
+    let reportedPath = job.completedPath
+    if (!reportedPath) {
+      // Jobs completed before completedPath was saved: ask the downloader where it put the files.
+      const state = await downloaderStatus(usenetDownloader, job.remoteId)
+      if (state.status !== 'completed' || !state.completedPath) throw new Error('The downloader no longer reports where this download was saved.')
+      reportedPath = state.completedPath
+    }
+    // A saved completedPath is already mapped to TOMIFY_USENET_DOWNLOAD_DIR; a fresh SABnzbd path still needs remapping.
+    const downloaderRoot = !job.completedPath && usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null
+    const completedPath = await validateCompletedPath(reportedPath, usenetDownloadRoot, downloaderRoot)
+    const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
+    const result = await importRemainingUsenetFiles(job, discovered.files, { recoveryRoot, probe, prepareArtwork, run, ffmpeg })
+    job.completedPath = completedPath
+    job.additionalImports = [...(job.additionalImports || []), { importedAt: new Date().toISOString(), importedCount: result.importedCount, sourceFiles: result.sourceFiles }]
+    job.updatedAt = new Date().toISOString()
+    await saveUsenetJob(job)
+    return { result }
+  })()
+  remainingImports.set(key, operation)
+  try { return await operation } finally { remainingImports.delete(key) }
+}
 
 async function diagnoseAuthenticatedYouTube() {
   const status = await cookieStatus()
@@ -546,6 +576,7 @@ createServer(async (request, response) => {
       throw new Error('Unsupported recovery backend.')
     }
     if (request.url === '/v1/jobs/status') return send(response, 200, await pollUsenetJob(body.jobId))
+    if (request.url === '/v1/jobs/import-remaining') return send(response, 200, await importRemainingUsenet(body))
     if (request.url === '/v1/delete') return send(response, 200, await deleteImportedRecovery(body))
     return send(response, 404, { error: 'not-found' })
   } catch (error) {
