@@ -127,7 +127,7 @@ describe('Recovery page actions', () => {
   it('continues from metadata and artwork review into source authorisation without resetting choices', async () => {
     const selectedCandidate = { id: 'candidate-1', backend: 'youtube' as const, externalId: 'video-1', url: 'https://www.youtube.com/watch?v=video-1', title: 'Zara Larsson - Lush Life', channel: 'Zara Larsson', official: true, matchScore: 97, selected: true }
     vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({
-      candidates: [selectedCandidate],
+      candidates: [selectedCandidate, { ...selectedCandidate, id: 'candidate-2', externalId: 'video-2', url: 'https://www.youtube.com/watch?v=video-2', title: 'Other upload', matchScore: 40, selected: false }],
       metadataResolution: { authority: 'musicbrainz', status: 'matched', confidence: 97, strong: true, candidateId: 'candidate-1', resolvedAt: '2026-01-01', metadata: { artist: 'Zara Larsson', title: 'Lush Life', album: '1', releaseDate: '2014-06-09', trackNumber: 1 } },
       artworkResolution: { candidateId: 'candidate-1', resolvedAt: '2026-01-01', selectedCandidateId: 'apple:1', candidates: [{ id: 'apple:1', provider: 'apple', providerLabel: 'Apple catalogue', providerId: '1', url: 'https://example.test/cover.jpg', previewUrl: 'https://example.test/cover.jpg', confidence: 95, quality: 'high', square: true, selectable: true }] },
     })], backends })
@@ -141,6 +141,13 @@ describe('Recovery page actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue to import' }))
 
     expect(screen.getByText('Confirm this source can be copied')).toBeInTheDocument()
+    // Both panels open directly under the selected candidate, before the next one.
+    const selectedRow = screen.getByText('Zara Larsson - Lush Life').closest('.candidate')!
+    const nextRow = screen.getByText('Other upload').closest('.candidate')!
+    for (const panel of [artistChoice, screen.getByText('Confirm this source can be copied')]) {
+      expect(selectedRow.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(panel.compareDocumentPosition(nextRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
     expect(artistChoice).not.toBeChecked()
     expect(screen.getByText('No artwork selected')).toBeInTheDocument()
   })
