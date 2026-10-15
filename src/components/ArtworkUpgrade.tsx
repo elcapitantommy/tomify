@@ -6,7 +6,8 @@ import { useAlbumArtwork, type ArtworkUpgradeProgress } from '../stores/albumArt
 function progressLabel(progress: ArtworkUpgradeProgress, running: boolean) {
   const parts = [`${progress.applied} upgraded`, progress.unchanged && `${progress.unchanged} already upgraded`, progress.noMatch && `${progress.noMatch} not found on Spotify`, progress.lowConfidence && `${progress.lowConfidence} uncertain matches left for the album page`, progress.failed && `${progress.failed} failed (${progress.lastError})`].filter(Boolean)
   const waiting = running && progress.waitingSeconds ? ` Spotify asked Tomify to slow down; resuming in ${progress.waitingSeconds}s.` : ''
-  return `${running ? 'Checking' : 'Checked'} ${progress.done} of ${progress.total} albums: ${parts.join(', ')}.${waiting}`
+  const stopped = progress.stopped ? ' Stopped after repeated Spotify errors.' : ''
+  return `${running ? 'Checking' : 'Checked'} ${progress.done} of ${progress.total} albums: ${parts.join(', ')}.${waiting}${stopped}`
 }
 
 export function ArtworkUpgrade() {

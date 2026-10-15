@@ -35,7 +35,7 @@ export interface AlbumArtworkCandidate {
 
 export type AutoArtworkResult = 'applied' | 'unchanged' | 'manual-choice' | 'low-confidence' | 'no-match' | 'failed'
 export interface AutoArtworkOutcome { result: AutoArtworkResult | 'rate-limited'; retryAfter?: number; message?: string }
-export interface ArtworkUpgradeProgress { done: number; total: number; applied: number; unchanged: number; noMatch: number; lowConfidence: number; failed: number; waitingSeconds?: number; lastError?: string }
+export interface ArtworkUpgradeProgress { done: number; total: number; applied: number; unchanged: number; noMatch: number; lowConfidence: number; failed: number; waitingSeconds?: number; lastError?: string; stopped?: boolean }
 
 type Status = 'checking' | 'ready' | 'unavailable'
 
@@ -117,6 +117,7 @@ export const useAlbumArtwork = create<AlbumArtworkState>((set, get) => ({
     const pending = albums.filter((album) => get().overrides[album.id]?.source !== 'manual')
     const progress: ArtworkUpgradeProgress = { done: 0, total: pending.length, applied: 0, unchanged: 0, noMatch: 0, lowConfidence: 0, failed: 0 }
     onProgress?.({ ...progress })
+    let consecutiveFailures = 0
     for (const album of pending) {
       if (signal?.aborted) break
       let outcome = await get().auto(album)
@@ -134,7 +135,10 @@ export const useAlbumArtwork = create<AlbumArtworkState>((set, get) => ({
       else if (outcome.result === 'low-confidence') progress.lowConfidence += 1
       else if (outcome.result === 'unchanged' || outcome.result === 'manual-choice') progress.unchanged += 1
       else { progress.failed += 1; progress.lastError = outcome.message ?? 'Spotify kept rate limiting Tomify.' }
+      consecutiveFailures = outcome.result === 'failed' || outcome.result === 'rate-limited' ? consecutiveFailures + 1 : 0
       onProgress?.({ ...progress })
+      // Five failures in a row means Spotify is refusing every request; stop instead of failing the whole library.
+      if (consecutiveFailures >= 5) { progress.stopped = true; break }
       await wait(350)
     }
     return progress

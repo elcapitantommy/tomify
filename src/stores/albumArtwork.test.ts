@@ -53,4 +53,14 @@ describe('album artwork store', () => {
     render(createElement(Artwork, { id: 'al-2', albumId: 'al-2', alt: 'Hejira' }))
     expect((screen.getByAltText('Hejira') as HTMLImageElement).src).toMatch(/getCoverArt\.view/)
   })
+
+  it('stops after five failures in a row instead of failing the whole library', async () => {
+    vi.useFakeTimers()
+    const fetcher = vi.fn(async () => Response.json({ error: 'spotify-forbidden', message: 'Spotify search returned HTTP 403.' }, { status: 502 }))
+    vi.stubGlobal('fetch', fetcher)
+    const run = useAlbumArtwork.getState().upgradeMany(['1', '2', '3', '4', '5', '6', '7'].map(album))
+    await vi.runAllTimersAsync()
+    expect(await run).toMatchObject({ done: 5, total: 7, failed: 5, stopped: true, lastError: 'Spotify search returned HTTP 403.' })
+    expect(fetcher).toHaveBeenCalledTimes(5)
+  })
 })

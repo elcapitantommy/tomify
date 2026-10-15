@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { build } from 'vite'
+import { catalogueWorkerSource } from './catalogue-worker.mjs'
 
 function mockDatabase() {
   return {
@@ -351,6 +352,40 @@ test('album artwork reports Spotify rate limits and errors instead of treating t
     assert.equal(failed.status, 502)
     assert.equal((await failed.json()).error, 'spotify-error')
     assert.equal(env.TOMIFY_DB.rows.size, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('album artwork searches as the connected Spotify account and explains a 403', async () => {
+  const env = { SPOTIFY_CLIENT_ID: 'id', SPOTIFY_CLIENT_SECRET: 'secret', SPOTIFY_TOKEN_ENCRYPTION_KEY: 'test-key' }
+  const { encryptCatalogueToken } = new Function(catalogueWorkerSource + '\nreturn { encryptCatalogueToken }')()
+  const encryptedToken = await encryptCatalogueToken(env, { accessToken: 'user-token', refreshToken: 'refresh', expiresAt: Date.now() + 3_600_000 })
+  const database = artworkDatabase()
+  const prepare = database.prepare
+  database.prepare = (sql) => sql.includes('FROM catalogue_provider_tokens') ? { bind() { return this }, async first() { return { encryptedToken } } } : prepare(sql)
+  const authorizations = []
+  let status = 403
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.hostname === 'accounts.spotify.com') return Response.json({ access_token: 'app-token', expires_in: 3600 })
+    authorizations.push(init?.headers?.authorization)
+    if (status === 403) return Response.json({ error: { status: 403, message: 'Active premium subscription required for the owner of the app.' } }, { status: 403 })
+    return Response.json({ albums: { items: [] } })
+  }
+  try {
+    const call = () => worker.fetch(new Request('https://app.tomify.test/api/album-artwork/auto', { method: 'POST', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' }, body: JSON.stringify({ albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' }) }), { ...env, TOMIFY_DB: database })
+    const forbidden = await call()
+    assert.equal(forbidden.status, 502)
+    const body = await forbidden.json()
+    assert.equal(body.error, 'spotify-forbidden')
+    assert.equal(body.message, 'Spotify search returned HTTP 403: Active premium subscription required for the owner of the app. Since March 2026 Spotify refuses Development Mode apps whose owner has no Premium subscription.')
+    assert.deepEqual(authorizations, ['Bearer user-token'])
+    status = 200
+    assert.equal((await call()).status, 200)
+    assert.ok(authorizations.slice(1).every((value) => value === 'Bearer user-token'), 'every search uses the connected account token')
   } finally {
     globalThis.fetch = originalFetch
   }

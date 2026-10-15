@@ -2,7 +2,7 @@
 // library and stores the chosen image per album in D1. Navidrome's own files are never
 // touched; Tomify shows the override instead of getCoverArt wherever it draws that album.
 // The pure helpers are exported for tests; handleAlbumArtworkRequest relies on Worker
-// globals (authenticate, json, spotifyAccessToken, spotifyTokenCache, rankArtworkCandidates,
+// globals (authenticate, json, spotifyAccessToken, spotifyTokenCache, spotifyUserToken, rankArtworkCandidates,
 // metadataTextSimilarity, artworkYearScore, cleanReleaseTitle, selectRelease, ensureReleaseTable).
 
 export const albumArtworkHosts = ['i.scdn.co', 'mosaic.scdn.co', 'image-cdn-ak.spotifycdn.com', 'image-cdn-fa.spotifycdn.com']
@@ -83,9 +83,18 @@ async function saveAlbumArtwork(db, albumId, artwork, source, username) {
   return selectAlbumArtwork(db, albumId)
 }
 
-async function searchSpotifyAlbums(env, query) {
+// Spotify's 2026 Development Mode rules can refuse app-only (client credentials) tokens for
+// search, so the connected Spotify account from playlist import is preferred when there is one.
+async function spotifySearchToken(env, db, username, forceRefresh) {
+  try { return { token: await spotifyUserToken(env, db, username, forceRefresh), account: true } }
+  catch { /* not connected, or token storage unavailable */ }
   const token = await spotifyAccessToken(env)
   if (!token) throw Object.assign(new Error('Spotify rejected the server credentials.'), { code: 'spotify-auth-failed' })
+  return { token, account: false }
+}
+
+async function searchSpotifyAlbums(env, db, username, query, refreshed = false) {
+  const { token, account } = await spotifySearchToken(env, db, username, refreshed)
   const url = new URL('https://api.spotify.com/v1/search')
   url.searchParams.set('q', query)
   url.searchParams.set('type', 'album')
@@ -93,17 +102,21 @@ async function searchSpotifyAlbums(env, query) {
   url.searchParams.set('market', String(env.SPOTIFY_MARKET || 'GB').slice(0, 2).toUpperCase())
   const response = await fetch(url, { headers: { authorization: 'Bearer ' + token, accept: 'application/json' } })
   if (response.status === 429) throw Object.assign(new Error('Spotify is rate limiting Tomify.'), { code: 'spotify-rate-limited', retryAfter: Math.min(120, Math.max(1, Number(response.headers.get('retry-after')) || 5)) })
-  if (response.status === 401) spotifyTokenCache = null
-  if (!response.ok) throw Object.assign(new Error('Spotify search returned HTTP ' + response.status + '.'), { code: 'spotify-error' })
-  const body = await response.json()
+  if (response.status === 401 && !refreshed) { if (!account) spotifyTokenCache = null; return searchSpotifyAlbums(env, db, username, query, true) }
+  const body = await response.json().catch(() => null)
+  if (!response.ok) {
+    const detail = typeof body?.error?.message === 'string' ? ': ' + body.error.message.slice(0, 200).replace(/[.\s]+$/, '') : ''
+    const hint = response.status === 403 ? (account ? ' Since March 2026 Spotify refuses Development Mode apps whose owner has no Premium subscription.' : ' Connect Spotify under Playlists > Import so Tomify can search as your account.') : ''
+    throw Object.assign(new Error('Spotify search returned HTTP ' + response.status + detail + '.' + hint), { code: response.status === 403 ? 'spotify-forbidden' : 'spotify-error' })
+  }
   return Array.isArray(body?.albums?.items) ? body.albums.items.filter(Boolean) : []
 }
 
-async function lookupAlbumArtwork(env, db, album) {
+async function lookupAlbumArtwork(env, db, username, album) {
   const releaseDate = (await selectRelease(db, album.albumId))?.releaseDate || (album.year ? String(album.year) : null)
   const wanted = { artist: album.artist, album: cleanReleaseTitle(album.name), releaseDate }
   for (const query of albumArtworkSearchQueries(wanted.album, wanted.artist)) {
-    const items = await searchSpotifyAlbums(env, query)
+    const items = await searchSpotifyAlbums(env, db, username, query)
     const candidates = rankArtworkCandidates(items.map((item) => spotifyAlbumCandidate(wanted, item, metadataTextSimilarity, artworkYearScore)).filter(Boolean)).slice(0, 6)
     if (candidates.length) return candidates
   }
@@ -137,7 +150,7 @@ async function handleAlbumArtworkRequest(request, env, url) {
     // A person's own choice, including keeping the library image, is never replaced automatically.
     if (url.pathname === '/api/album-artwork/auto' && existing?.source === 'manual') return json({ item: existing, applied: false, reason: 'manual-choice' })
     let candidates
-    try { candidates = await lookupAlbumArtwork(env, db, album) }
+    try { candidates = await lookupAlbumArtwork(env, db, username, album) }
     catch (error) {
       if (error?.code === 'spotify-rate-limited') return json({ error: error.code, message: 'Spotify asked Tomify to slow down.', retryAfter: error.retryAfter }, 429)
       return json({ error: error?.code || 'spotify-unavailable', message: error?.code ? error.message : 'Spotify could not be reached. Try again shortly.' }, 502)
@@ -164,4 +177,4 @@ async function handleAlbumArtworkRequest(request, env, url) {
   return json({ error: 'not-found' }, 404)
 }
 
-export const albumArtworkWorkerSource = `const albumArtworkHosts = ${JSON.stringify(albumArtworkHosts)}\nconst albumArtworkColumns = ${JSON.stringify(albumArtworkColumns)}\n\n` + [isAlbumArtworkUrl, baseAlbumTitle, albumArtworkSearchQueries, spotifyAlbumCandidate, chooseAutomaticAlbumArtwork, albumArtworkRow, ensureAlbumArtworkTable, selectAlbumArtwork, saveAlbumArtwork, searchSpotifyAlbums, lookupAlbumArtwork, handleAlbumArtworkRequest].map((fn) => fn.toString()).join('\n\n')
+export const albumArtworkWorkerSource = `const albumArtworkHosts = ${JSON.stringify(albumArtworkHosts)}\nconst albumArtworkColumns = ${JSON.stringify(albumArtworkColumns)}\n\n` + [isAlbumArtworkUrl, baseAlbumTitle, albumArtworkSearchQueries, spotifyAlbumCandidate, chooseAutomaticAlbumArtwork, albumArtworkRow, ensureAlbumArtworkTable, selectAlbumArtwork, saveAlbumArtwork, spotifySearchToken, searchSpotifyAlbums, lookupAlbumArtwork, handleAlbumArtworkRequest].map((fn) => fn.toString()).join('\n\n')
