@@ -1,8 +1,8 @@
-import { constants as fsConstants } from 'node:fs'
-import { access, copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises'
+import { constants as fsConstants, createReadStream } from 'node:fs'
+import { access, copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { buildArtworkProvenance, buildDerivativeArguments } from './artwork.mjs'
 import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './derivative.mjs'
 import { ffmpegMetadataArguments } from './metadata.mjs'
@@ -180,6 +180,20 @@ export async function resolveReleaseDirectory(recoveryRoot, artist, album) {
   return albumDirectory
 }
 
+async function sameFileContents(left, right) {
+  const [leftStat, rightStat] = await Promise.all([stat(left), stat(right)])
+  if (!leftStat.isFile() || !rightStat.isFile() || leftStat.size !== rightStat.size) return false
+  const digest = async (path) => { const hash = createHash('sha256'); for await (const chunk of createReadStream(path)) hash.update(chunk); return hash.digest('hex') }
+  return await digest(left) === await digest(right)
+}
+
+// Whether a recovery copy already uses this name: 'absent', 'same' (its preserved original is this very file) or 'other'.
+async function existingRecoveryCopy(finalPath, originalPath, sourcePath) {
+  const exists = async (path) => { try { await lstat(path); return true } catch (error) { if (error?.code === 'ENOENT') return false; throw error } }
+  if (!(await exists(finalPath)) && !(await exists(originalPath)) && !(await exists(`${finalPath}.tomify.json`))) return 'absent'
+  return await exists(originalPath) && await exists(finalPath) && await sameFileContents(originalPath, sourcePath) ? 'same' : 'other'
+}
+
 async function ensureAbsent(paths) {
   for (const path of paths) {
     try { await access(path); throw new Error('A recovery copy already exists; Tomify will not overwrite it.') } catch (error) { if (error?.code !== 'ENOENT') throw error }
@@ -211,6 +225,7 @@ export async function importUsenetCompletion(job, completedFiles, options) {
   await mkdir(resolve(recoveryRoot), { recursive: true })
   const canonicalRecoveryRoot = await realpath(resolve(recoveryRoot))
   const plans = []
+  const alreadyPresent = []
   const usedStems = new Set()
   for (const group of groups) {
     const finalDirectory = await resolveReleaseDirectory(recoveryRoot, group.artist, group.album)
@@ -232,15 +247,28 @@ export async function importUsenetCompletion(job, completedFiles, options) {
       const prefix = trackPrefix ? `${discPrefix}${trackPrefix} - ` : ''
       const baseStem = `${prefix}${safeName(item.metadata.title, basename(item.file.path, sourceExtension))}`
       // Two files that still land on the same name (a repeated track, or two copies of one album) are both kept.
+      // In a release, a name already used in the recovery library is skipped when it holds this same file (an
+      // album recovered before) and otherwise moves to the next free name, so one clash never fails the import.
       let stem = baseStem
-      for (let copy = 2; usedStems.has(join(finalDirectory, stem).toLocaleLowerCase('en')); copy += 1) stem = `${baseStem} (${copy})`
+      let alreadyRecovered = false
+      for (let copy = 2; ; copy += 1) {
+        if (!usedStems.has(join(finalDirectory, stem).toLocaleLowerCase('en'))) {
+          if (searchMode !== 'release') break
+          const existing = await existingRecoveryCopy(resolve(finalDirectory, `${stem}${derivativeExtension}`), resolve(sourceDirectory, `${stem}${sourceExtension}`), item.file.path)
+          if (existing === 'absent') break
+          if (existing === 'same') { alreadyRecovered = true; break }
+        }
+        stem = `${baseStem} (${copy})`
+      }
       usedStems.add(join(finalDirectory, stem).toLocaleLowerCase('en'))
+      if (alreadyRecovered) { alreadyPresent.push(item.file.path); continue }
       const finalPath = resolve(finalDirectory, `${stem}${derivativeExtension}`)
       const originalPath = resolve(sourceDirectory, `${stem}${sourceExtension}`)
       if (!inside(finalPath, canonicalRecoveryRoot) || !inside(originalPath, canonicalRecoveryRoot)) throw new Error('Unsafe recovery destination.')
       plans.push({ ...item, group, index: plans.length, sourceExtension, derivativeExtension, finalPath, originalPath, sidecarPath: `${finalPath}.tomify.json` })
     }
   }
+  if (!plans.length) throw new Error('Every track in this download is already in the recovery library.')
   const destinations = plans.flatMap((plan) => [plan.finalPath, plan.originalPath, plan.sidecarPath])
   if (new Set(destinations.map((path) => path.toLocaleLowerCase('en'))).size !== destinations.length) throw new Error('The completed release contains duplicate destination track names.')
   await ensureAbsent(destinations)
@@ -298,7 +326,7 @@ export async function importUsenetCompletion(job, completedFiles, options) {
     }
     const first = importedTracks[0]
     const albums = groups.map((group) => ({ artist: group.artist || null, album: group.album || null, trackCount: group.items.length }))
-    return { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, albums, artwork: first.artwork, sourceFiles: plans.map((plan) => plan.file.path) }
+    return { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, albums, alreadyPresentCount: alreadyPresent.length, artwork: first.artwork, sourceFiles: [...plans.map((plan) => plan.file.path), ...alreadyPresent] }
   } catch (error) {
     for (const path of committed.reverse()) await unlink(path).catch(() => {})
     for (const path of createdCovers) await unlink(path).catch(() => {})

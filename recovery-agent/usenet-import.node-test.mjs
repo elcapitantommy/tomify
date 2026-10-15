@@ -95,7 +95,7 @@ test('release mode imports every audio file with shared artwork, originals, deri
   assert.equal(tools.ffmpegCalls.length, 2)
   assert.equal(tools.ffmpegCalls.every((args) => args.filter((value) => value === '-i').length === 2), true)
   assert.equal(tools.ffmpegCalls.some((args) => args.some((value) => String(value).startsWith('MUSICBRAINZ_TRACKID='))), false)
-  await assert.rejects(importUsenetCompletion(job('release'), discovered.files, { recoveryRoot, ...harness(qualities) }), /will not overwrite/)
+  await assert.rejects(importUsenetCompletion(job('release'), discovered.files, { recoveryRoot, ...harness(qualities) }), /already in the recovery library/)
 })
 
 test('release tags that differ only by accents, or were mangled to U+FFFD, use the requested artist and album', () => {
@@ -248,6 +248,31 @@ test('an album with no album-artist tag and no artist on most tracks is Various 
   assert.equal(albumArtistFor(items, null), 'Various Artists')
   assert.equal(albumArtistFor([...items, { hasAlbumArtistTag: true, metadata: { artist: 'A', albumArtist: 'Compiler' } }], null), 'Compiler')
   assert.equal(albumArtistFor([{ hasAlbumArtistTag: false, metadata: { artist: 'A' } }, { hasAlbumArtistTag: false, metadata: { artist: 'A' } }, { hasAlbumArtistTag: false, metadata: { artist: 'B' } }], null), 'A')
+})
+
+test('a release skips tracks already recovered from the same file and renames ones that clash with a different file', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-existing-copy-test-'))
+  const completed = await mkdtemp(join(tmpdir(), 'tomify-existing-copy-completed-test-'))
+  await mkdir(join(completed, 'Lola'))
+  const qualities = {}
+  for (const [number, title] of [[1, 'The Contenders'], [2, 'Strangers'], [3, 'Lola']]) {
+    const path = join(completed, 'Lola', `0${number} - ${title}.mp3`)
+    await writeFile(path, `${title} audio`)
+    qualities[path] = { codec: 'mp3', container: 'mp3', duration: 200, tags: { title, track: String(number), album: 'Lola', artist: 'The Kinks' } }
+  }
+  const album = join(recoveryRoot, 'The Kinks', 'Lola')
+  await mkdir(join(album, '.tomify-source'), { recursive: true })
+  // Track 1 was recovered before from this very file; track 2's name holds a different recording.
+  await writeFile(join(album, '01 - The Contenders.mp3'), 'derivative'); await writeFile(join(album, '.tomify-source', '01 - The Contenders.mp3'), 'The Contenders audio')
+  await writeFile(join(album, '02 - Strangers.mp3'), 'other derivative'); await writeFile(join(album, '.tomify-source', '02 - Strangers.mp3'), 'another recording')
+  const discovered = await findCompletedAudio(completed)
+  const result = await importUsenetCompletion(job('release', { artist: 'The Kinks', album: null }), discovered.files, { recoveryRoot, ...harness({}, false), probe: async (path) => qualities[path] })
+
+  assert.equal(result.importedCount, 2)
+  assert.equal(result.alreadyPresentCount, 1)
+  assert.deepEqual(result.importedTracks.map((track) => basename(track.path)), ['02 - Strangers (2).mp3', '03 - Lola.mp3'])
+  assert.equal(await readFile(join(album, '.tomify-source', '02 - Strangers.mp3'), 'utf8'), 'another recording')
+  assert.equal(result.sourceFiles.length, 3)
 })
 
 test('loose artist keys ignore punctuation, "&" versus "and", accents and a leading "The"', () => {
