@@ -4,7 +4,7 @@ import { access, mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from 'n
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { findCompletedAudio } from './usenet.mjs'
-import { importUsenetCompletion, releaseTrackMetadata, selectUsenetImportFiles } from './usenet-import.mjs'
+import { importRemainingUsenetFiles, importUsenetCompletion, importedUsenetSourceFiles, releaseTrackMetadata, selectUsenetImportFiles } from './usenet-import.mjs'
 
 function job(searchMode, track = {}) {
   return {
@@ -98,6 +98,31 @@ test('release mode imports every audio file with shared artwork, originals, deri
   await assert.rejects(importUsenetCompletion(job('release'), discovered.files, { recoveryRoot, ...harness(qualities) }), /will not overwrite/)
 })
 
+test('release tags that differ only by accents, or were mangled to U+FFFD, use the requested artist and album', () => {
+  const request = job('release', { artist: 'Mötley Crüe', album: 'Dr. Feelgood' }).request.track
+  const mangled = releaseTrackMetadata('/release/01 - T.n.T. (Terror \'n Tryin\').flac', { tags: { ARTIST: 'M\ufffdtley Cr\ufffde', ALBUM: 'Dr. Feelgood' } }, request, 1)
+  assert.equal(mangled.artist, 'Mötley Crüe')
+  assert.equal(mangled.albumArtist, 'Mötley Crüe')
+  const plain = releaseTrackMetadata('/release/02 - Dr. Feelgood.flac', { tags: { ARTIST: 'Mötley Crüe', ALBUM: 'Dr. Feelgood' } }, job('release', { artist: 'Motley Crue', album: 'Dr. Feelgood' }).request.track, 2)
+  assert.equal(plain.artist, 'Motley Crue')
+  assert.equal(plain.albumArtist, 'Motley Crue')
+})
+
+test('release import joins an existing artist folder whose name differs only by accents', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-accent-import-test-'))
+  await mkdir(join(recoveryRoot, 'Motley Crue'), { recursive: true })
+  const completed = await mkdtemp(join(tmpdir(), 'tomify-accent-completed-test-'))
+  await writeFile(join(completed, '01 - Dr. Feelgood.flac'), 'one')
+  const discovered = await findCompletedAudio(completed)
+  const qualities = { '01 - Dr. Feelgood.flac': { codec: 'flac', container: 'flac', duration: 290, tags: { ARTIST: 'Mötley Crüe', ALBUM: 'Dr. Feelgood (30th Anniversary)' } } }
+  const tools = harness(qualities, false)
+  const result = await importUsenetCompletion(job('release', { artist: 'Mötley Crüe', album: 'Dr. Feelgood' }), discovered.files, { recoveryRoot, ...tools })
+  assert.equal(result.importedTracks[0].path.startsWith(join(recoveryRoot, 'Motley Crue', 'Dr. Feelgood (30th Anniversary)')), true)
+  assert.deepEqual(await readdir(recoveryRoot), ['Motley Crue'])
+  assert.equal(tools.ffmpegCalls[0].includes('artist=Mötley Crüe'), true)
+  assert.equal(tools.ffmpegCalls[0].some((value) => String(value).includes('\ufffd')), false)
+})
+
 test('single-track mode preserves the existing one-result payload shape', async () => {
   const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-track-import-test-'))
   const completed = await mkdtemp(join(tmpdir(), 'tomify-track-completed-test-'))
@@ -113,6 +138,21 @@ test('single-track mode preserves the existing one-result payload shape', async 
   assert.equal((await readdir(join(recoveryRoot, 'they might be giants', 'flood'))).filter((name) => name.endsWith('.mp3')).length, 1)
 })
 
+test('torrent imports record torrent provenance, including files unpacked from an archive', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-torrent-import-test-'))
+  const extracted = await mkdtemp(join(tmpdir(), 'tomify-torrent-extracted-test-'))
+  const file = join(extracted, '001', '07 - Birdhouse in Your Soul.flac')
+  await mkdir(join(extracted, '001'), { recursive: true }); await writeFile(file, 'audio')
+  const torrentJob = { ...job('track'), downloader: 'qbittorrent', indexer: { type: 'torrent', id: 'torrent-link', name: 'Torrent link' }, torrent: { infoHash: 'abc123', linkType: 'magnet' }, extractedPath: extracted }
+  torrentJob.result = { ...torrentJob.result, detailsUrl: 'magnet:?xt=urn:btih:abc123' }
+  const result = await importUsenetCompletion(torrentJob, [{ name: basename(file), path: file }], { recoveryRoot, ...harness({}, false) })
+  assert.equal(result.provenance.source, 'torrent')
+  assert.equal(result.provenance.archiveStatus, 'torrent-recovery-copy')
+  assert.equal(result.provenance.torrentInfoHash, 'abc123')
+  assert.equal(result.provenance.extractedFromArchive, true)
+  assert.equal(result.provenance.sourceUrl, 'magnet:?xt=urn:btih:abc123')
+})
+
 test('rejects a symlinked preserved-original directory outside the recovery root', async () => {
   const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-output-symlink-test-'))
   const albumDirectory = join(recoveryRoot, 'they might be giants', 'flood')
@@ -124,4 +164,34 @@ test('rejects a symlinked preserved-original directory outside the recovery root
   await writeFile(source, 'audio')
   await assert.rejects(importUsenetCompletion(job('track'), [{ name: basename(source), path: source }], { recoveryRoot, ...harness({}, false) }), /Unsafe recovery destination/)
   assert.deepEqual(await readdir(outside), [])
+})
+
+test('imports the rest of a single-track download as a release without re-importing the first track', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-remaining-import-test-'))
+  const completed = await mkdtemp(join(tmpdir(), 'tomify-remaining-completed-test-'))
+  for (const name of ['01 - Theme from Flood.mp3', '02 - Birdhouse in Your Soul.mp3', '03 - Lucky Ball and Chain.mp3']) await writeFile(join(completed, name), name)
+  const { files } = await findCompletedAudio(completed)
+  const tools = harness({}, false)
+  const first = await importUsenetCompletion(job('track'), files, { recoveryRoot, ...tools })
+  assert.deepEqual(first.sourceFiles, [join(completed, '02 - Birdhouse in Your Soul.mp3')])
+
+  const completedJob = { ...job('track'), status: 'completed', importResult: first }
+  const rest = await importRemainingUsenetFiles(completedJob, files, { recoveryRoot, ...tools })
+  assert.equal(rest.importedCount, 2)
+  assert.deepEqual(rest.importedTracks.map((track) => track.title), ['Theme from Flood', 'Lucky Ball and Chain'])
+  assert.equal(rest.provenance.releaseImport.multiTrack, true)
+
+  const afterRest = { ...completedJob, additionalImports: [{ sourceFiles: rest.sourceFiles }] }
+  await assert.rejects(importRemainingUsenetFiles(afterRest, files, { recoveryRoot, ...tools }), /already been imported/)
+  await assert.rejects(importRemainingUsenetFiles({ ...job('release'), status: 'completed' }, files, { recoveryRoot, ...tools }), /already imported as a whole release/)
+  await assert.rejects(importRemainingUsenetFiles({ ...job('track'), status: 'downloading' }, files, { recoveryRoot, ...tools }), /Only a completed/)
+})
+
+test('works out the first import of jobs saved before source files were recorded', () => {
+  const files = [
+    { name: '01 - Theme from Flood.mp3', path: '/release/01 - Theme from Flood.mp3' },
+    { name: '07 - Birdhouse in Your Soul.mp3', path: '/release/07 - Birdhouse in Your Soul.mp3' },
+  ]
+  const legacy = { ...job('track'), status: 'completed', importResult: { importedCount: 1 } }
+  assert.deepEqual([...importedUsenetSourceFiles(legacy, files)], ['/release/07 - Birdhouse in Your Soul.mp3'])
 })

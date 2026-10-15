@@ -18,6 +18,7 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: '/index.html',
+        navigateFallbackDenylist: [/^\/api\//, /^\/navidrome\//],
         cleanupOutdatedCaches: true,
         clientsClaim: false,
         skipWaiting: true,

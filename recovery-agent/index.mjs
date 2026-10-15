@@ -12,18 +12,31 @@ import { audioFormatSummary, sanitizeToolError, selectBestAudioFormat } from './
 import { archiveCandidate, archiveDownloadUrl, archiveMetadataUrl, archiveSearchUrl, selectArchiveAudioFiles, validateArchiveDownloadUrl } from './internet-archive.mjs'
 import { deleteRecoveryArtifacts } from './deletion.mjs'
 import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './derivative.mjs'
-import { ffmpegMetadataArguments } from './metadata.mjs'
+import { ffmpegMetadataArguments, ffprobeTagJsonFormat } from './metadata.mjs'
+import { decodeToolOutput } from './text-encoding.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
 import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, validateCompletedPath } from './usenet.mjs'
-import { importUsenetCompletion } from './usenet-import.mjs'
+import { importRemainingUsenetFiles, importUsenetCompletion } from './usenet-import.mjs'
+import { validateRecoveryAuthConfig } from './config.mjs'
+import { createUsenetJobPoller } from './usenet-job.mjs'
+import { rebootConfig, scheduleReboot } from './system.mjs'
+import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobState, torrentCandidate, torrentCapability, torrentConfig } from './torrent.mjs'
 
-const host = process.env.TOMIFY_RECOVERY_HOST || '127.0.0.1'
+let authConfiguration
+try { authConfiguration = validateRecoveryAuthConfig() }
+catch (error) {
+  process.stderr.write(`Tomify recovery agent refused to start: ${error instanceof Error ? error.message : 'invalid authentication configuration'}\n`)
+  process.exit(1)
+}
+
+const host = authConfiguration.host
 const port = Number(process.env.TOMIFY_RECOVERY_PORT || 8788)
 const recoveryRoot = resolve(process.env.TOMIFY_RECOVERY_DIR || './recovered-music')
 const masterRoot = process.env.TOMIFY_MASTER_DIR ? resolve(process.env.TOMIFY_MASTER_DIR) : null
 const youtubeCookies = process.env.TOMIFY_YOUTUBE_COOKIES ? resolve(process.env.TOMIFY_YOUTUBE_COOKIES) : null
-const token = process.env.TOMIFY_RECOVERY_TOKEN || ''
+const token = authConfiguration.token
 const ytdlp = process.env.YT_DLP_PATH || 'yt-dlp'
+const reboot = rebootConfig()
 const ffprobe = process.env.FFPROBE_PATH || 'ffprobe'
 const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg'
 const configuredArchiveMaxBytes = Number(process.env.TOMIFY_ARCHIVE_MAX_BYTES || 1024 * 1024 * 1024)
@@ -36,6 +49,11 @@ const newznabIndexers = parseIndexerConfig(process.env.TOMIFY_NEWZNAB_INDEXERS_J
 const nzbIndex = nzbIndexConfig()
 const usenetDownloader = downloaderConfig()
 const usenet = usenetCapability({ newznabIndexers, nzbIndex, downloader: usenetDownloader, downloadRoot: usenetDownloadRoot })
+const torrentDownloadRoot = process.env.TOMIFY_TORRENT_DOWNLOAD_DIR ? resolve(process.env.TOMIFY_TORRENT_DOWNLOAD_DIR) : null
+const torrentDownloader = torrentConfig()
+const torrent = torrentCapability({ config: torrentDownloader, downloadRoot: torrentDownloadRoot })
+const qbittorrent = torrentDownloader ? createQbittorrentClient(torrentDownloader) : null
+const sevenZip = process.env.SEVEN_ZIP_PATH || '7z'
 
 function inside(child, parent) {
   return child === parent || child.startsWith(parent + sep)
@@ -44,6 +62,8 @@ function inside(child, parent) {
 if (masterRoot && (inside(recoveryRoot, masterRoot) || inside(masterRoot, recoveryRoot))) throw new Error('TOMIFY_RECOVERY_DIR must be separate from TOMIFY_MASTER_DIR.')
 if (youtubeCookies && inside(youtubeCookies, recoveryRoot)) throw new Error('TOMIFY_YOUTUBE_COOKIES must be outside the recovery library.')
 if (usenetDownloadRoot && masterRoot && (inside(usenetDownloadRoot, masterRoot) || inside(masterRoot, usenetDownloadRoot))) throw new Error('TOMIFY_USENET_DOWNLOAD_DIR must be separate from TOMIFY_MASTER_DIR.')
+if (torrentDownloadRoot && masterRoot && (inside(torrentDownloadRoot, masterRoot) || inside(masterRoot, torrentDownloadRoot))) throw new Error('TOMIFY_TORRENT_DOWNLOAD_DIR must be separate from TOMIFY_MASTER_DIR.')
+if (torrentDownloadRoot && (inside(torrentDownloadRoot, recoveryRoot) || inside(recoveryRoot, torrentDownloadRoot))) throw new Error('TOMIFY_TORRENT_DOWNLOAD_DIR must be separate from TOMIFY_RECOVERY_DIR.')
 
 function safeName(value, fallback) {
   const cleaned = String(value || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '').replace(/[. ]+$/g, '').trim().slice(0, 120)
@@ -61,15 +81,18 @@ function youtubeUrl(value) {
 function run(command, args, timeoutMs = 120_000) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
-    let stdout = ''
+    // Keep raw bytes until the end: decoding per chunk splits multi-byte characters, and tag
+    // values may not be valid UTF-8 at all (see decodeToolOutput).
+    const stdoutChunks = []
+    let stdoutBytes = 0
     let stderr = ''
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${basename(command)} timed out.`)) }, timeoutMs)
-    child.stdout.on('data', (chunk) => { stdout += chunk; if (stdout.length > 8_000_000) child.kill('SIGKILL') })
+    child.stdout.on('data', (chunk) => { stdoutChunks.push(chunk); stdoutBytes += chunk.length; if (stdoutBytes > 8_000_000) child.kill('SIGKILL') })
     child.stderr.on('data', (chunk) => { stderr += chunk; if (stderr.length > 2_000_000) child.kill('SIGKILL') })
     child.on('error', (error) => { clearTimeout(timer); reject(error) })
     child.on('close', (code) => {
       clearTimeout(timer)
-      if (code === 0) resolvePromise({ stdout: stdout.trim(), stderr: stderr.trim() })
+      if (code === 0) resolvePromise({ stdout: decodeToolOutput(Buffer.concat(stdoutChunks)).trim(), stderr: stderr.trim() })
       else reject(new Error(`${basename(command)} failed: ${sanitizeToolError(stderr || `exit ${code}`, [youtubeCookies])}`))
     })
   })
@@ -113,7 +136,7 @@ async function parseBody(request) {
 }
 
 function authorised(request) {
-  if (!token) return true
+  if (authConfiguration.insecureLoopback) return true
   const supplied = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '')
   const expectedBuffer = Buffer.from(token)
   const suppliedBuffer = Buffer.from(supplied)
@@ -128,8 +151,9 @@ function send(response, status, body) {
 async function searchYouTube(track) {
   const artist = String(track?.artist || '').trim().slice(0, 240)
   const title = String(track?.title || '').trim().slice(0, 240)
-  if (!artist || !title) throw new Error('Artist and title are required.')
-  const query = `${artist} ${title} official audio`
+  const album = String(track?.album || '').trim().slice(0, 240)
+  if (!artist && !title && !album) throw new Error('An artist, album or title is required.')
+  const query = title ? `${[artist, title].filter(Boolean).join(' ')} official audio` : `${[artist, album].filter(Boolean).join(' ')} full album`
   const search = await withAnonymousFallback(async (authenticated) => {
     const { stdout } = await run(ytdlp, ['--ignore-config', '--no-playlist', '--skip-download', '--dump-single-json', '--no-warnings', ...cookieArguments(authenticated), `ytsearch8:${query}`])
     return JSON.parse(stdout)
@@ -202,7 +226,7 @@ async function fetchArchiveFile(url, destination, expectedHashes = {}) {
 }
 
 async function probe(path) {
-  const { stdout } = await run(ffprobe, ['-v', 'error', '-show_entries', 'format=format_name,duration,bit_rate:format_tags:stream=codec_type,codec_name,sample_rate,channels,bit_rate:stream_tags', '-of', 'json', path])
+  const { stdout } = await run(ffprobe, ['-v', 'error', '-show_entries', 'format=format_name,duration,bit_rate:format_tags:stream=codec_type,codec_name,sample_rate,channels,bit_rate:stream_tags', '-of', ffprobeTagJsonFormat, path])
   const value = JSON.parse(stdout)
   const audio = (value.streams || []).find((stream) => stream.codec_type === 'audio') || {}
   return { codec: audio.codec_name || null, container: value.format?.format_name || extname(path).slice(1) || null, bitrate: Number(audio.bit_rate || value.format?.bit_rate) || null, sampleRate: Number(audio.sample_rate) || null, channels: Number(audio.channels) || null, duration: Number(value.format?.duration) || null, tags: { ...(audio.tags || {}), ...(value.format?.tags || {}) } }
@@ -469,31 +493,152 @@ async function queueUsenet(body) {
     id, version: 1, status: 'queued', progress: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     downloader: submitted.downloader, remoteId: submitted.remoteId,
     indexer: { type: provider.type, id: provider.id, name: provider.name },
-    result: { externalId: body.candidate.externalId || null, resultId: reference.resultId || reference.collectionId || reference.guid || null, title: body.candidate.title || null, detailsUrl: body.candidate.url || null, postedAt: reference.postedAt || null, searchMode: reference.searchMode || 'track', size: reference.size || null, ageDays: reference.ageDays || null },
+    result: { externalId: body.candidate.externalId || null, resultId: reference.resultId || reference.collectionId || reference.guid || null, title: body.candidate.title || null, detailsUrl: body.candidate.url || null, postedAt: reference.postedAt || null, searchMode: reference.searchMode || 'track', searchFields: Array.isArray(reference.searchFields) ? reference.searchFields : null, size: reference.size || null, ageDays: reference.ageDays || null },
     request: { track: body.track || {}, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
   }
   await saveUsenetJob(job)
   return { job: { id, status: 'queued', progress: 0, provider: provider.name, downloader: submitted.downloader } }
 }
 
-async function pollUsenetJob(id) {
-  const job = await loadUsenetJob(id)
-  if (job.status === 'completed') return { job: { id: job.id, status: job.status, progress: 100, result: job.importResult } }
-  if (job.status === 'failed') return { job: { id: job.id, status: job.status, progress: job.progress || 0, error: job.error } }
-  try {
-    const state = await downloaderStatus(usenetDownloader, job.remoteId)
-    job.status = state.status; job.progress = state.progress || 0; job.message = state.message || null; job.updatedAt = new Date().toISOString()
-    if (state.status === 'completed') {
-      const completedPath = await validateCompletedPath(state.completedPath, usenetDownloadRoot, usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null)
-      const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
-      job.importResult = await importUsenetCompletion(job, discovered.files, { recoveryRoot, probe, prepareArtwork, run, ffmpeg })
-      job.status = 'completed'; job.progress = 100
-    }
-  } catch (error) {
-    job.status = 'failed'; job.error = sanitizeToolError(error instanceof Error ? error.message : 'Usenet recovery failed.', [])
+async function queueTorrent(body) {
+  if (body?.authorisation?.confirmed !== true || !body.authorisation.basis) throw new Error('Explicit source authorisation is required.')
+  if (!torrent.available) throw new Error('Torrent downloads are not configured on the recovery agent.')
+  const reference = body?.candidate?.provenance
+  if (reference?.providerType !== 'torrent' || !reference.link) throw new Error('The selected torrent link is no longer valid.')
+  // Parse the link again rather than trusting the stored candidate.
+  const candidate = torrentCandidate(reference.link, body.track)
+  const id = crypto.randomUUID()
+  const tag = `tomify-${id}`
+  const submitted = await qbittorrent.add(candidate.provenance.link, { tag, savePath: torrentDownloader.downloadRoot || torrentDownloadRoot })
+  const searchMode = ['track', 'release'].includes(reference.searchMode) ? reference.searchMode : candidate.provenance.searchMode
+  const job = {
+    id, version: 1, status: 'queued', progress: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    downloader: submitted.downloader, remoteId: submitted.remoteId,
+    indexer: { type: 'torrent', id: 'torrent-link', name: 'Torrent link' },
+    torrent: { infoHash: candidate.provenance.infoHash, linkType: candidate.provenance.linkType },
+    result: { externalId: body.candidate.externalId || null, resultId: candidate.provenance.resultId, title: body.candidate.title || null, detailsUrl: candidate.provenance.displayUrl, postedAt: null, searchMode, searchFields: null, size: null, ageDays: null },
+    request: { track: body.track || {}, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
   }
   await saveUsenetJob(job)
-  return { job: { id: job.id, status: job.status, progress: job.progress || 0, message: job.message || null, error: job.error || null, result: job.importResult || null } }
+  return { job: { id, status: 'queued', progress: 0, provider: 'Torrent link', downloader: submitted.downloader } }
+}
+
+async function torrentStatus(job) {
+  const info = await qbittorrent.info(job.remoteId)
+  if (info?.hash && !job.torrent?.infoHash) job.torrent = { ...(job.torrent || {}), infoHash: String(info.hash).toLowerCase() }
+  const state = qbittorrentJobState(info, { createdAt: job.createdAt, maxBytes: torrentDownloader.maxBytes })
+  if (state.remove && info?.hash) await qbittorrent.remove(info.hash, true).catch(() => {})
+  return state
+}
+
+function torrentExtractionPath(job) {
+  const path = resolve(usenetStateRoot, 'torrent-extracted', job.id)
+  if (!inside(path, usenetStateRoot) || !/^[a-f0-9-]{36}$/.test(job.id)) throw new Error('Unsafe torrent extraction path.')
+  return path
+}
+
+// Finds the audio in a completed torrent, unpacking any zip, rar or 7z archives into Tomify's own state
+// directory so qBittorrent's seeding copy is never modified. The caller removes the extracted copy afterwards.
+async function torrentAudio(job, completedPath) {
+  const extractionPath = torrentExtractionPath(job)
+  await rm(extractionPath, { recursive: true, force: true })
+  const archives = await findArchives(completedPath)
+  const files = [...(await findCompletedAudio(completedPath, { maxBytes: torrentDownloader.maxBytes, allowEmpty: true, label: 'torrent' })).files]
+  if (archives.length) {
+    await mkdir(extractionPath, { recursive: true })
+    for (const directory of await extractArchives(archives, extractionPath, { run, sevenZip, maxBytes: torrentDownloader.maxBytes })) {
+      files.push(...(await findCompletedAudio(directory, { maxBytes: torrentDownloader.maxBytes, allowEmpty: true, label: 'torrent archive' })).files)
+    }
+    job.extractedPath = extractionPath
+  }
+  if (!files.length) throw new Error(archives.length ? 'The torrent and its archives contain no supported audio files.' : 'The completed torrent contains no supported audio files.')
+  return { files, extractionPath }
+}
+
+// A path from qBittorrent is in its own view of the filesystem; a saved completedPath is already the host path.
+// Removes the job's torrent and its downloaded data from qBittorrent. Returns false when it was already gone.
+async function removeTorrent(job) {
+  const info = await qbittorrent.info(job.remoteId)
+  const hash = info?.hash || job.torrent?.infoHash
+  if (!info && !hash) return false
+  await qbittorrent.remove(String(hash).toLowerCase(), true)
+  return Boolean(info)
+}
+
+// Imports the completed torrent, then removes it and its data from qBittorrent: the preserved originals
+// under .tomify-source are the copy Tomify keeps. A failed removal is recorded but does not undo the import.
+async function completeTorrentJob(job, state, importFiles) {
+  const completedPath = await validateCompletedPath(state.completedPath, torrentDownloadRoot, torrentDownloader.downloadRoot)
+  job.completedPath = completedPath
+  const { files, extractionPath } = await torrentAudio(job, completedPath)
+  let result
+  try { result = await importFiles(files) }
+  finally { await rm(extractionPath, { recursive: true, force: true }) }
+  try { await removeTorrent(job); job.torrentRemovedAt = new Date().toISOString() }
+  catch (error) { job.torrentRemovalError = sanitizeToolError(error instanceof Error ? error.message : 'Could not remove the torrent from qBittorrent.', []) }
+  return result
+}
+
+// Deleting a torrent item from Recovery stops and removes its torrent and downloaded data, whatever state it is in.
+async function cancelTorrentJob(body) {
+  let job
+  try { job = await loadUsenetJob(String(body?.jobId || '')) }
+  catch (error) { if (error?.code === 'ENOENT') return { cancelled: true, torrentRemoved: false }; throw error }
+  if (job.downloader !== 'qbittorrent') throw new Error('Only torrent downloads can be cancelled.')
+  if (!qbittorrent) throw new Error('Torrent downloads are not configured on the recovery agent.')
+  // A status poll may be importing this torrent right now; wait for it so its files can be cleaned up too.
+  await pollUsenetJob.settled(job.id)
+  job = await loadUsenetJob(job.id)
+  const torrentRemoved = await removeTorrent(job)
+  await rm(torrentExtractionPath(job), { recursive: true, force: true })
+  await unlink(usenetJobPath(job.id)).catch((error) => { if (error?.code !== 'ENOENT') throw error })
+  const importedPaths = (Array.isArray(job.importResult?.importedTracks) ? job.importResult.importedTracks : []).map((track) => track?.path).filter((path) => typeof path === 'string')
+  return { cancelled: true, torrentRemoved, importedPaths }
+}
+
+const pollUsenetJob = createUsenetJobPoller({
+  loadJob: loadUsenetJob,
+  saveJob: saveUsenetJob,
+  downloaderStatus: (remoteId, job) => job?.downloader === 'qbittorrent' ? torrentStatus(job) : downloaderStatus(usenetDownloader, remoteId),
+  completeJob: async (job, state) => {
+    const options = { recoveryRoot, probe, prepareArtwork, run, ffmpeg }
+    if (job.downloader === 'qbittorrent') return completeTorrentJob(job, state, (files) => importUsenetCompletion(job, files, options))
+    const completedPath = await validateCompletedPath(state.completedPath, usenetDownloadRoot, usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null)
+    const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
+    job.completedPath = completedPath
+    return importUsenetCompletion(job, discovered.files, options)
+  },
+  sanitizeError: (error) => sanitizeToolError(error instanceof Error ? error.message : 'Usenet recovery failed.', []),
+})
+
+const remainingImports = new Map()
+
+async function importRemainingUsenet(body) {
+  const key = String(body?.jobId || '')
+  if (remainingImports.has(key)) throw new Error('The remaining files from this download are already being imported.')
+  const operation = (async () => {
+    const job = await loadUsenetJob(key)
+    if (job.downloader === 'qbittorrent') throw new Error('Torrents are removed from qBittorrent once imported, so there is nothing left to import. Add the album as wanted music (leave the track blank) and paste the link again.')
+    let reportedPath = job.completedPath
+    if (!reportedPath) {
+      // Jobs completed before completedPath was saved: ask the downloader where it put the files.
+      const state = await downloaderStatus(usenetDownloader, job.remoteId)
+      if (state.status !== 'completed' || !state.completedPath) throw new Error('The downloader no longer reports where this download was saved.')
+      reportedPath = state.completedPath
+    }
+    // A saved completedPath is already mapped to TOMIFY_USENET_DOWNLOAD_DIR; a fresh SABnzbd path still needs remapping.
+    const downloaderRoot = !job.completedPath && usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null
+    const completedPath = await validateCompletedPath(reportedPath, usenetDownloadRoot, downloaderRoot)
+    const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
+    const result = await importRemainingUsenetFiles(job, discovered.files, { recoveryRoot, probe, prepareArtwork, run, ffmpeg })
+    job.completedPath = completedPath
+    job.additionalImports = [...(job.additionalImports || []), { importedAt: new Date().toISOString(), importedCount: result.importedCount, sourceFiles: result.sourceFiles }]
+    job.updatedAt = new Date().toISOString()
+    await saveUsenetJob(job)
+    return { result }
+  })()
+  remainingImports.set(key, operation)
+  try { return await operation } finally { remainingImports.delete(key) }
 }
 
 async function diagnoseAuthenticatedYouTube() {
@@ -521,30 +666,38 @@ createServer(async (request, response) => {
   try {
     if (request.method === 'GET' && request.url === '/health') {
       const auth = await cookieStatus()
-      return send(response, 200, { ok: true, backends: ['youtube', 'internet-archive', ...(usenet.available ? ['usenet'] : [])], youtubeAuthentication: auth.usable ? 'configured' : 'not-configured' })
+      return send(response, 200, { ok: true, backends: ['youtube', 'internet-archive', ...(usenet.available ? ['usenet'] : []), ...(torrent.available ? ['torrent'] : [])], youtubeAuthentication: auth.usable ? 'configured' : 'not-configured' })
     }
     if (!authorised(request)) return send(response, 401, { error: 'unauthorized' })
     if (request.method !== 'POST') return send(response, 404, { error: 'not-found' })
     const body = await parseBody(request)
     if (request.url === '/v1/status') {
       const auth = await cookieStatus()
-      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenet.available, authentication: usenet.available ? 'configured' : 'not-configured', providerCount: usenet.providerCount, providers: [...(newznabIndexers.length ? ['newznab'] : []), ...(nzbIndex ? ['nzbindex'] : [])], downloader: usenetDownloader?.type || null }] })
+      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenet.available, authentication: usenet.available ? 'configured' : 'not-configured', providerCount: usenet.providerCount, providers: [...(newznabIndexers.length ? ['newznab'] : []), ...(nzbIndex ? ['nzbindex'] : [])], downloader: usenetDownloader?.type || null }, { id: 'torrent', available: torrent.available, authentication: torrent.available ? 'configured' : 'not-configured', downloader: torrentDownloader?.type || null }], reboot: reboot.enabled ? 'enabled' : 'disabled' })
     }
     if (request.url === '/v1/diagnostics/youtube-auth') return send(response, 200, await diagnoseAuthenticatedYouTube())
     if (request.url === '/v1/search') {
       if (body.backend === 'youtube') return send(response, 200, { candidates: await searchYouTube(body.track) })
       if (body.backend === 'internet-archive') return send(response, 200, { candidates: await searchInternetArchive(body.track) })
-      if (body.backend === 'usenet') return send(response, 200, { candidates: await searchUsenet(body.track, body.searchMode) })
+      if (body.backend === 'usenet') return send(response, 200, { candidates: await searchUsenet(body.track, body.searchFields ?? body.searchMode ?? 'track') })
+      if (body.backend === 'torrent') {
+        if (!torrent.available) throw new Error('Torrent downloads are not configured on the recovery agent.')
+        return send(response, 200, { candidates: [torrentCandidate(body.link, body.track)] })
+      }
       throw new Error('Unsupported recovery backend.')
     }
     if (request.url === '/v1/acquire') {
       if (body.backend === 'youtube') return send(response, 200, await acquireYouTube(body))
       if (body.backend === 'internet-archive') return send(response, 200, await acquireInternetArchive(body))
       if (body.backend === 'usenet') return send(response, 202, await queueUsenet(body))
+      if (body.backend === 'torrent') return send(response, 202, await queueTorrent(body))
       throw new Error('Unsupported recovery backend.')
     }
     if (request.url === '/v1/jobs/status') return send(response, 200, await pollUsenetJob(body.jobId))
+    if (request.url === '/v1/jobs/cancel') return send(response, 200, await cancelTorrentJob(body))
+    if (request.url === '/v1/jobs/import-remaining') return send(response, 200, await importRemainingUsenet(body))
     if (request.url === '/v1/delete') return send(response, 200, await deleteImportedRecovery(body))
+    if (request.url === '/v1/system/reboot') return send(response, 202, scheduleReboot(body, { config: reboot, spawn }))
     return send(response, 404, { error: 'not-found' })
   } catch (error) {
     const message = sanitizeToolError(error instanceof Error ? error.message : 'Recovery agent failed.', [youtubeCookies])

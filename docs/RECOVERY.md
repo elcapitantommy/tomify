@@ -4,7 +4,7 @@ Tomify Recovery is a queue for rebuilding missing tracks without confusing a con
 
 ## What v1 does
 
-- Adds wanted tracks with artist, title, release, duration and track number.
+- Adds wanted music from any combination of artist, album and track (at least one), plus optional duration and track number. Leaving the track blank asks for the whole album.
 - Searches YouTube or Internet Archive through the same pluggable backend contract and ranks candidates by title, artist and duration evidence.
 - Penalises likely live, remix, karaoke, nightcore, sped-up, slowed and cover versions unless those words are part of the wanted title.
 - Shows the channel, duration, match confidence and source URL before selection.
@@ -26,7 +26,9 @@ Tomify Recovery is a queue for rebuilding missing tracks without confusing a con
 - Writes only into a dedicated recovery directory. Existing files are not overwritten and the configured FLAC master tree must be separate.
 - Deletes queue-only items directly from D1. For imported items, deletion first removes the recovery derivative, its `.tomify.json` sidecar and the matching preserved original under `.tomify-source`; D1 state is retained if that filesystem cleanup fails.
 - Marks every YouTube result `lossy-recovery-copy` and initially `needs-upgrade`; it is never promoted to an archival master automatically.
+- Sets any import from any source to `recovered` when its audio is lossless (FLAC, ALAC, WAV/PCM and similar) and `needs-upgrade` when it is lossy. Either way the files stay recovery copies, never verified masters. Items imported before this rule can be cleared with Mark acceptable.
 - Marks Internet Archive imports `internet-archive-recovery-copy`. A lossless file is still a recovery source, not proof of an archival master.
+- Accepts a pasted magnet or `.torrent` link per item, downloads it with qBittorrent-nox over NordVPN, shows live speed, seeds, peers and time left, unpacks archives, imports the audio and then removes the torrent and its data. See [Torrent links and qBittorrent](#torrent-links-and-qbittorrent).
 
 Tomify does not capture credentials, accept Google passwords, circumvent DRM or bypass access controls. Exported cookies are sensitive session credentials: they stay entirely on the media server and are never stored in D1, browser storage, frontend code, Worker assets, logs or API responses.
 
@@ -65,6 +67,21 @@ For MP4/M4A, MP3 and FLAC, FFmpeg maps the preserved audio stream with `-c:a cop
 
 Artwork provenance records the provider and provider ID, original and final fetched URLs, fetched and final dimensions, source and final MIME types, acquisition time, `cover.jpg` path, storage mode and whether the derivative received embedded art.
 
+## Library album artwork
+
+Albums already in the Navidrome library can show catalogue artwork in place of their library cover. Tomify searches Apple's iTunes catalogue first (1200px, no account or key), then Deezer (1000px, no account or key), then Spotify when `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` are set. It never downloads the image or writes to the music server: the chosen image URL is stored per Navidrome album ID in the D1 `album_artwork` table and drawn wherever that album, or a track from it, appears in Tomify (cards, album page, player, queue, now playing and the Media Session). If the image fails to load, the library cover is shown. Other Subsonic clients keep seeing the library cover. Because nothing is retained, the `*_ARTWORK_EMBEDDING_ENABLED` flags are not needed.
+
+Titles are compared both as written and with trailing edition qualifiers removed (`(Remastered 2009)`, `[Deluxe]`, ` - Special Edition`), so a plain library title matches a catalogue's edition names; an exact edition match still ranks first. Any credited artist can satisfy the artist gate.
+
+- **Album page:** *Edit metadata* shows an *Album artwork* panel. *Find better artwork* lists up to six matches across all catalogues. Choosing one, or *Keep library artwork*, is a manual choice; *Undo my choice* removes it.
+- **Settings → Upgrade album artwork:** walks every library album and applies the best match only when it is a square image of at least 600px with at least 85% confidence, stopping at the first catalogue that gives one. Albums with a manual choice are skipped, and so are albums that already have Tomify artwork and albums the run checked in the last 30 days without a confident match (remembered in this browser), so pressing Upgrade again after an app update or a stop carries on rather than starting over. Albums whose check failed are retried. Apple allows roughly 20 searches a minute, so albums are spaced three seconds apart (about 25 minutes for 500 albums); the run lives in the app, not the page, so it keeps going while you browse, and it can be stopped at any time.
+
+A catalogue that fails or rate-limits is skipped while another still answers. Only when every catalogue fails is the album reported: rate limits return HTTP 429 with the shortest `retryAfter`, which the bulk run waits out before retrying the album; other failures return 502 with each catalogue's message and count as failed. The run stops after five failures in a row.
+
+Spotify searches use the account connected for playlist import when there is one, falling back to client credentials. Spotify's 2026 Development Mode rules can refuse app-only tokens, and refuse every request when the developer app's owner has no Premium subscription; Spotify's own error text is included in the failure message.
+
+API: `GET /api/album-artwork` (overrides and available providers), `POST /api/album-artwork/lookup`, `/auto`, `/select` and `/reset`, each with `{ albumId, name, artist, year }` as needed. `/select` accepts only HTTPS Apple, Deezer or Spotify image hosts.
+
 ## Components
 
 ```text
@@ -77,6 +94,8 @@ Recovery page
            |
            +-- YouTube recovery agent (v1)
            +-- Internet Archive recovery agent (v1)
+           +-- Usenet (NZBIndex/Newznab via SABnzbd or NZBGet)
+           +-- Torrent links via qBittorrent-nox
            +-- CD rip / purchased download / recovered file (future)
 ```
 
@@ -84,15 +103,205 @@ The hosted Worker cannot execute media binaries. `recovery-agent/index.mjs` is a
 
 ## Media-server setup
 
-Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`. Internet Archive search/download uses Node's built-in HTTPS fetch and needs no provider credentials.
+Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`, plus qBittorrent-nox and 7-Zip for torrent links. Internet Archive search/download uses Node's built-in HTTPS fetch and needs no provider credentials.
 
-1. Copy `recovery-agent/recovery-agent.env.example` to `/etc/tomify/recovery-agent.env` and set a long random token.
+1. Copy `recovery-agent/recovery-agent.env.example` to `/etc/tomify/recovery-agent.env` and set a random `TOMIFY_RECOVERY_TOKEN` containing at least 32 characters.
 2. Keep `TOMIFY_RECOVERY_DIR=/srv/music-recovery` separate from `TOMIFY_MASTER_DIR=/srv/music`.
-3. Install the example systemd unit, adjusting its paths and user if needed.
-4. Put the agent behind an authenticated HTTPS reverse proxy that the hosted Tomify Worker can reach. Do not expose the unauthenticated loopback service directly.
+   On the current box, recovered files physically live on the library SSD at `/srv/music/_Recovery` (so Navidrome sees them under the library), and `/srv/music-recovery` is a bind mount of that folder. The agent still only writes through `/srv/music-recovery`, never anywhere else under the master tree. See [Recovery files on the library SSD](#recovery-files-on-the-library-ssd).
+3. Copy the recovery-agent runtime from the primary Windows checkout at `C:\Users\TomDixon\Documents\tomify` to `/opt/tomify/recovery-agent` on Debian, then install the example systemd unit. The current Debian deployment does not contain a Git checkout and does not use `/srv/tomify/app`.
+4. Put the agent behind an authenticated HTTPS reverse proxy that the hosted Tomify Worker can reach. The current deployment uses a Cloudflare Tunnel, run by the `tomify-recovery-cloudflared` Docker container on the box, which forwards `RECOVERY_AGENT_URL` to `127.0.0.1:8788`. Do not expose the unauthenticated loopback service directly. To run downloads over a VPN without breaking the tunnel or SSH, see [Running recovery downloads over NordVPN](#running-recovery-downloads-over-nordvpn).
 5. Set hosted secrets `RECOVERY_AGENT_URL` and `RECOVERY_AGENT_TOKEN` for the Tomify Site, plus any optional artwork-provider configuration above, then redeploy.
 
+The agent fails closed at startup when `TOMIFY_RECOVERY_TOKEN` is missing or shorter than 32 characters. Local development without authentication requires the explicit `TOMIFY_RECOVERY_ALLOW_INSECURE_LOOPBACK=true` opt-in and is accepted only with a loopback `TOMIFY_RECOVERY_HOST` such as `127.0.0.1` or `::1`. Never enable insecure mode on the Debian service.
+
+### Recovery files on the library SSD
+
+The 1.8 TB SSD (`/dev/sda1`) is mounted at `/srv/music` and holds all music, recovered files included. The NVMe system disk only holds in-progress torrent downloads (`/srv/torrents`), which are deleted after import. `/etc/fstab` contains:
+
+```
+UUID=0a4c05dc-3e2f-422f-8b0c-8c6e64639f8c /srv/music ext4 defaults,noatime 0 2
+/srv/music/_Recovery /srv/music-recovery none bind,nofail,x-systemd.requires-mounts-for=/srv/music 0 0
+```
+
+`findmnt /srv/music-recovery` should show `SOURCE /dev/sda1[/_Recovery]`. If it shows an `nvme` source, the SSD is not mounted, or an older bind is still stacked on `/srv/music/_Recovery`. Stop `tomify-recovery` and Navidrome, run `sudo umount` on `/srv/music-recovery` and then on `/srv/music/_Recovery` until `findmnt /srv/music/_Recovery` prints nothing (unmount `/srv/music-mp3` first if it reports busy), then `sudo mount /srv/music-recovery` and `sudo mount /srv/music-mp3`.
+
+Earlier deployments did it the other way round: the files sat on the NVMe at `/srv/music-recovery` and were bind-mounted into `/srv/music/_Recovery`. To move such a box over, arm a reboot fail-safe first (`sudo systemd-run --on-active=20min --unit=ssd-failsafe /bin/systemctl reboot`). Then:
+
+1. Stop the agent and Navidrome, and unmount the old bind as above.
+2. Copy the files with `sudo rsync -aHAX /srv/music-recovery/ /srv/music/_Recovery/` and check the sizes match with `du -sh`.
+3. Move the old folder aside with `sudo mv /srv/music-recovery /srv/music-recovery.old`, then create an empty mount point with `sudo install -d -o tom -g tom /srv/music-recovery`.
+4. Replace the old fstab line with the bind line above, run `sudo systemctl daemon-reload` and mount it.
+5. Start the agent and Navidrome again.
+6. Cancel the fail-safe (`sudo systemctl stop ssd-failsafe.timer`) and reboot once. Check `findmnt` again before deleting `/srv/music-recovery.old`.
+
+### Updating the recovery agent
+
+The agent is not deployed with the site. Deploying the Worker updates the Recovery page and API only, so every merged change under `recovery-agent/` must also be copied to the media server. The deployment workflow is Windows-to-Debian rather than Git-on-Debian:
+
+1. Update and validate branch `feat/phase-1-pwa` in `C:\Users\TomDixon\Documents\tomify` (`git pull`).
+2. Copy the agent files to `/tmp` on the Debian host. The `tom` account cannot write `/opt/tomify/recovery-agent` directly, so a straight `scp` there fails with *Permission denied*.
+3. Install them with `sudo cp` and restart `tomify-recovery`.
+
+From PowerShell in the Windows checkout:
+
+```powershell
+scp recovery-agent\*.mjs tom@tomify:/tmp/
+ssh -t tom@tomify "sudo cp /tmp/*.mjs /opt/tomify/recovery-agent/ && sudo systemctl restart tomify-recovery"
+```
+
+The `*.node-test.mjs` files are copied too; they are harmless and never loaded by the service. To confirm the new code is live, `grep` a string from the change in the deployed file (for example `ssh tom@tomify "grep -c import-remaining /opt/tomify/recovery-agent/index.mjs"` should print a non-zero count), then check `curl -s http://127.0.0.1:8788/health` on the host.
+
+A Worker that is newer than the agent is the usual cause of Recovery errors right after a deploy. The page reports that the recovery agent is out of date when the agent has no endpoint for a request (previously this showed as `not-found`); other symptoms include *Artist and title are required.* when adding artist-only or album-only wanted music, a Usenet search falling back to a single field, or *Unsupported recovery backend.* when adding a torrent link. The Worker still sends the legacy `searchMode` alongside `searchFields`, so an older agent keeps its closest single-field search rather than failing outright.
+
+The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and cache directories are `/var/lib/tomify-recovery` and `/var/cache/tomify-recovery`. The systemd sandbox grants write access only to those locations, `/srv/music-recovery`, and the optional YouTube cookie file; `/opt/tomify/secrets` as a whole remains read-only. A server-side Git checkout is not part of the current deployment.
+
 The recovery directory may be added to Navidrome as a separate library path after review. It should not be merged over `/srv/music` by an automated job.
+
+## Restarting the media server from Tomify
+
+**Settings → Restart media server** reboots the Debian box through the recovery agent's tunnel, for when SSH cannot reach it (for example after a VPN change). The button asks for confirmation, only Navidrome administrators may use it (the Worker checks `adminRole` with Navidrome's `getUser` API), and the agent waits three seconds after answering before running `systemctl reboot`. Playback, downloads and imports in progress stop, and the site is unavailable until the box and its tunnel containers are back.
+
+It is off by default. To enable it on the server:
+
+1. Add `TOMIFY_RECOVERY_ALLOW_REBOOT=true` to `/etc/tomify/recovery-agent.env`.
+2. Allow the service account to reboot without a password with a polkit rule. Minimal Debian installs do not include polkit, so install it first (`/etc/polkit-1/rules.d` only exists once it is installed):
+
+   ```bash
+   sudo apt install polkitd
+   sudo tee /etc/polkit-1/rules.d/50-tomify-reboot.rules >/dev/null <<'EOF'
+   polkit.addRule(function (action, subject) {
+     if ((action.id == "org.freedesktop.login1.reboot" || action.id == "org.freedesktop.login1.reboot-multiple-sessions") && subject.user == "tom") {
+       return polkit.Result.YES
+     }
+   })
+   EOF
+   ```
+
+   Check the rule without rebooting: `pkcheck --action-id org.freedesktop.login1.reboot --process $$ && echo allowed` should print `allowed`. Use the `User=` from the `tomify-recovery` unit if it is not `tom`. The rule covers only reboots; it grants no other privileges, and the unit keeps `NoNewPrivileges=true`.
+3. Copy the updated agent files (including `system.mjs`) and run `sudo systemctl restart tomify-recovery`. `/v1/status` then reports `"reboot":"enabled"`.
+
+If the agent has reboot disabled or has not been updated, the button shows the reason and nothing happens. The tunnel and the agent must still be reachable for the button to work, so it cannot help when the whole box is offline.
+
+## Running recovery downloads over NordVPN
+
+The recovery side (yt-dlp, Internet Archive fetches and SABnzbd) can run over NordVPN, but the box also has to keep accepting SSH from the LAN and over Tailscale, and keep its Cloudflare Tunnel up. The hosted Worker never connects to the box directly: it calls `RECOVERY_AGENT_URL`, which Cloudflare routes down a tunnel to the agent on `127.0.0.1:8788`. Two `cloudflared` Docker containers run on the box: `tomify-recovery-cloudflared` for the agent and `cloudflared` for Navidrome. `cloudflared` only makes outbound connections to Cloudflare's tunnel edge, so nothing needs to be port-forwarded, but those connections must survive the VPN.
+
+Connecting the NordVPN Linux client with default settings breaks both: its firewall drops inbound LAN traffic, so SSH stops answering, and the tunnel's edge connections are torn down when the default route moves into the VPN. With autoconnect or the kill switch on, this persists across reboots. The setup below keeps the whole box on the VPN, with three exceptions: the LAN, inbound SSH, and Cloudflare's tunnel edge.
+
+### If you are locked out
+
+If the site still works, use **Settings → Restart media server** (see [Restarting the media server from Tomify](#restarting-the-media-server-from-tomify)); with `nordvpnd` disabled at boot the box returns with the VPN off. Otherwise:
+
+If `nordvpnd` is disabled at boot (`sudo systemctl disable nordvpnd`, as the steps below do until the setup is proven), a power cycle brings the box back with the VPN off. If it is still enabled and autoconnect is on, a power cycle alone is not enough, because NordVPN reconnects during boot. Use a keyboard and monitor on the box if you can. Otherwise, from the LAN, start this loop on the Windows PC before powering the box back on; it retries until SSH answers in the gap before NordVPN connects:
+
+```powershell
+while ($true) { ssh -o ConnectTimeout=3 -t tom@tomify "sudo systemctl stop nordvpnd" ; if ($LASTEXITCODE -eq 0) { break } ; Start-Sleep 1 }
+```
+
+Once you have a shell, stop NordVPN from taking the box again before changing anything else:
+
+```bash
+sudo systemctl disable nordvpnd  # never start NordVPN at boot until the setup below is proven
+sudo systemctl stop nordvpnd     # drops the VPN and its firewall rules (skip if the loop above already did this)
+sudo systemctl start nordvpnd    # runs it for this session only, disconnected
+nordvpn disconnect
+nordvpn set autoconnect off
+nordvpn set killswitch off
+nordvpn settings                 # confirm both are now disabled
+```
+
+Then confirm the site's link to the agent is back:
+
+```bash
+docker ps --filter name=cloudflared         # tomify-recovery-cloudflared and cloudflared should both be Up
+systemctl status tomify-recovery --no-pager
+curl -s http://127.0.0.1:8788/health; echo
+```
+
+If a tunnel container has stopped or its logs (`docker logs --tail 20 tomify-recovery-cloudflared`) show repeated errors, restart it with `docker restart tomify-recovery-cloudflared` (or `cloudflared`). The account running `nordvpn` must be in the `nordvpn` group (`sudo usermod -aG nordvpn tom`, then log in again).
+
+### Allowlist the LAN, SSH and the tunnel
+
+Find the LAN subnet first (the `/24`-style network on the interface that carries the default route):
+
+```bash
+ip -4 route show default          # e.g. "default via 192.168.1.1 dev enp3s0"
+ip -4 -br addr show               # e.g. "enp3s0 UP 192.168.1.20/24" means 192.168.1.0/24
+```
+
+Then, with NordVPN still disconnected:
+
+```bash
+sudo systemctl start nordvpnd                    # the settings below need the service running; it stays disconnected
+nordvpn set lan-discovery enable                 # keeps all private LAN ranges reachable, including yours
+nordvpn allowlist add port 22 protocol TCP       # inbound SSH
+nordvpn allowlist add subnet 198.41.192.0/19     # Cloudflare Tunnel edge (region1 and region2)
+nordvpn allowlist add subnet 100.64.0.0/10       # Tailscale addresses (SSH over the tailnet)
+nordvpn allowlist add port 41641 protocol UDP    # Tailscale direct connections stay outside the VPN
+nordvpn settings                                 # check the allowlist
+```
+
+Tailscale addresses (`100.x.y.z`) sit in the carrier-grade NAT range, which LAN discovery does not treat as local, so SSH over Tailscale needs the two Tailscale lines above; restart `tailscaled` after adding them if the box is already connected. LAN discovery replaces allowlisting your LAN subnet by hand; NordVPN refuses to allowlist a private subnet while it is on, so knowing the subnet is only useful for checking that it is a private range (192.168.x.x, 10.x.x.x or 172.16–31.x.x). Allowlisted subnets are routed outside the VPN, so the tunnel keeps connecting from the home connection, just as it did before. `198.41.192.0/19` covers the IPv4 addresses behind `region1.v2.argotunnel.com` and `region2.v2.argotunnel.com` used by both tunnel protocols (QUIC and HTTP/2 on port 7844). To make sure `cloudflared` does not try IPv6 edges, which the allowlist above does not cover, set `TUNNEL_EDGE_IP_VERSION=4` in both containers' environment (or add `--edge-ip-version 4` to their `tunnel run` command) and recreate them.
+
+### Connect with a fail-safe
+
+Arm an automatic reboot before the first connection, so a mistake undoes itself after ten minutes instead of needing someone at the box. With `nordvpnd` disabled at boot, the reboot always comes back with the VPN off; stopping the service alone has been seen to leave Tailscale unreachable:
+
+```bash
+systemctl is-enabled nordvpnd                   # must say disabled, or the reboot reconnects the VPN
+sudo systemd-run --on-active=10min --unit=nordvpn-failsafe /bin/systemctl reboot
+nordvpn connect
+```
+
+From another terminal on the Windows PC, check that a **new** SSH session opens (`ssh tom@tomify`; if that name resolves to the box's Tailscale address this also proves Tailscale works), then on the box:
+
+```bash
+nordvpn status                                  # Connected
+curl -s https://api.ipify.org; echo             # a NordVPN address, not your home IP
+docker logs --tail 20 tomify-recovery-cloudflared   # "Registered tunnel connection", no repeated errors
+docker logs --tail 20 cloudflared
+curl -s http://127.0.0.1:8788/health; echo
+```
+
+Finally open Recovery on the site and run a search. If everything works, cancel the fail-safe and only then make it persistent:
+
+```bash
+sudo systemctl stop nordvpn-failsafe.timer
+sudo systemctl enable nordvpnd
+nordvpn set autoconnect on
+nordvpn set killswitch on        # optional: blocks downloads if the VPN drops; the allowlist still applies
+```
+
+Before enabling autoconnect, install the boot-order fix below; without it Tailscale SSH fails after every reboot (confirmed on the Debian box, and fixed by the unit below). Then reboot once (Settings → Restart media server, or `sudo reboot`) and repeat the SSH, tunnel container and Recovery checks to confirm autoconnect comes up with the allowlist in place. If SSH does not come back, revoke the NordVPN token in your Nord Account and press **Restart media server** again: autoconnect cannot log in, so the box boots with the VPN off.
+
+### Tailscale after an autoconnect boot
+
+At boot `tailscaled` starts before NordVPN connects, and the routes NordVPN installs when it connects leave Tailscale unreachable until `tailscaled` is restarted, even with the allowlist above. This one-shot unit waits until `nordvpn status` reports *Connected*, then restarts Tailscale. Waiting for the `nordlynx` interface alone is not enough: NordVPN creates it a few seconds into boot, before Wi-Fi has a DHCP lease and before the tunnel is up, so a restart at that point can leave Tailscale logged out and unreachable until the next reboot (seen on the Debian box, which is on Wi-Fi).
+
+```bash
+sudo tee /etc/systemd/system/tailscale-after-nordvpn.service >/dev/null <<'EOF'
+[Unit]
+Description=Restart Tailscale once NordVPN has connected
+After=nordvpnd.service tailscaled.service
+Wants=nordvpnd.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=6min
+ExecStart=/bin/sh -c 'for i in $(seq 1 300); do nordvpn status 2>/dev/null | grep -q "Status: Connected" && break; sleep 1; done; sleep 10; systemctl restart tailscaled'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable tailscale-after-nordvpn.service
+```
+
+After a reboot, `sudo journalctl -b -u tailscale-after-nordvpn` shows when it ran. Tailscale SSH is normally back within a minute of boot; if it is not back after five minutes, press **Restart media server**. Autoconnect may pick a distant server; pin it with `nordvpn set autoconnect on United_Kingdom` (or another country). If NordVPN uses OpenVPN rather than NordLynx, replace `nordlynx` with `nordtun`.
+
+### What goes over the VPN
+
+With this setup everything the box starts outbound goes through NordVPN except LAN traffic, inbound SSH and the tunnel: yt-dlp, Internet Archive downloads, NZBIndex and Newznab searches, SABnzbd's connections to the Usenet provider, artwork fetches and MusicBrainz lookups from the agent. Playback and the Worker's calls to the agent keep using the tunnel, so their speed is unchanged. If SABnzbd runs in Docker its traffic is routed the same way; if downloads stall after connecting, check that the container can still resolve DNS (`docker exec <container> getent hosts nzbindex.com`).
 
 ## Internet Archive backend
 
@@ -102,11 +311,55 @@ The candidate review links to the Archive item so the user can inspect its descr
 
 ## Newznab, NZBIndex and Usenet backend
 
-The optional Usenet backend searches one or more Newznab-compatible indexers, NZBIndex, or both, and queues an explicitly selected result in either SABnzbd or NZBGet. It supports three independent query modes: artist, track title, or release/album. Results are shown in a provider-neutral review list with their indexer, title, advertised size, age when available, and a link to the provider's detail page. Search results are not treated as evidence of permission.
+The optional Usenet backend searches one or more Newznab-compatible indexers, NZBIndex, or both, and queues an explicitly selected result in either SABnzbd or NZBGet. Searches combine any mix of artist, release/album and track title (at least one) into a single query, always ordered artist, album, track. The older single-field modes (`artist`, `track`, `release`) are still accepted. Results are shown in a provider-neutral review list with their indexer, title, advertised size, age when available, and a link to the provider's detail page. Search results are not treated as evidence of permission.
 
-Import scope follows the selected search mode. Track-title mode imports only the completed audio file that best matches the wanted track. Release/album mode imports every valid supported audio file from the completed release into one album directory, preserving each original and creating one stream-copy derivative and provenance sidecar per track. Artist mode remains intentionally conservative and imports only the best matching wanted track; an artist search does not authorise Tomify to ingest every file in an arbitrary artist bundle.
+While a search runs, the Recovery item shows which provider it is searching (*Searching NZB indexers…*) and its search buttons are disabled; when it finishes, the same place reports how many results were found or why the search failed.
 
-For release imports, embedded title, artist, album artist, album, track/disc number, and date tags are preferred per track. Selected release metadata supplies artist, album, date, release ID, and release-group ID only when source tags are missing. Filename order is the final fallback for title and numbering. Tomify never applies the seed track's MusicBrainz recording ID or ISRC to the other tracks. Artwork is prepared once and shared across the album, and existing artist/album directories are reused case-insensitively without renaming unrelated directories.
+Import scope follows the fields searched. Any search that includes the track title imports only the completed audio file that best matches the wanted track. A search that includes the album but not the track title imports every valid supported audio file from the completed release into one album directory, preserving each original and creating one stream-copy derivative and provenance sidecar per track. An artist-only search for a wanted track imports only the best matching wanted track. For wanted music with no track title (just an artist), an artist-only search imports the selected download as a release, the same as an album search, so pick a single album rather than a discography bundle.
+
+When a track-level import came from a download that holds more audio (a whole album, say), the imported item offers **Import rest of download** beside its *Imported* badge. The agent re-reads the completed download, skips the files that job already imported, and imports the rest as a release without downloading again. The new tracks are added to the same Recovery item, so deleting it still removes every file it imported. The action needs an agent with the `/v1/jobs/import-remaining` endpoint; an older agent is reported as out of date.
+
+For release imports, embedded title, artist, album artist, album, track/disc number, and date tags are preferred per track. Selected release metadata supplies artist, album, date, release ID, and release-group ID only when source tags are missing. Filename order is the final fallback for title and numbering. Tomify never applies the seed track's MusicBrainz recording ID or ISRC to the other tracks. Artwork is prepared once and shared across the album, and existing artist/album directories are reused ignoring case and accents (so `Mötley Crüe` joins an existing `Motley Crue` folder) without renaming unrelated directories.
+
+Source tags are read as UTF-8, and any bytes that are not valid UTF-8 (some FLAC rips store Latin-1 or Windows-1252 Vorbis comments) are decoded as Windows-1252 instead of being replaced with `�`. When a release's artist or album tag differs from what you asked for only by accents, or still contains `�`, the requested spelling is used so the import lands under the artist you already have in Navidrome; other differences keep the source tag.
+
+### Repairing tags mangled before this fix
+
+Agents older than the tag-encoding fix wrote `�` (U+FFFD) into recovered copies whose source tags were not UTF-8, which shows up in Navidrome as a second artist such as `M�tley Cr�e`. The untouched original of each recovered track is kept in the album's `.tomify-source` folder, so the real characters can be restored from it. On the box (FLAC imports; needs the `flac` package for `metaflac`):
+
+```bash
+sudo apt-get install -y flac
+cat > /tmp/fix-mangled-tags.sh <<'EOF'
+#!/bin/bash
+# Restores tags containing U+FFFD in recovered FLACs from the Windows-1252 originals in .tomify-source.
+bad=$'\xef\xbf\xbd'
+find /srv/music-recovery -name '*.flac' -not -path '*/.tomify-source/*' -print0 | while IFS= read -r -d '' file; do
+  metaflac --no-utf8-convert --export-tags-to=- "$file" | grep -q "$bad" || continue
+  original="$(dirname "$file")/.tomify-source/$(basename "$file")"
+  [ -f "$original" ] || { echo "No original for: $file"; continue; }
+  metaflac --no-utf8-convert --export-tags-to=- "$file" | grep "$bad" | cut -d= -f1 | sort -u | while IFS= read -r tag; do
+    sources="$tag"; [ "${tag^^}" = ALBUMARTIST ] && sources="ALBUMARTIST ALBUM_ARTIST ARTIST"
+    value=""
+    for source in $sources; do
+      value=$(metaflac --no-utf8-convert --show-tag="$source" "$original" | head -n1 | cut -d= -f2- | iconv -f WINDOWS-1252 -t UTF-8)
+      [ -n "$value" ] && break
+    done
+    [ -n "$value" ] || { echo "No $tag in original: $file"; continue; }
+    metaflac --no-utf8-convert --remove-tag="$tag" --set-tag="$tag=$value" "$file" && echo "Fixed $tag=$value in: $file"
+  done
+done
+EOF
+sudo bash /tmp/fix-mangled-tags.sh
+```
+
+The folder the old agent created is still named with `�`, which `ls /srv/music-recovery` shows as `?`. Rename it with a `?` wildcard so later imports find it, for example `sudo mv /srv/music-recovery/M?tley\ Cr?e "/srv/music-recovery/Mötley Crüe"` (if that name already exists, move the album folder inside it instead).
+
+If the restored name is spelled differently from an artist you already have (for example `Mötley Crüe` next to `Motley Crue`), Navidrome still lists two artists. Set the recovered album to the existing spelling, then run a full scan in Navidrome so the two artists merge:
+
+```bash
+sudo find "/srv/music-recovery/<Artist folder>/<Album folder>" -maxdepth 1 -name '*.flac' \
+  -exec metaflac --no-utf8-convert --remove-tag=ARTIST --remove-tag=ALBUMARTIST --set-tag='ARTIST=Motley Crue' --set-tag='ALBUMARTIST=Motley Crue' {} +
+```
 
 This backend is for lawful recovery only. The operator must retrieve only content they are authorised to copy. Tomify does not bypass subscriptions, authentication, takedowns, encryption, or other access controls. Acquisition remains disabled until the existing source-specific authorisation confirmation is completed for the selected result.
 
@@ -146,7 +399,133 @@ echo
 
 NZBIndex always counts as an available indexer, with or without its optional key. Usenet is available when exactly one downloader is configured and `TOMIFY_USENET_DOWNLOAD_DIR` is set; configured Newznab indexers are searched alongside NZBIndex.
 
-Acquisition is asynchronous. The UI reports queued, downloading, completed, or failed job state and progress while polling through the Worker. On completion, the agent resolves the downloader path and rejects anything outside `TOMIFY_USENET_DOWNLOAD_DIR`, symlinks, non-regular files, excessive file counts, and downloads over `TOMIFY_USENET_MAX_BYTES`. It verifies selected audio with FFprobe, preserves unchanged sources beneath `.tomify-source`, and creates Navidrome-facing derivatives through the same stream-copy and metadata pipeline as other Recovery sources. Existing recovery artifacts and canonical masters are never overwritten. A completed release job retains the backward-compatible primary `path`, `quality`, `derivative`, and `provenance` fields and also returns `importedCount`, `importedTracks`, plus release artist/album summaries.
+Acquisition is asynchronous. The UI reports queued, downloading, completed, or failed job state and progress while polling through the Worker. On completion, the agent resolves the downloader path and rejects anything outside `TOMIFY_USENET_DOWNLOAD_DIR`, symlinks, non-regular files, excessive file counts, and downloads over `TOMIFY_USENET_MAX_BYTES`. It verifies selected audio with FFprobe, preserves unchanged sources beneath `.tomify-source`, and creates Navidrome-facing derivatives through the same stream-copy and metadata pipeline as other Recovery sources. Existing recovery artifacts and canonical masters are never overwritten. When the downloader marks a job failed, its own reason (for example missing articles or a failed repair) is kept as the job error and shown on the Recovery item. A completed release job retains the backward-compatible primary `path`, `quality`, `derivative`, and `provenance` fields and also returns `importedCount`, `importedTracks`, plus release artist/album summaries.
+
+## Torrent links and qBittorrent
+
+Each Recovery item has a **Torrent link** field beside the search buttons. Paste a magnet link or an `http(s)` link to a `.torrent` file and press **Add link**: the agent checks the link and Tomify adds it as the item's torrent candidate and selects it, which opens the usual MusicBrainz and artwork review. Import still needs the source-specific authorisation confirmation. The link is then queued in qBittorrent-nox on the media server, and the Recovery row shows live progress: percentage, download speed, connected seeds and peers (with the swarm totals in brackets), downloaded size and time left.
+
+When qBittorrent finishes, the agent:
+
+1. Resolves the torrent's content path and rejects anything outside `TOMIFY_TORRENT_DOWNLOAD_DIR`, symlinks, excessive file counts and downloads over `TOMIFY_TORRENT_MAX_BYTES` (4 GiB by default; larger torrents are failed and removed as soon as their size is known).
+2. Unpacks any `.zip`, `.rar` or `.7z` archives (first volumes only, so multi-part sets are read once) into its own folder under `TOMIFY_RECOVERY_STATE_DIR`. Every archive is listed first and refused if an entry is absolute, climbs out with `..`, is a symbolic link, or would unpack beyond the size limit. Password-protected or damaged archives fail the job with a message naming the archive.
+3. Imports the audio through the same pipeline as Usenet: wanted music with a track title imports the best matching file, and wanted music without one (an album, or anything by an artist) imports the whole download as a release, with originals preserved in `.tomify-source`, stream-copy derivatives, artwork and `.tomify.json` sidecars marked `torrent-recovery-copy`.
+4. Removes the torrent and its downloaded data from qBittorrent, and deletes the unpacked archive copy. A failed removal is recorded on the job without undoing the import. Because nothing is left behind, torrents do not offer **Import rest of download**; for a whole album, leave the track blank on the wanted item before pasting the link.
+
+**Delete** works on a torrent item at any time, including while it downloads: the agent stops the torrent and removes it and its data from qBittorrent first, then Tomify deletes any imported files and the queue entry. If qBittorrent cannot be reached the item is kept so you can retry. Usenet downloads still have to finish before their item can be deleted.
+
+Links are validated on the agent: magnet links need a BitTorrent info hash, and `.torrent` links must be `http(s)` on a public host, without embedded credentials. The full link (including trackers or a private-tracker passkey) is stored with the candidate so it can be queued later, but the Recovery page and provenance show it without trackers or query strings. Torrents are removed as soon as they are imported, so they do not keep seeding; respect any ratio rules of a private tracker you use.
+
+The same lawful-recovery rules as Usenet apply: only retrieve content you are authorised to copy.
+
+### Installing qBittorrent-nox on the Debian box
+
+qBittorrent runs as its own `qbittorrent` account, its web UI listens only on `127.0.0.1:8081`, and its BitTorrent traffic is bound to NordVPN's `nordlynx` interface, so torrents stop rather than fall back to the home connection if the VPN drops. Nothing here changes the box's routing or firewall, but arm the usual fail-safe anyway, since a reboot is the way back from any surprise. With `nordvpnd` enabled at boot the box returns on the VPN, which is the known-good setup.
+
+```bash
+sudo systemd-run --on-active=10min --unit=qbittorrent-failsafe /bin/systemctl reboot
+```
+
+Check that port 8081 is free (SABnzbd commonly uses 8080). If something is listening, pick another port and use it everywhere below:
+
+```bash
+sudo ss -ltnp | grep -E ':8081\b' || echo "8081 is free"
+```
+
+Install qBittorrent-nox and 7-Zip, and create the service account and download folder:
+
+```bash
+sudo apt update
+sudo apt install qbittorrent-nox 7zip
+command -v 7z || command -v 7zz    # Debian 12 installs 7-Zip as 7zz; note the path for SEVEN_ZIP_PATH
+sudo useradd --system --home-dir /var/lib/qbittorrent --create-home --shell /usr/sbin/nologin qbittorrent
+sudo install -d -o qbittorrent -g qbittorrent -m 755 /srv/torrents
+```
+
+RAR archives need the non-free `7zip-rar` package (add `non-free` to the Debian sources first); zip and 7z work without it.
+
+Write qBittorrent's settings before its first start, so the web UI never listens anywhere but loopback and has no default password. This generates a random password, stores only its PBKDF2 hash in qBittorrent's config, and prints the password once for the agent's environment file:
+
+```bash
+QBT_PASSWORD=$(openssl rand -hex 24)
+QBT_HASH=$(python3 -c 'import base64,hashlib,os,sys; s=os.urandom(16); k=hashlib.pbkdf2_hmac("sha512", sys.argv[1].encode(), s, 100000, 64); print("@ByteArray(%s:%s)" % (base64.b64encode(s).decode(), base64.b64encode(k).decode()))' "$QBT_PASSWORD")
+sudo install -d -o qbittorrent -g qbittorrent -m 700 /var/lib/qbittorrent/qBittorrent /var/lib/qbittorrent/qBittorrent/config
+sudo tee /var/lib/qbittorrent/qBittorrent/config/qBittorrent.conf >/dev/null <<EOF
+[BitTorrent]
+Session\Interface=nordlynx
+Session\InterfaceName=nordlynx
+Session\DefaultSavePath=/srv/torrents
+
+[LegalNotice]
+Accepted=true
+
+[Preferences]
+WebUI\Address=127.0.0.1
+WebUI\Port=8081
+WebUI\LocalHostAuth=true
+WebUI\Username=tomify
+WebUI\Password_PBKDF2="$QBT_HASH"
+WebUI\CSRFProtection=true
+WebUI\HostHeaderValidation=true
+EOF
+sudo chown qbittorrent:qbittorrent /var/lib/qbittorrent/qBittorrent/config/qBittorrent.conf
+sudo chmod 600 /var/lib/qbittorrent/qBittorrent/config/qBittorrent.conf
+echo "qBittorrent password: $QBT_PASSWORD"
+```
+
+If NordVPN uses OpenVPN rather than NordLynx, use `nordtun` instead of `nordlynx`. Copy the example unit from the Windows checkout (PowerShell):
+
+```powershell
+scp recovery-agent\qbittorrent-nox.service.example tom@tomify:/tmp/
+```
+
+Then install and start it on the box:
+
+```bash
+sudo cp /tmp/qbittorrent-nox.service.example /etc/systemd/system/qbittorrent-nox.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now qbittorrent-nox
+systemctl status qbittorrent-nox --no-pager
+```
+
+Check that the web UI is only on loopback, the password works and the session is bound to the VPN:
+
+```bash
+sudo ss -ltnp | grep qbittorrent                      # 127.0.0.1:8081 only, plus the BitTorrent port
+curl -s -c /tmp/qbt.cookie --data-urlencode username=tomify --data-urlencode "password=$QBT_PASSWORD" http://127.0.0.1:8081/api/v2/auth/login; echo   # Ok.
+curl -s -b /tmp/qbt.cookie http://127.0.0.1:8081/api/v2/app/preferences | grep -o '"current_network_interface":"[^"]*"'   # "nordlynx"
+rm -f /tmp/qbt.cookie
+```
+
+Add the qBittorrent settings to `/etc/tomify/recovery-agent.env` (use `/usr/bin/7zz` for `SEVEN_ZIP_PATH` if that is what `command -v` printed):
+
+```bash
+sudo tee -a /etc/tomify/recovery-agent.env >/dev/null <<EOF
+TOMIFY_QBITTORRENT_URL=http://127.0.0.1:8081
+TOMIFY_QBITTORRENT_USERNAME=tomify
+TOMIFY_QBITTORRENT_PASSWORD=$QBT_PASSWORD
+TOMIFY_TORRENT_DOWNLOAD_DIR=/srv/torrents
+TOMIFY_TORRENT_CATEGORY=tomify
+TOMIFY_TORRENT_MAX_BYTES=4294967296
+SEVEN_ZIP_PATH=/usr/bin/7z
+EOF
+unset QBT_PASSWORD QBT_HASH
+```
+
+Then deploy the updated agent (see [Updating the recovery agent](#updating-the-recovery-agent); it includes the new `torrent.mjs`), restart it, and confirm `/health` lists `torrent`:
+
+```bash
+sudo systemctl restart tomify-recovery
+curl -s http://127.0.0.1:8788/health; echo           # "backends":[..., "torrent"]
+```
+
+Open Recovery on the site, paste a link into an item and check the progress line. If everything works, cancel the fail-safe:
+
+```bash
+sudo systemctl stop qbittorrent-failsafe.timer
+```
+
+Reboot once (Settings → Restart media server) and check `systemctl status qbittorrent-nox` and the binding check above again: qBittorrent starts after `nordvpnd` and picks up `nordlynx` once NordVPN connects. If qBittorrent runs in Docker instead, set `TOMIFY_QBITTORRENT_DOWNLOAD_DIR` to its in-container download root (for example `/downloads`) and `TOMIFY_TORRENT_DOWNLOAD_DIR` to the matching host folder.
 
 ## Optional authenticated YouTube session
 
@@ -193,11 +572,14 @@ The result reports only whether the cookie session is configured and extraction 
 
 An acquisition backend exposes:
 
-- `POST /v1/search` with `{ backend, track, searchMode? }`, returning `{ candidates }`.
+- `POST /v1/search` with `{ backend, track, searchFields? }`, where `searchFields` is any non-empty subset of `artist`, `album` and `track` (legacy `searchMode` is still accepted), returning `{ candidates }`. For `backend: "torrent"` the body carries `link` instead, and the one candidate returned is that validated link.
 - `POST /v1/acquire` with `{ backend, candidate, track, artwork, authorisation }`, returning `{ path, quality, artwork, provenance }`.
-- For asynchronous Usenet acquisition, `POST /v1/acquire` returns an opaque job and `POST /v1/jobs/status` reports queued/downloading/completed/failed state, progress, and the final import result.
+- For asynchronous Usenet and torrent acquisition, `POST /v1/acquire` returns an opaque job and `POST /v1/jobs/status` reports queued/downloading/completed/failed state, progress, and the final import result. Torrent jobs also report `details` (`downloadSpeed`, `uploadSpeed`, `seeds`, `seedsInSwarm`, `peers`, `peersInSwarm`, `eta`, `size`, `downloaded`).
+- `POST /v1/jobs/cancel` with `{ jobId }`, stopping a torrent job and removing the torrent and its data from qBittorrent. It waits for any import in progress and returns the `importedPaths` that import created, so they can be deleted too. Idempotent once the job is gone.
+- `POST /v1/jobs/import-remaining` with `{ jobId }`, importing the audio files a completed single-track Usenet job left in its download as a release, without downloading again. Files already imported by that job are skipped, and a job that was already imported as a release is refused.
 - `POST /v1/delete` with `{ importedPaths }`, removing only each recovery derivative, its sidecar and its matching `.tomify-source` original.
-- `POST /v1/status`, returning backend capability state without secret paths or values.
+- `POST /v1/status`, returning backend capability state, plus whether remote reboot is enabled, without secret paths or values.
+- `POST /v1/system/reboot` with `{ confirm: "reboot" }`, returning 202 and rebooting the server shortly afterwards when `TOMIFY_RECOVERY_ALLOW_REBOOT=true`; refused otherwise.
 
 All `/v1/*` endpoints, including deletion, use the same `TOMIFY_RECOVERY_TOKEN` bearer authentication. The Worker calls deletion before removing an imported item from D1. If the agent rejects a path or any filesystem operation fails, the Worker returns an actionable error and leaves the D1 item and candidates intact so the operation can be inspected and retried.
 
@@ -206,5 +588,7 @@ That boundary is intentionally source-neutral. A later CD-rip, purchased-downloa
 YouTube provenance records the video ID and URL, channel/uploader, title, acquisition timestamp, selected format ID, all available audio-format summaries, measured source quality, derivative details, and whether authenticated access was actually used. Cookies themselves are never provenance.
 
 Internet Archive provenance records the item identifier and details URL, exact filename and final download URL, creator, item title, collection, licence/rights statements, format, original/derivative source flag, byte count, supplied MD5/SHA-1 values, acquisition time, measured audio quality and derivative details.
+
+Torrent provenance records the info hash, link type (magnet or `.torrent` URL), the link without trackers or query string, whether each file came out of an archive, the completed file count, measured source quality and derivative details. It never records the tracker list or a passkey.
 
 Usenet provenance records the provider type and name, opaque result or collection identifier, posted title and date when supplied, selected search mode, details URL, advertised size/age, downloader type, completed file count, measured source quality, and derivative details. It never records indexer API keys, downloader credentials, or credential-bearing download URLs.

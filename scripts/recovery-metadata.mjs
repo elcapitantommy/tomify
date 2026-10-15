@@ -125,4 +125,11 @@ export function applyRecoveryMetadataChoices(wanted, resolution, choices) {
   }
 }
 
-export const recoveryMetadataWorkerSource = [normaliseMetadataText, editDistance, metadataTextSimilarity, creditedArtist, numericTrack, releaseDetails, durationConfidence, resolveRecoveryMetadata, applyRecoveryMetadataChoices].map((fn) => fn.toString()).join('\n\n')
+// A lossless import (FLAC, ALAC, WAV and similar) is an acceptable recovery; anything lossy still needs a better copy.
+// Either way it stays a recovery copy, never a verified archival master.
+export function recoveryImportStatus(quality) {
+  const codec = String(quality?.codec || '').toLowerCase()
+  return /^(flac|alac|ape|wavpack|tta|truehd|mlp|pcm_.*|wav|aiff?)$/.test(codec) ? 'recovered' : 'needs-upgrade'
+}
+
+export const recoveryMetadataWorkerSource = [normaliseMetadataText, editDistance, metadataTextSimilarity, creditedArtist, numericTrack, releaseDetails, durationConfidence, resolveRecoveryMetadata, applyRecoveryMetadataChoices, recoveryImportStatus].map((fn) => fn.toString()).join('\n\n')

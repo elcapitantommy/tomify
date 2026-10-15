@@ -49,13 +49,36 @@ export function usenetCapability({ newznabIndexers = [], nzbIndex = null, downlo
   return { available: Boolean(providerCount && downloader && downloadRoot), providerCount }
 }
 
-export function usenetSearchQuery(track, mode) {
-  const selected = mode === 'artist' ? text(track?.artist) : mode === 'release' ? text(track?.album) : mode === 'track' ? text(track?.title) : ''
-  if (!selected) throw new Error(`A ${mode === 'release' ? 'release/album' : mode} value is required for this search mode.`)
-  return selected.slice(0, 240)
+const USENET_SEARCH_FIELDS = ['artist', 'album', 'track']
+const LEGACY_SEARCH_MODES = { artist: ['artist'], track: ['track'], release: ['album'] }
+const FIELD_LABELS = { artist: 'artist', album: 'release/album', track: 'track title' }
+
+function trackFieldValue(track, field) { return text(field === 'artist' ? track?.artist : field === 'album' ? track?.album : track?.title) }
+
+// Accepts a legacy mode string ('artist' | 'track' | 'release'), an array of fields, or an
+// existing spec, and returns the fields to combine plus the import mode those fields imply.
+// Passing the wanted track lets an artist-only search for music with no track title import the whole download.
+export function usenetSearchSpec(input, track) {
+  const requested = typeof input === 'string' ? LEGACY_SEARCH_MODES[input] : Array.isArray(input) ? input : Array.isArray(input?.fields) ? input.fields : null
+  if (!requested) throw new Error('Choose at least one of artist, album or track to search Usenet.')
+  const fields = USENET_SEARCH_FIELDS.filter((field) => requested.includes(field))
+  if (!fields.length || fields.length !== new Set(requested).size) throw new Error('Usenet search fields must be artist, album or track.')
+  if (['artist', 'track', 'release'].includes(input?.mode) && Array.isArray(input?.fields)) return { fields, mode: input.mode }
+  // Naming the album without a track title means the whole release. Artist-only stays a single-track
+  // import when there is a track title to match; with none, the chosen download is imported as a release.
+  const mode = fields.includes('track') ? 'track' : fields.includes('album') || (track && !trackFieldValue(track, 'track')) ? 'release' : 'artist'
+  return { fields, mode }
 }
 
-export function parseNewznabResults(xml, indexer, mode) {
+export function usenetSearchQuery(track, input) {
+  const { fields } = usenetSearchSpec(input, track)
+  const missing = fields.find((field) => !trackFieldValue(track, field))
+  if (missing) throw new Error(`A ${FIELD_LABELS[missing]} value is required for this search.`)
+  return fields.map((field) => trackFieldValue(track, field)).join(' ').replace(/\s+/g, ' ').slice(0, 240)
+}
+
+export function parseNewznabResults(xml, indexer, input) {
+  const { fields: searchFields, mode } = usenetSearchSpec(input)
   const items = String(xml || '').match(/<item\b[\s\S]*?<\/item>/gi) || []
   return items.slice(0, 40).map((item) => {
     const title = xmlTag(item, 'title')
@@ -78,19 +101,19 @@ export function parseNewznabResults(xml, indexer, mode) {
     return {
       externalId: createHash('sha256').update(`${indexer.id}\0${guid}`).digest('hex'), url: detailsUrl,
       title, channel: indexer.name, duration: null, thumbnail: null,
-      provenance: { providerType: 'newznab', providerId: indexer.id, providerName: indexer.name, resultId: guid, guid, postedTitle: title, searchMode: mode, size, ageDays, detailsUrl, categories: xmlAttr(item, 'category') || null },
+      provenance: { providerType: 'newznab', providerId: indexer.id, providerName: indexer.name, resultId: guid, guid, postedTitle: title, searchMode: mode, searchFields, size, ageDays, detailsUrl, categories: xmlAttr(item, 'category') || null },
     }
   }).filter(Boolean)
 }
 
-export async function searchNewznab(indexers, track, mode, fetchImpl = fetch) {
-  const query = usenetSearchQuery(track, mode)
+export async function searchNewznab(indexers, track, input, fetchImpl = fetch) {
+  const query = usenetSearchQuery(track, input)
   const settled = await Promise.allSettled(indexers.map(async (indexer) => {
     const url = apiEndpoint(indexer.url)
     url.searchParams.set('t', 'search'); url.searchParams.set('q', query); url.searchParams.set('cat', indexer.categories); url.searchParams.set('limit', '40'); url.searchParams.set('o', 'xml'); url.searchParams.set('apikey', indexer.apiKey)
     const response = await fetchImpl(url, { signal: AbortSignal.timeout(30_000), headers: { accept: 'application/rss+xml, application/xml, text/xml', 'user-agent': 'Tomify/0.1 recovery-agent' } })
     if (!response.ok) throw new Error(`${indexer.name} returned HTTP ${response.status}.`)
-    return parseNewznabResults(await response.text(), indexer, mode)
+    return parseNewznabResults(await response.text(), indexer, usenetSearchSpec(input))
   }))
   const results = settled.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
   if (!results.length && settled.length && settled.every((result) => result.status === 'rejected')) throw settled[0].reason
@@ -103,9 +126,9 @@ export function newznabDownloadUrl(indexer, guid) {
   return url.toString()
 }
 
-export function nzbIndexSearchUrl(config, track, mode) {
+export function nzbIndexSearchUrl(config, track, input) {
   const url = new URL('/api/search', config.apiUrl)
-  url.searchParams.set('q', usenetSearchQuery(track, mode))
+  url.searchParams.set('q', usenetSearchQuery(track, input))
   url.searchParams.set('max', '40')
   url.searchParams.set('sort', 'agedesc')
   url.searchParams.set('complete', '1')
@@ -113,7 +136,8 @@ export function nzbIndexSearchUrl(config, track, mode) {
   return url
 }
 
-export function parseNzbIndexResults(payload, config, mode, now = Date.now()) {
+export function parseNzbIndexResults(payload, config, input, now = Date.now()) {
+  const { fields: searchFields, mode } = usenetSearchSpec(input)
   if (payload?.error) throw new Error(`NZBIndex search failed${payload.errorMessage ? `: ${text(payload.errorMessage).slice(0, 240)}` : '.'}`)
   const collections = Array.isArray(payload?.data?.content) ? payload.data.content : []
   return collections.filter((collection) => {
@@ -134,7 +158,7 @@ export function parseNzbIndexResults(payload, config, mode, now = Date.now()) {
       title, channel: config.name, duration: null, thumbnail: null,
       provenance: {
         providerType: 'nzbindex', providerId: config.id, providerName: config.name, resultId: collectionId, collectionId,
-        postedTitle: title, postedAt, searchMode: mode, size: number(collection?.size), ageDays, detailsUrl,
+        postedTitle: title, postedAt, searchMode: mode, searchFields, size: number(collection?.size), ageDays, detailsUrl,
         fileCount: number(collection?.fileCount), complete: typeof collection?.complete === 'boolean' ? collection.complete : null,
         poster: text(collection?.poster).slice(0, 240) || null,
         groups: Array.isArray(collection?.groups) ? collection.groups.map((group) => text(group).slice(0, 240)).filter(Boolean).slice(0, 50) : [],
@@ -148,16 +172,17 @@ export function assertNzbIndexCandidateComplete(reference) {
   if (reference?.searchMode === 'release' && isNonInitialMultipart(reference?.postedTitle)) throw new Error('The selected NZBIndex result is a numbered multipart fragment, not a complete release.')
 }
 
-export async function searchNzbIndex(config, track, mode, fetchImpl = fetch) {
-  const response = await fetchImpl(nzbIndexSearchUrl(config, track, mode), { signal: AbortSignal.timeout(30_000), headers: { accept: 'application/json', 'user-agent': 'Tomify/0.1 recovery-agent' } })
+export async function searchNzbIndex(config, track, input, fetchImpl = fetch) {
+  const response = await fetchImpl(nzbIndexSearchUrl(config, track, input), { signal: AbortSignal.timeout(30_000), headers: { accept: 'application/json', 'user-agent': 'Tomify/0.1 recovery-agent' } })
   if (!response.ok) throw new Error(`NZBIndex returned HTTP ${response.status}.`)
-  return parseNzbIndexResults(await response.json(), config, mode)
+  return parseNzbIndexResults(await response.json(), config, usenetSearchSpec(input))
 }
 
-export async function searchUsenetProviders(newznabIndexers, nzbIndex, track, mode, fetchImpl = fetch) {
+export async function searchUsenetProviders(newznabIndexers, nzbIndex, track, input, fetchImpl = fetch) {
+  const spec = usenetSearchSpec(input, track)
   const searches = []
-  if (newznabIndexers.length) searches.push(searchNewznab(newznabIndexers, track, mode, fetchImpl))
-  if (nzbIndex) searches.push(searchNzbIndex(nzbIndex, track, mode, fetchImpl))
+  if (newznabIndexers.length) searches.push(searchNewznab(newznabIndexers, track, spec, fetchImpl))
+  if (nzbIndex) searches.push(searchNzbIndex(nzbIndex, track, spec, fetchImpl))
   const settled = await Promise.allSettled(searches)
   const batches = settled.filter((result) => result.status === 'fulfilled').map((result) => result.value)
   if (!batches.length && settled.length) throw settled[0].reason
@@ -258,15 +283,16 @@ export async function validateCompletedPath(value, downloadRoot, downloaderRoot 
 export async function findCompletedAudio(completedPath, options = {}) {
   const maxBytes = options.maxBytes || 2 * 1024 * 1024 * 1024
   const maxFiles = options.maxFiles || 1000
+  const label = options.label || 'Usenet download'
   const files = []
   let totalBytes = 0
   let fileCount = 0
   let entryCount = 0
   async function visit(path) {
     entryCount += 1
-    if (entryCount > maxFiles) throw new Error('Completed Usenet download contains too many filesystem entries.')
+    if (entryCount > maxFiles) throw new Error(`Completed ${label} contains too many filesystem entries.`)
     const details = await lstat(path)
-    if (details.isSymbolicLink()) throw new Error('Symlinks are not accepted in completed Usenet downloads.')
+    if (details.isSymbolicLink()) throw new Error(`Symlinks are not accepted in a completed ${label}.`)
     if (details.isDirectory()) {
       for (const entry of await readdir(path)) { if (entry === '..' || entry === '.') continue; await visit(join(path, entry)) }
       return
@@ -274,11 +300,11 @@ export async function findCompletedAudio(completedPath, options = {}) {
     if (!details.isFile()) return
     fileCount += 1
     totalBytes += details.size
-    if (totalBytes > maxBytes) throw new Error('Completed Usenet download exceeds the configured size limit.')
+    if (totalBytes > maxBytes) throw new Error(`Completed ${label} exceeds the configured size limit.`)
     if (AUDIO_EXTENSIONS.has(extname(path).toLowerCase())) files.push({ path, size: details.size, name: basename(path) })
   }
   await visit(completedPath)
-  if (!files.length) throw new Error('Completed Usenet download contains no supported audio files.')
+  if (!files.length && !options.allowEmpty) throw new Error(`Completed ${label} contains no supported audio files.`)
   return { files, totalBytes, fileCount }
 }
 

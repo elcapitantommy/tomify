@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, nzbIndexConfig, nzbIndexDownloadUrl, nzbIndexSearchUrl, parseIndexerConfig, parseNewznabResults, parseNzbIndexResults, searchNzbIndex, searchUsenetProviders, selectCompletedAudio, submitDownloader, usenetCapability, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
+import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, nzbIndexConfig, nzbIndexDownloadUrl, nzbIndexSearchUrl, parseIndexerConfig, parseNewznabResults, parseNzbIndexResults, searchNzbIndex, searchUsenetProviders, selectCompletedAudio, submitDownloader, usenetCapability, usenetSearchQuery, usenetSearchSpec, validateCompletedPath } from './usenet.mjs'
 
 function sabStatusFetch({ queue = [], history = [] }) {
   return async (requestUrl) => {
@@ -18,6 +18,53 @@ test('builds independent artist, track, and release queries', () => {
   assert.equal(usenetSearchQuery(track, 'track'), 'Teardrop')
   assert.equal(usenetSearchQuery(track, 'release'), 'Mezzanine')
   assert.throws(() => usenetSearchQuery({ artist: 'A' }, 'release'), /release\/album/)
+})
+
+test('combines any mix of artist, album and track in a fixed order', () => {
+  const track = { artist: 'They Might Be Giants', title: 'Birdhouse in Your Soul', album: 'Flood' }
+  assert.equal(usenetSearchQuery(track, ['artist', 'album']), 'They Might Be Giants Flood')
+  assert.equal(usenetSearchQuery(track, ['track', 'artist']), 'They Might Be Giants Birdhouse in Your Soul')
+  assert.equal(usenetSearchQuery(track, ['track', 'album', 'artist']), 'They Might Be Giants Flood Birdhouse in Your Soul')
+  assert.throws(() => usenetSearchQuery({ artist: 'They Might Be Giants' }, ['artist', 'album']), /release\/album value is required/)
+  assert.throws(() => usenetSearchQuery(track, []), /artist, album or track/)
+  assert.throws(() => usenetSearchQuery(track, ['artist', 'genre']), /artist, album or track/)
+  assert.throws(() => usenetSearchQuery(track, 'everything'), /artist, album or track/)
+})
+
+test('derives the import mode from the combined search fields', () => {
+  const track = { artist: 'They Might Be Giants', title: 'Birdhouse in Your Soul', album: 'Flood' }
+  const album = { artist: 'They Might Be Giants', title: '', album: 'Flood' }
+  assert.deepEqual(usenetSearchSpec('release'), { fields: ['album'], mode: 'release' })
+  assert.deepEqual(usenetSearchSpec('artist'), { fields: ['artist'], mode: 'artist' })
+  assert.deepEqual(usenetSearchSpec(['album', 'artist']), { fields: ['artist', 'album'], mode: 'release' })
+  assert.deepEqual(usenetSearchSpec(['artist', 'album', 'track']), { fields: ['artist', 'album', 'track'], mode: 'track' })
+  assert.equal(usenetSearchQuery(album, ['artist', 'album']), 'They Might Be Giants Flood')
+  // Artist-only searches import the best matching track when there is a title, otherwise the whole download.
+  assert.equal(usenetSearchQuery(track, ['artist']), 'They Might Be Giants')
+  assert.equal(usenetSearchQuery({ artist: 'They Might Be Giants', title: '', album: '' }, ['artist']), 'They Might Be Giants')
+  assert.deepEqual(usenetSearchSpec(['artist'], track), { fields: ['artist'], mode: 'artist' })
+  assert.deepEqual(usenetSearchSpec(['artist'], album), { fields: ['artist'], mode: 'release' })
+  assert.deepEqual(usenetSearchSpec({ fields: ['artist'], mode: 'release' }), { fields: ['artist'], mode: 'release' })
+})
+
+test('sends one combined query to every provider and records the fields searched', async () => {
+  const queries = []
+  const fetchImpl = async (requestUrl) => {
+    const url = new URL(requestUrl)
+    queries.push(url.searchParams.get('q'))
+    if (url.hostname === 'api.nzbindex.com') return { ok: true, json: async () => ({ data: { content: [
+      { id: 'fragment-id', name: '[2/6] "They Might Be Giants - Flood.zip" yEnc', complete: true },
+      { id: 'flood-id', name: '[1/6] "They Might Be Giants - Flood.zip" yEnc', complete: true },
+    ] }, error: false }) }
+    return { ok: true, text: async () => '<rss><channel><item><title>They Might Be Giants - Flood FLAC</title><guid>flood-guid</guid></item></channel></rss>' }
+  }
+  const results = await searchUsenetProviders([{ id: 'one', name: 'Indexer', url: 'https://indexer.test', apiKey: 'secret', categories: '3000' }], nzbIndexConfig({}), { artist: 'They Might Be Giants', title: 'Birdhouse in Your Soul', album: 'Flood' }, ['artist', 'album'], fetchImpl)
+  assert.deepEqual(queries, ['They Might Be Giants Flood', 'They Might Be Giants Flood'])
+  assert.deepEqual(results.map((result) => result.provenance.resultId), ['flood-guid', 'flood-id'])
+  for (const result of results) {
+    assert.equal(result.provenance.searchMode, 'release')
+    assert.deepEqual(result.provenance.searchFields, ['artist', 'album'])
+  }
 })
 
 test('parses provider-neutral Newznab results without exposing credentials', () => {

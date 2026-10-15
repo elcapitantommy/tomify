@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { recoveryApi } from '../lib/recovery-api'
@@ -7,7 +7,7 @@ import { Recovery } from './Recovery'
 
 vi.mock('../lib/recovery-api', () => ({
   recoveryApi: {
-    list: vi.fn(), add: vi.fn(), search: vi.fn(), select: vi.fn(), acquire: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), delete: vi.fn(),
+    list: vi.fn(), add: vi.fn(), search: vi.fn(), addTorrentLink: vi.fn(), select: vi.fn(), acquire: vi.fn(), importRemaining: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), delete: vi.fn(),
   },
 }))
 
@@ -15,6 +15,7 @@ const backends = [
   { id: 'youtube', label: 'YouTube', available: true as const },
   { id: 'internet-archive', label: 'Internet Archive', available: true as const },
   { id: 'usenet', label: 'Usenet / NZB', available: true as const },
+  { id: 'torrent', label: 'Torrent link', available: true as const },
 ]
 
 function item(overrides: Partial<RecoveryItem> = {}): RecoveryItem {
@@ -49,20 +50,99 @@ describe('Recovery page actions', () => {
     expect(inactive.querySelector('.spin')).toBeNull()
   })
 
-  it('searches Newznab independently by artist, track title, or release', async () => {
+  it('searches Usenet with any combination of artist, album and track', async () => {
     vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ album: 'Lush Life' })], backends })
     vi.mocked(recoveryApi.search).mockImplementation(() => new Promise(() => {}))
     renderRecovery()
     fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
-    fireEvent.change(screen.getByRole('combobox', { name: 'Usenet search mode' }), { target: { value: 'artist' } })
+    const fields = screen.getByRole('group', { name: 'Usenet search fields' })
+    const artist = within(fields).getByRole('checkbox', { name: 'Artist' })
+    const album = within(fields).getByRole('checkbox', { name: 'Album' })
+    const track = within(fields).getByRole('checkbox', { name: 'Track' })
+    expect([artist, album, track].map((box) => (box as HTMLInputElement).checked)).toEqual([true, false, true])
+
+    fireEvent.click(album)
     fireEvent.click(screen.getByRole('button', { name: 'Search NZB' }))
-    expect(recoveryApi.search).toHaveBeenCalledWith('recovery-1', 'usenet', 'artist')
+    expect(recoveryApi.search).toHaveBeenCalledWith('recovery-1', 'usenet', ['artist', 'album', 'track'])
+  })
+
+  it('defaults to an artist and album search for a whole-album wanted item and blocks empty searches', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ title: '', artist: 'They Might Be Giants', album: 'Flood' })], backends })
+    vi.mocked(recoveryApi.search).mockImplementation(() => new Promise(() => {}))
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /flood/i }))
+    const fields = screen.getByRole('group', { name: 'Usenet search fields' })
+    expect(within(fields).getByRole('checkbox', { name: 'Track' })).toBeDisabled()
+    const artist = within(fields).getByRole('checkbox', { name: 'Artist' })
+    const album = within(fields).getByRole('checkbox', { name: 'Album' })
+    expect(artist).toBeChecked()
+    expect(album).toBeChecked()
+
+    fireEvent.click(album)
+    expect(screen.getByRole('button', { name: 'Search NZB' })).toBeEnabled()
+    fireEvent.click(artist)
+    expect(screen.getByRole('button', { name: 'Search NZB' })).toBeDisabled()
+    fireEvent.click(album)
+    fireEvent.click(screen.getByRole('button', { name: 'Search NZB' }))
+    expect(recoveryApi.search).toHaveBeenCalledWith('recovery-1', 'usenet', ['album'])
+    expect(screen.getByRole('status')).toHaveTextContent('Searching NZB indexers…')
+  })
+
+  it('allows an artist-only NZB search for wanted music by an artist and reports the outcome on the row', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ title: '', artist: 'They Might Be Giants', album: '' })], backends })
+    vi.mocked(recoveryApi.search).mockRejectedValueOnce(new Error('NZBIndex search failed.')).mockResolvedValueOnce({ item: item({ title: '', artist: 'They Might Be Giants', album: '' }) })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /they might be giants/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Search NZB' }))
+    expect(recoveryApi.search).toHaveBeenCalledWith('recovery-1', 'usenet', ['artist'])
+    expect(await screen.findByText('NZBIndex search failed.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Search NZB' }))
+    expect(await screen.findByText('NZB search found no results.')).toBeInTheDocument()
+  })
+
+  it('adds wanted music from any one of artist, album or track', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [], backends })
+    vi.mocked(recoveryApi.add).mockResolvedValue({ item: item({ id: 'recovery-2', title: '', artist: '', album: 'Flood' }) })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: 'Add wanted music' }))
+    const submit = screen.getByRole('button', { name: 'Add to queue' })
+    expect(submit).toBeDisabled()
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Album' }), { target: { value: ' Flood ' } })
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+    expect(recoveryApi.add).toHaveBeenCalledWith({ artist: undefined, title: undefined, album: 'Flood', duration: undefined, trackNumber: undefined })
+    expect(await screen.findByText('Whole album')).toBeInTheDocument()
+  })
+
+  it('offers to import the rest of a single-track Usenet download once', async () => {
+    const imported = { id: 'candidate-1', backend: 'usenet' as const, externalId: 'flood', url: 'https://www.nzbindex.com/collection/flood', title: '[1/6] "They Might Be Giants - Flood.zip" - yEnc', channel: 'NZBIndex', official: false, matchScore: 37, selected: true, importedPath: '/recovery/Birdhouse in Your Soul.mp3', provenance: { searchMode: 'track' as const, importedCount: 1, job: { id: 'job-1', status: 'completed' as const, progress: 100 } } }
+    const completed = { ...imported, provenance: { ...imported.provenance, importedCount: 3, remainingImportedAt: '2026-10-15T00:00:00.000Z' } }
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ title: 'Birdhouse in Your Soul', artist: 'They Might Be Giants', status: 'needs-upgrade', candidates: [imported] })], backends })
+    vi.mocked(recoveryApi.importRemaining).mockResolvedValue({ item: item({ title: 'Birdhouse in Your Soul', artist: 'They Might Be Giants', status: 'needs-upgrade', candidates: [completed] }) })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /birdhouse/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Import rest of download' }))
+    expect(recoveryApi.importRemaining).toHaveBeenCalledWith('recovery-1')
+    expect((await screen.findAllByText('Imported 3 tracks')).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: 'Import rest of download' })).toBeNull()
+  })
+
+  it('shows the delete confirmation directly under the action buttons, above the candidates', async () => {
+    const candidate = { id: 'candidate-1', backend: 'usenet' as const, externalId: 'x', url: 'https://www.nzbindex.com/collection/x', title: 'Candidate', channel: 'NZBIndex', official: false, matchScore: 37, selected: false }
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ candidates: [candidate] })], backends })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const prompt = screen.getByText('Delete this recovery item?').closest('.delete-confirm')
+    expect(prompt?.previousElementSibling).toHaveClass('recovery-actions')
+    expect(prompt?.nextElementSibling).toHaveClass('candidate-list')
   })
 
   it('continues from metadata and artwork review into source authorisation without resetting choices', async () => {
     const selectedCandidate = { id: 'candidate-1', backend: 'youtube' as const, externalId: 'video-1', url: 'https://www.youtube.com/watch?v=video-1', title: 'Zara Larsson - Lush Life', channel: 'Zara Larsson', official: true, matchScore: 97, selected: true }
     vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({
-      candidates: [selectedCandidate],
+      candidates: [selectedCandidate, { ...selectedCandidate, id: 'candidate-2', externalId: 'video-2', url: 'https://www.youtube.com/watch?v=video-2', title: 'Other upload', matchScore: 40, selected: false }],
       metadataResolution: { authority: 'musicbrainz', status: 'matched', confidence: 97, strong: true, candidateId: 'candidate-1', resolvedAt: '2026-01-01', metadata: { artist: 'Zara Larsson', title: 'Lush Life', album: '1', releaseDate: '2014-06-09', trackNumber: 1 } },
       artworkResolution: { candidateId: 'candidate-1', resolvedAt: '2026-01-01', selectedCandidateId: 'apple:1', candidates: [{ id: 'apple:1', provider: 'apple', providerLabel: 'Apple catalogue', providerId: '1', url: 'https://example.test/cover.jpg', previewUrl: 'https://example.test/cover.jpg', confidence: 95, quality: 'high', square: true, selectable: true }] },
     })], backends })
@@ -76,6 +156,13 @@ describe('Recovery page actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue to import' }))
 
     expect(screen.getByText('Confirm this source can be copied')).toBeInTheDocument()
+    // Both panels open directly under the selected candidate, before the next one.
+    const selectedRow = screen.getByText('Zara Larsson - Lush Life').closest('.candidate')!
+    const nextRow = screen.getByText('Other upload').closest('.candidate')!
+    for (const panel of [artistChoice, screen.getByText('Confirm this source can be copied')]) {
+      expect(selectedRow.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(panel.compareDocumentPosition(nextRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
     expect(artistChoice).not.toBeChecked()
     expect(screen.getByText('No artwork selected')).toBeInTheDocument()
   })
@@ -88,5 +175,52 @@ describe('Recovery page actions', () => {
     expect(await screen.findByText('Imported 19 tracks')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /lush life/i }))
     expect(screen.getAllByText('Imported 19 tracks').length).toBeGreaterThan(1)
+  })
+
+  it('adds a pasted torrent link and selects it for review straight away', async () => {
+    const link = 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Flood'
+    const torrent = { id: 'torrent-1', backend: 'torrent' as const, externalId: 't', url: link, title: 'Flood', channel: 'Torrent link', official: false, matchScore: 60, selected: false }
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item()], backends })
+    vi.mocked(recoveryApi.addTorrentLink).mockResolvedValue({ item: item({ candidates: [torrent] }) })
+    vi.mocked(recoveryApi.select).mockResolvedValue({ item: item({ candidates: [{ ...torrent, selected: true }] }) })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    const input = screen.getByRole('textbox', { name: 'Torrent link' })
+    expect(input).toHaveAttribute('placeholder', 'Paste a magnet or .torrent link')
+    const add = screen.getByRole('button', { name: 'Add link' })
+    fireEvent.change(input, { target: { value: 'not a link' } })
+    expect(add).toBeDisabled()
+    fireEvent.change(input, { target: { value: link } })
+    fireEvent.click(add)
+    expect(recoveryApi.addTorrentLink).toHaveBeenCalledWith('recovery-1', link)
+    await vi.waitFor(() => expect(recoveryApi.select).toHaveBeenCalledWith('recovery-1', 'torrent-1'))
+    expect(await screen.findByText(/Pasted torrent link/)).toBeInTheDocument()
+    expect(input).toHaveValue('')
+  })
+
+  it('reports a rejected torrent link on the row', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item()], backends })
+    vi.mocked(recoveryApi.addTorrentLink).mockRejectedValue(new Error('The magnet link has an invalid info hash.'))
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Torrent link' }), { target: { value: 'magnet:?xt=urn:btih:bad' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add link' }))
+    expect(await screen.findByText('The magnet link has an invalid info hash.')).toBeInTheDocument()
+    expect(recoveryApi.select).not.toHaveBeenCalled()
+  })
+
+  it('shows live torrent speed, seeds and ETA and still allows deleting a running torrent', async () => {
+    const running = { id: 'torrent-1', backend: 'torrent' as const, externalId: 't', url: 'magnet:?xt=urn:btih:abc', title: 'Flood', channel: 'Torrent link', official: false, matchScore: 60, selected: true, provenance: { job: { id: 'job-1', status: 'downloading' as const, progress: 37, details: { downloadSpeed: 2_400_000, seeds: 12, seedsInSwarm: 40, peers: 3, size: 1_100_000_000, downloaded: 412_000_000, eta: 245 } } } }
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ status: 'downloading', candidates: [running] })], backends })
+    vi.mocked(recoveryApi.pollJob).mockImplementation(() => new Promise(() => {}))
+    vi.mocked(recoveryApi.delete).mockResolvedValue({ deleted: true, filesRemoved: false })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    expect(screen.getByText('2.4 MB/s · 12 seeds (40) · 3 peers · 412 MB of 1.1 GB · 4 min left')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Search YouTube' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(screen.getByText(/stops the torrent and removes it and everything it has downloaded from qBittorrent/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }))
+    expect(recoveryApi.delete).toHaveBeenCalledWith('recovery-1')
   })
 })
