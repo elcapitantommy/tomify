@@ -1,0 +1,21 @@
+[Unit]
+Description=qBittorrent-nox for Tomify torrent downloads
+After=network-online.target nordvpnd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qbittorrent
+Group=qbittorrent
+# Downloads stay readable by the recovery agent's account.
+UMask=0022
+ExecStart=/usr/bin/qbittorrent-nox --profile=/var/lib/qbittorrent
+Restart=on-failure
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/qbittorrent /srv/torrents
+
+[Install]
+WantedBy=multi-user.target

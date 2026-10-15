@@ -27,6 +27,7 @@ Tomify Recovery is a queue for rebuilding missing tracks without confusing a con
 - Deletes queue-only items directly from D1. For imported items, deletion first removes the recovery derivative, its `.tomify.json` sidecar and the matching preserved original under `.tomify-source`; D1 state is retained if that filesystem cleanup fails.
 - Marks every YouTube result `lossy-recovery-copy` and initially `needs-upgrade`; it is never promoted to an archival master automatically.
 - Marks Internet Archive imports `internet-archive-recovery-copy`. A lossless file is still a recovery source, not proof of an archival master.
+- Accepts a pasted magnet or `.torrent` link per item, downloads it with qBittorrent-nox over NordVPN, shows live speed, seeds, peers and time left, unpacks archives, imports the audio and then removes the torrent and its data. See [Torrent links and qBittorrent](#torrent-links-and-qbittorrent).
 
 Tomify does not capture credentials, accept Google passwords, circumvent DRM or bypass access controls. Exported cookies are sensitive session credentials: they stay entirely on the media server and are never stored in D1, browser storage, frontend code, Worker assets, logs or API responses.
 
@@ -92,6 +93,8 @@ Recovery page
            |
            +-- YouTube recovery agent (v1)
            +-- Internet Archive recovery agent (v1)
+           +-- Usenet (NZBIndex/Newznab via SABnzbd or NZBGet)
+           +-- Torrent links via qBittorrent-nox
            +-- CD rip / purchased download / recovered file (future)
 ```
 
@@ -99,7 +102,7 @@ The hosted Worker cannot execute media binaries. `recovery-agent/index.mjs` is a
 
 ## Media-server setup
 
-Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`. Internet Archive search/download uses Node's built-in HTTPS fetch and needs no provider credentials.
+Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`, plus qBittorrent-nox and 7-Zip for torrent links. Internet Archive search/download uses Node's built-in HTTPS fetch and needs no provider credentials.
 
 1. Copy `recovery-agent/recovery-agent.env.example` to `/etc/tomify/recovery-agent.env` and set a random `TOMIFY_RECOVERY_TOKEN` containing at least 32 characters.
 2. Keep `TOMIFY_RECOVERY_DIR=/srv/music-recovery` separate from `TOMIFY_MASTER_DIR=/srv/music`.
@@ -126,7 +129,7 @@ ssh -t tom@tomify "sudo cp /tmp/*.mjs /opt/tomify/recovery-agent/ && sudo system
 
 The `*.node-test.mjs` files are copied too; they are harmless and never loaded by the service. To confirm the new code is live, `grep` a string from the change in the deployed file (for example `ssh tom@tomify "grep -c import-remaining /opt/tomify/recovery-agent/index.mjs"` should print a non-zero count), then check `curl -s http://127.0.0.1:8788/health` on the host.
 
-A Worker that is newer than the agent is the usual cause of Recovery errors right after a deploy. The page reports that the recovery agent is out of date when the agent has no endpoint for a request (previously this showed as `not-found`); other symptoms include *Artist and title are required.* when adding artist-only or album-only wanted music, or a Usenet search falling back to a single field. The Worker still sends the legacy `searchMode` alongside `searchFields`, so an older agent keeps its closest single-field search rather than failing outright.
+A Worker that is newer than the agent is the usual cause of Recovery errors right after a deploy. The page reports that the recovery agent is out of date when the agent has no endpoint for a request (previously this showed as `not-found`); other symptoms include *Artist and title are required.* when adding artist-only or album-only wanted music, a Usenet search falling back to a single field, or *Unsupported recovery backend.* when adding a torrent link. The Worker still sends the legacy `searchMode` alongside `searchFields`, so an older agent keeps its closest single-field search rather than failing outright.
 
 The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and cache directories are `/var/lib/tomify-recovery` and `/var/cache/tomify-recovery`. The systemd sandbox grants write access only to those locations, `/srv/music-recovery`, and the optional YouTube cookie file; `/opt/tomify/secrets` as a whole remains read-only. A server-side Git checkout is not part of the current deployment.
 
@@ -335,6 +338,132 @@ NZBIndex always counts as an available indexer, with or without its optional key
 
 Acquisition is asynchronous. The UI reports queued, downloading, completed, or failed job state and progress while polling through the Worker. On completion, the agent resolves the downloader path and rejects anything outside `TOMIFY_USENET_DOWNLOAD_DIR`, symlinks, non-regular files, excessive file counts, and downloads over `TOMIFY_USENET_MAX_BYTES`. It verifies selected audio with FFprobe, preserves unchanged sources beneath `.tomify-source`, and creates Navidrome-facing derivatives through the same stream-copy and metadata pipeline as other Recovery sources. Existing recovery artifacts and canonical masters are never overwritten. When the downloader marks a job failed, its own reason (for example missing articles or a failed repair) is kept as the job error and shown on the Recovery item. A completed release job retains the backward-compatible primary `path`, `quality`, `derivative`, and `provenance` fields and also returns `importedCount`, `importedTracks`, plus release artist/album summaries.
 
+## Torrent links and qBittorrent
+
+Each Recovery item has a **Torrent link** field beside the search buttons. Paste a magnet link or an `http(s)` link to a `.torrent` file and press **Add link**: the agent checks the link and Tomify adds it as the item's torrent candidate and selects it, which opens the usual MusicBrainz and artwork review. Import still needs the source-specific authorisation confirmation. The link is then queued in qBittorrent-nox on the media server, and the Recovery row shows live progress: percentage, download speed, connected seeds and peers (with the swarm totals in brackets), downloaded size and time left.
+
+When qBittorrent finishes, the agent:
+
+1. Resolves the torrent's content path and rejects anything outside `TOMIFY_TORRENT_DOWNLOAD_DIR`, symlinks, excessive file counts and downloads over `TOMIFY_TORRENT_MAX_BYTES` (4 GiB by default; larger torrents are failed and removed as soon as their size is known).
+2. Unpacks any `.zip`, `.rar` or `.7z` archives (first volumes only, so multi-part sets are read once) into its own folder under `TOMIFY_RECOVERY_STATE_DIR`. Every archive is listed first and refused if an entry is absolute, climbs out with `..`, is a symbolic link, or would unpack beyond the size limit. Password-protected or damaged archives fail the job with a message naming the archive.
+3. Imports the audio through the same pipeline as Usenet: wanted music with a track title imports the best matching file, and wanted music without one (an album, or anything by an artist) imports the whole download as a release, with originals preserved in `.tomify-source`, stream-copy derivatives, artwork and `.tomify.json` sidecars marked `torrent-recovery-copy`.
+4. Removes the torrent and its downloaded data from qBittorrent, and deletes the unpacked archive copy. A failed removal is recorded on the job without undoing the import. Because nothing is left behind, torrents do not offer **Import rest of download**; for a whole album, leave the track blank on the wanted item before pasting the link.
+
+**Delete** works on a torrent item at any time, including while it downloads: the agent stops the torrent and removes it and its data from qBittorrent first, then Tomify deletes any imported files and the queue entry. If qBittorrent cannot be reached the item is kept so you can retry. Usenet downloads still have to finish before their item can be deleted.
+
+Links are validated on the agent: magnet links need a BitTorrent info hash, and `.torrent` links must be `http(s)` on a public host, without embedded credentials. The full link (including trackers or a private-tracker passkey) is stored with the candidate so it can be queued later, but the Recovery page and provenance show it without trackers or query strings. Torrents are removed as soon as they are imported, so they do not keep seeding; respect any ratio rules of a private tracker you use.
+
+The same lawful-recovery rules as Usenet apply: only retrieve content you are authorised to copy.
+
+### Installing qBittorrent-nox on the Debian box
+
+qBittorrent runs as its own `qbittorrent` account, its web UI listens only on `127.0.0.1:8081`, and its BitTorrent traffic is bound to NordVPN's `nordlynx` interface, so torrents stop rather than fall back to the home connection if the VPN drops. Nothing here changes the box's routing or firewall, but arm the usual fail-safe anyway, since a reboot is the way back from any surprise. With `nordvpnd` enabled at boot the box returns on the VPN, which is the known-good setup.
+
+```bash
+sudo systemd-run --on-active=10min --unit=qbittorrent-failsafe /bin/systemctl reboot
+```
+
+Check that port 8081 is free (SABnzbd commonly uses 8080). If something is listening, pick another port and use it everywhere below:
+
+```bash
+sudo ss -ltnp | grep -E ':8081\b' || echo "8081 is free"
+```
+
+Install qBittorrent-nox and 7-Zip, and create the service account and download folder:
+
+```bash
+sudo apt update
+sudo apt install qbittorrent-nox 7zip
+command -v 7z || command -v 7zz    # Debian 12 installs 7-Zip as 7zz; note the path for SEVEN_ZIP_PATH
+sudo useradd --system --home-dir /var/lib/qbittorrent --create-home --shell /usr/sbin/nologin qbittorrent
+sudo install -d -o qbittorrent -g qbittorrent -m 755 /srv/torrents
+```
+
+RAR archives need the non-free `7zip-rar` package (add `non-free` to the Debian sources first); zip and 7z work without it.
+
+Write qBittorrent's settings before its first start, so the web UI never listens anywhere but loopback and has no default password. This generates a random password, stores only its PBKDF2 hash in qBittorrent's config, and prints the password once for the agent's environment file:
+
+```bash
+QBT_PASSWORD=$(openssl rand -hex 24)
+QBT_HASH=$(python3 -c 'import base64,hashlib,os,sys; s=os.urandom(16); k=hashlib.pbkdf2_hmac("sha512", sys.argv[1].encode(), s, 100000, 64); print("@ByteArray(%s:%s)" % (base64.b64encode(s).decode(), base64.b64encode(k).decode()))' "$QBT_PASSWORD")
+sudo install -d -o qbittorrent -g qbittorrent -m 700 /var/lib/qbittorrent/qBittorrent /var/lib/qbittorrent/qBittorrent/config
+sudo tee /var/lib/qbittorrent/qBittorrent/config/qBittorrent.conf >/dev/null <<EOF
+[BitTorrent]
+Session\Interface=nordlynx
+Session\InterfaceName=nordlynx
+Session\DefaultSavePath=/srv/torrents
+
+[LegalNotice]
+Accepted=true
+
+[Preferences]
+WebUI\Address=127.0.0.1
+WebUI\Port=8081
+WebUI\LocalHostAuth=true
+WebUI\Username=tomify
+WebUI\Password_PBKDF2="$QBT_HASH"
+WebUI\CSRFProtection=true
+WebUI\HostHeaderValidation=true
+EOF
+sudo chown qbittorrent:qbittorrent /var/lib/qbittorrent/qBittorrent/config/qBittorrent.conf
+sudo chmod 600 /var/lib/qbittorrent/qBittorrent/config/qBittorrent.conf
+echo "qBittorrent password: $QBT_PASSWORD"
+```
+
+If NordVPN uses OpenVPN rather than NordLynx, use `nordtun` instead of `nordlynx`. Copy the example unit from the Windows checkout (PowerShell):
+
+```powershell
+scp recovery-agent\qbittorrent-nox.service.example tom@tomify:/tmp/
+```
+
+Then install and start it on the box:
+
+```bash
+sudo cp /tmp/qbittorrent-nox.service.example /etc/systemd/system/qbittorrent-nox.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now qbittorrent-nox
+systemctl status qbittorrent-nox --no-pager
+```
+
+Check that the web UI is only on loopback, the password works and the session is bound to the VPN:
+
+```bash
+sudo ss -ltnp | grep qbittorrent                      # 127.0.0.1:8081 only, plus the BitTorrent port
+curl -s -c /tmp/qbt.cookie --data-urlencode username=tomify --data-urlencode "password=$QBT_PASSWORD" http://127.0.0.1:8081/api/v2/auth/login; echo   # Ok.
+curl -s -b /tmp/qbt.cookie http://127.0.0.1:8081/api/v2/app/preferences | grep -o '"current_network_interface":"[^"]*"'   # "nordlynx"
+rm -f /tmp/qbt.cookie
+```
+
+Add the qBittorrent settings to `/etc/tomify/recovery-agent.env` (use `/usr/bin/7zz` for `SEVEN_ZIP_PATH` if that is what `command -v` printed):
+
+```bash
+sudo tee -a /etc/tomify/recovery-agent.env >/dev/null <<EOF
+TOMIFY_QBITTORRENT_URL=http://127.0.0.1:8081
+TOMIFY_QBITTORRENT_USERNAME=tomify
+TOMIFY_QBITTORRENT_PASSWORD=$QBT_PASSWORD
+TOMIFY_TORRENT_DOWNLOAD_DIR=/srv/torrents
+TOMIFY_TORRENT_CATEGORY=tomify
+TOMIFY_TORRENT_MAX_BYTES=4294967296
+SEVEN_ZIP_PATH=/usr/bin/7z
+EOF
+unset QBT_PASSWORD QBT_HASH
+```
+
+Then deploy the updated agent (see [Updating the recovery agent](#updating-the-recovery-agent); it includes the new `torrent.mjs`), restart it, and confirm `/health` lists `torrent`:
+
+```bash
+sudo systemctl restart tomify-recovery
+curl -s http://127.0.0.1:8788/health; echo           # "backends":[..., "torrent"]
+```
+
+Open Recovery on the site, paste a link into an item and check the progress line. If everything works, cancel the fail-safe:
+
+```bash
+sudo systemctl stop qbittorrent-failsafe.timer
+```
+
+Reboot once (Settings → Restart media server) and check `systemctl status qbittorrent-nox` and the binding check above again: qBittorrent starts after `nordvpnd` and picks up `nordlynx` once NordVPN connects. If qBittorrent runs in Docker instead, set `TOMIFY_QBITTORRENT_DOWNLOAD_DIR` to its in-container download root (for example `/downloads`) and `TOMIFY_TORRENT_DOWNLOAD_DIR` to the matching host folder.
+
 ## Optional authenticated YouTube session
 
 Authentication is optional. Without it—or when it fails—the backend uses anonymous YouTube extraction. Tomify never stores a Google/YouTube username or password.
@@ -380,9 +509,10 @@ The result reports only whether the cookie session is configured and extraction 
 
 An acquisition backend exposes:
 
-- `POST /v1/search` with `{ backend, track, searchFields? }`, where `searchFields` is any non-empty subset of `artist`, `album` and `track` (legacy `searchMode` is still accepted), returning `{ candidates }`.
+- `POST /v1/search` with `{ backend, track, searchFields? }`, where `searchFields` is any non-empty subset of `artist`, `album` and `track` (legacy `searchMode` is still accepted), returning `{ candidates }`. For `backend: "torrent"` the body carries `link` instead, and the one candidate returned is that validated link.
 - `POST /v1/acquire` with `{ backend, candidate, track, artwork, authorisation }`, returning `{ path, quality, artwork, provenance }`.
-- For asynchronous Usenet acquisition, `POST /v1/acquire` returns an opaque job and `POST /v1/jobs/status` reports queued/downloading/completed/failed state, progress, and the final import result.
+- For asynchronous Usenet and torrent acquisition, `POST /v1/acquire` returns an opaque job and `POST /v1/jobs/status` reports queued/downloading/completed/failed state, progress, and the final import result. Torrent jobs also report `details` (`downloadSpeed`, `uploadSpeed`, `seeds`, `seedsInSwarm`, `peers`, `peersInSwarm`, `eta`, `size`, `downloaded`).
+- `POST /v1/jobs/cancel` with `{ jobId }`, stopping a torrent job and removing the torrent and its data from qBittorrent. It waits for any import in progress and returns the `importedPaths` that import created, so they can be deleted too. Idempotent once the job is gone.
 - `POST /v1/jobs/import-remaining` with `{ jobId }`, importing the audio files a completed single-track Usenet job left in its download as a release, without downloading again. Files already imported by that job are skipped, and a job that was already imported as a release is refused.
 - `POST /v1/delete` with `{ importedPaths }`, removing only each recovery derivative, its sidecar and its matching `.tomify-source` original.
 - `POST /v1/status`, returning backend capability state, plus whether remote reboot is enabled, without secret paths or values.
@@ -395,5 +525,7 @@ That boundary is intentionally source-neutral. A later CD-rip, purchased-downloa
 YouTube provenance records the video ID and URL, channel/uploader, title, acquisition timestamp, selected format ID, all available audio-format summaries, measured source quality, derivative details, and whether authenticated access was actually used. Cookies themselves are never provenance.
 
 Internet Archive provenance records the item identifier and details URL, exact filename and final download URL, creator, item title, collection, licence/rights statements, format, original/derivative source flag, byte count, supplied MD5/SHA-1 values, acquisition time, measured audio quality and derivative details.
+
+Torrent provenance records the info hash, link type (magnet or `.torrent` URL), the link without trackers or query string, whether each file came out of an archive, the completed file count, measured source quality and derivative details. It never records the tracker list or a passkey.
 
 Usenet provenance records the provider type and name, opaque result or collection identifier, posted title and date when supplied, selected search mode, details URL, advertised size/age, downloader type, completed file count, measured source quality, and derivative details. It never records indexer API keys, downloader credentials, or credential-bearing download URLs.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { qualityLabel, scoreRecoveryCandidate } from './recovery'
+import { looksLikeTorrentLink, qualityLabel, scoreRecoveryCandidate, torrentTransferSummary } from './recovery'
 
 describe('recovery candidate matching', () => {
   it('favours an official, duration-matched upload', () => {
@@ -14,5 +14,20 @@ describe('recovery candidate matching', () => {
   it('does not claim unknown quality before inspection', () => {
     expect(qualityLabel({})).toBe('Quality measured after import')
     expect(qualityLabel({ codec: 'aac', bitrate: 128_000, sampleRate: 44_100, channels: 2 })).toBe('AAC · 128 kbps · 44.1 kHz · 2 ch')
+  })
+})
+
+describe('torrent links', () => {
+  it('recognises magnet and http(s) links only', () => {
+    expect(looksLikeTorrentLink(' magnet:?xt=urn:btih:abc&dn=Flood ')).toBe(true)
+    expect(looksLikeTorrentLink('https://example.com/flood.torrent')).toBe(true)
+    expect(looksLikeTorrentLink('magnet:?dn=Flood')).toBe(false)
+    expect(looksLikeTorrentLink('Flood FLAC')).toBe(false)
+  })
+
+  it('summarises live torrent figures and leaves out what qBittorrent does not know', () => {
+    expect(torrentTransferSummary({ downloadSpeed: 950, seeds: 1, peers: 0, eta: 7200 })).toBe('950 B/s · 1 seed · 0 peers · 2 h 0 min left')
+    expect(torrentTransferSummary({ seeds: 0, seedsInSwarm: 0, eta: null })).toBe('0 seeds')
+    expect(torrentTransferSummary(null)).toBeNull()
   })
 })
