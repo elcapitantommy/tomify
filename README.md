@@ -185,6 +185,7 @@ pnpm build
 
 - Navidrome token authentication, persisted without storing the password, with logout and useful failure states.
 - Home, artists, artist detail, albums, multi-disc album detail, debounced search, playlists, favourites, downloads placeholder and settings.
+- Playlists are private to the account that made them, with a **Share** button for sharing one with other Tomify accounts (read-only; recipients see it under **Shared with you**). Navidrome itself would hand admins every user's playlists and everyone other users' public ones, so Tomify lists only your own plus those shared with you. Navidrome has no per-user sharing, so sharing a Navidrome playlist also marks it public in Navidrome (other Subsonic clients can then see it) and unsharing it from everyone makes it private again. An account appears in the Share list once it has signed in to Tomify. Shares live in the D1 `playlist_shares` table (`drizzle/0007_playlist_shares.sql`; the Worker also creates it on first use, so deploying needs no extra step).
 - Persistent HTML5 player with queue, seek, volume, mute, shuffle, repeat, previous/next and full-screen mobile now playing.
 - Media Session metadata (absolute artwork in six sizes), transport controls and position updates.
 - Installable manifest, app icons, standalone mode, cached app shell and cached artwork.
