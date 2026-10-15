@@ -166,6 +166,7 @@ ip -4 -br addr show               # e.g. "enp3s0 UP 192.168.1.20/24" means 192.1
 Then, with NordVPN still disconnected:
 
 ```bash
+sudo systemctl start nordvpnd                    # the settings below need the service running; it stays disconnected
 nordvpn set lan-discovery enable                 # keeps private LAN ranges reachable
 nordvpn allowlist add subnet 192.168.1.0/24      # use your subnet from above
 nordvpn allowlist add port 22 protocol TCP       # inbound SSH
