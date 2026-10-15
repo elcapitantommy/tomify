@@ -9,6 +9,24 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/tomify-logo-192.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-180.png" />
     <title>Tomify</title>
+    <script>
+      // After a deploy, a page built from an old cached index.html can ask for
+      // hashed assets that no longer exist, leaving a blank screen. Reload once
+      // (after asking the service worker to update) so the new build loads.
+      window.addEventListener('error', function (event) {
+        var el = event.target
+        var src = el && (el.src || el.href)
+        if (!src || src.indexOf('/assets/') < 0) return
+        var key = 'tomify-asset-reload:' + src
+        try { if (sessionStorage.getItem(key)) return; sessionStorage.setItem(key, '1') } catch (e) { return }
+        var reload = function () { location.reload() }
+        var sw = navigator.serviceWorker
+        if (!sw) return reload()
+        sw.getRegistrations().then(function (regs) {
+          return Promise.all(regs.map(function (reg) { return reg.update().catch(function () {}) }))
+        }).then(reload, reload)
+      }, true)
+    </script>
   </head>
   <body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>
 </html>
