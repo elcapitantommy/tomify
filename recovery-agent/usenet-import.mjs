@@ -60,10 +60,50 @@ export function folderAlbum(path) {
   return { album: album || null, discNumber: disc ? Number(disc[1]) : null }
 }
 
+// Compares artist names ignoring case, accents, punctuation, "&" versus "and" and a leading "The", so
+// "Earth, Wind & Fire", "Earth Wind And Fire" and "Earth, Wind, and Fire" are one artist.
+export function looseArtistKey(value) {
+  return foldName(value).replace(/&/g, ' and ').replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim().replace(/^the /, '').replace(/ /g, '')
+}
+
+// One spelling for the release's own artist across every track, so Navidrome lists a discography whose tags
+// spell the band several ways as one artist. Prefers the spelling of an artist folder already in the master
+// library, then the release's most common spelling. Other artists (guests, collaborations) are left as tagged.
+export async function unifyReleaseArtist(inspected, requested, masterRoot) {
+  const names = inspected.flatMap((item) => [item.metadata.albumArtist, item.metadata.artist]).filter(Boolean)
+  const key = looseArtistKey(requested.artist || mostCommon(inspected.map((item) => item.metadata.albumArtist || item.metadata.artist)))
+  if (!key) return null
+  const libraryNames = masterRoot ? (await readdir(masterRoot, { withFileTypes: true }).catch(() => [])).filter((entry) => entry.isDirectory()).map((entry) => entry.name) : []
+  const canonical = libraryNames.filter((name) => looseArtistKey(name) === key).sort((left, right) => left.localeCompare(right, 'en'))[0]
+    || mostCommon(names.filter((name) => looseArtistKey(name) === key))
+    || requested.artist
+  for (const item of inspected) {
+    const metadata = { ...item.metadata }
+    if (looseArtistKey(metadata.albumArtist) === key) metadata.albumArtist = canonical
+    if (looseArtistKey(metadata.artist) === key) metadata.artist = canonical
+    item.metadata = metadata
+  }
+  return canonical
+}
+
+// The album artist for one album of a release. An album-artist tag wins. Without one, a track's artist is often
+// a guest or featured name ("Deniece Williams" on a compilation), so the release's own artist is used when it
+// appears on the album, then an artist on more than half its tracks, then "Various Artists".
+export function albumArtistFor(items, releaseArtist) {
+  const tagged = mostCommon(items.filter((item) => item.hasAlbumArtistTag).map((item) => item.metadata.albumArtist))
+  if (tagged) return tagged
+  const key = looseArtistKey(releaseArtist)
+  if (key && items.some((item) => looseArtistKey(item.metadata.artist) === key)) return releaseArtist
+  const common = mostCommon(items.map((item) => item.metadata.artist))
+  if (!common) return null
+  const count = items.filter((item) => looseArtistKey(item.metadata.artist) === looseArtistKey(common)).length
+  return count * 2 > items.length || items.length === 1 ? common : 'Various Artists'
+}
+
 // Splits a release into one group per album, so a discography imports into one folder per album rather than
 // mixing every album's tracks (and their clashing "01 - Intro" names) into one. Files with no album tag fall
 // back to their folder's name when the release spans several folders.
-export function releaseAlbumGroups(inspected, requested) {
+export function releaseAlbumGroups(inspected, requested, releaseArtist = null) {
   const folders = inspected.map((item) => folderAlbum(item.file.path))
   const multipleFolders = new Set(folders.map((folder) => foldName(folder.album || ''))).size > 1
   const groups = new Map()
@@ -78,10 +118,14 @@ export function releaseAlbumGroups(inspected, requested) {
   const requestedAlbum = foldName(requested.album || '')
   const list = [...groups.entries()].map(([key, items]) => ({
     items,
-    artist: mostCommon(items.map((item) => item.metadata.albumArtist || item.metadata.artist)) || requested.artist,
+    artist: albumArtistFor(items, releaseArtist) || requested.artist,
     album: mostCommon(items.map((item) => item.metadata.album)) || requested.album || null,
     requested: groups.size === 1 || (Boolean(requestedAlbum) && key === requestedAlbum),
   }))
+  // Navidrome splits an album whose tracks name different album artists, so every track gets its album's one.
+  for (const group of list) {
+    for (const item of group.items) item.metadata = { ...item.metadata, albumArtist: group.artist || item.metadata.albumArtist }
+  }
   // MusicBrainz release ids and dates from the wanted item only describe the wanted album.
   for (const group of list.filter((value) => !value.requested)) {
     for (const item of group.items) item.metadata = { ...item.metadata, releaseId: null, releaseGroupId: null, releaseDate: item.hasDateTag ? item.metadata.releaseDate : null }
@@ -143,7 +187,7 @@ async function ensureAbsent(paths) {
 }
 
 export async function importUsenetCompletion(job, completedFiles, options) {
-  const { recoveryRoot, probe, prepareArtwork, run, ffmpeg } = options
+  const { recoveryRoot, masterRoot = null, probe, prepareArtwork, run, ffmpeg } = options
   const searchMode = job.result.searchMode || 'track'
   const selectedFiles = selectUsenetImportFiles(completedFiles, job.request.track || {}, searchMode)
   if (!selectedFiles.length) throw new Error('No completed audio file matched the wanted track.')
@@ -155,12 +199,13 @@ export async function importUsenetCompletion(job, completedFiles, options) {
       throw new Error('The selected completed file is not valid audio.')
     }
     const tags = sourceTags(quality)
-    inspected.push({ file, quality, hasAlbumTag: Boolean(tags.album), hasDateTag: Boolean(tags.date || tags.year), metadata: searchMode === 'release' ? releaseTrackMetadata(file.path, quality, job.request.track || {}, index + 1) : { ...(job.request.track || {}) } })
+    inspected.push({ file, quality, hasAlbumTag: Boolean(tags.album), hasAlbumArtistTag: Boolean(tags.albumartist || tags.albumartists), hasDateTag: Boolean(tags.date || tags.year), metadata: searchMode === 'release' ? releaseTrackMetadata(file.path, quality, job.request.track || {}, index + 1) : { ...(job.request.track || {}) } })
   }
   const torrent = job.downloader === 'qbittorrent'
   if (!inspected.length) throw new Error(`The completed ${torrent ? 'torrent' : 'Usenet download'} contains no valid supported audio files.`)
 
-  const groups = searchMode === 'release' ? releaseAlbumGroups(inspected, job.request.track || {}) : [{ items: inspected, artist: job.request.track?.artist, album: job.request.track?.album, requested: true }]
+  const unifiedArtist = searchMode === 'release' ? await unifyReleaseArtist(inspected, job.request.track || {}, masterRoot) : null
+  const groups = searchMode === 'release' ? releaseAlbumGroups(inspected, job.request.track || {}, unifiedArtist) : [{ items: inspected, artist: job.request.track?.artist, album: job.request.track?.album, requested: true }]
   const releaseArtist = searchMode === 'release' ? mostCommon(inspected.map((item) => item.metadata.albumArtist || item.metadata.artist)) || job.request.track?.artist : job.request.track?.artist
   const releaseAlbum = groups.length === 1 ? groups[0].album : null
   await mkdir(resolve(recoveryRoot), { recursive: true })

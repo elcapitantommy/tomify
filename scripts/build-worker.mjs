@@ -6,6 +6,7 @@ import { catalogueImportWorkerSource } from './catalogue-import.mjs'
 import { catalogueWorkerSource } from './catalogue-worker.mjs'
 import { completenessWorkerSource } from './completeness-worker.mjs'
 import { albumArtworkWorkerSource } from './album-artwork-worker.mjs'
+import { playlistShareWorkerSource } from './playlist-share-worker.mjs'
 
 const outputDirectory = new URL('../dist/', import.meta.url)
 const workerPath = new URL('../dist/server/index.js', import.meta.url)
@@ -54,6 +55,8 @@ ${catalogueWorkerSource}
 ${completenessWorkerSource}
 
 ${albumArtworkWorkerSource}
+
+${playlistShareWorkerSource}
 
 function decode(value) {
   const binary = atob(value)
@@ -464,6 +467,8 @@ export default {
     if (completenessResponse) return completenessResponse
     const albumArtworkResponse = await handleAlbumArtworkRequest(request, env, url)
     if (albumArtworkResponse) return albumArtworkResponse
+    const playlistShareResponse = await handlePlaylistShareRequest(request, env, url)
+    if (playlistShareResponse) return playlistShareResponse
 
     if (pathname === '/api/system/reboot' && request.method === 'POST') {
       const username = await authenticate(request)

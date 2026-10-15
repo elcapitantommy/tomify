@@ -214,7 +214,16 @@ async function handleCatalogueRequest(request, env, url) {
     try { const input = await request.json(); return json({ playlist: await saveCataloguePlaylist(env.TOMIFY_DB, username, input.playlist, input) }, 201) } catch (error) { return json({ error: 'catalogue-playlist-import-failed', message: error instanceof Error ? error.message : 'Playlist import failed.' }, 400) }
   }
   const match = url.pathname.match(/^\/api\/catalogue-playlists\/([^/]+)(?:\/(resolve))?$/)
-  if (match && request.method === 'GET' && !match[2]) { const playlist = await cataloguePlaylistDetail(env.TOMIFY_DB, username, match[1]); return playlist ? json({ playlist }) : json({ error: 'playlist-not-found' }, 404) }
+  if (match && request.method === 'GET' && !match[2]) {
+    const own = await cataloguePlaylistDetail(env.TOMIFY_DB, username, match[1])
+    if (own) return json({ playlist: { ...own, owner: username, sharedWithMe: false } })
+    // Another account's playlist is readable only when its owner shared it with this account.
+    await ensurePlaylistShareTables(env.TOMIFY_DB)
+    const share = await playlistShareFor(env.TOMIFY_DB, 'imported', match[1], username)
+    const ownerRow = share ? await env.TOMIFY_DB.prepare('SELECT username FROM catalogue_playlists WHERE id = ?').bind(match[1]).first() : null
+    const shared = ownerRow ? await cataloguePlaylistDetail(env.TOMIFY_DB, ownerRow.username, match[1]) : null
+    return shared ? json({ playlist: { ...shared, owner: ownerRow.username, sharedWithMe: true } }) : json({ error: 'playlist-not-found' }, 404)
+  }
   if (match && request.method === 'PUT' && !match[2]) {
     try { const input = await request.json(); return json({ playlist: await saveCataloguePlaylist(env.TOMIFY_DB, username, input.playlist, { ...input, mode: 'update', playlistId: match[1] }) }) } catch (error) { return json({ error: 'catalogue-playlist-update-failed', message: error instanceof Error ? error.message : 'Playlist update failed.' }, 400) }
   }

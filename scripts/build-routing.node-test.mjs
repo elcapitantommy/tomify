@@ -626,3 +626,64 @@ test('VPN changes report a refusal from the agent', async () => {
     assert.match((await response.json()).message, /kill switch/)
   })
 })
+
+// A D1-shaped wrapper over node:sqlite so playlist sharing runs against real SQL.
+async function sqliteDatabase() {
+  const { DatabaseSync } = await import('node:sqlite')
+  const sqlite = new DatabaseSync(':memory:')
+  const statement = (sql, args = []) => ({
+    bind: (...values) => statement(sql, values),
+    async first() { return sqlite.prepare(sql).get(...args) ?? null },
+    async all() { return { results: sqlite.prepare(sql).all(...args) } },
+    async run() { sqlite.prepare(sql).run(...args); return {} },
+  })
+  return { sqlite, prepare: (sql) => statement(sql), async batch(statements) { for (const item of statements) await item.run(); return [] } }
+}
+
+async function withNavidromePlaylists(playlists, callback) {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/getPlaylist.view') { const playlist = playlists[url.searchParams.get('id')]; return Response.json({ 'subsonic-response': playlist ? { status: 'ok', playlist } : { status: 'failed', error: { code: 70, message: 'playlist not found' } } }) }
+    return Response.json({ error: 'unexpected' }, { status: 500 })
+  }
+  try { await callback() } finally { globalThis.fetch = originalFetch }
+}
+
+const shareCall = (env, user, path, init = {}) => worker.fetch(new Request('https://app.tomify.test' + path, { ...init, headers: { 'x-tomify-user': user, 'x-tomify-token': 'token-' + user, 'x-tomify-salt': 'salt', 'content-type': 'application/json' } }), env)
+
+test('playlists stay with their owner until shared, and recipients get read-only access', async () => {
+  const db = await sqliteDatabase()
+  const env = { TOMIFY_DB: db }
+  await withNavidromePlaylists({ 'nav-1': { id: 'nav-1', name: 'Road trip', owner: 'Tom' } }, async () => {
+    for (const user of ['Tom', 'anna', 'sam']) assert.equal((await shareCall(env, user, '/api/playlist-shares')).status, 200)
+    assert.equal((await shareCall(env, 'Tom', '/api/catalogue-playlists')).status, 200)
+    db.sqlite.prepare("INSERT INTO catalogue_playlists (id, username, name, provider, provider_playlist_id, source_url) VALUES ('imp-1', 'Tom', 'Spotify mix', 'spotify', 'sp1', 'https://open.spotify.com/playlist/sp1')").run()
+
+    assert.equal((await shareCall(env, 'anna', '/api/catalogue-playlists/imp-1')).status, 404)
+    assert.equal((await shareCall(env, 'anna', '/api/playlist-shares/imported/imp-1', { method: 'PUT', body: JSON.stringify({ users: ['anna'] }) })).status, 404)
+    assert.equal((await shareCall(env, 'anna', '/api/playlist-shares/navidrome/nav-1', { method: 'PUT', body: JSON.stringify({ users: ['anna'] }) })).status, 404)
+
+    const imported = await shareCall(env, 'Tom', '/api/playlist-shares/imported/imp-1', { method: 'PUT', body: JSON.stringify({ users: ['Anna', 'tom', 'stranger'] }) })
+    assert.deepEqual(await imported.json(), { kind: 'imported', playlistId: 'imp-1', sharedWith: ['anna'] })
+    const navidrome = await shareCall(env, 'Tom', '/api/playlist-shares/navidrome/nav-1', { method: 'PUT', body: JSON.stringify({ users: ['anna', 'sam'] }) })
+    assert.deepEqual((await navidrome.json()).sharedWith, ['anna', 'sam'])
+
+    const tom = await (await shareCall(env, 'Tom', '/api/playlist-shares')).json()
+    assert.deepEqual(tom.accounts, ['anna', 'sam'])
+    assert.deepEqual(tom.sharedByMe, [{ kind: 'imported', playlistId: 'imp-1', sharedWith: ['anna'] }, { kind: 'navidrome', playlistId: 'nav-1', sharedWith: ['anna', 'sam'] }])
+    const anna = await (await shareCall(env, 'anna', '/api/playlist-shares')).json()
+    assert.deepEqual(anna.sharedWithMe, [{ kind: 'navidrome', playlistId: 'nav-1', owner: 'tom', name: 'Road trip' }, { kind: 'imported', playlistId: 'imp-1', owner: 'tom', name: 'Spotify mix' }])
+
+    const detail = await shareCall(env, 'anna', '/api/catalogue-playlists/imp-1')
+    assert.equal(detail.status, 200)
+    const shared = (await detail.json()).playlist
+    assert.equal(shared.name, 'Spotify mix'); assert.equal(shared.owner, 'Tom'); assert.equal(shared.sharedWithMe, true)
+    assert.equal((await shareCall(env, 'sam', '/api/catalogue-playlists/imp-1')).status, 404)
+    assert.equal((await shareCall(env, 'anna', '/api/catalogue-playlists/imp-1/resolve', { method: 'PATCH', body: JSON.stringify({ items: [] }) })).status, 404)
+
+    await shareCall(env, 'Tom', '/api/playlist-shares/imported/imp-1', { method: 'PUT', body: JSON.stringify({ users: [] }) })
+    assert.equal((await shareCall(env, 'anna', '/api/catalogue-playlists/imp-1')).status, 404)
+  })
+})
