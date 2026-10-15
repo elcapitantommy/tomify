@@ -3,6 +3,12 @@ import { ImageUp, LoaderCircle, Square } from 'lucide-react'
 import { useApi } from '../lib/api-context'
 import { useAlbumArtwork, type ArtworkUpgradeProgress } from '../stores/albumArtwork'
 
+function progressLabel(progress: ArtworkUpgradeProgress, running: boolean) {
+  const parts = [`${progress.applied} upgraded`, progress.unchanged && `${progress.unchanged} already upgraded`, progress.noMatch && `${progress.noMatch} not found on Spotify`, progress.lowConfidence && `${progress.lowConfidence} uncertain matches left for the album page`, progress.failed && `${progress.failed} failed (${progress.lastError})`].filter(Boolean)
+  const waiting = running && progress.waitingSeconds ? ` Spotify asked Tomify to slow down; resuming in ${progress.waitingSeconds}s.` : ''
+  return `${running ? 'Checking' : 'Checked'} ${progress.done} of ${progress.total} albums: ${parts.join(', ')}.${waiting}`
+}
+
 export function ArtworkUpgrade() {
   const api = useApi()
   const status = useAlbumArtwork((state) => state.status)
@@ -22,7 +28,7 @@ export function ArtworkUpgrade() {
     finally { setRunning(false) }
   }
 
-  const detail = error ?? (progress ? `${running ? 'Checking' : 'Checked'} ${progress.done} of ${progress.total} albums: ${progress.applied} upgraded, ${progress.skipped} kept${progress.failed ? `, ${progress.failed} failed` : ''}.`
+  const detail = error ?? (progress ? progressLabel(progress, running)
     : spotifyAvailable ? 'Replaces library artwork with a confident Spotify match of at least 600px. Albums where you chose artwork yourself are left alone, and nothing on the music server is changed.'
       : status === 'ready' ? 'Spotify is not configured on the server.' : 'The artwork store is unavailable.')
 

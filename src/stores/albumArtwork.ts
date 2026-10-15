@@ -34,7 +34,8 @@ export interface AlbumArtworkCandidate {
 }
 
 export type AutoArtworkResult = 'applied' | 'unchanged' | 'manual-choice' | 'low-confidence' | 'no-match' | 'failed'
-export interface ArtworkUpgradeProgress { done: number; total: number; applied: number; skipped: number; failed: number }
+export interface AutoArtworkOutcome { result: AutoArtworkResult | 'rate-limited'; retryAfter?: number; message?: string }
+export interface ArtworkUpgradeProgress { done: number; total: number; applied: number; unchanged: number; noMatch: number; lowConfidence: number; failed: number; waitingSeconds?: number; lastError?: string }
 
 type Status = 'checking' | 'ready' | 'unavailable'
 
@@ -46,7 +47,7 @@ interface AlbumArtworkState {
   lookup(album: Album): Promise<AlbumArtworkCandidate[]>
   select(albumId: string, candidate: AlbumArtworkCandidate | 'library'): Promise<void>
   reset(albumId: string): Promise<void>
-  auto(album: Album): Promise<AutoArtworkResult>
+  auto(album: Album): Promise<AutoArtworkOutcome>
   upgradeMany(albums: Album[], onProgress?: (progress: ArtworkUpgradeProgress) => void, signal?: AbortSignal): Promise<ArtworkUpgradeProgress>
 }
 
@@ -59,7 +60,7 @@ function headers(): Record<string, string> {
 async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await window.fetch('/api/album-artwork/' + path, { method: 'POST', headers: headers(), body: JSON.stringify(body) })
   const result = await response.json().catch(() => ({})) as T & { error?: string; message?: string }
-  if (!response.ok) throw Object.assign(new Error(result.message || result.error || 'Album artwork request failed.'), { code: result.error })
+  if (!response.ok) throw Object.assign(new Error(result.message || result.error || 'Album artwork request failed.'), { code: result.error, retryAfter: (result as { retryAfter?: number }).retryAfter })
   return result
 }
 
@@ -103,26 +104,38 @@ export const useAlbumArtwork = create<AlbumArtworkState>((set, get) => ({
     try {
       const result = await post<{ item?: AlbumArtworkOverride | null; applied: boolean; reason?: AutoArtworkResult }>('auto', albumInput(album))
       if (result.applied && result.item) set((state) => ({ overrides: { ...state.overrides, [album.id]: result.item! } }))
-      return result.applied ? 'applied' : result.reason ?? 'no-match'
-    } catch {
-      return 'failed'
+      return { result: result.applied ? 'applied' : result.reason ?? 'no-match' }
+    } catch (error) {
+      const failure = error as Error & { code?: string; retryAfter?: number }
+      if (failure.code === 'spotify-rate-limited') return { result: 'rate-limited', retryAfter: failure.retryAfter ?? 5 }
+      return { result: 'failed', message: failure.message }
     }
   },
 
   upgradeMany: async (albums, onProgress, signal) => {
     // Albums with a manual choice are left alone; everything else is re-checked so better matches can replace earlier ones.
     const pending = albums.filter((album) => get().overrides[album.id]?.source !== 'manual')
-    const progress: ArtworkUpgradeProgress = { done: 0, total: pending.length, applied: 0, skipped: 0, failed: 0 }
+    const progress: ArtworkUpgradeProgress = { done: 0, total: pending.length, applied: 0, unchanged: 0, noMatch: 0, lowConfidence: 0, failed: 0 }
     onProgress?.({ ...progress })
     for (const album of pending) {
       if (signal?.aborted) break
-      const result = await get().auto(album)
+      let outcome = await get().auto(album)
+      // Spotify rate limits are waited out and the same album retried, rather than counted as misses.
+      for (let attempt = 0; outcome.result === 'rate-limited' && attempt < 5 && !signal?.aborted; attempt += 1) {
+        const seconds = Math.min(60, outcome.retryAfter ?? 5)
+        onProgress?.({ ...progress, waitingSeconds: seconds })
+        await wait(seconds * 1000)
+        outcome = await get().auto(album)
+      }
+      if (signal?.aborted) break
       progress.done += 1
-      if (result === 'applied') progress.applied += 1
-      else if (result === 'failed') progress.failed += 1
-      else progress.skipped += 1
+      if (outcome.result === 'applied') progress.applied += 1
+      else if (outcome.result === 'no-match') progress.noMatch += 1
+      else if (outcome.result === 'low-confidence') progress.lowConfidence += 1
+      else if (outcome.result === 'unchanged' || outcome.result === 'manual-choice') progress.unchanged += 1
+      else { progress.failed += 1; progress.lastError = outcome.message ?? 'Spotify kept rate limiting Tomify.' }
       onProgress?.({ ...progress })
-      await wait(250)
+      await wait(350)
     }
     return progress
   },

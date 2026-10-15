@@ -268,7 +268,7 @@ test('album artwork applies a confident Spotify match automatically but never re
     if (url.hostname === 'accounts.spotify.com') return Response.json({ access_token: 'spotify-token', expires_in: 3600 })
     if (url.hostname === 'api.spotify.com') {
       spotifySearches.push(url.searchParams.get('q'))
-      const items = url.searchParams.get('q')?.startsWith('album:Flood ') ? [{ id: 'sp-flood', name: 'Flood', release_date: '1990-01-15', artists: [{ name: 'They Might Be Giants' }], images: [{ url: 'https://i.scdn.co/image/flood-640', width: 640, height: 640 }, { url: 'https://i.scdn.co/image/flood-64', width: 64, height: 64 }], external_urls: { spotify: 'https://open.spotify.com/album/sp-flood' } }] : []
+      const items = url.searchParams.get('q')?.startsWith('album:Flood ') ? [{ id: 'sp-flood', name: 'Flood (Deluxe Edition)', release_date: '1990-01-15', artists: [{ name: 'They Might Be Giants' }], images: [{ url: 'https://i.scdn.co/image/flood-640', width: 640, height: 640 }, { url: 'https://i.scdn.co/image/flood-64', width: 64, height: 64 }], external_urls: { spotify: 'https://open.spotify.com/album/sp-flood' } }] : []
       return Response.json({ albums: { items } })
     }
     return new Response('{}', { status: 404 })
@@ -288,7 +288,7 @@ test('album artwork applies a confident Spotify match automatically but never re
     assert.equal(applied.item.url, 'https://i.scdn.co/image/flood-640')
     assert.equal(applied.item.source, 'auto')
     assert.equal(applied.item.storeUrl, 'https://open.spotify.com/album/sp-flood')
-    assert.deepEqual(spotifySearches, ['album:Flood (2013 Remaster) artist:They Might Be Giants', 'album:Flood artist:They Might Be Giants'])
+    assert.deepEqual(spotifySearches, ['album:Flood artist:They Might Be Giants'], 'the edition qualifier is dropped from the search and from matching')
 
     const unchanged = await call('auto', album).then((response) => response.json())
     assert.equal(unchanged.applied, false)
@@ -313,6 +313,7 @@ test('album artwork applies a confident Spotify match automatically but never re
 
     const none = await call('auto', { albumId: 'album-2', name: 'Unknown Thing', artist: 'Nobody' }).then((response) => response.json())
     assert.deepEqual([none.applied, none.reason], [false, 'no-match'])
+    assert.deepEqual(spotifySearches.slice(-2), ['album:Unknown Thing artist:Nobody', 'Unknown Thing Nobody'], 'an unfiltered search is tried before giving up')
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -325,6 +326,31 @@ test('album artwork lookups report a missing Spotify configuration', async () =>
     const response = await worker.fetch(new Request('https://app.tomify.test/api/album-artwork/lookup', { method: 'POST', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' }, body: JSON.stringify({ albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' }) }), { TOMIFY_DB: artworkDatabase() })
     assert.equal(response.status, 503)
     assert.equal((await response.json()).error, 'spotify-unavailable')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('album artwork reports Spotify rate limits and errors instead of treating them as no match', async () => {
+  const originalFetch = globalThis.fetch
+  let status = 429
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.hostname === 'accounts.spotify.com') return Response.json({ access_token: 'spotify-token', expires_in: 3600 })
+    return new Response('{}', { status, headers: status === 429 ? { 'retry-after': '7' } : {} })
+  }
+  try {
+    const env = { TOMIFY_DB: artworkDatabase(), SPOTIFY_CLIENT_ID: 'id', SPOTIFY_CLIENT_SECRET: 'secret' }
+    const call = () => worker.fetch(new Request('https://app.tomify.test/api/album-artwork/auto', { method: 'POST', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' }, body: JSON.stringify({ albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' }) }), env)
+    const limited = await call()
+    assert.equal(limited.status, 429)
+    assert.deepEqual(await limited.json().then(({ error, retryAfter }) => ({ error, retryAfter })), { error: 'spotify-rate-limited', retryAfter: 7 })
+    status = 500
+    const failed = await call()
+    assert.equal(failed.status, 502)
+    assert.equal((await failed.json()).error, 'spotify-error')
+    assert.equal(env.TOMIFY_DB.rows.size, 0)
   } finally {
     globalThis.fetch = originalFetch
   }
