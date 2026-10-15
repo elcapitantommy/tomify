@@ -22,6 +22,22 @@ describe('album completeness', () => {
     expect(result.matches.every((match) => match.local.length === 1 && match.local[0].title === match.track.title)).toBe(true)
   })
 
+  it('flags a release much smaller than the local album as a mismatched edition, not complete', () => {
+    const single: TracklistTrack[] = [{ key: '1-1', disc: 1, number: 1, title: 'Particle Man', artist: 'They Might Be Giants', length: null, recordingId: null }]
+    const result = assessAlbumCompleteness({ tracks: single }, floodTitles.map((title, index) => local(`t${index}`, { title, track: index + 1 })))
+    expect(result.present).toBe(1)
+    expect(result.editionMismatch).toBe(true)
+    expect(result.complete).toBe(false)
+  })
+
+  it('keeps a complete album with a few bonus tracks complete', () => {
+    const tracks = [...flood.map((track, index) => local(`t${index}`, { title: track.title, track: index + 1 })), local('bonus', { title: 'Demo', track: 20 })]
+    const result = assessAlbumCompleteness({ tracks: flood }, tracks)
+    expect(result.editionMismatch).toBe(false)
+    expect(result.complete).toBe(true)
+    expect(result.extras).toHaveLength(1)
+  })
+
   it('matches by disc and track number when titles differ only by tagging style', () => {
     const result = assessAlbumCompleteness({ tracks: flood.slice(0, 4) }, [local('x', { title: 'Istanbul', track: 4, duration: 123 })])
     expect(result.matches[3].local.map((track) => track.id)).toEqual(['x'])

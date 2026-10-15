@@ -42,6 +42,28 @@ export function chooseReleaseEdition(editions, localTrackCount) {
   return [...pool].sort((left, right) => Math.abs(left.trackCount - target) - Math.abs(right.trackCount - target) || formatRank(left) - formatRank(right) || String(left.date || '9999').localeCompare(String(right.date || '9999')))[0]
 }
 
+// An edition far smaller than the local album (a one-track promo single sharing the album's title)
+// cannot be the edition the files came from. Small local albums are left alone: they may be partial.
+export function editionFitsLocal(trackCount, localTrackCount) {
+  const local = Number(localTrackCount) || 0
+  return local < 4 || (Number(trackCount) || 0) >= local * 0.5
+}
+
+// Bonus for a MusicBrainz release group whose primary type suits the number of local tracks, so a
+// twelve-track album does not match the same-titled single and a two-track single does not match the album.
+export function releaseGroupTypeFit(group, trackCount) {
+  const local = Number(trackCount) || 0
+  const type = String(group?.['primary-type'] || '').toLowerCase()
+  if (!local || !type) return 0
+  if (local >= 5) return type === 'album' ? 10 : type === 'single' ? -30 : 0
+  if (local <= 3) return type === 'single' ? 10 : type === 'album' ? -10 : 0
+  return 0
+}
+
+export function releaseTrackCount(release) {
+  return (Array.isArray(release?.media) ? release.media : []).reduce((sum, medium) => sum + (Number(medium?.['track-count']) || (Array.isArray(medium?.tracks) ? medium.tracks.length : 0)), 0)
+}
+
 export function mapReleaseTracklist(release, albumId, source, releaseGroupId = null) {
   const media = Array.isArray(release?.media) ? release.media : []
   const releaseArtist = completenessCredit(release?.['artist-credit'])
@@ -97,28 +119,45 @@ async function fetchMusicBrainzRelease(id) {
   return release?.id ? release : null
 }
 
+async function releaseGroupEditions(releaseGroupId) {
+  if (!isMusicBrainzId(releaseGroupId)) return []
+  const browse = new URL('https://musicbrainz.org/ws/2/release')
+  browse.searchParams.set('release-group', releaseGroupId)
+  browse.searchParams.set('inc', 'media')
+  browse.searchParams.set('limit', '100')
+  browse.searchParams.set('fmt', 'json')
+  return summariseReleaseEditions((await musicBrainzJson(browse))?.releases)
+}
+
 async function resolveAlbumTracklist(db, album, requestedReleaseId) {
+  const local = album.localTrackCount
   let release = null
   let source = 'auto'
   if (requestedReleaseId) { release = await fetchMusicBrainzRelease(requestedReleaseId); source = 'manual' }
-  if (!release && isMusicBrainzId(album.musicBrainzId)) { release = await fetchMusicBrainzRelease(album.musicBrainzId); if (release) source = 'tagged' }
-  let releaseGroupId = release?.['release-group']?.id || (await selectRelease(db, album.albumId))?.musicBrainzId || null
-  if (!release && !releaseGroupId) releaseGroupId = (await lookupMusicBrainzReleaseGroup({ name: album.name, artist: album.artist, year: album.year, musicBrainzId: album.musicBrainzId }))?.group?.id || null
-  let editions = []
-  if (isMusicBrainzId(releaseGroupId)) {
-    const browse = new URL('https://musicbrainz.org/ws/2/release')
-    browse.searchParams.set('release-group', releaseGroupId)
-    browse.searchParams.set('inc', 'media')
-    browse.searchParams.set('limit', '100')
-    browse.searchParams.set('fmt', 'json')
-    editions = summariseReleaseEditions((await musicBrainzJson(browse))?.releases)
+  let tagged = null
+  if (!release && isMusicBrainzId(album.musicBrainzId)) {
+    tagged = await fetchMusicBrainzRelease(album.musicBrainzId)
+    if (tagged && editionFitsLocal(releaseTrackCount(tagged), local)) { release = tagged; source = 'tagged' }
   }
+  let releaseGroupId = [release?.['release-group']?.id, tagged?.['release-group']?.id, (await selectRelease(db, album.albumId))?.musicBrainzId].find(isMusicBrainzId) || null
+  if (!release && !releaseGroupId) releaseGroupId = (await lookupMusicBrainzReleaseGroup({ name: album.name, artist: album.artist, year: album.year, musicBrainzId: album.musicBrainzId, trackCount: local }))?.group?.id || null
+  let editions = await releaseGroupEditions(releaseGroupId)
   if (!release) {
-    const chosen = chooseReleaseEdition(editions, album.localTrackCount)
+    let chosen = chooseReleaseEdition(editions, local)
+    if (!chosen || !editionFitsLocal(chosen.trackCount, local)) {
+      // The tagged or cached release group can be a same-titled single; search again by title, weighing the track count.
+      const searchedId = (await lookupMusicBrainzReleaseGroup({ name: album.name, artist: album.artist, year: album.year, trackCount: local }))?.group?.id
+      if (isMusicBrainzId(searchedId) && searchedId !== releaseGroupId) {
+        const alternatives = await releaseGroupEditions(searchedId)
+        const better = chooseReleaseEdition(alternatives, local)
+        if (better && (!chosen || editionFitsLocal(better.trackCount, local))) { releaseGroupId = searchedId; editions = alternatives; chosen = better }
+      }
+    }
     if (chosen) release = await fetchMusicBrainzRelease(chosen.id)
   }
+  if (!release && tagged) { release = tagged; source = 'tagged' }
   if (!release) return null
-  const tracklist = mapReleaseTracklist(release, album.albumId, source, releaseGroupId)
+  const tracklist = { ...mapReleaseTracklist(release, album.albumId, source, releaseGroupId), localTrackCount: Number(local) || 0 }
   return tracklist.tracks.length ? { tracklist, editions } : null
 }
 
@@ -144,9 +183,13 @@ async function handleCompletenessRequest(request, env, url) {
   if (url.pathname === '/api/album-completeness/tracklist') {
     let cached = await selectTracklist(db, albumId)
     const requestedReleaseId = isMusicBrainzId(body.releaseId) ? body.releaseId : body.force === true && cached?.tracklist?.source === 'manual' ? cached.tracklist.releaseId : null
-    if (!cached || body.force === true || (requestedReleaseId && requestedReleaseId !== cached.tracklist.releaseId)) {
+    const localTrackCount = Number(body.localTrackCount) || 0
+    // A cached automatic edition that is far smaller than the album (picked before edition fit was checked,
+    // or before more tracks arrived) is resolved again, once per local track count.
+    const misfit = cached && cached.tracklist.source !== 'manual' && !editionFitsLocal(cached.tracklist.tracks.length, localTrackCount) && cached.tracklist.localTrackCount !== localTrackCount
+    if (!cached || misfit || body.force === true || (requestedReleaseId && requestedReleaseId !== cached.tracklist.releaseId)) {
       let resolved
-      try { resolved = await resolveAlbumTracklist(db, { albumId, name: String(body.name || ''), artist: String(body.artist || ''), year: Number(body.year) || null, musicBrainzId: body.musicBrainzId, localTrackCount: Number(body.localTrackCount) || 0 }, requestedReleaseId) }
+      try { resolved = await resolveAlbumTracklist(db, { albumId, name: String(body.name || ''), artist: String(body.artist || ''), year: Number(body.year) || null, musicBrainzId: body.musicBrainzId, localTrackCount }, requestedReleaseId) }
       catch { return json({ error: 'musicbrainz-unavailable', message: 'MusicBrainz could not be reached. Try again shortly.' }, 502) }
       if (!resolved) return json({ error: 'tracklist-unavailable', message: 'MusicBrainz has no confident tracklist for this album.' }, 404)
       await db.prepare('INSERT INTO release_tracklists (album_id, release_id, release_group_id, source, tracklist_json, editions_json, fetched_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?) ON CONFLICT(album_id) DO UPDATE SET release_id = excluded.release_id, release_group_id = excluded.release_group_id, source = excluded.source, tracklist_json = excluded.tracklist_json, editions_json = excluded.editions_json, fetched_at = CURRENT_TIMESTAMP, updated_by = excluded.updated_by')
@@ -180,4 +223,4 @@ async function handleCompletenessRequest(request, env, url) {
   return json({ error: 'not-found' }, 404)
 }
 
-export const completenessWorkerSource = [completenessText, isMusicBrainzId, completenessCredit, summariseReleaseEditions, chooseReleaseEdition, mapReleaseTracklist, matchRecoveryItems, ensureTracklistTable, selectTracklist, fetchMusicBrainzRelease, resolveAlbumTracklist, completenessRecoveryRows, handleCompletenessRequest].map((fn) => fn.toString()).join('\n\n')
+export const completenessWorkerSource = [completenessText, isMusicBrainzId, completenessCredit, summariseReleaseEditions, chooseReleaseEdition, editionFitsLocal, releaseGroupTypeFit, releaseTrackCount, mapReleaseTracklist, matchRecoveryItems, ensureTracklistTable, selectTracklist, fetchMusicBrainzRelease, releaseGroupEditions, resolveAlbumTracklist, completenessRecoveryRows, handleCompletenessRequest].map((fn) => fn.toString()).join('\n\n')

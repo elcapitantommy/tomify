@@ -445,7 +445,7 @@ async function lookupMusicBrainzReleaseGroup(album) {
     const creditedArtist = normalise(artistCredit(group))
     const artistMatch = creditedArtist === wantedArtist || creditedArtist.includes(wantedArtist) || wantedArtist.includes(creditedArtist)
     const yearMatch = album.year && String(group['first-release-date'] || '').startsWith(String(album.year))
-    return { group, score: score + (titleMatch ? 15 : 0) + (artistMatch ? 15 : 0) + (yearMatch ? 5 : 0), rawScore: score, titleMatch, artistMatch }
+    return { group, score: score + (titleMatch ? 15 : 0) + (artistMatch ? 15 : 0) + (yearMatch ? 5 : 0) + releaseGroupTypeFit(group, album.trackCount), rawScore: score, titleMatch, artistMatch }
   }).filter((candidate) => candidate.titleMatch && candidate.artistMatch && candidate.rawScore >= 80)
     .sort((a, b) => b.score - a.score)
 

@@ -57,7 +57,7 @@ export function AlbumCompleteness({ album, tracks }: { album: Album; tracks: Tra
     <div className="album-completeness-heading">
       {result.complete ? <CircleCheck/> : <CircleAlert/>}
       <div>
-        <strong>{result.complete ? 'Complete' : 'Incomplete'} · {result.present} of {result.total} tracks</strong>
+        <strong>{result.editionMismatch ? 'Edition does not match' : result.complete ? 'Complete' : 'Incomplete'} · {result.present} of {result.total} tracks</strong>
         <small>Compared with MusicBrainz: {tracklist.title}{editionLabel(tracklist) ? ` · ${editionLabel(tracklist)}` : ''}{tracklist.source === 'tagged' ? ' · from your file tags' : tracklist.source === 'manual' ? ' · chosen edition' : ''}</small>
       </div>
       <button className="button secondary" onClick={() => setRequest((current) => ({ releaseId: tracklist.source === 'manual' ? tracklist.releaseId : undefined, force: true, nonce: current.nonce + 1 }))} aria-label="Refresh MusicBrainz tracklist"><RefreshCw/></button>
@@ -84,6 +84,7 @@ export function AlbumCompleteness({ album, tracks }: { album: Album; tracks: Tra
     </>}
 
     {result.duplicated > 0 && <p className="album-completeness-note">{result.duplicated} {result.duplicated === 1 ? 'track has' : 'tracks have'} more than one copy in your library.</p>}
+    {result.editionMismatch && <p className="album-completeness-note">Most of your tracks are not on this MusicBrainz edition, so it is probably a different release with the same title. {editions.length > 1 ? 'Choose another edition above or refresh.' : 'Refresh to search MusicBrainz again.'}</p>}
     {result.extras.length > 0 && <p className="album-completeness-note">{result.extras.length} local {result.extras.length === 1 ? 'track is' : 'tracks are'} not on this edition: {result.extras.slice(0, 5).map((track) => track.title).join(', ')}{result.extras.length > 5 ? '…' : ''}</p>}
   </section>
 }

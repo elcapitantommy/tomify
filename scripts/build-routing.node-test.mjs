@@ -127,6 +127,55 @@ test('album completeness resolves a tagged release tracklist and adds only missi
   }
 })
 
+test('album completeness compares a twelve-track album with the album, not its same-titled one-track single', async () => {
+  const singleGroup = '44444444-4444-4444-8444-444444444444'
+  const albumGroup = '55555555-5555-4555-8555-555555555555'
+  const singleRelease = '66666666-6666-4666-8666-666666666666'
+  const albumRelease = '77777777-7777-4777-8777-777777777777'
+  const titles = ['Your Time Has Come', 'Out of Exile', 'Be Yourself', 'Doesn\u2019t Remind Me', 'Drown Me Slowly', 'Heaven\u2019s Dead', 'The Worm', 'Man or Animal', 'Yesterday to Tomorrow', 'Dandelion', '#1 Zero', 'The Curse']
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    // MusicBrainz ranks the promo single first; both share the title, artist and year.
+    if (url.pathname === '/ws/2/release-group/') return Response.json({ 'release-groups': [
+      { id: singleGroup, title: 'Out of Exile', score: 100, 'primary-type': 'Single', 'first-release-date': '2005', 'artist-credit': [{ name: 'Audioslave' }] },
+      { id: albumGroup, title: 'Out of Exile', score: 100, 'primary-type': 'Album', 'first-release-date': '2005-05-23', 'artist-credit': [{ name: 'Audioslave' }] },
+    ] })
+    if (url.pathname === '/ws/2/release' && url.searchParams.get('release-group') === singleGroup) return Response.json({ releases: [{ id: singleRelease, title: 'Out of Exile', status: 'Promotion', date: '2005', country: 'US', media: [{ format: 'CD-R', 'track-count': 1 }] }] })
+    if (url.pathname === '/ws/2/release' && url.searchParams.get('release-group') === albumGroup) return Response.json({ releases: [{ id: albumRelease, title: 'Out of Exile', status: 'Official', date: '2005-05-23', country: 'US', media: [{ format: 'CD', 'track-count': 12 }] }] })
+    if (url.pathname === `/ws/2/release/${singleRelease}`) return Response.json({ id: singleRelease, title: 'Out of Exile', date: '2005', country: 'US', status: 'Promotion', 'release-group': { id: singleGroup }, 'artist-credit': [{ name: 'Audioslave' }], media: [{ position: 1, format: 'CD-R', 'track-count': 1, tracks: [{ position: 1, title: 'Out of Exile' }] }] })
+    if (url.pathname === `/ws/2/release/${albumRelease}`) return Response.json({ id: albumRelease, title: 'Out of Exile', date: '2005-05-23', country: 'US', status: 'Official', 'release-group': { id: albumGroup }, 'artist-credit': [{ name: 'Audioslave' }], media: [{ position: 1, format: 'CD', 'track-count': 12, tracks: titles.map((title, index) => ({ position: index + 1, title })) }] })
+    return new Response('{}', { status: 404 })
+  }
+  try {
+    const env = { TOMIFY_DB: completenessDatabase() }
+    const headers = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }
+    const call = (body) => worker.fetch(new Request('https://app.tomify.test/api/album-completeness/tracklist', { method: 'POST', headers, body: JSON.stringify(body) }), env)
+
+    const searched = await (await call({ albumId: 'exile', name: 'Out Of Exile', artist: 'Audioslave', year: 2005, localTrackCount: 12 })).json()
+    assert.equal(searched.tracklist.releaseId, albumRelease)
+    assert.equal(searched.tracklist.tracks.length, 12)
+
+    // A file tagged with the single's release ID falls back to the album too.
+    const tagged = await (await call({ albumId: 'exile-tagged', name: 'Out Of Exile', artist: 'Audioslave', year: 2005, musicBrainzId: singleRelease, localTrackCount: 12 })).json()
+    assert.equal(tagged.tracklist.releaseId, albumRelease)
+    assert.equal(tagged.tracklist.source, 'auto')
+
+    // A tracklist cached before this fix is resolved again on the next load, without pressing refresh.
+    const stale = { albumId: 'exile-cached', releaseId: singleRelease, releaseGroupId: singleGroup, title: 'Out of Exile', source: 'auto', tracks: [{ key: '1-1', disc: 1, number: 1, title: 'Out of Exile' }] }
+    await env.TOMIFY_DB.prepare('INSERT INTO release_tracklists').bind('exile-cached', singleRelease, singleGroup, 'auto', JSON.stringify(stale), '[]').run()
+    const refreshed = await (await call({ albumId: 'exile-cached', name: 'Out Of Exile', artist: 'Audioslave', year: 2005, localTrackCount: 12 })).json()
+    assert.equal(refreshed.tracklist.releaseId, albumRelease)
+
+    // A one-track local copy of the single still matches the single.
+    const single = await (await call({ albumId: 'exile-single', name: 'Out Of Exile', artist: 'Audioslave', year: 2005, localTrackCount: 1 })).json()
+    assert.equal(single.tracklist.releaseId, singleRelease)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('album completeness reports an unreachable MusicBrainz as a JSON 502', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input) => {
