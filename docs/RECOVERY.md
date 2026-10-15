@@ -297,7 +297,47 @@ Import scope follows the fields searched. Any search that includes the track tit
 
 When a track-level import came from a download that holds more audio (a whole album, say), the imported item offers **Import rest of download** beside its *Imported* badge. The agent re-reads the completed download, skips the files that job already imported, and imports the rest as a release without downloading again. The new tracks are added to the same Recovery item, so deleting it still removes every file it imported. The action needs an agent with the `/v1/jobs/import-remaining` endpoint; an older agent is reported as out of date.
 
-For release imports, embedded title, artist, album artist, album, track/disc number, and date tags are preferred per track. Selected release metadata supplies artist, album, date, release ID, and release-group ID only when source tags are missing. Filename order is the final fallback for title and numbering. Tomify never applies the seed track's MusicBrainz recording ID or ISRC to the other tracks. Artwork is prepared once and shared across the album, and existing artist/album directories are reused case-insensitively without renaming unrelated directories.
+For release imports, embedded title, artist, album artist, album, track/disc number, and date tags are preferred per track. Selected release metadata supplies artist, album, date, release ID, and release-group ID only when source tags are missing. Filename order is the final fallback for title and numbering. Tomify never applies the seed track's MusicBrainz recording ID or ISRC to the other tracks. Artwork is prepared once and shared across the album, and existing artist/album directories are reused ignoring case and accents (so `Mötley Crüe` joins an existing `Motley Crue` folder) without renaming unrelated directories.
+
+Source tags are read as UTF-8, and any bytes that are not valid UTF-8 (some FLAC rips store Latin-1 or Windows-1252 Vorbis comments) are decoded as Windows-1252 instead of being replaced with `�`. When a release's artist or album tag differs from what you asked for only by accents, or still contains `�`, the requested spelling is used so the import lands under the artist you already have in Navidrome; other differences keep the source tag.
+
+### Repairing tags mangled before this fix
+
+Agents older than the tag-encoding fix wrote `�` (U+FFFD) into recovered copies whose source tags were not UTF-8, which shows up in Navidrome as a second artist such as `M�tley Cr�e`. The untouched original of each recovered track is kept in the album's `.tomify-source` folder, so the real characters can be restored from it. On the box (FLAC imports; needs the `flac` package for `metaflac`):
+
+```bash
+sudo apt-get install -y flac
+cat > /tmp/fix-mangled-tags.sh <<'EOF'
+#!/bin/bash
+# Restores tags containing U+FFFD in recovered FLACs from the Windows-1252 originals in .tomify-source.
+bad=$'\xef\xbf\xbd'
+find /srv/music-recovery -name '*.flac' -not -path '*/.tomify-source/*' -print0 | while IFS= read -r -d '' file; do
+  metaflac --no-utf8-convert --export-tags-to=- "$file" | grep -q "$bad" || continue
+  original="$(dirname "$file")/.tomify-source/$(basename "$file")"
+  [ -f "$original" ] || { echo "No original for: $file"; continue; }
+  metaflac --no-utf8-convert --export-tags-to=- "$file" | grep "$bad" | cut -d= -f1 | sort -u | while IFS= read -r tag; do
+    sources="$tag"; [ "${tag^^}" = ALBUMARTIST ] && sources="ALBUMARTIST ALBUM_ARTIST ARTIST"
+    value=""
+    for source in $sources; do
+      value=$(metaflac --no-utf8-convert --show-tag="$source" "$original" | head -n1 | cut -d= -f2- | iconv -f WINDOWS-1252 -t UTF-8)
+      [ -n "$value" ] && break
+    done
+    [ -n "$value" ] || { echo "No $tag in original: $file"; continue; }
+    metaflac --no-utf8-convert --remove-tag="$tag" --set-tag="$tag=$value" "$file" && echo "Fixed $tag=$value in: $file"
+  done
+done
+EOF
+sudo bash /tmp/fix-mangled-tags.sh
+```
+
+The folder the old agent created is still named with `�`, which `ls /srv/music-recovery` shows as `?`. Rename it with a `?` wildcard so later imports find it, for example `sudo mv /srv/music-recovery/M?tley\ Cr?e "/srv/music-recovery/Mötley Crüe"` (if that name already exists, move the album folder inside it instead).
+
+If the restored name is spelled differently from an artist you already have (for example `Mötley Crüe` next to `Motley Crue`), Navidrome still lists two artists. Set the recovered album to the existing spelling, then run a full scan in Navidrome so the two artists merge:
+
+```bash
+sudo find "/srv/music-recovery/<Artist folder>/<Album folder>" -maxdepth 1 -name '*.flac' \
+  -exec metaflac --no-utf8-convert --remove-tag=ARTIST --remove-tag=ALBUMARTIST --set-tag='ARTIST=Motley Crue' --set-tag='ALBUMARTIST=Motley Crue' {} +
+```
 
 This backend is for lawful recovery only. The operator must retrieve only content they are authorised to copy. Tomify does not bypass subscriptions, authentication, takedowns, encryption, or other access controls. Acquisition remains disabled until the existing source-specific authorisation confirmation is completed for the selected result.
 

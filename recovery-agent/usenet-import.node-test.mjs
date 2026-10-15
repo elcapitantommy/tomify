@@ -98,6 +98,31 @@ test('release mode imports every audio file with shared artwork, originals, deri
   await assert.rejects(importUsenetCompletion(job('release'), discovered.files, { recoveryRoot, ...harness(qualities) }), /will not overwrite/)
 })
 
+test('release tags that differ only by accents, or were mangled to U+FFFD, use the requested artist and album', () => {
+  const request = job('release', { artist: 'Mötley Crüe', album: 'Dr. Feelgood' }).request.track
+  const mangled = releaseTrackMetadata('/release/01 - T.n.T. (Terror \'n Tryin\').flac', { tags: { ARTIST: 'M\ufffdtley Cr\ufffde', ALBUM: 'Dr. Feelgood' } }, request, 1)
+  assert.equal(mangled.artist, 'Mötley Crüe')
+  assert.equal(mangled.albumArtist, 'Mötley Crüe')
+  const plain = releaseTrackMetadata('/release/02 - Dr. Feelgood.flac', { tags: { ARTIST: 'Mötley Crüe', ALBUM: 'Dr. Feelgood' } }, job('release', { artist: 'Motley Crue', album: 'Dr. Feelgood' }).request.track, 2)
+  assert.equal(plain.artist, 'Motley Crue')
+  assert.equal(plain.albumArtist, 'Motley Crue')
+})
+
+test('release import joins an existing artist folder whose name differs only by accents', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-accent-import-test-'))
+  await mkdir(join(recoveryRoot, 'Motley Crue'), { recursive: true })
+  const completed = await mkdtemp(join(tmpdir(), 'tomify-accent-completed-test-'))
+  await writeFile(join(completed, '01 - Dr. Feelgood.flac'), 'one')
+  const discovered = await findCompletedAudio(completed)
+  const qualities = { '01 - Dr. Feelgood.flac': { codec: 'flac', container: 'flac', duration: 290, tags: { ARTIST: 'Mötley Crüe', ALBUM: 'Dr. Feelgood (30th Anniversary)' } } }
+  const tools = harness(qualities, false)
+  const result = await importUsenetCompletion(job('release', { artist: 'Mötley Crüe', album: 'Dr. Feelgood' }), discovered.files, { recoveryRoot, ...tools })
+  assert.equal(result.importedTracks[0].path.startsWith(join(recoveryRoot, 'Motley Crue', 'Dr. Feelgood (30th Anniversary)')), true)
+  assert.deepEqual(await readdir(recoveryRoot), ['Motley Crue'])
+  assert.equal(tools.ffmpegCalls[0].includes('artist=Mötley Crüe'), true)
+  assert.equal(tools.ffmpegCalls[0].some((value) => String(value).includes('\ufffd')), false)
+})
+
 test('single-track mode preserves the existing one-result payload shape', async () => {
   const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-track-import-test-'))
   const completed = await mkdtemp(join(tmpdir(), 'tomify-track-completed-test-'))

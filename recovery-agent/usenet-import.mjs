@@ -7,6 +7,7 @@ import { buildArtworkProvenance, buildDerivativeArguments } from './artwork.mjs'
 import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './derivative.mjs'
 import { ffmpegMetadataArguments } from './metadata.mjs'
 import { selectCompletedAudio } from './usenet.mjs'
+import { foldName, preferRequestedName } from './text-encoding.mjs'
 
 function text(value) { return String(value ?? '').trim() }
 function inside(child, parent) { return child === parent || child.startsWith(parent + sep) }
@@ -51,9 +52,9 @@ export function releaseTrackMetadata(sourcePath, quality, releaseFallback, fallb
   const tags = sourceTags(quality)
   const filename = filenameMetadata(sourcePath, fallbackTrackNumber)
   return {
-    artist: tags.artist || releaseFallback.artist || null,
-    albumArtist: tags.albumartist || tags.albumartists || tags.artist || releaseFallback.artist || null,
-    album: tags.album || releaseFallback.album || null,
+    artist: preferRequestedName(tags.artist, releaseFallback.artist),
+    albumArtist: preferRequestedName(tags.albumartist || tags.albumartists || tags.artist, releaseFallback.artist),
+    album: preferRequestedName(tags.album, releaseFallback.album),
     title: tags.title || filename.title,
     trackNumber: numericTag(tags.tracknumber || tags.track) || filename.trackNumber,
     discNumber: numericTag(tags.discnumber || tags.disc) || filename.discNumber,
@@ -75,7 +76,7 @@ export function selectUsenetImportFiles(files, track, searchMode) {
 async function matchingDirectory(parent, requested, fallback, canonicalRoot) {
   const name = safeName(requested, fallback)
   const entries = await readdir(parent, { withFileTypes: true }).catch((error) => { if (error?.code === 'ENOENT') return []; throw error })
-  const directories = entries.filter((entry) => entry.isDirectory() && entry.name.toLocaleLowerCase('en') === name.toLocaleLowerCase('en')).map((entry) => entry.name)
+  const directories = entries.filter((entry) => entry.isDirectory() && foldName(entry.name) === foldName(name)).map((entry) => entry.name)
   const selected = directories.includes(name) ? name : directories.sort((left, right) => left.localeCompare(right, 'en'))[0] || name
   const result = resolve(parent, selected)
   if (!inside(result, resolve(parent))) throw new Error('Unsafe recovery destination.')

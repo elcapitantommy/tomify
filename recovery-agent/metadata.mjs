@@ -1,3 +1,8 @@
+// ffprobe replaces tag bytes that are not valid UTF-8 with U+FFFD by default, which loses
+// Latin-1 tags such as "M\xF6tley Cr\xFCe" for good. sv=ignore passes the raw bytes through
+// so the agent can decode them itself (text-encoding.mjs decodeToolOutput).
+export const ffprobeTagJsonFormat = 'json=string_validation=ignore'
+
 export function ffmpegMetadataArguments(track, comment) {
   const values = [
     ['artist', track?.artist],
