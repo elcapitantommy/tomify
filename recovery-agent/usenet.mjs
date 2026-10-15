@@ -57,22 +57,23 @@ function trackFieldValue(track, field) { return text(field === 'artist' ? track?
 
 // Accepts a legacy mode string ('artist' | 'track' | 'release'), an array of fields, or an
 // existing spec, and returns the fields to combine plus the import mode those fields imply.
-export function usenetSearchSpec(input) {
+// Passing the wanted track lets an artist-only search for music with no track title import the whole download.
+export function usenetSearchSpec(input, track) {
   const requested = typeof input === 'string' ? LEGACY_SEARCH_MODES[input] : Array.isArray(input) ? input : Array.isArray(input?.fields) ? input.fields : null
   if (!requested) throw new Error('Choose at least one of artist, album or track to search Usenet.')
   const fields = USENET_SEARCH_FIELDS.filter((field) => requested.includes(field))
   if (!fields.length || fields.length !== new Set(requested).size) throw new Error('Usenet search fields must be artist, album or track.')
   if (['artist', 'track', 'release'].includes(input?.mode) && Array.isArray(input?.fields)) return { fields, mode: input.mode }
-  // Naming the album without a track title means the whole release; artist-only stays a single-track import.
-  const mode = fields.includes('track') ? 'track' : fields.includes('album') ? 'release' : 'artist'
+  // Naming the album without a track title means the whole release. Artist-only stays a single-track
+  // import when there is a track title to match; with none, the chosen download is imported as a release.
+  const mode = fields.includes('track') ? 'track' : fields.includes('album') || (track && !trackFieldValue(track, 'track')) ? 'release' : 'artist'
   return { fields, mode }
 }
 
 export function usenetSearchQuery(track, input) {
-  const { fields, mode } = usenetSearchSpec(input)
+  const { fields } = usenetSearchSpec(input, track)
   const missing = fields.find((field) => !trackFieldValue(track, field))
   if (missing) throw new Error(`A ${FIELD_LABELS[missing]} value is required for this search.`)
-  if (mode === 'artist' && !trackFieldValue(track, 'track')) throw new Error('Include the album to search for wanted music that has no track title.')
   return fields.map((field) => trackFieldValue(track, field)).join(' ').replace(/\s+/g, ' ').slice(0, 240)
 }
 
@@ -178,7 +179,7 @@ export async function searchNzbIndex(config, track, input, fetchImpl = fetch) {
 }
 
 export async function searchUsenetProviders(newznabIndexers, nzbIndex, track, input, fetchImpl = fetch) {
-  const spec = usenetSearchSpec(input)
+  const spec = usenetSearchSpec(input, track)
   const searches = []
   if (newznabIndexers.length) searches.push(searchNewznab(newznabIndexers, track, spec, fetchImpl))
   if (nzbIndex) searches.push(searchNzbIndex(nzbIndex, track, spec, fetchImpl))

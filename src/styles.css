@@ -53,3 +53,5 @@
 @media(max-width:800px){.artwork-picker{margin-top:-18px}}
 .candidate-actions{display:flex;flex-direction:column;align-items:flex-end;gap:10px}.candidate-actions .button{white-space:nowrap}
 .recovery-actions{flex-wrap:wrap}.recovery-actions .button,.usenet-search-fields label{white-space:nowrap}.usenet-search-control{flex:none}.recovery-actions+.delete-confirm{margin:0 0 14px}
+.button:disabled:not(.busy){opacity:.45;cursor:not-allowed}.button:disabled.busy{cursor:progress}.recovery-search-status{display:flex;align-items:center;gap:8px;margin:0 0 14px;color:var(--muted);font-size:.85rem}.recovery-search-status svg{width:16px;color:var(--accent)}
+.recovery-search-status.error{color:#ffb0aa}.recovery-search-status.error svg{color:var(--danger)}

@@ -22,8 +22,7 @@ export function recoveryFieldValue(item: Pick<RecoveryItem, 'artist' | 'title' |
 
 /** Artist-only Usenet searches import one matching track, so a wanted item without a title must include the album. */
 export function recoverySearchFieldsReady(item: Pick<RecoveryItem, 'artist' | 'title' | 'album'>, fields: RecoverySearchField[]) {
-  if (!fields.length || !fields.every((field) => recoveryFieldValue(item, field))) return false
-  return Boolean(recoveryFieldValue(item, 'track')) || fields.includes('album')
+  return fields.length > 0 && fields.every((field) => recoveryFieldValue(item, field))
 }
 
 /** Default Usenet search: artist plus the track title, or artist plus album when no title was entered. */
