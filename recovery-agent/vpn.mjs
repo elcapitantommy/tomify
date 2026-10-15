@@ -19,6 +19,11 @@ export function vpnConfig(env = process.env) {
   }
 }
 
+// The CLI keeps config and cache under the user's home, which the agent's unit hides (ProtectHome=true).
+export function nordvpnEnvironment(env, home) {
+  return { ...env, HOME: home, XDG_CONFIG_HOME: `${home}/.config`, XDG_CACHE_HOME: `${home}/.cache` }
+}
+
 // The CLI draws a spinner with carriage returns and may colour its output; keep what is left on each line.
 function cleanLines(text) {
   return String(text || '')
