@@ -7,9 +7,9 @@ function text(value) { return String(value || '').trim() }
 
 export function archiveSearchUrl(track, rows = 8) {
   const artist = text(track?.artist).slice(0, 240)
-  const title = text(track?.title).slice(0, 240)
-  if (!artist || !title) throw new Error('Artist and title are required.')
-  const phrase = `${artist} ${title}`.replace(/[\\"]/g, ' ').replace(/\s+/g, ' ').trim()
+  const title = text(track?.title).slice(0, 240) || text(track?.album).slice(0, 240)
+  if (!artist && !title) throw new Error('An artist, album or title is required.')
+  const phrase = [artist, title].filter(Boolean).join(' ').replace(/[\\"]/g, ' ').replace(/\s+/g, ' ').trim()
   const url = new URL('https://archive.org/advancedsearch.php')
   url.searchParams.set('q', `mediatype:audio AND (title:("${phrase}") OR description:("${phrase}") OR subject:("${phrase}"))`)
   for (const field of ['identifier', 'title', 'creator', 'description', 'licenseurl', 'rights']) url.searchParams.append('fl[]', field)

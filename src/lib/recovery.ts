@@ -13,6 +13,38 @@ export const recoveryStatusLabels: Record<RecoveryStatus, string> = {
 
 export type RecoveryBackend = 'youtube' | 'internet-archive' | 'usenet'
 export type RecoverySearchMode = 'artist' | 'track' | 'release'
+export type RecoverySearchField = 'artist' | 'album' | 'track'
+export const recoverySearchFields: RecoverySearchField[] = ['artist', 'album', 'track']
+
+export function recoveryFieldValue(item: Pick<RecoveryItem, 'artist' | 'title' | 'album'>, field: RecoverySearchField) {
+  return (field === 'artist' ? item.artist : field === 'album' ? item.album : item.title)?.trim() ?? ''
+}
+
+/** Artist-only Usenet searches import one matching track, so a wanted item without a title must include the album. */
+export function recoverySearchFieldsReady(item: Pick<RecoveryItem, 'artist' | 'title' | 'album'>, fields: RecoverySearchField[]) {
+  if (!fields.length || !fields.every((field) => recoveryFieldValue(item, field))) return false
+  return Boolean(recoveryFieldValue(item, 'track')) || fields.includes('album')
+}
+
+/** Default Usenet search: artist plus the track title, or artist plus album when no title was entered. */
+export function defaultRecoverySearchFields(item: Pick<RecoveryItem, 'artist' | 'title' | 'album'>): RecoverySearchField[] {
+  const preferred: RecoverySearchField[] = recoveryFieldValue(item, 'track') ? ['artist', 'track'] : ['artist', 'album']
+  const available = preferred.filter((field) => recoveryFieldValue(item, field))
+  return available.length ? available : recoverySearchFields.filter((field) => recoveryFieldValue(item, field))
+}
+
+/** The heading for a wanted item, which may be a track, a whole album, or just an artist. */
+export function recoveryItemHeading(item: Pick<RecoveryItem, 'artist' | 'title' | 'album'>) {
+  return item.title?.trim() || item.album?.trim() || item.artist?.trim() || 'Untitled'
+}
+
+/** Whatever the heading leaves out: artist and album under a track, artist under an album. */
+export function recoveryItemSubtitle(item: Pick<RecoveryItem, 'artist' | 'title' | 'album'>) {
+  const [artist, title, album] = [item.artist?.trim(), item.title?.trim(), item.album?.trim()]
+  if (title) return [artist, album].filter(Boolean).join(' · ')
+  if (album) return artist ? `${artist} · whole album` : 'Whole album'
+  return 'Any music by this artist'
+}
 
 export interface AudioQuality {
   codec?: string | null

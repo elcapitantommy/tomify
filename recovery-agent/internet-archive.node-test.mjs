@@ -29,3 +29,9 @@ test('constructs and validates only trusted Archive download locations', () => {
   assert.throws(() => archiveDownloadUrl('../item', 'track.mp3'), /invalid/)
   assert.throws(() => archiveDownloadUrl('item', '../track.mp3'), /invalid/)
 })
+
+test('searches the archive for wanted albums or artists without a track title', () => {
+  assert.match(new URL(archiveSearchUrl({ artist: 'They Might Be Giants', title: '', album: 'Flood' })).searchParams.get('q'), /"They Might Be Giants Flood"/)
+  assert.match(new URL(archiveSearchUrl({ artist: 'They Might Be Giants' })).searchParams.get('q'), /"They Might Be Giants"/)
+  assert.throws(() => archiveSearchUrl({ artist: ' ', title: '' }), /artist, album or title/)
+})

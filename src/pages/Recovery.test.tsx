@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { recoveryApi } from '../lib/recovery-api'
@@ -49,14 +49,55 @@ describe('Recovery page actions', () => {
     expect(inactive.querySelector('.spin')).toBeNull()
   })
 
-  it('searches Newznab independently by artist, track title, or release', async () => {
+  it('searches Usenet with any combination of artist, album and track', async () => {
     vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ album: 'Lush Life' })], backends })
     vi.mocked(recoveryApi.search).mockImplementation(() => new Promise(() => {}))
     renderRecovery()
     fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
-    fireEvent.change(screen.getByRole('combobox', { name: 'Usenet search mode' }), { target: { value: 'artist' } })
+    const fields = screen.getByRole('group', { name: 'Usenet search fields' })
+    const artist = within(fields).getByRole('checkbox', { name: 'Artist' })
+    const album = within(fields).getByRole('checkbox', { name: 'Album' })
+    const track = within(fields).getByRole('checkbox', { name: 'Track' })
+    expect([artist, album, track].map((box) => (box as HTMLInputElement).checked)).toEqual([true, false, true])
+
+    fireEvent.click(album)
     fireEvent.click(screen.getByRole('button', { name: 'Search NZB' }))
-    expect(recoveryApi.search).toHaveBeenCalledWith('recovery-1', 'usenet', 'artist')
+    expect(recoveryApi.search).toHaveBeenCalledWith('recovery-1', 'usenet', ['artist', 'album', 'track'])
+  })
+
+  it('defaults to an artist and album search for a whole-album wanted item and blocks empty searches', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ title: '', artist: 'They Might Be Giants', album: 'Flood' })], backends })
+    vi.mocked(recoveryApi.search).mockImplementation(() => new Promise(() => {}))
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /flood/i }))
+    const fields = screen.getByRole('group', { name: 'Usenet search fields' })
+    expect(within(fields).getByRole('checkbox', { name: 'Track' })).toBeDisabled()
+    const artist = within(fields).getByRole('checkbox', { name: 'Artist' })
+    const album = within(fields).getByRole('checkbox', { name: 'Album' })
+    expect(artist).toBeChecked()
+    expect(album).toBeChecked()
+
+    fireEvent.click(album)
+    expect(screen.getByRole('button', { name: 'Search NZB' })).toBeDisabled()
+    fireEvent.click(artist)
+    fireEvent.click(album)
+    fireEvent.click(screen.getByRole('button', { name: 'Search NZB' }))
+    expect(recoveryApi.search).toHaveBeenCalledWith('recovery-1', 'usenet', ['album'])
+  })
+
+  it('adds wanted music from any one of artist, album or track', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [], backends })
+    vi.mocked(recoveryApi.add).mockResolvedValue({ item: item({ id: 'recovery-2', title: '', artist: '', album: 'Flood' }) })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: 'Add wanted music' }))
+    const submit = screen.getByRole('button', { name: 'Add to queue' })
+    expect(submit).toBeDisabled()
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Album' }), { target: { value: ' Flood ' } })
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+    expect(recoveryApi.add).toHaveBeenCalledWith({ artist: undefined, title: undefined, album: 'Flood', duration: undefined, trackNumber: undefined })
+    expect(await screen.findByText('Whole album')).toBeInTheDocument()
   })
 
   it('continues from metadata and artwork review into source authorisation without resetting choices', async () => {
