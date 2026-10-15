@@ -181,6 +181,8 @@ async function callRecoveryAgent(env, path, body) {
   const baseUrl = String(env.RECOVERY_AGENT_URL)
   const response = await fetch((baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl) + path, { method: 'POST', headers, body: JSON.stringify(body) })
   const result = await response.json().catch(() => ({}))
+  // An agent older than this Worker answers new endpoints with a bare 404.
+  if (response.status === 404 && result.error === 'not-found') throw new Error('The recovery agent is out of date and does not support this action. Copy the latest recovery-agent files to the server and restart tomify-recovery.')
   if (!response.ok) throw new Error(result.message || result.error || 'Recovery agent request failed.')
   return result
 }
