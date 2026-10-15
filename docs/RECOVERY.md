@@ -104,7 +104,7 @@ Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`. Internet Archive se
 1. Copy `recovery-agent/recovery-agent.env.example` to `/etc/tomify/recovery-agent.env` and set a random `TOMIFY_RECOVERY_TOKEN` containing at least 32 characters.
 2. Keep `TOMIFY_RECOVERY_DIR=/srv/music-recovery` separate from `TOMIFY_MASTER_DIR=/srv/music`.
 3. Copy the recovery-agent runtime from the primary Windows checkout at `C:\Users\TomDixon\Documents\tomify` to `/opt/tomify/recovery-agent` on Debian, then install the example systemd unit. The current Debian deployment does not contain a Git checkout and does not use `/srv/tomify/app`.
-4. Put the agent behind an authenticated HTTPS reverse proxy that the hosted Tomify Worker can reach. The current deployment uses the box's Cloudflare Tunnel (`cloudflared`), which forwards `RECOVERY_AGENT_URL` to `127.0.0.1:8788`. Do not expose the unauthenticated loopback service directly. To run downloads over a VPN without breaking the tunnel or SSH, see [Running recovery downloads over NordVPN](#running-recovery-downloads-over-nordvpn).
+4. Put the agent behind an authenticated HTTPS reverse proxy that the hosted Tomify Worker can reach. The current deployment uses a Cloudflare Tunnel, run by the `tomify-recovery-cloudflared` Docker container on the box, which forwards `RECOVERY_AGENT_URL` to `127.0.0.1:8788`. Do not expose the unauthenticated loopback service directly. To run downloads over a VPN without breaking the tunnel or SSH, see [Running recovery downloads over NordVPN](#running-recovery-downloads-over-nordvpn).
 5. Set hosted secrets `RECOVERY_AGENT_URL` and `RECOVERY_AGENT_TOKEN` for the Tomify Site, plus any optional artwork-provider configuration above, then redeploy.
 
 The agent fails closed at startup when `TOMIFY_RECOVERY_TOKEN` is missing or shorter than 32 characters. Local development without authentication requires the explicit `TOMIFY_RECOVERY_ALLOW_INSECURE_LOOPBACK=true` opt-in and is accepted only with a loopback `TOMIFY_RECOVERY_HOST` such as `127.0.0.1` or `::1`. Never enable insecure mode on the Debian service.
@@ -121,7 +121,7 @@ The recovery directory may be added to Navidrome as a separate library path afte
 
 ## Running recovery downloads over NordVPN
 
-The recovery side (yt-dlp, Internet Archive fetches and SABnzbd) can run over NordVPN, but the box also has to keep accepting SSH from the LAN and keep its Cloudflare Tunnel up. The hosted Worker never connects to the box directly: it calls `RECOVERY_AGENT_URL`, which Cloudflare routes down the `cloudflared` tunnel to the agent on `127.0.0.1:8788`. Navidrome is published through the same tunnel. `cloudflared` only makes outbound connections to Cloudflare's tunnel edge, so nothing needs to be port-forwarded, but those connections must survive the VPN.
+The recovery side (yt-dlp, Internet Archive fetches and SABnzbd) can run over NordVPN, but the box also has to keep accepting SSH from the LAN and keep its Cloudflare Tunnel up. The hosted Worker never connects to the box directly: it calls `RECOVERY_AGENT_URL`, which Cloudflare routes down a tunnel to the agent on `127.0.0.1:8788`. Two `cloudflared` Docker containers run on the box: `tomify-recovery-cloudflared` for the agent and `cloudflared` for Navidrome. `cloudflared` only makes outbound connections to Cloudflare's tunnel edge, so nothing needs to be port-forwarded, but those connections must survive the VPN.
 
 Connecting the NordVPN Linux client with default settings breaks both: its firewall drops inbound LAN traffic, so SSH stops answering, and the tunnel's edge connections are torn down when the default route moves into the VPN. With autoconnect or the kill switch on, this persists across reboots. The setup below keeps the whole box on the VPN, with three exceptions: the LAN, inbound SSH, and Cloudflare's tunnel edge.
 
@@ -147,12 +147,12 @@ nordvpn settings                 # confirm both are now disabled
 Then confirm the site's link to the agent is back:
 
 ```bash
-systemctl status cloudflared --no-pager     # or: systemctl list-units | grep -i cloudflared
+docker ps --filter name=cloudflared         # tomify-recovery-cloudflared and cloudflared should both be Up
 systemctl status tomify-recovery --no-pager
 curl -s http://127.0.0.1:8788/health; echo
 ```
 
-If `cloudflared` is not running, `sudo systemctl restart cloudflared`. The account running `nordvpn` must be in the `nordvpn` group (`sudo usermod -aG nordvpn tom`, then log in again).
+If a tunnel container has stopped or its logs (`docker logs --tail 20 tomify-recovery-cloudflared`) show repeated errors, restart it with `docker restart tomify-recovery-cloudflared` (or `cloudflared`). The account running `nordvpn` must be in the `nordvpn` group (`sudo usermod -aG nordvpn tom`, then log in again).
 
 ### Allowlist the LAN, SSH and the tunnel
 
@@ -173,7 +173,7 @@ nordvpn allowlist add subnet 198.41.192.0/19     # Cloudflare Tunnel edge (regio
 nordvpn settings                                 # check the allowlist
 ```
 
-Allowlisted subnets are routed outside the VPN, so the tunnel keeps connecting from the home connection, just as it did before. `198.41.192.0/19` covers the IPv4 addresses behind `region1.v2.argotunnel.com` and `region2.v2.argotunnel.com` used by both tunnel protocols (QUIC and HTTP/2 on port 7844). To make sure `cloudflared` does not try IPv6 edges, which the allowlist above does not cover, add `edge-ip-version: "4"` to its config (usually `/etc/cloudflared/config.yml`) and restart it.
+Allowlisted subnets are routed outside the VPN, so the tunnel keeps connecting from the home connection, just as it did before. `198.41.192.0/19` covers the IPv4 addresses behind `region1.v2.argotunnel.com` and `region2.v2.argotunnel.com` used by both tunnel protocols (QUIC and HTTP/2 on port 7844). To make sure `cloudflared` does not try IPv6 edges, which the allowlist above does not cover, set `TUNNEL_EDGE_IP_VERSION=4` in both containers' environment (or add `--edge-ip-version 4` to their `tunnel run` command) and recreate them.
 
 ### Connect with a fail-safe
 
@@ -189,7 +189,8 @@ From another terminal on the Windows PC, check that a **new** SSH session opens 
 ```bash
 nordvpn status                                  # Connected
 curl -s https://api.ipify.org; echo             # a NordVPN address, not your home IP
-journalctl -u cloudflared -n 20 --no-pager      # "Registered tunnel connection", no repeated errors
+docker logs --tail 20 tomify-recovery-cloudflared   # "Registered tunnel connection", no repeated errors
+docker logs --tail 20 cloudflared
 curl -s http://127.0.0.1:8788/health; echo
 ```
 
@@ -201,7 +202,7 @@ nordvpn set autoconnect on
 nordvpn set killswitch on        # optional: blocks downloads if the VPN drops; the allowlist still applies
 ```
 
-Reboot once and repeat the SSH, `cloudflared` and Recovery checks to confirm autoconnect comes up with the allowlist in place.
+Reboot once and repeat the SSH, tunnel container and Recovery checks to confirm autoconnect comes up with the allowlist in place.
 
 ### What goes over the VPN
 
