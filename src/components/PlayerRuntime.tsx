@@ -7,12 +7,18 @@ import type { Track } from '../types'
 
 type AudioSlot = 0 | 1
 
+// A paused player only fetches enough to show the duration. A full preload of a
+// restored track on every page load downloads whole FLACs nobody asked for, and
+// those stalled downloads hold up the rest of the app's requests.
+const preloadFor = (playing: boolean) => playing ? 'auto' : 'metadata'
+
 export function PlayerRuntime() {
   const audioA = useRef<HTMLAudioElement>(null)
   const audioB = useRef<HTMLAudioElement>(null)
   const activeSlot = useRef<AudioSlot>(0)
   const loadedTrackIds = useRef<[string | undefined, string | undefined]>([undefined, undefined])
   const submittedTrackId = useRef<string | undefined>(undefined)
+  const nowPlayingTrackId = useRef<string | undefined>(undefined)
   const restoredPositionTrackId = useRef<string | undefined>(undefined)
   const initialRestore = useRef<{ trackId?: string; position: number } | null>(null)
   const api = useApi()
@@ -35,8 +41,14 @@ export function PlayerRuntime() {
 
   useEffect(() => {
     submittedTrackId.current = undefined
-    if (track) void api.scrobble(track.id, false).catch(() => undefined)
-  }, [api, track?.id])
+  }, [track?.id])
+
+  // Tell Navidrome "now playing" only once the track actually plays, not when a page load restores a paused queue.
+  useEffect(() => {
+    if (!track || !playing || nowPlayingTrackId.current === track.id) return
+    nowPlayingTrackId.current = track.id
+    void api.scrobble(track.id, false).catch(() => undefined)
+  }, [api, playing, track?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const getAudio = (slot: AudioSlot) => slot === 0 ? audioA.current : audioB.current
   const currentAudio = () => getAudio(activeSlot.current)
@@ -74,10 +86,10 @@ export function PlayerRuntime() {
       const trackChanged = loadedTrackIds.current[target] !== nextTrack.id
       if (trackChanged || element.src !== url) {
         element.src = url
-        element.preload = 'auto'
         element.load()
         loadedTrackIds.current[target] = nextTrack.id
       }
+      element.preload = 'auto'
 
       if (element.ended) element.currentTime = 0
 
@@ -93,7 +105,7 @@ export function PlayerRuntime() {
     if (!element) return
     if (loadedTrackIds.current[slot] !== track.id) {
       element.src = api.streamUrl(track.id)
-      element.preload = 'auto'
+      element.preload = preloadFor(usePlayer.getState().playing)
       element.load()
       loadedTrackIds.current[slot] = track.id
     }
@@ -106,7 +118,7 @@ export function PlayerRuntime() {
       if (activeSlot.current !== slot || loadedTrackIds.current[slot] !== track.id) return
       if (element.src !== source.url) {
         element.src = source.url
-        element.preload = 'auto'
+        element.preload = preloadFor(usePlayer.getState().playing)
         element.load()
       }
       if (usePlayer.getState().playing && element.paused) {
@@ -123,7 +135,7 @@ export function PlayerRuntime() {
   // Keep one complete track primed ahead. The current element can then hand off
   // to an already-buffering decoder instead of loading the next URL after ended.
   useEffect(() => {
-    if (!track || shuffle || repeat === 'one' || queue.length < 2) return
+    if (!track || !playing || shuffle || repeat === 'one' || queue.length < 2) return
 
     let nextIndex = currentIndex + 1
     if (nextIndex >= queue.length) {
@@ -145,12 +157,13 @@ export function PlayerRuntime() {
     element.volume = volume
     element.muted = muted
     loadedTrackIds.current[slot] = nextTrack.id
-  }, [api, currentIndex, muted, queue, repeat, shuffle, track?.id, volume]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [api, currentIndex, muted, playing, queue, repeat, shuffle, track?.id, volume]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const element = currentAudio()
     if (!element || !track) return
     if (playing) {
+      element.preload = 'auto'
       if (element.paused) void element.play().catch(() => usePlayer.getState().setPlaying(false))
     } else {
       element.pause()
@@ -243,7 +256,7 @@ export function PlayerRuntime() {
   })
 
   return <>
-    <audio ref={audioA} preload="auto" playsInline {...events(0)}/>
-    <audio ref={audioB} preload="auto" playsInline {...events(1)}/>
+    <audio ref={audioA} preload="metadata" playsInline {...events(0)}/>
+    <audio ref={audioB} preload="metadata" playsInline {...events(1)}/>
   </>
 }
