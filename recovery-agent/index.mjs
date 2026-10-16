@@ -17,7 +17,7 @@ import { ffmpegMetadataArguments, ffprobeTagJsonFormat } from './metadata.mjs'
 import { decodeToolOutput } from './text-encoding.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
 import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
-import { importRemainingUsenetFiles, importUsenetCompletion } from './usenet-import.mjs'
+import { importRemainingUsenetFiles, importUsenetCompletion, planDestination } from './usenet-import.mjs'
 import { validateRecoveryAuthConfig } from './config.mjs'
 import { createUsenetJobPoller } from './usenet-job.mjs'
 import { rebootConfig, scheduleReboot } from './system.mjs'
@@ -304,15 +304,7 @@ async function acquireYouTube(body) {
     const sourceExtension = extname(sourcePath).toLowerCase() || '.mka'
     const sourceQuality = await probe(sourcePath)
     const derivativeExtension = recoveryDerivativeExtension(sourcePath, sourceQuality)
-    const artistDirectory = safeName(track.artist, 'Unknown Artist')
-    const albumDirectory = safeName(track.album, 'Recovered Tracks')
-    const prefix = Number.isInteger(track.trackNumber) && track.trackNumber > 0 ? `${String(track.trackNumber).padStart(2, '0')} - ` : ''
-    const stem = `${prefix}${safeName(track.title, 'Recovered Track')}`
-    const finalDirectory = resolve(recoveryRoot, artistDirectory, albumDirectory)
-    const sourceDirectory = resolve(finalDirectory, '.tomify-source')
-    const finalPath = resolve(finalDirectory, `${stem}${derivativeExtension}`)
-    const originalPath = resolve(sourceDirectory, `${stem}${sourceExtension}`)
-    if (!inside(finalPath, recoveryRoot) || !inside(originalPath, recoveryRoot)) throw new Error('Unsafe recovery destination.')
+    const { finalDirectory, sourceDirectory, finalPath, originalPath } = await planDestination(recoveryRoot, track, sourceExtension, derivativeExtension)
     await mkdir(sourceDirectory, { recursive: true })
     for (const path of [finalPath, originalPath, `${finalPath}.tomify.json`]) {
       try { await access(path); throw new Error('A recovery copy already exists; Tomify will not overwrite it.') } catch (error) { if (error?.code !== 'ENOENT') throw error }
@@ -387,15 +379,7 @@ async function acquireInternetArchive(body) {
     const sourceQuality = await probe(sourcePath)
     if (!sourceQuality.codec || !sourceQuality.duration) throw new Error('The Internet Archive file is not valid audio.')
     const derivativeExtension = recoveryDerivativeExtension(sourcePath, sourceQuality)
-    const artistDirectory = safeName(track.artist, 'Unknown Artist')
-    const albumDirectory = safeName(track.album, 'Recovered Tracks')
-    const prefix = Number.isInteger(track.trackNumber) && track.trackNumber > 0 ? `${String(track.trackNumber).padStart(2, '0')} - ` : ''
-    const stem = `${prefix}${safeName(track.title, 'Recovered Track')}`
-    const finalDirectory = resolve(recoveryRoot, artistDirectory, albumDirectory)
-    const sourceDirectory = resolve(finalDirectory, '.tomify-source')
-    const finalPath = resolve(finalDirectory, `${stem}${derivativeExtension}`)
-    const originalPath = resolve(sourceDirectory, `${stem}${sourceExtension}`)
-    if (!inside(finalPath, recoveryRoot) || !inside(originalPath, recoveryRoot)) throw new Error('Unsafe recovery destination.')
+    const { finalDirectory, sourceDirectory, finalPath, originalPath } = await planDestination(recoveryRoot, track, sourceExtension, derivativeExtension)
     await mkdir(sourceDirectory, { recursive: true })
     for (const path of [finalPath, originalPath, `${finalPath}.tomify.json`]) {
       try { await access(path); throw new Error('A recovery copy already exists; Tomify will not overwrite it.') } catch (error) { if (error?.code !== 'ENOENT') throw error }
