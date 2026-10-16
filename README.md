@@ -188,6 +188,7 @@ GitHub Actions runs the frozen-lockfile install, lint, typecheck, production bui
 
 - Navidrome token authentication, persisted without storing the password, with logout and useful failure states.
 - Home, artists, artist detail, albums, multi-disc album detail, debounced search, playlists, favourites, downloads placeholder and settings.
+- A heart on every track row and album card stars or unstars it in Navidrome. The heart changes at once and flips back if the server refuses, and the Favourites page updates without a reload.
 - Playlists are private to the account that made them, with a **Share** button for sharing one with other Tomify accounts (read-only; recipients see it under **Shared with you**). Navidrome itself would hand admins every user's playlists and everyone other users' public ones, so Tomify lists only your own plus those shared with you. Navidrome has no per-user sharing, so sharing a Navidrome playlist also marks it public in Navidrome (other Subsonic clients can then see it) and unsharing it from everyone makes it private again. An account appears in the Share list once it has signed in to Tomify. Shares live in the D1 `playlist_shares` table (`drizzle/0007_playlist_shares.sql`; the Worker also creates it on first use, so deploying needs no extra step).
 - Persistent HTML5 player with queue, seek, volume, mute, shuffle, repeat, previous/next and full-screen mobile now playing.
 - Media Session metadata (absolute artwork in six sizes), transport controls and position updates.
@@ -218,7 +219,7 @@ Apple controls which Media Session actions appear, and may omit seeking on some 
 
 ### Known limitations
 
-- Offline audio downloads, favourite editing, playlist editing and drag-to-reorder are not included yet.
+- Offline audio downloads, playlist editing and drag-to-reorder are not included yet.
 - Authentication tokens live in browser local storage. This is appropriate for trusted household devices; a shared device should be signed out after use.
 - A cross-origin deployment requires correct Navidrome CORS configuration. A same-origin proxy avoids that operational edge.
 
