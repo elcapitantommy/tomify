@@ -54,6 +54,17 @@ describe('Settings', () => {
     render(<MemoryRouter><Settings/></MemoryRouter>)
     expect(await screen.findByText('App new-site')).toBeInTheDocument()
     expect(screen.getByText('Recovery agent old-agent')).toBeInTheDocument()
-    expect(screen.getByRole('alert')).toHaveTextContent(/do not match/i)
+    expect(screen.getByRole('alert')).toHaveTextContent(/does not match/i)
+  })
+
+  it('does not warn when only the versions differ and the contracts match', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/version') return Response.json({ version: 'site-sha', contract: 2 })
+      return Response.json({ version: 'agent-sha', contract: 2 })
+    }))
+    useAuth.setState({ isAdmin: true })
+    render(<MemoryRouter><Settings/></MemoryRouter>)
+    expect(await screen.findByText('Recovery agent agent-sha')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })
