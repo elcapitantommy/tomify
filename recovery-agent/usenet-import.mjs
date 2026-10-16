@@ -159,10 +159,11 @@ export function selectUsenetImportFiles(files, track, searchMode) {
 }
 
 async function matchingDirectory(parent, requested, fallback, canonicalRoot) {
-  const name = safeName(requested, fallback)
+  const name = safeName(requested, fallback).normalize('NFC')
   const entries = await readdir(parent, { withFileTypes: true }).catch((error) => { if (error?.code === 'ENOENT') return []; throw error })
-  const directories = entries.filter((entry) => entry.isDirectory() && foldName(entry.name) === foldName(name)).map((entry) => entry.name)
-  const selected = directories.includes(name) ? name : directories.sort((left, right) => left.localeCompare(right, 'en'))[0] || name
+  const directories = entries.filter((entry) => entry.isDirectory() && foldName(entry.name.normalize('NFC')) === foldName(name)).map((entry) => entry.name)
+  const exact = directories.find((directory) => directory.normalize('NFC') === name)
+  const selected = exact || directories.sort((left, right) => left.localeCompare(right, 'en'))[0] || name
   const result = resolve(parent, selected)
   if (!inside(result, resolve(parent))) throw new Error('Unsafe recovery destination.')
   await mkdir(result, { recursive: true })
@@ -178,6 +179,19 @@ export async function resolveReleaseDirectory(recoveryRoot, artist, album) {
   const artistDirectory = await matchingDirectory(canonicalRoot, artist, 'Unknown Artist', canonicalRoot)
   const albumDirectory = await matchingDirectory(artistDirectory, album, 'Recovered Tracks', canonicalRoot)
   return albumDirectory
+}
+
+export async function planDestination(recoveryRoot, track, sourceExtension, derivativeExtension) {
+  const root = resolve(recoveryRoot)
+  const finalDirectory = await resolveReleaseDirectory(root, track?.artist, track?.album)
+  const canonicalRoot = await realpath(root)
+  const sourceDirectory = resolve(finalDirectory, '.tomify-source')
+  const prefix = Number.isInteger(track?.trackNumber) && track.trackNumber > 0 ? `${String(track.trackNumber).padStart(2, '0')} - ` : ''
+  const stem = `${prefix}${safeName(track?.title, 'Recovered Track').normalize('NFC')}`
+  const finalPath = resolve(finalDirectory, `${stem}${derivativeExtension}`)
+  const originalPath = resolve(sourceDirectory, `${stem}${sourceExtension}`)
+  if (!inside(finalPath, canonicalRoot) || !inside(originalPath, canonicalRoot)) throw new Error('Unsafe recovery destination.')
+  return { finalDirectory, sourceDirectory, finalPath, originalPath }
 }
 
 async function sameFileContents(left, right) {

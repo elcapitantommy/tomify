@@ -164,9 +164,10 @@ The first custom client is implemented as a **React 18 + TypeScript + Vite PWA**
 
 ### Local development
 
-Requirements: Node.js 20 or newer and pnpm 9 or newer.
+Requirements: Node.js 20 or newer and Corepack. The repository pins pnpm 11.28.6 through `packageManager`, so local development and CI use the same package manager.
 
 ```bash
+corepack enable
 cp .env.example .env.local
 pnpm install
 pnpm dev
@@ -180,6 +181,8 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+GitHub Actions runs the frozen-lockfile install, lint, typecheck, production build, and complete test suite on every push and pull request. Build deliberately runs before tests because the Worker routing tests inspect the generated service worker and Worker bundle.
 
 ### Implemented
 
