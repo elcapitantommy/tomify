@@ -23,7 +23,7 @@ import { createUsenetJobPoller } from './usenet-job.mjs'
 import { rebootConfig, scheduleReboot } from './system.mjs'
 import { createVpnController, nordvpnEnvironment, nordvpnFailureMessage, vpnConfig } from './vpn.mjs'
 import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobState, torrentCandidate, torrentCapability, torrentConfig, torrentSearchCandidates } from './torrent.mjs'
-import { healthResponse, recoveryAgentPackageVersion } from './health.mjs'
+import { agentStatusResponse, healthResponse, recoveryAgentPackageVersion } from './health.mjs'
 
 let authConfiguration
 try { authConfiguration = validateRecoveryAuthConfig() }
@@ -681,7 +681,7 @@ createServer(async (request, response) => {
     const body = await parseBody(request)
     if (request.url === '/v1/status') {
       const auth = await cookieStatus()
-      return send(response, 200, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenet.available, authentication: usenet.available ? 'configured' : 'not-configured', providerCount: usenet.providerCount, providers: [...(newznabIndexers.length ? ['newznab'] : []), ...(nzbIndex ? ['nzbindex'] : [])], downloader: usenetDownloader?.type || null }, { id: 'torrent', available: torrent.available, authentication: torrent.available ? 'configured' : 'not-configured', downloader: torrentDownloader?.type || null, search: torrent.available }], reboot: reboot.enabled ? 'enabled' : 'disabled', vpn: vpnSettings.enabled ? 'enabled' : 'disabled' })
+      return send(response, 200, agentStatusResponse(health, { backends: [{ id: 'youtube', available: true, authentication: auth.usable ? 'configured' : 'not-configured' }, { id: 'internet-archive', available: true, authentication: 'not-required' }, { id: 'usenet', available: usenet.available, authentication: usenet.available ? 'configured' : 'not-configured', providerCount: usenet.providerCount, providers: [...(newznabIndexers.length ? ['newznab'] : []), ...(nzbIndex ? ['nzbindex'] : [])], downloader: usenetDownloader?.type || null }, { id: 'torrent', available: torrent.available, authentication: torrent.available ? 'configured' : 'not-configured', downloader: torrentDownloader?.type || null, search: torrent.available }], reboot: reboot.enabled ? 'enabled' : 'disabled', vpn: vpnSettings.enabled ? 'enabled' : 'disabled' }))
     }
     if (request.url === '/v1/diagnostics/youtube-auth') return send(response, 200, await diagnoseAuthenticatedYouTube())
     if (request.url === '/v1/search') {

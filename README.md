@@ -166,6 +166,8 @@ The first custom client is implemented as a **React 18 + TypeScript + Vite PWA**
 
 Requirements: Node.js 20 or newer and Corepack. The repository pins pnpm 11.28.6 through `packageManager`, so local development and CI use the same package manager.
 
+Production builds embed the current Git short SHA and application/agent contract version. `GET /api/version` exposes the site values, while Settings compares them with the authenticated recovery-agent status. Recovery operations stop with `recovery-agent-outdated` when the deployed agent predates the site's required contract; agent updates are documented in [Updating the recovery agent](docs/RECOVERY.md#updating-the-recovery-agent).
+
 ```bash
 corepack enable
 cp .env.example .env.local

@@ -44,6 +44,32 @@ test('Worker handles the Spotify callback as API and returns JSON for unknown AP
   assert.match(spa.headers.get('content-type') || '', /^text\/html/)
 })
 
+test('Worker exposes its build version and recovery contract', async () => {
+  const response = await worker.fetch(new Request('https://app.tomify.test/api/version'), {})
+  assert.equal(response.status, 200)
+  const body = await response.json()
+  assert.match(body.version, /^[0-9a-f]+$|^unknown$/)
+  assert.equal(body.contract, 2)
+})
+
+test('Worker exposes authenticated recovery-agent version details to Settings', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+    if (url.pathname === '/v1/status') return Response.json({ version: 'agent123', contract: 2, backends: [] })
+    return new Response('{}', { status: 404 })
+  }
+  try {
+    const headers = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' }
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/recovery-agent/status', { headers }), { RECOVERY_AGENT_URL: 'https://agent-settings.tomify.test' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { version: 'agent123', contract: 2 })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 function completenessDatabase() {
   const tracklists = new Map()
   const recoveryItems = []
@@ -209,12 +235,48 @@ function wantedMusicDatabase() {
   return { rows, prepare: statement, async batch() { return [] } }
 }
 
+test('Recovery rejects old or unversioned agents and accepts contract 2', async () => {
+  const searched = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+    if (url.pathname === '/v1/status') {
+      if (url.hostname === 'agent-old.tomify.test') return Response.json({ version: 'old', contract: 1, backends: [] })
+      if (url.hostname === 'agent-current.tomify.test') return Response.json({ version: 'current', contract: 2, backends: [] })
+      return Response.json({ version: 'legacy', backends: [] })
+    }
+    if (url.pathname === '/v1/search') { searched.push(url.hostname); return Response.json({ candidates: [] }) }
+    return new Response('{}', { status: 404 })
+  }
+  try {
+    const headers = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }
+    const search = async (agent) => {
+      const env = { TOMIFY_DB: wantedMusicDatabase(), RECOVERY_AGENT_URL: `https://${agent}.tomify.test` }
+      const added = await worker.fetch(new Request('https://app.tomify.test/api/recovery', { method: 'POST', headers, body: JSON.stringify({ artist: 'They Might Be Giants', album: 'Flood' }) }), env).then((response) => response.json())
+      return worker.fetch(new Request(`https://app.tomify.test/api/recovery/${added.item.id}/search`, { method: 'POST', headers, body: JSON.stringify({ backend: 'usenet', searchFields: ['artist', 'album'] }) }), env)
+    }
+
+    const old = await search('agent-old')
+    assert.equal(old.status, 409)
+    assert.deepEqual(await old.json().then(({ error, message }) => ({ error, message })), { error: 'recovery-agent-outdated', message: 'The recovery agent is out of date. Redeploy it using docs/RECOVERY.md, “Updating the recovery agent”: https://github.com/elcapitantommy/tomify/blob/main/docs/RECOVERY.md#updating-the-recovery-agent' })
+    assert.equal((await search('agent-current')).status, 200)
+    const legacy = await search('agent-legacy')
+    assert.equal(legacy.status, 409)
+    assert.equal((await legacy.json()).error, 'recovery-agent-outdated')
+    assert.deepEqual(searched, ['agent-current.tomify.test'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('Recovery accepts wanted music from any mix of artist, album and track and searches Usenet with combined fields', async () => {
   const agentRequests = []
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
     if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+    if (url.pathname === '/v1/status') return Response.json({ version: 'test', contract: 2, backends: [] })
     if (url.pathname === '/v1/search') { agentRequests.push(JSON.parse(init.body)); return Response.json({ candidates: [] }) }
     return new Response('{}', { status: 404 })
   }
@@ -263,6 +325,7 @@ test('Recovery imports the rest of a single-track Usenet download and keeps ever
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
     if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+    if (url.pathname === '/v1/status') return Response.json({ version: 'test', contract: 2, backends: [] })
     if (url.pathname === '/v1/jobs/import-remaining') {
       agentRequests.push(JSON.parse(init.body))
       return Response.json({ result: { importedCount: 2, artist: 'They Might Be Giants', album: 'Flood', importedTracks: [{ path: '/recovery/They Might Be Giants/Flood/01 - Theme from Flood.mp3', title: 'Theme from Flood' }, { path: '/recovery/They Might Be Giants/Flood/03 - Lucky Ball and Chain.mp3', title: 'Lucky Ball and Chain' }] } })
@@ -464,7 +527,7 @@ test('Recovery explains an out-of-date agent instead of showing not-found', asyn
   globalThis.fetch = async (input) => ['/rest/ping.view', '/rest/getUser.view'].includes(new URL(String(input)).pathname) ? Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } }) : Response.json({ error: 'not-found' }, { status: 404 })
   try {
     const response = await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/import-remaining', { method: 'POST', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' } }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
-    assert.equal(response.status, 502)
+    assert.equal(response.status, 409)
     assert.match((await response.json()).message, /recovery agent is out of date/)
   } finally {
     globalThis.fetch = originalFetch
@@ -477,6 +540,7 @@ test('Recovery hands a pasted torrent link to the agent as a torrent search', as
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
     if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+    if (url.pathname === '/v1/status') return Response.json({ version: 'test', contract: 2, backends: [] })
     if (url.pathname === '/v1/search') { agentRequests.push(JSON.parse(init.body)); return Response.json({ candidates: [{ externalId: 'torrent-external', url: 'magnet:?xt=urn:btih:abc', title: 'Flood', channel: 'Torrent link', provenance: { providerType: 'torrent', searchMode: 'release' } }] }) }
     return new Response('{}', { status: 404 })
   }
@@ -504,6 +568,7 @@ test('Recovery searches torrents by the chosen fields when no link is pasted', a
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
     if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+    if (url.pathname === '/v1/status') return Response.json({ version: 'test', contract: 2, backends: [] })
     if (url.pathname === '/v1/search') { agentRequests.push(JSON.parse(init.body)); return Response.json({ candidates: [{ externalId: 'torrent-search', url: 'https://thepiratebay.org/description.php?id=1', title: 'They Might Be Giants - Flood (1990) FLAC', channel: 'thepiratebay.org', provenance: { providerType: 'torrent', providerId: 'qbittorrent-search', seeds: 42, searchMode: 'release' } }] }) }
     return new Response('{}', { status: 404 })
   }
