@@ -874,6 +874,8 @@ export default {
       const force = album.force === true
       const replaceManual = album.replaceManual === true
       if (existing && (!force || (existing.source === 'manual' && !replaceManual))) return json({ item: existing, cached: true })
+      // Anyone opening an album fills in a missing classification; refreshing or replacing one is an edit, so administrators only.
+      if (existing && !(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can edit release metadata.' }, 403)
 
       const match = await lookupMusicBrainzReleaseGroup(album)
       if (!match?.group) return json({ error: 'musicbrainz-no-match' }, 404)
@@ -894,6 +896,7 @@ export default {
       if (!env || !env.TOMIFY_DB) return json({ error: 'metadata-store-unavailable' }, 503)
       const username = await authenticate(request)
       if (!username) return json({ error: 'unauthorized' }, 401)
+      if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can edit release metadata.' }, 403)
       const body = await request.json()
       const allowed = ['album', 'single', 'ep', 'compilation', 'other']
       if (!body || !allowed.includes(body.releaseType)) return json({ error: 'invalid-release-type' }, 400)

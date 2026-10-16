@@ -1,11 +1,12 @@
-import { useState } from 'react'
-import { Check, ImageUp, LoaderCircle, RotateCcw } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Check, ImageUp, LoaderCircle, RotateCcw, X } from 'lucide-react'
 import type { Album } from '../types'
 import { useAlbumArtwork, type AlbumArtworkCandidate } from '../stores/albumArtwork'
 
 type LookupState = { status: 'idle' } | { status: 'loading' } | { status: 'ready'; candidates: AlbumArtworkCandidate[] } | { status: 'error'; message: string }
 
-export function AlbumArtworkPicker({ album }: { album: Album }) {
+// Opened by clicking the album's artwork (administrators only); searchOnOpen looks up replacements straight away.
+export function AlbumArtworkPicker({ album, searchOnOpen = false, onClose }: { album: Album; searchOnOpen?: boolean; onClose?: () => void }) {
   const override = useAlbumArtwork((state) => state.overrides[album.id])
   const available = useAlbumArtwork((state) => state.providers.length > 0)
   const lookup = useAlbumArtwork((state) => state.lookup)
@@ -21,6 +22,10 @@ export function AlbumArtworkPicker({ album }: { album: Album }) {
     catch (reason) { setState({ status: 'error', message: reason instanceof Error ? reason.message : 'Artwork lookup failed.' }) }
   }
 
+  useEffect(() => {
+    if (searchOnOpen && available) void search()
+  }, [album.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const run = async (action: () => Promise<void>) => {
     setSaving(true); setError(null)
     try { await action() } catch (reason) { setError(reason instanceof Error ? reason.message : 'Artwork could not be saved.') } finally { setSaving(false) }
@@ -32,7 +37,7 @@ export function AlbumArtworkPicker({ album }: { album: Album }) {
     : override?.provider === 'library' ? 'Keeping the library artwork. Automatic upgrades will skip this album.' : 'Showing the artwork from your music library.'
 
   return <section className="artwork-picker cloud-only" aria-label="Album artwork">
-    <div className="release-editor-title"><ImageUp/><div><strong>Album artwork</strong><small>{summary}{override && override.provider !== 'library' && override.storeUrl && <> <a href={override.storeUrl} target="_blank" rel="noreferrer">Open in {providerName}</a></>}</small></div></div>
+    <div className="release-editor-title"><ImageUp/><div><strong>Album artwork</strong><small>{summary}{override && override.provider !== 'library' && override.storeUrl && <> <a href={override.storeUrl} target="_blank" rel="noreferrer">Open in {providerName}</a></>}</small></div>{onClose && <button type="button" className="icon-button artwork-picker-close" onClick={onClose} aria-label="Close album artwork options"><X/></button>}</div>
     <div className="artwork-picker-actions">
       <button className="button secondary" disabled={!available || state.status === 'loading' || saving} onClick={() => void search()}>{state.status === 'loading' ? <LoaderCircle className="spin"/> : <ImageUp/>}Find better artwork</button>
       {override?.provider !== 'library' && <button className="button secondary" disabled={saving} onClick={() => void run(() => select(album.id, 'library'))}>Keep library artwork</button>}

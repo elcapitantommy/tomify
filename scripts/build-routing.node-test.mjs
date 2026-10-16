@@ -179,7 +179,7 @@ test('album completeness compares a twelve-track album with the album, not its s
 test('album completeness reports an unreachable MusicBrainz as a JSON 502', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input) => {
-    if (new URL(String(input)).pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (['/rest/ping.view', '/rest/getUser.view'].includes(new URL(String(input)).pathname)) return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
     throw new TypeError('network unreachable')
   }
   try {
@@ -768,5 +768,39 @@ test('playlists stay with their owner until shared, and recipients get read-only
 
     await shareCall(env, 'Tom', '/api/playlist-shares/imported/imp-1', { method: 'PUT', body: JSON.stringify({ users: [] }) })
     assert.equal((await shareCall(env, 'anna', '/api/catalogue-playlists/imp-1')).status, 404)
+  })
+})
+
+test('only administrators can edit release metadata, change album artwork or run the completeness check', async () => {
+  const db = await sqliteDatabase()
+  const env = { TOMIFY_DB: db }
+  const call = (path, method, body) => worker.fetch(new Request('https://app.tomify.test' + path, { method, headers: adminHeaders, ...(body ? { body: JSON.stringify(body) } : {}) }), env)
+  const album = { albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' }
+  await withRebootFetch({ admin: false, agent: () => Response.json({}, { status: 500 }) }, async (outbound) => {
+    assert.equal((await call('/api/album-artwork', 'GET')).status, 200)
+    assert.equal((await call('/api/release-meta', 'GET')).status, 200)
+    db.sqlite.prepare("INSERT INTO release_metadata (album_id, release_type, source) VALUES ('album-1', 'album', 'musicbrainz')").run()
+    // Opening an album that is already classified still works for everyone.
+    assert.equal((await (await call('/api/release-meta/enrich', 'POST', album)).json()).cached, true)
+    for (const [path, method, body] of [
+      ['/api/release-meta/album-1', 'PUT', { releaseType: 'single' }],
+      ['/api/release-meta/enrich', 'POST', { ...album, force: true, replaceManual: true }],
+      ['/api/album-artwork/lookup', 'POST', album],
+      ['/api/album-artwork/select', 'POST', { albumId: 'album-1', provider: 'library' }],
+      ['/api/album-artwork/reset', 'POST', { albumId: 'album-1' }],
+      ['/api/album-completeness/tracklist', 'POST', { ...album, localTrackCount: 1 }],
+    ]) {
+      const response = await call(path, method, body)
+      assert.equal(response.status, 403, `${method} ${path}`)
+      assert.match((await response.json()).message, /Navidrome administrator/)
+    }
+    assert.equal(db.sqlite.prepare("SELECT release_type FROM release_metadata WHERE album_id = 'album-1'").get().release_type, 'album')
+    assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM album_artwork').get().count, 0)
+    // Nothing reached MusicBrainz or the artwork catalogues.
+    assert.equal(outbound.length, 0)
+  })
+  await withRebootFetch({ admin: true, agent: () => Response.json({}, { status: 500 }) }, async () => {
+    assert.equal((await call('/api/release-meta/album-1', 'PUT', { releaseType: 'single' })).status, 200)
+    assert.equal((await call('/api/album-artwork/select', 'POST', { albumId: 'album-1', provider: 'library' })).status, 200)
   })
 })
