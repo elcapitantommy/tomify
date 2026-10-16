@@ -161,6 +161,67 @@ The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and
 
 The recovery directory may be added to Navidrome as a separate library path after review. It should not be merged over `/srv/music` by an automated job.
 
+## Backups and uptime checks
+
+D1 holds the only copy of playlists, imported Spotify playlists and recovery state, and `/var/lib/tomify-recovery` holds the agent's job state. `scripts/backup.sh` backs both up on the Debian box:
+
+- `wrangler d1 export tomify-metadata --remote` to `tomify-d1-<UTC time>.sql`;
+- a tar.gz of the agent state directory to `tomify-agent-state-<UTC time>.tar.gz`.
+
+Both go to `BACKUP_DIR` (default `/var/backups/tomify`, created with owner-only permissions), and only the newest 14 of each are kept (`BACKUP_KEEP`). A file is only renamed into place once it is complete, so a failed run never counts towards the 14. `TOMIFY_RECOVERY_STATE_DIR`, `TOMIFY_D1_DATABASE` and `WRANGLER` (for example `npx --yes wrangler@4`) override the other defaults. The script prints file names only, never tokens or the Cloudflare account.
+
+### Setting up the nightly backup
+
+1. Install wrangler on the box: `sudo npm install -g wrangler`. The box has no Git checkout and needs none; wrangler finds the database by name.
+2. Authenticate wrangler as `tom`. On a headless box an API token is simplest: create one in the Cloudflare dashboard with the **Account → D1 → Edit** permission, then create `/etc/tomify/backup.env` with `CLOUDFLARE_API_TOKEN=...` and `CLOUDFLARE_ACCOUNT_ID=...`, owned by `tom` with mode `600`. Running `wrangler login` as `tom` also works.
+3. Create the backup folder: `sudo install -d -o tom -g tom -m 700 /var/backups/tomify`. A different disk from the agent state, or a regular copy off the box, protects against losing the NVMe; set `BACKUP_DIR` in `backup.env` to change it.
+4. Copy the script and units over from the Windows checkout, as for the agent:
+
+   ```powershell
+   scp scripts\backup.sh scripts\tomify-backup.service.example scripts\tomify-backup.timer.example tom@tomify:/tmp/
+   ssh -t tom@tomify "sudo install -m 755 /tmp/backup.sh /opt/tomify/backup.sh && sudo cp /tmp/tomify-backup.service.example /etc/systemd/system/tomify-backup.service && sudo cp /tmp/tomify-backup.timer.example /etc/systemd/system/tomify-backup.timer && sudo systemctl daemon-reload"
+   ```
+
+5. Check it, then enable the timer (nightly at about 03:30, caught up after the box was off):
+
+   ```sh
+   set -a; . /etc/tomify/backup.env; set +a; /opt/tomify/backup.sh --dry-run
+   sudo systemctl start tomify-backup.service && journalctl -u tomify-backup -n 20
+   sudo systemctl enable --now tomify-backup.timer
+   ```
+
+`--dry-run` checks that wrangler is logged in and prints the commands and the old backups it would delete, without changing anything. `systemctl list-timers tomify-backup.timer` shows the last and next run; a failed run shows in `systemctl status tomify-backup`.
+
+### Restoring from a backup
+
+D1 first: for a mistake in the last few days, D1 Time Travel is quicker than an export (`wrangler d1 time-travel restore tomify-metadata --timestamp=<RFC 3339 time>`). To restore an export, load it into a new, empty database so nothing is half-overwritten, then switch the Worker to it:
+
+```sh
+wrangler d1 create tomify-metadata-restored
+wrangler d1 execute tomify-metadata-restored --remote --file /var/backups/tomify/tomify-d1-<time>.sql
+```
+
+Check the data (for example `wrangler d1 execute tomify-metadata-restored --remote --command "SELECT COUNT(*) FROM recovery_items"`), then put the new `database_name` and `database_id` in `wrangler.toml` and redeploy.
+
+Agent state:
+
+```sh
+sudo systemctl stop tomify-recovery
+sudo mv /var/lib/tomify-recovery /var/lib/tomify-recovery.before-restore
+sudo tar -xzf /var/backups/tomify/tomify-agent-state-<time>.tar.gz -C /var/lib
+sudo chown -R tom:tom /var/lib/tomify-recovery
+sudo systemctl start tomify-recovery
+```
+
+Delete `/var/lib/tomify-recovery.before-restore` once the Recovery page looks right.
+
+### External uptime check
+
+Point any external HTTP monitor (a free tier of a hosted monitor, or a cron job on another machine running `curl -fsS`) at two URLs, every few minutes:
+
+- the Tomify site's URL, expecting HTTP 200;
+- `RECOVERY_AGENT_URL` followed by `/health`, expecting HTTP 200 with `"ok":true`. This is the agent through its Cloudflare Tunnel, so it also fails when the box, the agent or the `tomify-recovery-cloudflared` container is down. `/health` needs no token and returns only the list of available backends.
+
 ## Restarting the media server from Tomify
 
 **Settings → Restart media server** reboots the Debian box through the recovery agent's tunnel, for when SSH cannot reach it (for example after a VPN change). The button asks for confirmation, only Navidrome administrators may use it (the Worker checks `adminRole` with Navidrome's `getUser` API), and the agent waits three seconds after answering before running `systemctl reboot`. Playback, downloads and imports in progress stop, and the site is unavailable until the box and its tunnel containers are back.
