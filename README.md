@@ -213,6 +213,20 @@ The service worker precaches the application shell and uses a bounded cache for 
 
 Apple controls which Media Session actions appear, and may omit seeking on some iOS releases. Background playback and lock-screen behaviour require verification on the actual target iPhones over HTTPS; automated desktop tests cannot prove OS-level Control Center presentation. Cross-origin artwork and audio must remain reachable while the phone is locked.
 
+### Playing across devices
+
+Tomify works like Spotify Connect between the tabs and apps signed in to the same account:
+
+- One device plays at a time. Starting music on a device takes playback over, and the device that was playing pauses itself.
+- While another device is playing, the player bar, queue and full-screen player show and control it ("Playing on Windows · Chrome"). Play, pause, seek, skip, shuffle, repeat, volume and **Add to queue** all act on that device, and the buttons update straight away rather than after the round trip.
+- The device button (speaker icon) lists every device with Tomify open on the account. Pick one to move playback there at the same track and position, or press **Play on this device** in the full-screen player to bring it here.
+- A paused device stays in control for a minute so it can be resumed from elsewhere. After that, other devices go back to their own player, loaded with the track and position where it stopped, so pressing play carries on from there.
+- Closing or reloading a tab removes it from the device list and marks its playback as paused, so other devices stop showing it as playing. A reload never replays an old remote command, and commands older than 30 seconds are dropped.
+- Syncing checks every 1–1.5 seconds while something is playing and backs off to every 10 seconds when nothing changes. A background tab that is playing keeps checking (so it still hears pause from your phone); a background tab that is not playing checks every 20 seconds.
+- An iPhone app in the background may stop checking in. Other devices then keep showing it as playing until its current track would have ended.
+
+The state lives in the D1 tables `live_playback` and `live_playback_devices` (`drizzle/0009_live_playback.sql`; the Worker also creates them on first use, so deploying needs no extra step). The Worker code is in `scripts/live-playback-worker.mjs`.
+
 ### Known limitations
 
 - Offline audio downloads, favourite editing, playlist editing and drag-to-reorder are not included yet.

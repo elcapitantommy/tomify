@@ -836,3 +836,54 @@ test('administrators can upload album artwork from their device, served publicly
     assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM album_artwork_uploads').get().count, 0)
   })
 })
+
+const liveCall = (env, path, init = {}) => worker.fetch(new Request('https://app.tomify.test' + path, { ...init, headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' } }), env)
+const liveState = (deviceId, extra = {}) => ({ deviceId, deviceName: deviceId, queue: [{ id: 't1', title: 'Ana Ng' }], currentIndex: 0, playing: true, currentTime: 12, duration: 200, ...extra })
+
+test('live playback lists open devices, keeps quick commands and lets any open device take over', async () => {
+  const db = await sqliteDatabase()
+  const env = { TOMIFY_DB: db }
+  await withNavidromePlaylists({}, async () => {
+    const empty = await (await liveCall(env, '/api/live-playback?deviceId=phone&deviceName=iPhone%20app')).json()
+    assert.equal(empty.state, null)
+    assert.equal(typeof empty.now, 'number')
+    assert.deepEqual(empty.devices.map((device) => device.deviceName), ['iPhone app'])
+
+    assert.equal((await liveCall(env, '/api/live-playback', { method: 'POST', body: JSON.stringify(liveState('desktop')) })).status, 200)
+    assert.equal((await liveCall(env, '/api/live-playback', { method: 'POST', body: JSON.stringify(liveState('phone')) })).status, 409)
+
+    for (const action of ['next', 'next']) assert.equal((await liveCall(env, '/api/live-playback/command', { method: 'POST', body: JSON.stringify({ targetDeviceId: 'desktop', action }) })).status, 200)
+    const queued = await liveCall(env, '/api/live-playback/command', { method: 'POST', body: JSON.stringify({ targetDeviceId: 'desktop', action: 'add-to-queue', track: { id: 't2', title: 'Purple Toupee', secret: 'dropped' } }) })
+    assert.equal(queued.status, 200)
+    const polled = await (await liveCall(env, '/api/live-playback?deviceId=phone')).json()
+    assert.deepEqual(polled.commands.map((command) => [command.revision, command.action]), [[1, 'next'], [2, 'next'], [3, 'add-to-queue']])
+    assert.equal(polled.commands[2].track.secret, undefined)
+    assert.equal(polled.command.revision, 3)
+    assert.deepEqual(polled.devices.map((device) => device.deviceId).sort(), ['desktop', 'phone'])
+
+    assert.equal((await liveCall(env, '/api/live-playback/command', { method: 'POST', body: JSON.stringify({ targetDeviceId: 'laptop', action: 'transfer' }) })).status, 409)
+    assert.equal((await liveCall(env, '/api/live-playback/command', { method: 'POST', body: JSON.stringify({ targetDeviceId: 'phone', action: 'pause' }) })).status, 409)
+    const transfer = await liveCall(env, '/api/live-playback/command', { method: 'POST', body: JSON.stringify({ targetDeviceId: 'phone', action: 'transfer' }) })
+    assert.equal(transfer.status, 200)
+  })
+})
+
+test('a closing tab leaves the device list and shows its playback as paused', async () => {
+  const db = await sqliteDatabase()
+  const env = { TOMIFY_DB: db }
+  await withNavidromePlaylists({}, async () => {
+    await liveCall(env, '/api/live-playback', { method: 'POST', body: JSON.stringify(liveState('desktop')) })
+    assert.equal((await liveCall(env, '/api/live-playback/leave', { method: 'POST', body: JSON.stringify({ deviceId: 'desktop', currentTime: 61 }) })).status, 200)
+    const after = await (await liveCall(env, '/api/live-playback')).json()
+    assert.equal(after.state.playing, false)
+    assert.equal(after.state.currentTime, 61)
+    assert.equal(after.state.revision, 2)
+    assert.deepEqual(after.devices, [])
+  })
+})
+
+test('live playback reads the single command stored by the previous Worker', async () => {
+  const { parseLiveCommands } = await import('./live-playback-worker.mjs')
+  assert.deepEqual(parseLiveCommands({ commandJson: JSON.stringify({ action: 'pause' }), commandRevision: 4, commandTargetDevice: 'desktop', commandUpdatedAt: 99 }), [{ action: 'pause', revision: 4, targetDeviceId: 'desktop', updatedAt: 99 }])
+  assert.deepEqual(parseLiveCommands({ commandJson: 'not json' }), [])
+})

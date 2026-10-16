@@ -5,7 +5,7 @@ import { PlayerBar } from './Player'
 import { PlayerRuntime } from './PlayerRuntime'
 import { LivePlaybackSync } from './LivePlaybackSync'
 import { usePlayer } from '../stores/player'
-import { localPlaybackDeviceId, useLivePlayback } from '../stores/livePlayback'
+import { useRemoteSession } from '../stores/livePlayback'
 import { useAuth } from '../stores/auth'
 
 const primary = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }]
@@ -22,13 +22,9 @@ export function AppShell() {
   const lastScrollY = useRef(0)
   const localQueue = usePlayer((state) => state.queue)
   const localCurrentIndex = usePlayer((state) => state.currentIndex)
-  const live = useLivePlayback((state) => state.snapshot)
+  const { remote } = useRemoteSession(5000)
   const localTrack = localQueue[localCurrentIndex]
-  const remoteTrack = live &&
-    live.deviceId !== localPlaybackDeviceId &&
-    Date.now() - live.updatedAt < 10_000
-      ? live.queue[live.currentIndex]
-      : undefined
+  const remoteTrack = remote?.queue[remote.currentIndex]
   const titleTrack = remoteTrack ?? localTrack
   const isAdmin = useAuth((state) => state.isAdmin) === true
   const logout = useAuth((state) => state.logout)
