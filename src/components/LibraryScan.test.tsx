@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import type { NavidromeClient } from '../lib/navidrome'
 import { LibraryScan, SCAN_POLL_MS } from './LibraryScan'
 
@@ -13,7 +14,8 @@ describe('LibraryScan', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     api.scanStatus.mockResolvedValueOnce({ scanning: false, lastScan: '2026-10-15T10:00:00Z' }).mockResolvedValueOnce({ scanning: false, count: 5120 })
     api.startScan.mockResolvedValue({ scanning: true, count: 12 })
-    render(<LibraryScan/>)
+    render(<MemoryRouter><LibraryScan/></MemoryRouter>)
+    expect(screen.getByRole('link', { name: /Library health/ })).toHaveAttribute('href', '/library-health')
     fireEvent.click(await screen.findByRole('button', { name: 'Scan library' }))
     expect(api.startScan).toHaveBeenCalledWith(true)
     expect(await screen.findByRole('button', { name: /Scanning/ })).toBeDisabled()
@@ -25,7 +27,7 @@ describe('LibraryScan', () => {
   it('shows why Navidrome refused the scan', async () => {
     api.scanStatus.mockResolvedValue({ scanning: false })
     api.startScan.mockRejectedValue(new Error('User not authorized'))
-    render(<LibraryScan/>)
+    render(<MemoryRouter><LibraryScan/></MemoryRouter>)
     fireEvent.click(await screen.findByRole('button', { name: 'Scan library' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('User not authorized')
   })

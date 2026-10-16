@@ -2,6 +2,7 @@ import { lstat, mkdir, stat, readdir, readFile, rename, rm, writeFile } from 'no
 import { dirname, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { classifyQuality, qualityTiers } from '../shared/quality.mjs'
+import { reportLibraryInventory } from './inventory-report.mjs'
 
 const audioExtensions = new Set(['.flac', '.mp3', '.m4a', '.mp4', '.aac', '.ogg', '.opus', '.wav', '.aiff', '.aif', '.mka', '.wma', '.webm'])
 const inventoryFileName = 'library-inventory.json'
@@ -45,18 +46,19 @@ async function directoryIdentity(path) {
   try { const details = await stat(resolve(path)); return details.isDirectory() ? `${details.dev}:${details.ino}` : null } catch { return null }
 }
 
-// Hidden directories are skipped: `.tomify-source` holds the originals behind recovery derivatives (linked from their
-// sidecars, not library tracks), and Navidrome ignores dot-directories too. `skip` holds directory identities to leave
-// out, such as the recovery library bind-mounted inside the master one (/srv/music/_Recovery on the media server).
+// Hidden directories are skipped. `.tomify-source` is the exception: its direct audio children are recorded as
+// unprobed sourceFiles so health checks can find broken provenance, but they are not counted as library tracks.
+// `skip` holds directory identities to leave out, such as the recovery bind mount inside the master library.
 async function walkLibrary(root, library, progress, skip = new Set()) {
-  if (!root) return { files: [], sidecars: [] }
+  if (!root) return { files: [], sidecars: [], sourceFiles: [] }
   const absoluteRoot = resolve(root)
   let rootDetails
-  try { rootDetails = await lstat(absoluteRoot) } catch (error) { if (error?.code === 'ENOENT') return { files: [], sidecars: [] }; throw error }
-  if (!rootDetails.isDirectory() || rootDetails.isSymbolicLink()) return { files: [], sidecars: [] }
+  try { rootDetails = await lstat(absoluteRoot) } catch (error) { if (error?.code === 'ENOENT') return { files: [], sidecars: [], sourceFiles: [] }; throw error }
+  if (!rootDetails.isDirectory() || rootDetails.isSymbolicLink()) return { files: [], sidecars: [], sourceFiles: [] }
   const directories = [absoluteRoot]
   const files = []
   const sidecars = []
+  const sourceFiles = []
   while (directories.length) {
     const directory = directories.pop()
     try {
@@ -70,7 +72,18 @@ async function walkLibrary(root, library, progress, skip = new Set()) {
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue
       const path = join(directory, entry.name)
-      if (entry.isDirectory()) { if (!entry.name.startsWith('.')) directories.push(path); continue }
+      if (entry.isDirectory()) {
+        if (entry.name === '.tomify-source') {
+          const sourceEntries = await readdir(path, { withFileTypes: true }).catch((error) => { if (error?.code === 'ENOENT') return []; throw error })
+          for (const source of sourceEntries) {
+            if (!source.isFile() || source.isSymbolicLink() || !audioExtensions.has(extname(source.name).toLowerCase())) continue
+            const sourcePath = join(path, source.name)
+            const details = await lstat(sourcePath).catch((error) => { if (error?.code === 'ENOENT') return null; throw error })
+            if (details?.isFile() && !details.isSymbolicLink()) sourceFiles.push({ library, path: sourcePath, size: details.size, mtime: details.mtime.toISOString(), mtimeMs: details.mtimeMs })
+          }
+        } else if (!entry.name.startsWith('.')) directories.push(path)
+        continue
+      }
       if (!entry.isFile()) continue
       if (audioExtensions.has(extname(entry.name).toLowerCase())) {
         const details = await lstat(path).catch((error) => { if (error?.code === 'ENOENT') return null; throw error })
@@ -83,7 +96,7 @@ async function walkLibrary(root, library, progress, skip = new Set()) {
       }
     }
   }
-  return { files, sidecars }
+  return { files, sidecars, sourceFiles }
 }
 
 async function inspectSidecar(entry, audioPaths) {
@@ -132,6 +145,7 @@ export async function scanLibraryInventory({ masterRoot = null, recoveryRoot, st
   collected.push(await walkLibrary(recoveryRoot, 'recovery', update))
   const discoveredFiles = collected.flatMap((value) => value.files).sort((left, right) => left.library.localeCompare(right.library) || left.path.localeCompare(right.path, 'en', { sensitivity: 'variant' }))
   const discoveredSidecars = collected.flatMap((value) => value.sidecars).sort((left, right) => left.path.localeCompare(right.path, 'en', { sensitivity: 'variant' }))
+  const sourceFiles = collected.flatMap((value) => value.sourceFiles).sort((left, right) => left.path.localeCompare(right.path, 'en', { sensitivity: 'variant' }))
   update({ filesDiscovered: discoveredFiles.length, currentLibrary: null, currentPath: null })
   const audioPaths = new Set(discoveredFiles.map((file) => file.path))
   const sidecars = []
@@ -157,7 +171,7 @@ export async function scanLibraryInventory({ masterRoot = null, recoveryRoot, st
     update({ filesProcessed, filesProbed: progress.filesProbed + 1, progress: discoveredFiles.length ? Math.round(filesProcessed / discoveredFiles.length * 100) : 100 })
   }
   const completedAt = now()
-  const inventory = { version: 1, completedAt, files, sidecars }
+  const inventory = { version: 2, completedAt, files, sidecars, sourceFiles }
   await writeJsonAtomic(statePath, inventory)
   update({ state: 'completed', progress: 100, completedAt, currentLibrary: null, currentPath: null })
   return inventory
@@ -207,6 +221,7 @@ export function createInventoryController(options) {
     },
     async status() { await load(); return { ...status } },
     async summary() { await load(); return summarizeLibraryInventory(lastInventory) },
+    async report(options = {}) { await load(); return reportLibraryInventory(lastInventory, options) },
     async settled() { await running; return lastInventory },
   }
 }

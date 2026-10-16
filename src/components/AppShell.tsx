@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, LogOut, Search, Settings, UsersRound, X } from 'lucide-react'
+import { Activity, Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, LogOut, Search, Settings, UsersRound, X } from 'lucide-react'
 import { PlayerBar } from './Player'
 import { PlayerRuntime } from './PlayerRuntime'
 import { LivePlaybackSync } from './LivePlaybackSync'
@@ -10,7 +10,7 @@ import { useAuth } from '../stores/auth'
 
 const primary = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }]
 const library = [{ to: '/playlists', label: 'Playlists', icon: ListMusic }, { to: '/favourites', label: 'Favourites', icon: Heart }, { to: '/downloads', label: 'Downloads', icon: Download }]
-// Recovery and Settings are for Navidrome administrators: the sidebar lists them, and on mobile they live in the account sheet.
+// Administrative tools stay out of the mobile tab bar and live in the account sheet instead.
 const recovery = { to: '/recovery', label: 'Recovery', icon: LifeBuoy }
 const mobile = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }, { to: '/playlists', label: 'Playlists', icon: ListMusic }, { to: '/favourites', label: 'Favourites', icon: Heart }]
 
@@ -77,7 +77,7 @@ function AccountSheet({ isAdmin, onClose, onLogout }: { isAdmin: boolean; onClos
   return <div className="account-sheet-backdrop" onClick={onClose}>
     <div className="account-sheet" role="dialog" aria-modal="true" aria-label="Account" onClick={(event) => event.stopPropagation()}>
       <header><CircleUserRound/><span><strong>{username}</strong><small>{isAdmin ? 'Navidrome administrator' : 'Your Navidrome account'}</small></span><button type="button" className="account-sheet-close" onClick={onClose} aria-label="Close"><X/></button></header>
-      {isAdmin && <><NavLink to="/recovery"><LifeBuoy/>Recovery</NavLink><NavLink to="/settings"><Settings/>Settings</NavLink></>}
+      {isAdmin && <><NavLink to="/recovery"><LifeBuoy/>Recovery</NavLink><NavLink to="/library-health"><Activity/>Library health</NavLink><NavLink to="/settings"><Settings/>Settings</NavLink></>}
       <button type="button" onClick={onLogout}><LogOut/>Sign out</button>
     </div>
   </div>

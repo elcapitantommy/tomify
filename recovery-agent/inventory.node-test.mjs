@@ -59,6 +59,7 @@ test('inventory is read-only, keeps case-distinct directories and orphan sidecar
   assert.equal(inventory.files.length, 3)
   assert.equal(inventory.files.some((file) => file.path.endsWith('linked-copy.flac')), false)
   assert.equal(inventory.files.some((file) => file.path === paths.sourceFlac), false)
+  assert.deepEqual(inventory.sourceFiles.map((file) => file.path), [paths.sourceFlac])
   assert.equal(inventory.files.some((file) => file.path.includes(join('master', 'Kinks'))), true)
   assert.equal(inventory.files.some((file) => file.path.includes(join('recovery', 'kinks'))), true)
   assert.equal(inventory.sidecars.find((sidecar) => sidecar.path.endsWith('orphan.flac.tomify.json')).orphan, true)
@@ -77,7 +78,7 @@ test('inventory is read-only, keeps case-distinct directories and orphan sidecar
   assert.deepEqual(await treeSnapshot(paths.masterRoot), beforeMaster)
   assert.deepEqual(await treeSnapshot(paths.recoveryRoot), beforeRecovery)
   assert.deepEqual(await readdir(paths.stateRoot), ['library-inventory.json'])
-  assert.equal(JSON.parse(await readFile(inventoryStatePath(paths.stateRoot), 'utf8')).version, 1)
+  assert.equal(JSON.parse(await readFile(inventoryStatePath(paths.stateRoot), 'utf8')).version, 2)
 })
 
 test('a second inventory probes only the audio file whose size or mtime changed and drops deleted entries', async () => {

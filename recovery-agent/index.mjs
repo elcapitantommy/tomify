@@ -770,6 +770,7 @@ createServer(async (request, response) => {
     }
     if (request.url === '/v1/inventory/status') return send(response, 200, { status: await inventory.status() })
     if (request.url === '/v1/inventory/summary') return send(response, 200, { summary: await inventory.summary() })
+    if (request.url === '/v1/inventory/report') return send(response, 200, { report: await inventory.report(body) })
     // Read-only: the job runner advances jobs, so asking for status never starts a download step or an import.
     if (request.url === '/v1/jobs/status') return send(response, 200, await pollUsenetJob.read(body.jobId))
     if (request.url === '/v1/jobs/cancel') return send(response, 200, await cancelRecoveryJob(body))
