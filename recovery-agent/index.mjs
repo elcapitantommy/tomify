@@ -23,6 +23,7 @@ import { createUsenetJobPoller } from './usenet-job.mjs'
 import { rebootConfig, scheduleReboot } from './system.mjs'
 import { createVpnController, nordvpnEnvironment, vpnConfig } from './vpn.mjs'
 import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobState, torrentCandidate, torrentCapability, torrentConfig, torrentSearchCandidates } from './torrent.mjs'
+import { healthResponse, recoveryAgentPackageVersion } from './health.mjs'
 
 let authConfiguration
 try { authConfiguration = validateRecoveryAuthConfig() }
@@ -57,6 +58,7 @@ const torrentDownloader = torrentConfig()
 const torrent = torrentCapability({ config: torrentDownloader, downloadRoot: torrentDownloadRoot })
 const qbittorrent = torrentDownloader ? createQbittorrentClient(torrentDownloader) : null
 const sevenZip = process.env.SEVEN_ZIP_PATH || '7z'
+const health = healthResponse(process.env, await recoveryAgentPackageVersion())
 
 function inside(child, parent) {
   return child === parent || child.startsWith(parent + sep)
@@ -687,8 +689,7 @@ await mkdir(usenetStateRoot, { recursive: true })
 createServer(async (request, response) => {
   try {
     if (request.method === 'GET' && request.url === '/health') {
-      const auth = await cookieStatus()
-      return send(response, 200, { ok: true, backends: ['youtube', 'internet-archive', ...(usenet.available ? ['usenet'] : []), ...(torrent.available ? ['torrent'] : [])], youtubeAuthentication: auth.usable ? 'configured' : 'not-configured' })
+      return send(response, 200, health)
     }
     if (!authorised(request)) return send(response, 401, { error: 'unauthorized' })
     if (request.method !== 'POST') return send(response, 404, { error: 'not-found' })

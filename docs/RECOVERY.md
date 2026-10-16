@@ -441,7 +441,7 @@ TOMIFY_RECOVERY_STATE_DIR=/var/lib/tomify-recovery
 
 For NZBGet, use `TOMIFY_NZBGET_URL`, `TOMIFY_NZBGET_USERNAME`, and `TOMIFY_NZBGET_PASSWORD` instead of the SABnzbd settings. `TOMIFY_SABNZBD_DOWNLOAD_DIR` does not apply to NZBGet. Indexer URLs must use HTTPS, except for loopback development services. Credentials and credential-bearing NZB download URLs are used only by the recovery agent; they are never returned to the Worker, browser, D1, or provenance.
 
-Restart the service after editing the environment, then confirm that `/health` lists `usenet`:
+Restart the service after editing the environment, then confirm that the agent is healthy. The unauthenticated endpoint intentionally returns only `{"ok":true,"version":null}` unless `TOMIFY_VERSION` or a package version is available; backend details remain on authenticated `/v1/status` and in Recovery:
 
 ```bash
 sudo systemctl restart tomify-recovery
@@ -589,11 +589,11 @@ EOF
 unset QBT_PASSWORD QBT_HASH
 ```
 
-Then deploy the updated agent (see [Updating the recovery agent](#updating-the-recovery-agent); it includes the new `torrent.mjs`), restart it, and confirm `/health` lists `torrent`:
+Then deploy the updated agent (see [Updating the recovery agent](#updating-the-recovery-agent); it includes the new `torrent.mjs`), restart it, confirm `/health` returns `{"ok":true,...}`, and check that Recovery offers torrents:
 
 ```bash
 sudo systemctl restart tomify-recovery
-curl -s http://127.0.0.1:8788/health; echo           # "backends":[..., "torrent"]
+curl -s http://127.0.0.1:8788/health; echo
 ```
 
 Open Recovery on the site, paste a link into an item and check the progress line. If everything works, cancel the fail-safe:
@@ -632,7 +632,7 @@ sudo systemctl restart tomify-recovery
 curl -s http://127.0.0.1:8788/health
 ```
 
-Expected status includes `"youtubeAuthentication":"configured"`. To perform an authenticated extraction diagnostic through the protected API without returning video metadata or secrets:
+The public response does not reveal whether YouTube authentication is configured. To perform an authenticated extraction diagnostic through the protected API without returning video metadata or secrets:
 
 ```bash
 curl -s -X POST --config - http://127.0.0.1:8788/v1/diagnostics/youtube-auth -d '{}' <<EOF
