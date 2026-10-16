@@ -27,6 +27,15 @@ function ReportCategory({ title, empty, entries, action, busy, open }: { title: 
   </details>
 }
 
+// Moves a finding between its category and the Marked as fine list, the same way the Worker sorts the next report.
+function applyMark(report: InventoryReport, category: InventoryCategory, entry: InventoryEntry, restore: boolean): InventoryReport {
+  const key = entryKey(entry)
+  const dismissed = (report.dismissed ?? []).filter((item) => entryKey(item) !== key)
+  const open = (report[category] ?? []).filter((item) => entryKey(item) !== key)
+  if (restore) return { ...report, dismissed, [category]: [...open, entry] }
+  return { ...report, dismissed: [...dismissed, { ...entry, category }], [category]: open }
+}
+
 function entryKey(entry: InventoryEntry) { return `${entry.kind}:${[...entry.paths].sort().join('|')}` }
 
 export function LibraryHealth() {
@@ -51,7 +60,9 @@ export function LibraryHealth() {
   const [busy, setBusy] = useState<string | null>(null)
   const mark = async (category: InventoryCategory, entry: InventoryEntry, restore: boolean) => {
     setBusy(entryKey(entry))
-    try { await setInventoryDismissal(category, entry, restore); await load() }
+    // Update the page from the change itself: reloading the report recomputes it on the agent, which can take long
+    // enough that the button looked stuck until a manual refresh.
+    try { await setInventoryDismissal(category, entry, restore); setReport((current) => current && applyMark(current, category, entry, restore)) }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'The finding could not be updated.') }
     finally { setBusy(null) }
   }
