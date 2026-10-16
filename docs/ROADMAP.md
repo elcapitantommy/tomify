@@ -21,7 +21,7 @@ The tables below record how far `main` has got with each numbered item, checked 
 | 9 | Single-command, versioned release and agent deploy | Partly done | The systemd example now points at `/opt/tomify/recovery-agent`. There is no release script, symlink swap or added sandbox hardening. |
 | 10 | Migrations as the schema source of truth | Not started | `release_metadata` and `live_playback` have no migration, and the Worker still runs DDL on the request path. |
 | 11 | Unified release-directory resolver for every backend | Partly done | `resolveReleaseDirectory` in `usenet-import.mjs` matches existing folders ignoring case and accents, for Usenet and torrents. YouTube and Internet Archive imports in `index.mjs` still build paths with `safeName`. |
-| 12 | Truthful quality classification | Partly done | Lossless imports are marked `recovered` and lossy ones `needs-upgrade`. Every file is still tagged `lossy-recovery-copy` (`metadata.mjs`), and there are no quality tiers or target setting. |
+| 12 | Truthful quality classification | Done | `shared/quality.mjs` sorts imports into lossless, transparent-lossy, lossy or unknown; the Worker marks `recovered`/`needs-upgrade` against the Settings target; files are tagged with their tier. |
 | 13 | Duplicate preflight before acquisition | Not started | |
 | 14 | Separate pipeline states through to "playable" | Not started | Settings can start a Navidrome scan, but Recovery items do not track scan or playability. |
 | 15 | Spotify matching fixes | Not started | `src/lib/catalogue-import.ts` and `scripts/catalogue-import.mjs` still each have a matcher, with no edition-suffix stripping or re-checking of `available` items. |
@@ -35,7 +35,7 @@ The tables below record how far `main` has got with each numbered item, checked 
 
 | # | Item | Status | What is on `main` |
 | --- | --- | --- | --- |
-| 0.6 | Stop tagging lossless files `lossy-recovery-copy`; stop marking every import `needs-upgrade` | Partly done | See task 12. |
+| 0.6 | Stop tagging lossless files `lossy-recovery-copy`; stop marking every import `needs-upgrade` | Done | See task 12. |
 | 0.7 | Pin pnpm | Not started | See task 8. |
 | 0.8 | Back up and record deployed versions before changes | Unknown | A manual step on the box, so the code cannot show it. |
 | 1.8 | Quieter live-playback sync | Not started | `LivePlaybackSync.tsx` polls and publishes on fixed intervals. |

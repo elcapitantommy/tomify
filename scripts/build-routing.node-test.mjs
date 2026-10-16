@@ -771,7 +771,8 @@ test('a YouTube import is queued as an agent job, and an older agent that import
     assert.equal(queuedDb.candidate.importedPath, null)
 
     const polled = await (await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/job', { headers: recoveryHeaders }), { TOMIFY_DB: queuedDb, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })).json()
-    assert.equal(queuedDb.item.status, 'needs-upgrade')
+    // 256 kbps AAC is transparent lossy, which meets the default preferred quality.
+    assert.equal(queuedDb.item.status, 'recovered')
     assert.equal(polled.item.candidates[0].importedPath, youtubeResult.path)
     assert.equal(polled.item.candidates[0].provenance.source, 'youtube')
     assert.equal(polled.item.candidates[0].provenance.archiveStatus, 'lossy-recovery-copy')
@@ -782,7 +783,7 @@ test('a YouTube import is queued as an agent job, and an older agent that import
   await withRecoveryAgent(() => Response.json(youtubeResult), async () => {
     const response = await acquire(syncDb)
     assert.equal(response.status, 200)
-    assert.equal(syncDb.item.status, 'needs-upgrade')
+    assert.equal(syncDb.item.status, 'recovered')
     assert.equal(syncDb.candidate.importedPath, youtubeResult.path)
   })
 })
@@ -1114,4 +1115,92 @@ test('live playback reads the single command stored by the previous Worker', asy
   const { parseLiveCommands } = await import('./live-playback-worker.mjs')
   assert.deepEqual(parseLiveCommands({ commandJson: JSON.stringify({ action: 'pause' }), commandRevision: 4, commandTargetDevice: 'desktop', commandUpdatedAt: 99 }), [{ action: 'pause', revision: 4, targetDeviceId: 'desktop', updatedAt: 99 }])
   assert.deepEqual(parseLiveCommands({ commandJson: 'not json' }), [])
+})
+
+function qualityDatabase({ target = null, items = [], candidates = [] } = {}) {
+  const settings = new Map(target ? [['quality_target', target]] : [])
+  const statusUpdates = []
+  const statement = (sql) => ({
+    sql, args: [],
+    bind(...args) { this.args = args; return this },
+    async first() {
+      if (sql.includes('FROM tomify_settings')) return settings.has('quality_target') ? { value: settings.get('quality_target') } : null
+      if (sql.startsWith('SELECT id, artist, title, album')) return items.find((item) => item.id === this.args[1]) || null
+      return null
+    },
+    async all() {
+      if (sql.includes('FROM recovery_items i LEFT JOIN recovery_candidates')) return { results: items.filter((item) => ['recovered', 'needs-upgrade'].includes(item.status)).map((item) => { const candidate = candidates.find((value) => value.recoveryId === item.id && value.selected) || {}; return { id: item.id, status: item.status, codec: candidate.codec ?? null, container: candidate.container ?? null, bitrate: candidate.bitrate ?? null, provenanceJson: candidate.provenanceJson ?? null } }) }
+      if (sql.includes('FROM recovery_candidates')) return { results: candidates.filter((value) => value.recoveryId === this.args[0]) }
+      return { results: [] }
+    },
+    async run() {
+      if (sql.startsWith('INSERT INTO tomify_settings')) settings.set('quality_target', this.args[0])
+      return {}
+    },
+  })
+  const apply = (value) => {
+    if (!value.sql.startsWith('UPDATE recovery_items SET') || !value.sql.includes('status = ?')) return
+    const [status, id] = value.sql.includes('selected_candidate_id = ?') ? [value.args[1], value.args[2]] : [value.args[0], value.args[1]]
+    statusUpdates.push({ id, status })
+    const item = items.find((row) => row.id === id)
+    if (item) item.status = status
+  }
+  return { settings, statusUpdates, prepare: statement, async batch(statements) { statements.forEach(apply); return [] } }
+}
+
+const qualityCall = (env, path, method = 'GET', body) => worker.fetch(new Request('https://app.tomify.test' + path, { method, headers: adminHeaders, ...(body ? { body: JSON.stringify(body) } : {}) }), env)
+
+test('the quality target is an administrator-only setting that defaults to transparent-lossy', async () => {
+  const env = { TOMIFY_DB: qualityDatabase() }
+  assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/settings/quality'), env)).status, 401)
+  await withRebootFetch({ admin: false, agent: () => Response.json({}) }, async () => {
+    for (const [path, method, body] of [['/api/settings/quality', 'GET'], ['/api/settings/quality', 'PUT', { target: 'lossy' }], ['/api/settings/quality/recheck', 'POST']]) {
+      const response = await qualityCall(env, path, method, body)
+      assert.equal(response.status, 403, `${method} ${path}`)
+      assert.match((await response.json()).message, /Navidrome administrator/)
+    }
+  })
+  await withRebootFetch({ admin: true, agent: () => Response.json({}) }, async () => {
+    const initial = await (await qualityCall(env, '/api/settings/quality')).json()
+    assert.equal(initial.target, 'transparent-lossy')
+    assert.deepEqual(initial.targets.map((option) => option.id), ['lossless', 'transparent-lossy', 'lossy'])
+    assert.equal((await qualityCall(env, '/api/settings/quality', 'PUT', { target: 'best' })).status, 400)
+    assert.equal((await (await qualityCall(env, '/api/settings/quality', 'PUT', { target: 'lossless' })).json()).target, 'lossless')
+    assert.equal(env.TOMIFY_DB.settings.get('quality_target'), 'lossless')
+    assert.equal((await (await qualityCall(env, '/api/settings/quality')).json()).target, 'lossless')
+  })
+})
+
+test('a completed recovery job is marked recovered or needs-upgrade against the saved quality target', async () => {
+  const expected = { lossless: 'needs-upgrade', 'transparent-lossy': 'recovered', lossy: 'recovered' }
+  for (const [target, status] of Object.entries(expected)) {
+    const items = [{ id: 'recovery-1', artist: 'They Might Be Giants', title: 'Birdhouse in Your Soul', status: 'downloading' }]
+    const candidates = [{ id: 'candidate-1', recoveryId: 'recovery-1', backend: 'usenet', selected: 1, provenanceJson: JSON.stringify({ source: 'usenet', job: { id: 'job-1', status: 'downloading', progress: 50 } }) }]
+    const env = { ...rebootEnv, TOMIFY_DB: qualityDatabase({ target, items, candidates }) }
+    const agent = () => Response.json({ job: { id: 'job-1', status: 'completed', progress: 100, result: { importedCount: 1, quality: { codec: 'mp3', container: 'mp3', bitrate: 243_000 }, provenance: { source: 'usenet' } } } })
+    await withRebootFetch({ admin: true, agent }, async () => {
+      assert.equal((await qualityCall(env, '/api/recovery/recovery-1/job')).status, 200)
+    })
+    assert.deepEqual(env.TOMIFY_DB.statusUpdates, [{ id: 'recovery-1', status }], `target ${target}`)
+  }
+})
+
+test('re-checking quality labels recomputes recovered and needs-upgrade items from their stored source quality', async () => {
+  const items = [
+    { id: 'mp3-v0', status: 'needs-upgrade' }, { id: 'aac-128', status: 'recovered' }, { id: 'flac', status: 'recovered' },
+    { id: 'opus-source', status: 'needs-upgrade' }, { id: 'still-missing', status: 'missing' },
+  ]
+  const candidates = [
+    { recoveryId: 'mp3-v0', selected: 1, codec: 'mp3', bitrate: 243_000 },
+    { recoveryId: 'aac-128', selected: 1, codec: 'aac', bitrate: 128_000 },
+    { recoveryId: 'flac', selected: 1, codec: 'flac', bitrate: 900_000 },
+    { recoveryId: 'opus-source', selected: 1, codec: 'opus', bitrate: null, provenanceJson: JSON.stringify({ sourceAudio: { quality: { codec: 'opus', bitrate: 160_000 } } }) },
+  ]
+  const env = { TOMIFY_DB: qualityDatabase({ items, candidates }) }
+  await withRebootFetch({ admin: true, agent: () => Response.json({}) }, async () => {
+    const response = await qualityCall(env, '/api/settings/quality/recheck', 'POST')
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { target: 'transparent-lossy', checked: 4, changed: 3, recovered: 2, needsUpgrade: 1 })
+  })
+  assert.deepEqual(Object.fromEntries(items.map((item) => [item.id, item.status])), { 'mp3-v0': 'recovered', 'aac-128': 'needs-upgrade', flac: 'recovered', 'opus-source': 'recovered', 'still-missing': 'missing' })
 })

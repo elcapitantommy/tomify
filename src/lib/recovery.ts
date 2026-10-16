@@ -1,3 +1,5 @@
+import { classifyQuality, qualityTierDescription } from '../../shared/quality.mjs'
+
 export type RecoveryStatus = 'missing' | 'candidate-found' | 'importing' | 'queued' | 'downloading' | 'recovered' | 'needs-upgrade' | 'failed'
 
 export const recoveryStatusLabels: Record<RecoveryStatus, string> = {
@@ -274,9 +276,12 @@ export function scoreRecoveryCandidate(
   return { score, official: looksOfficial }
 }
 
+/** Measured figures plus the quality tier, e.g. "MP3 · 243 kbps · 44.1 kHz · 2 ch · Transparent: lossy, but sounds the same as lossless". */
 export function qualityLabel(candidate: AudioQuality): string {
   const values = [candidate.codec?.toUpperCase(), candidate.bitrate ? `${Math.round(candidate.bitrate / 1000)} kbps` : null, candidate.sampleRate ? `${(candidate.sampleRate / 1000).toFixed(1)} kHz` : null, candidate.channels ? `${candidate.channels} ch` : null]
-  return values.filter(Boolean).join(' · ') || 'Quality measured after import'
+  const measured = values.filter(Boolean).join(' · ')
+  if (!measured) return 'Quality measured after import'
+  return `${measured} · ${qualityTierDescription(classifyQuality(candidate).tier)}`
 }
 
 /** A Usenet import that took one track from a download that may hold more, e.g. a whole album. */

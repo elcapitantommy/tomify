@@ -13,3 +13,12 @@ test('includes canonical MusicBrainz metadata and omits unavailable values', () 
   assert.ok(tags.includes('ISRC=SE3R41500004'))
   assert.ok(!tags.some((tag) => tag.endsWith('=undefined')))
 })
+
+test('tags the measured quality tier instead of calling every file lossy', () => {
+  const status = (quality) => ffmpegMetadataArguments({ title: 'Lush Life' }, null, quality).find((value) => value.startsWith('TOMIFY_ARCHIVE_STATUS='))
+  assert.equal(status({ codec: 'flac', bitrate: 900_000 }), 'TOMIFY_ARCHIVE_STATUS=lossless')
+  assert.equal(status({ codec: 'mp3', bitrate: 243_000 }), 'TOMIFY_ARCHIVE_STATUS=transparent-lossy')
+  assert.equal(status({ codec: 'aac', bitrate: 128_000 }), 'TOMIFY_ARCHIVE_STATUS=lossy')
+  assert.equal(status(undefined), 'TOMIFY_ARCHIVE_STATUS=unknown')
+  assert.ok(!ffmpegMetadataArguments({ title: 'Lush Life' }, null, { codec: 'flac' }).some((value) => value.includes('lossy-recovery-copy')))
+})

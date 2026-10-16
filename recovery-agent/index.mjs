@@ -320,7 +320,7 @@ async function acquireYouTube(body) {
     const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
     if (!inside(releaseCoverPath, recoveryRoot)) throw new Error('Unsafe recovery artwork destination.')
     const comment = `Tomify lossy recovery copy; source=${sourceUrl}; authorisation=${body.authorisation.basis}`
-    const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment)
+    const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment, sourceQuality)
     const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
     let trackCommitted = false
     let coverCreated = false
@@ -393,7 +393,7 @@ async function acquireInternetArchive(body) {
     if (!inside(releaseCoverPath, recoveryRoot)) throw new Error('Unsafe recovery artwork destination.')
     const sourceUrl = `https://archive.org/details/${encodeURIComponent(identifier)}`
     const comment = `Tomify Internet Archive recovery copy; source=${sourceUrl}; authorisation=${body.authorisation.basis}`
-    const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment)
+    const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment, sourceQuality)
     const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
     let trackCommitted = false
     let coverCreated = false

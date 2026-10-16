@@ -8,6 +8,7 @@ vi.mock('../components/ServerRestart', () => ({ ServerRestart: () => <p>restart 
 vi.mock('../components/VpnControl', () => ({ VpnControl: () => <p>vpn control</p> }))
 vi.mock('../components/LibraryScan', () => ({ LibraryScan: () => <p>scan control</p> }))
 vi.mock('../components/ArtworkUpgrade', () => ({ ArtworkUpgrade: () => null }))
+vi.mock('../components/QualitySettings', () => ({ QualitySettings: () => <p>quality control</p> }))
 
 const session = { serverUrl: 'https://music.example', username: 'guest', salt: 's', token: 't' }
 
@@ -28,6 +29,7 @@ describe('Settings', () => {
     expect(screen.getByText('scan control')).toBeInTheDocument()
     expect(screen.getByText('vpn control')).toBeInTheDocument()
     expect(screen.getByText('restart control')).toBeInTheDocument()
+    expect(screen.getByText('quality control')).toBeInTheDocument()
   })
 
   it('shows other users only that settings are for administrators, and lets them sign out', () => {
@@ -36,6 +38,7 @@ describe('Settings', () => {
     expect(screen.getByText(/only available to Navidrome administrators/)).toBeInTheDocument()
     expect(screen.queryByText('vpn control')).not.toBeInTheDocument()
     expect(screen.queryByText('restart control')).not.toBeInTheDocument()
+    expect(screen.queryByText('quality control')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
   })
 
