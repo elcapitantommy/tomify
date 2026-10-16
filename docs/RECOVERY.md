@@ -553,7 +553,22 @@ The agent runs its own job runner (`recovery-agent/jobs.mjs`). On start-up it lo
 
 `POST /v1/jobs/status` only reads the stored job. The Recovery page's poll goes through the Worker's `GET /api/recovery/:id/job`, which copies the agent's answer onto the Recovery item so the page shows progress, but it no longer drives the job. An item whose job finished while no browser was open shows as imported the next time the Recovery page is opened.
 
-With a Worker that has this change, YouTube and Internet Archive imports are queued the same way: `POST /v1/acquire` answers `202` with a job, and the runner downloads and imports it. An interrupted YouTube or Internet Archive job is run again after a restart; if the earlier attempt had already written its files, the retry fails with "A recovery copy already exists" rather than overwriting them.
+With a Worker that has this change, YouTube and Internet Archive imports are queued the same way: `POST /v1/acquire` answers `202` with a job, and the runner downloads and imports it.
+
+### Crash-safe imports
+
+Every import (Usenet and torrent releases, YouTube and Internet Archive) first prepares all its files in `TOMIFY_RECOVERY_STATE_DIR/import-staging/<job id>/`: the tagged derivatives, the provenance sidecars and any downloaded source and artwork. It then writes a manifest to `TOMIFY_RECOVERY_STATE_DIR/import-manifests/<job id>.json` before committing the first file. The manifest lists every planned destination with its source and expected sha256, and is rewritten (temporary file, then rename) as each file is committed. Staging lives in the state directory rather than `/tmp` because the agent's unit has `PrivateTmp=true`, which empties `/tmp` on every restart. A release therefore needs room for all its derivatives in the state directory at once, about the size of the download again.
+
+If the agent stops part-way (a crash, a restart, a reboot), the runner settles the import on start-up, before it advances any job:
+
+- A job left `importing` with a manifest is resumed. A destination that already holds the expected sha256 counts as committed, and the remaining files are committed from their sources. The job is then `completed` with the result it would have had, and a torrent's unpacked copy and torrent are removed as after a normal import.
+- When a source it still needs is gone or changed (for example the completed download was deleted), every file the manifest says this import committed is removed and the job is marked `failed` with a message saying so. Queue the item again to retry.
+- A destination whose sha256 no longer matches the manifest is never deleted or overwritten. The import is rolled back around it, the job fails with a message naming the file, and the path is kept on the job as `importConflicts`. A `cover.jpg` that appeared meanwhile is simply kept, as before.
+- A job left `importing` with no manifest had not committed anything yet, so it is imported again from the start.
+
+An import that fails while the agent is running is rolled back the same way, straight away. The manifest and staging directory are removed once the job is saved as completed or failed. An interrupted import whose job no longer exists (one started by an older Worker that waited for the answer) is rolled back on start-up.
+
+This needs the agent redeployed with the new `recovery-agent/manifest.mjs` (the copy in [Updating the recovery agent](#updating-the-recovery-agent) includes it). Restarting the agent with an import in progress is then safe: the import finishes after the restart. `TOMIFY_RECOVERY_STATE_DIR` must stay on a disk that survives reboots (`/var/lib/tomify-recovery` in the example unit).
 
 ```text
 TOMIFY_JOB_POLL_SECONDS=10
