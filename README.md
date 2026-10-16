@@ -124,7 +124,7 @@ Exact codecs/bitrates will be chosen during implementation based on browser supp
 
 A later **Keep downloaded** mode should keep selected playlists or albums synchronised when the device next has a suitable connection.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the proposed system design and [docs/ROADMAP.md](docs/ROADMAP.md) for the staged build plan.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how Tomify is built today and [docs/ROADMAP.md](docs/ROADMAP.md) for the roadmap and what is done.
 
 ## Non-goals for the first version
 
@@ -188,13 +188,14 @@ GitHub Actions runs the frozen-lockfile install, lint, typecheck, production bui
 
 - Navidrome token authentication, persisted without storing the password, with logout and useful failure states.
 - Home, artists, artist detail, albums, multi-disc album detail, debounced search, playlists, favourites, downloads placeholder and settings.
+- A heart on every track row and album card stars or unstars it in Navidrome. The heart changes at once and flips back if the server refuses, and the Favourites page updates without a reload.
 - Playlists are private to the account that made them, with a **Share** button for sharing one with other Tomify accounts (read-only; recipients see it under **Shared with you**). Navidrome itself would hand admins every user's playlists and everyone other users' public ones, so Tomify lists only your own plus those shared with you. Navidrome has no per-user sharing, so sharing a Navidrome playlist also marks it public in Navidrome (other Subsonic clients can then see it) and unsharing it from everyone makes it private again. An account appears in the Share list once it has signed in to Tomify. Shares live in the D1 `playlist_shares` table (`drizzle/0007_playlist_shares.sql`; the Worker also creates it on first use, so deploying needs no extra step).
 - Persistent HTML5 player with queue, seek, volume, mute, shuffle, repeat, previous/next and full-screen mobile now playing.
 - Media Session metadata (absolute artwork in six sizes), transport controls and position updates.
 - Installable manifest, app icons, standalone mode, cached app shell and cached artwork.
 - A playback source resolver boundary ready to prefer IndexedDB audio before the network in the next phase.
 - A source-aware Recovery queue with MusicBrainz metadata review, provider-ranked cover art, D1 provenance, safe recovery-copy deletion and an optional media-server acquisition agent.
-- OAuth-backed Spotify playlist import as catalogue metadata only, with Navidrome matching, ambiguous-match review, ordered pending Recovery entries, duplicate preservation, and manual refresh diffs.
+- OAuth-backed Spotify playlist import as catalogue metadata only, with Navidrome matching, ambiguous-match review, ordered pending Recovery entries, duplicate preservation, and manual refresh diffs. Matching ignores reissue labels on titles (` - 2010 Remaster`, `(Remastered 2009)`, `(Deluxe Edition)`, ` - Mono`, ` - Single Version`, `feat.` credits) but still treats live, remix, acoustic and similar versions as different recordings. It searches the library by the first credited artist and the bare title, then by the title alone. Opening an imported playlist re-checks every ready entry with Navidrome `getSong`; an entry whose track has moved is matched again, and one with no match left goes back to missing. The matcher lives in `src/lib/catalogue-match.mjs`, shared by the app and the Worker build.
 - Album completeness against the MusicBrainz tracklist (administrators only, run with **Check completeness** on the album page rather than on every visit), with edition choice, duplicate-copy and extra-track notes, and one-click "add missing to Recovery".
 - On the album page, administrators can **Edit metadata** (release type and date) and click the album artwork to replace it, either with an Apple, Deezer or Spotify match or with **Upload from device**. Other accounts see neither, and the Worker answers `403` to their metadata edits, artwork changes and completeness checks.
 - Library album artwork upgrades from Apple (1200px) and Deezer (1000px), with Spotify optional, chosen per album or in a resumable bulk run from Settings.
@@ -209,6 +210,8 @@ The Recovery page (Navidrome administrators only) accepts wanted music from any 
 See [docs/RECOVERY.md](docs/RECOVERY.md) for the agent setup, backend contract and legal/quality boundaries.
 
 The recovery agent is deployed separately from the site. After any change under `recovery-agent/` is merged, copy it to the media server and restart it (see [Updating the recovery agent](docs/RECOVERY.md#updating-the-recovery-agent)); an out-of-date agent makes newer Recovery features fail.
+
+`scripts/backup.sh` backs up the D1 database and the agent's state nightly on the media server, and an external uptime check should watch the site and the agent's `/health`; see [Backups and uptime checks](docs/RECOVERY.md#backups-and-uptime-checks).
 
 ### PWA and iOS notes
 
@@ -232,7 +235,7 @@ The state lives in the D1 tables `live_playback` and `live_playback_devices` (`d
 
 ### Known limitations
 
-- Offline audio downloads, favourite editing, playlist editing and drag-to-reorder are not included yet.
+- Offline audio downloads, playlist editing and drag-to-reorder are not included yet.
 - Authentication tokens live in browser local storage. This is appropriate for trusted household devices; a shared device should be signed out after use.
 - A cross-origin deployment requires correct Navidrome CORS configuration. A same-origin proxy avoids that operational edge.
 

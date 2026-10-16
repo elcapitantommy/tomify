@@ -1,3 +1,5 @@
+import { normaliseCatalogueText } from '../src/lib/catalogue-match.mjs'
+
 export function parseSpotifyPlaylistId(value) {
   const input = String(value || '').trim()
   const uri = input.match(/^spotify:playlist:([A-Za-z0-9]{10,40})$/)
@@ -8,52 +10,6 @@ export function parseSpotifyPlaylistId(value) {
     const match = url.pathname.match(/^\/playlist\/([A-Za-z0-9]{10,40})\/?$/)
     return match?.[1] || null
   } catch { return null }
-}
-
-export function normaliseCatalogueText(value) {
-  return String(value || '').toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[’']/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
-}
-
-function catalogueSimilarity(expected, actual) {
-  const left = new Set(normaliseCatalogueText(expected).split(' ').filter(Boolean))
-  const right = new Set(normaliseCatalogueText(actual).split(' ').filter(Boolean))
-  if (!left.size || !right.size) return 0
-  let intersection = 0
-  for (const token of left) if (right.has(token)) intersection += 1
-  return (2 * intersection) / (left.size + right.size)
-}
-
-function versionSignals(value) {
-  const text = normaliseCatalogueText(value)
-  return ['live', 'remix', 'acoustic', 'radio edit', 'karaoke', 'cover', 'sped up', 'slowed', 'instrumental'].filter((signal) => text.includes(signal))
-}
-
-export function scoreCatalogueMatch(wanted, candidate) {
-  const wantedRecordingId = normaliseCatalogueText(wanted.musicBrainzRecordingId)
-  const candidateRecordingId = normaliseCatalogueText(candidate.musicBrainzId || candidate.musicBrainzRecordingId)
-  if (wantedRecordingId && candidateRecordingId && wantedRecordingId === candidateRecordingId) return 100
-  const wantedIsrc = normaliseCatalogueText(wanted.isrc)
-  const candidateIsrc = normaliseCatalogueText(candidate.isrc)
-  if (wantedIsrc && candidateIsrc && wantedIsrc === candidateIsrc) return 99
-  const wantedVersions = versionSignals(wanted.title)
-  const candidateVersions = versionSignals(candidate.title)
-  if (wantedVersions.some((signal) => !candidateVersions.includes(signal)) || candidateVersions.some((signal) => !wantedVersions.includes(signal))) return 0
-  const title = catalogueSimilarity(wanted.title, candidate.title)
-  const artist = catalogueSimilarity((wanted.artists || [wanted.artist]).join(' '), candidate.artist)
-  const album = wanted.album ? catalogueSimilarity(wanted.album, candidate.album) : 0.5
-  const durationDifference = wanted.duration && candidate.duration ? Math.abs(Number(wanted.duration) - Number(candidate.duration)) : null
-  const duration = durationDifference == null ? 0.5 : durationDifference <= 2 ? 1 : durationDifference <= 5 ? 0.8 : durationDifference <= 10 ? 0.35 : 0
-  if (title < 0.65 || artist < 0.65) return Math.round((title * 0.55 + artist * 0.35 + duration * 0.1) * 70)
-  return Math.round(Math.min(98, title * 43 + artist * 35 + album * 12 + duration * 10))
-}
-
-export function matchCatalogueTrack(wanted, candidates) {
-  const ranked = (Array.isArray(candidates) ? candidates : []).map((track) => ({ track, confidence: scoreCatalogueMatch(wanted, track) })).filter((match) => match.confidence > 0).sort((left, right) => right.confidence - left.confidence)
-  const best = ranked[0]
-  if (!best || best.confidence < 72) return { status: 'missing', confidence: best?.confidence || 0, match: null, candidates: ranked.slice(0, 3) }
-  const ambiguous = ranked[1] && ranked[1].confidence >= 72 && best.confidence - ranked[1].confidence <= 4
-  if (best.confidence < 92 || ambiguous) return { status: 'review', confidence: best.confidence, match: best.track, candidates: ranked.slice(0, 3) }
-  return { status: 'available', confidence: best.confidence, match: best.track, candidates: ranked.slice(0, 3) }
 }
 
 export function occurrenceKeys(items) {

@@ -184,6 +184,13 @@ describe('Recovery page actions', () => {
     expect(prompt?.nextElementSibling).toHaveClass('candidate-list')
   })
 
+  it('disables deletion while an item is importing', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ status: 'importing' })], backends })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled()
+  })
+
   it('continues from metadata and artwork review into source authorisation without resetting choices', async () => {
     const selectedCandidate = { id: 'candidate-1', backend: 'youtube' as const, externalId: 'video-1', url: 'https://www.youtube.com/watch?v=video-1', title: 'Zara Larsson - Lush Life', channel: 'Zara Larsson', official: true, matchScore: 97, selected: true }
     vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({

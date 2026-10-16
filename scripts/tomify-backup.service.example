@@ -1,0 +1,15 @@
+[Unit]
+Description=Tomify backup (D1 export and recovery agent state)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=tom
+EnvironmentFile=-/etc/tomify/backup.env
+ExecStart=/opt/tomify/backup.sh
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full

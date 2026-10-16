@@ -234,16 +234,32 @@ export async function submitDownloader(config, nzbUrl, name, fetchImpl = fetch) 
   return { downloader: 'nzbget', remoteId: String(body.result) }
 }
 
-export async function downloaderStatus(config, remoteId, fetchImpl = fetch) {
+function downloaderPresent(job) {
+  if (job && Object.hasOwn(job, 'downloaderMissingSince')) delete job.downloaderMissingSince
+}
+
+function downloaderMissing(job, { now = Date.now, lostMinutes = Number(process.env.TOMIFY_DOWNLOADER_LOST_MINUTES || 15) } = {}) {
+  const timeoutMinutes = Number.isFinite(Number(lostMinutes)) && Number(lostMinutes) > 0 ? Number(lostMinutes) : 15
+  const currentTime = typeof now === 'function' ? Number(now()) : Number(now)
+  if (!job) return { status: 'queued', progress: 0, message: 'Waiting for downloader' }
+  const recordedTime = Date.parse(job.downloaderMissingSince || '')
+  const missingSince = Number.isFinite(recordedTime) ? recordedTime : currentTime
+  if (!Number.isFinite(recordedTime)) job.downloaderMissingSince = new Date(currentTime).toISOString()
+  if (currentTime - missingSince >= timeoutMinutes * 60_000) return { status: 'failed', progress: 0, message: 'downloader-lost: the job is no longer in the downloader' }
+  return { status: 'queued', progress: 0, message: 'Waiting for downloader' }
+}
+
+export async function downloaderStatus(config, remoteId, fetchImpl = fetch, job = null, options = {}) {
   if (config.type === 'sabnzbd') {
     const queue = apiEndpoint(config.url); Object.entries({ output: 'json', apikey: config.apiKey, mode: 'queue', nzo_ids: remoteId }).forEach(([k, v]) => queue.searchParams.set(k, v))
     const queued = await jsonRequest(queue, { method: 'GET' }, 'SABnzbd queue', fetchImpl)
     const slot = queued?.queue?.slots?.find((value) => String(value.nzo_id) === String(remoteId))
-    if (slot) return { status: String(slot.status || '').toLowerCase().includes('pause') ? 'queued' : 'downloading', progress: Math.max(0, Math.min(100, number(slot.percentage) || 0)), message: slot.status || null }
+    if (slot) { downloaderPresent(job); return { status: String(slot.status || '').toLowerCase().includes('pause') ? 'queued' : 'downloading', progress: Math.max(0, Math.min(100, number(slot.percentage) || 0)), message: slot.status || null } }
     const history = apiEndpoint(config.url); Object.entries({ output: 'json', apikey: config.apiKey, mode: 'history', nzo_ids: remoteId, limit: '20' }).forEach(([k, v]) => history.searchParams.set(k, v))
     const completed = await jsonRequest(history, { method: 'GET' }, 'SABnzbd history', fetchImpl)
     const item = completed?.history?.slots?.find((value) => String(value.nzo_id) === String(remoteId))
-    if (!item) return { status: 'queued', progress: 0, message: 'Waiting for downloader' }
+    if (!item) return downloaderMissing(job, options)
+    downloaderPresent(job)
     const statusText = text(item.status)
     const normalizedStatus = statusText.toLowerCase().replace(/[^a-z]/g, '')
     // SAB exposes post-processing jobs in history; only its documented terminal states end the job.
@@ -256,10 +272,11 @@ export async function downloaderStatus(config, remoteId, fetchImpl = fetch) {
   const request = async (method, params = []) => jsonRequest(`${config.url}/jsonrpc`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: basicAuth(config) }, body: JSON.stringify({ method, params }) }, `NZBGet ${method}`, fetchImpl)
   const groups = (await request('listgroups'))?.result || []
   const group = groups.find((value) => String(value.NZBID) === String(remoteId))
-  if (group) { const total = number(group.FileSizeMB) || 0; const remaining = number(group.RemainingSizeMB) || total; return { status: 'downloading', progress: total ? Math.round((total - remaining) / total * 100) : 0, message: group.Status || null } }
+  if (group) { downloaderPresent(job); const total = number(group.FileSizeMB) || 0; const remaining = number(group.RemainingSizeMB) || total; return { status: 'downloading', progress: total ? Math.round((total - remaining) / total * 100) : 0, message: group.Status || null } }
   const history = (await request('history', [false]))?.result || []
   const item = history.find((value) => String(value.NZBID) === String(remoteId))
-  if (!item) return { status: 'queued', progress: 0, message: 'Waiting for downloader' }
+  if (!item) return downloaderMissing(job, options)
+  downloaderPresent(job)
   const success = /SUCCESS|GOOD/i.test(String(item.Status))
   return success ? { status: 'completed', progress: 100, completedPath: text(item.DestDir) } : { status: 'failed', progress: 0, message: text(item.Status || 'Download failed') }
 }

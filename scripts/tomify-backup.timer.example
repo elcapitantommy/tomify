@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Tomify backup nightly
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -44,7 +44,7 @@ MusicBrainz calls identify Tomify with a descriptive user agent and are serialis
 
 At import, the Worker reconstructs the effective metadata from the immutable wanted fields plus the user's per-field choices; it does not accept arbitrary replacement tags from the browser. Both `wantedMetadata` and `resolvedMetadata`, together with the MusicBrainz decision and confidence, are written to candidate provenance and the `.tomify.json` sidecar.
 
-The recovery agent uses the effective metadata for its recovery directory and filename and writes artist, title, album, date, track/disc number, MusicBrainz recording/release/release-group IDs and ISRC where the output container supports those tags. This does not change the recovery boundary: every artifact remains under `TOMIFY_RECOVERY_DIR`, separate from the canonical master tree.
+The recovery agent uses the effective metadata for its recovery directory and filename and writes artist, title, album, date, track/disc number, MusicBrainz recording/release/release-group IDs and ISRC where the output container supports those tags. YouTube, Internet Archive, Usenet and torrent imports all use the same safe directory resolver, reusing existing artist and album folders regardless of case or NFC/NFD Unicode composition. This does not change the recovery boundary: every artifact remains under `TOMIFY_RECOVERY_DIR`, separate from the canonical master tree.
 
 ## Artwork resolution and storage
 
@@ -160,6 +160,67 @@ A Worker that is newer than the agent is the usual cause of Recovery errors righ
 The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and cache directories are `/var/lib/tomify-recovery` and `/var/cache/tomify-recovery`. The systemd sandbox grants write access only to those locations, `/srv/music-recovery`, and the optional YouTube cookie file; `/opt/tomify/secrets` as a whole remains read-only. A server-side Git checkout is not part of the current deployment.
 
 The recovery directory may be added to Navidrome as a separate library path after review. It should not be merged over `/srv/music` by an automated job.
+
+## Backups and uptime checks
+
+D1 holds the only copy of playlists, imported Spotify playlists and recovery state, and `/var/lib/tomify-recovery` holds the agent's job state. `scripts/backup.sh` backs both up on the Debian box:
+
+- `wrangler d1 export tomify-metadata --remote` to `tomify-d1-<UTC time>.sql`;
+- a tar.gz of the agent state directory to `tomify-agent-state-<UTC time>.tar.gz`.
+
+Both go to `BACKUP_DIR` (default `/var/backups/tomify`, created with owner-only permissions), and only the newest 14 of each are kept (`BACKUP_KEEP`). A file is only renamed into place once it is complete, so a failed run never counts towards the 14. `TOMIFY_RECOVERY_STATE_DIR`, `TOMIFY_D1_DATABASE` and `WRANGLER` (for example `npx --yes wrangler@4`) override the other defaults. The script prints file names only, never tokens or the Cloudflare account.
+
+### Setting up the nightly backup
+
+1. Install wrangler on the box: `sudo npm install -g wrangler`. The box has no Git checkout and needs none; wrangler finds the database by name.
+2. Authenticate wrangler as `tom`. On a headless box an API token is simplest: create one in the Cloudflare dashboard with the **Account → D1 → Edit** permission, then create `/etc/tomify/backup.env` with `CLOUDFLARE_API_TOKEN=...` and `CLOUDFLARE_ACCOUNT_ID=...`, owned by `tom` with mode `600`. Running `wrangler login` as `tom` also works.
+3. Create the backup folder: `sudo install -d -o tom -g tom -m 700 /var/backups/tomify`. A different disk from the agent state, or a regular copy off the box, protects against losing the NVMe; set `BACKUP_DIR` in `backup.env` to change it.
+4. Copy the script and units over from the Windows checkout, as for the agent:
+
+   ```powershell
+   scp scripts\backup.sh scripts\tomify-backup.service.example scripts\tomify-backup.timer.example tom@tomify:/tmp/
+   ssh -t tom@tomify "sudo install -m 755 /tmp/backup.sh /opt/tomify/backup.sh && sudo cp /tmp/tomify-backup.service.example /etc/systemd/system/tomify-backup.service && sudo cp /tmp/tomify-backup.timer.example /etc/systemd/system/tomify-backup.timer && sudo systemctl daemon-reload"
+   ```
+
+5. Check it, then enable the timer (nightly at about 03:30, caught up after the box was off):
+
+   ```sh
+   set -a; . /etc/tomify/backup.env; set +a; /opt/tomify/backup.sh --dry-run
+   sudo systemctl start tomify-backup.service && journalctl -u tomify-backup -n 20
+   sudo systemctl enable --now tomify-backup.timer
+   ```
+
+`--dry-run` checks that wrangler is logged in and prints the commands and the old backups it would delete, without changing anything. `systemctl list-timers tomify-backup.timer` shows the last and next run; a failed run shows in `systemctl status tomify-backup`.
+
+### Restoring from a backup
+
+D1 first: for a mistake in the last few days, D1 Time Travel is quicker than an export (`wrangler d1 time-travel restore tomify-metadata --timestamp=<RFC 3339 time>`). To restore an export, load it into a new, empty database so nothing is half-overwritten, then switch the Worker to it:
+
+```sh
+wrangler d1 create tomify-metadata-restored
+wrangler d1 execute tomify-metadata-restored --remote --file /var/backups/tomify/tomify-d1-<time>.sql
+```
+
+Check the data (for example `wrangler d1 execute tomify-metadata-restored --remote --command "SELECT COUNT(*) FROM recovery_items"`), then put the new `database_name` and `database_id` in `wrangler.toml` and redeploy.
+
+Agent state:
+
+```sh
+sudo systemctl stop tomify-recovery
+sudo mv /var/lib/tomify-recovery /var/lib/tomify-recovery.before-restore
+sudo tar -xzf /var/backups/tomify/tomify-agent-state-<time>.tar.gz -C /var/lib
+sudo chown -R tom:tom /var/lib/tomify-recovery
+sudo systemctl start tomify-recovery
+```
+
+Delete `/var/lib/tomify-recovery.before-restore` once the Recovery page looks right.
+
+### External uptime check
+
+Point any external HTTP monitor (a free tier of a hosted monitor, or a cron job on another machine running `curl -fsS`) at two URLs, every few minutes:
+
+- the Tomify site's URL, expecting HTTP 200;
+- `RECOVERY_AGENT_URL` followed by `/health`, expecting HTTP 200 with `"ok":true`. This is the agent through its Cloudflare Tunnel, so it also fails when the box, the agent or the `tomify-recovery-cloudflared` container is down. `/health` needs no token and returns only the list of available backends.
 
 ## Restarting the media server from Tomify
 
@@ -434,6 +495,7 @@ TOMIFY_SABNZBD_DOWNLOAD_DIR=/downloads
 TOMIFY_USENET_DOWNLOAD_DIR=/srv/usenet/completed
 TOMIFY_USENET_CATEGORY=music
 TOMIFY_USENET_MAX_BYTES=2147483648
+TOMIFY_DOWNLOADER_LOST_MINUTES=15
 TOMIFY_RECOVERY_STATE_DIR=/var/lib/tomify-recovery
 ```
 
@@ -441,7 +503,9 @@ TOMIFY_RECOVERY_STATE_DIR=/var/lib/tomify-recovery
 
 For NZBGet, use `TOMIFY_NZBGET_URL`, `TOMIFY_NZBGET_USERNAME`, and `TOMIFY_NZBGET_PASSWORD` instead of the SABnzbd settings. `TOMIFY_SABNZBD_DOWNLOAD_DIR` does not apply to NZBGet. Indexer URLs must use HTTPS, except for loopback development services. Credentials and credential-bearing NZB download URLs are used only by the recovery agent; they are never returned to the Worker, browser, D1, or provenance.
 
-Restart the service after editing the environment, then confirm that `/health` lists `usenet`:
+If a job disappears from both the downloader queue and history, Tomify records the first missing time in that job's state file. It keeps waiting during `TOMIFY_DOWNLOADER_LOST_MINUTES` (15 by default), including across agent restarts, then fails the job with `downloader-lost` instead of leaving it queued forever. If the downloader reports the job again before the timeout, the missing timer is cleared.
+
+Restart the service after editing the environment, then confirm that the agent is healthy. The unauthenticated endpoint intentionally returns only `{"ok":true,"version":null}` unless `TOMIFY_VERSION` or a package version is available; backend details remain on authenticated `/v1/status` and in Recovery:
 
 ```bash
 sudo systemctl restart tomify-recovery
@@ -464,7 +528,7 @@ When qBittorrent finishes, the agent:
 3. Imports the audio through the same pipeline as Usenet: wanted music with a track title imports the best matching file, and wanted music without one (an album, or anything by an artist) imports the whole download as a release, with originals preserved in `.tomify-source`, stream-copy derivatives, artwork and `.tomify.json` sidecars marked `torrent-recovery-copy`.
 4. Removes the torrent and its downloaded data from qBittorrent, and deletes the unpacked archive copy. A failed removal is recorded on the job without undoing the import. Because nothing is left behind, torrents do not offer **Import rest of download**; for a whole album, leave the track blank on the wanted item before pasting the link.
 
-**Delete** works on a torrent item at any time, including while it downloads: the agent stops the torrent and removes it and its data from qBittorrent first, then Tomify deletes any imported files and the queue entry. If qBittorrent cannot be reached the item is kept so you can retry. Usenet downloads still have to finish before their item can be deleted.
+**Delete** works on a queued or downloading torrent item: the agent stops the torrent and removes it and its data from qBittorrent first, then Tomify deletes any imported files and the queue entry. If qBittorrent cannot be reached the item is kept so you can retry. Deletion is blocked while any backend is importing, and active Usenet downloads still have to finish before their item can be deleted.
 
 Links are validated on the agent: magnet links need a BitTorrent info hash, and `.torrent` links must be `http(s)` on a public host, without embedded credentials. The full link (including trackers or a private-tracker passkey) is stored with the candidate so it can be queued later, but the Recovery page and provenance show it without trackers or query strings. Torrents are removed as soon as they are imported, so they do not keep seeding; respect any ratio rules of a private tracker you use.
 
@@ -589,11 +653,11 @@ EOF
 unset QBT_PASSWORD QBT_HASH
 ```
 
-Then deploy the updated agent (see [Updating the recovery agent](#updating-the-recovery-agent); it includes the new `torrent.mjs`), restart it, and confirm `/health` lists `torrent`:
+Then deploy the updated agent (see [Updating the recovery agent](#updating-the-recovery-agent); it includes the new `torrent.mjs`), restart it, confirm `/health` returns `{"ok":true,...}`, and check that Recovery offers torrents:
 
 ```bash
 sudo systemctl restart tomify-recovery
-curl -s http://127.0.0.1:8788/health; echo           # "backends":[..., "torrent"]
+curl -s http://127.0.0.1:8788/health; echo
 ```
 
 Open Recovery on the site, paste a link into an item and check the progress line. If everything works, cancel the fail-safe:
@@ -632,7 +696,7 @@ sudo systemctl restart tomify-recovery
 curl -s http://127.0.0.1:8788/health
 ```
 
-Expected status includes `"youtubeAuthentication":"configured"`. To perform an authenticated extraction diagnostic through the protected API without returning video metadata or secrets:
+The public response does not reveal whether YouTube authentication is configured. To perform an authenticated extraction diagnostic through the protected API without returning video metadata or secrets:
 
 ```bash
 curl -s -X POST --config - http://127.0.0.1:8788/v1/diagnostics/youtube-auth -d '{}' <<EOF

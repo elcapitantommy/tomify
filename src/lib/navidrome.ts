@@ -5,6 +5,9 @@ export interface ScanStatus { scanning: boolean; count?: number; folderCount?: n
 export interface AuthSession { serverUrl: string; username: string; salt: string; token: string }
 interface SubsonicEnvelope { 'subsonic-response': Record<string, unknown> & { status: 'ok' | 'failed'; error?: { code: number; message: string } } }
 
+export type StarKind = 'song' | 'album' | 'artist'
+const STAR_PARAM: Record<StarKind, string> = { song: 'id', album: 'albumId', artist: 'artistId' }
+
 export class NavidromeError extends Error { constructor(message: string, readonly code?: number) { super(message); this.name = 'NavidromeError' } }
 
 export const DEFAULT_NAVIDROME_SERVER = 'https://tomify.tomdixon.uk'
@@ -68,6 +71,7 @@ export class NavidromeClient {
   async albums(type: 'alphabeticalByName' | 'newest' | 'recent' | 'starred' = 'alphabeticalByName', size = 100, signal?: AbortSignal): Promise<Album[]> { const r = await this.get<{ albumList2?: { album?: Album[] } }>('getAlbumList2', { type, size }, signal); return r.albumList2?.album ?? [] }
   async allAlbums(signal?: AbortSignal): Promise<Album[]> { const albums: Album[] = []; for (let offset = 0; ; offset += 500) { const r = await this.get<{ albumList2?: { album?: Album[] } }>('getAlbumList2', { type: 'alphabeticalByName', size: 500, offset }, signal); const page = r.albumList2?.album ?? []; albums.push(...page); if (page.length < 500) return albums } }
   async album(id: string, signal?: AbortSignal): Promise<Album & { song?: Track[] }> { const r = await this.get<{ album: Album & { song?: Track[] } }>('getAlbum', { id }, signal); return r.album }
+  async song(id: string, signal?: AbortSignal): Promise<Track> { const r = await this.get<{ song: Track }>('getSong', { id }, signal); return r.song }
   async search(query: string, signal?: AbortSignal): Promise<SearchResults> { const r = await this.get<{ searchResult3?: { artist?: Artist[]; album?: Album[]; song?: Track[] } }>('search3', { query, artistCount: 20, albumCount: 20, songCount: 50 }, signal); const s = r.searchResult3; return { artists: s?.artist ?? [], albums: s?.album ?? [], tracks: s?.song ?? [] } }
   // Navidrome returns every user's playlists to admins and other users' public playlists to everyone; Tomify only lists the signed-in account's own.
   // Playlists other accounts shared through Tomify are opened with `sharedBy`, the owner named on the share.
@@ -77,6 +81,9 @@ export class NavidromeClient {
   async setPlaylistPublic(id: string, isPublic: boolean) { await this.get('updatePlaylist', { playlistId: id, public: String(isPublic) }) }
   ownsPlaylist(playlist: Pick<Playlist, 'owner'>) { return sameAccount(playlist.owner, this.session.username) }
   async starred(signal?: AbortSignal): Promise<SearchResults> { const r = await this.get<{ starred2?: { artist?: Artist[]; album?: Album[]; song?: Track[] } }>('getStarred2', {}, signal); const s = r.starred2; return { artists: s?.artist ?? [], albums: s?.album ?? [], tracks: s?.song ?? [] } }
+  // Subsonic stars songs by `id`, albums by `albumId` and artists by `artistId`.
+  async star(id: string, kind: StarKind = 'song') { await this.get('star', { [STAR_PARAM[kind]]: id }) }
+  async unstar(id: string, kind: StarKind = 'song') { await this.get('unstar', { [STAR_PARAM[kind]]: id }) }
   async scrobble(id: string, submission = true) { await this.get('scrobble', { id, submission: submission ? 'true' : 'false' }); return true }
   coverArtUrl(id?: string, size = 600) { return id ? this.url('getCoverArt', { id, size }).toString() : '' }
   streamUrl(id: string) { return this.url('stream', { id, estimateContentLength: 'true' }).toString() }

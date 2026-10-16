@@ -564,7 +564,7 @@ export default {
       // Torrent jobs can be deleted at any point: the agent stops the torrent and removes it and its data from qBittorrent.
       const torrentJobIds = [...new Set(item.candidates.filter((candidate) => candidate.backend === 'torrent' && candidate.provenance?.job?.id).map((candidate) => candidate.provenance.job.id))]
       const activeCandidate = item.candidates.find((candidate) => candidate.selected && candidate.provenance?.job?.id)
-      if ((item.status === 'queued' || item.status === 'downloading') && activeCandidate?.backend !== 'torrent') return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before deleting this item.' }, 409)
+      if (item.status === 'importing' || ((item.status === 'queued' || item.status === 'downloading') && activeCandidate?.backend !== 'torrent')) return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before deleting this item.' }, 409)
       const importedPaths = [...new Set(item.candidates.flatMap((candidate) => [candidate.importedPath, ...(Array.isArray(candidate.provenance?.importedTracks) ? candidate.provenance.importedTracks.map((track) => track?.path) : [])]).filter((path) => typeof path === 'string' && path.length > 0))]
       for (const jobId of torrentJobIds) {
         try {

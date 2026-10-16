@@ -587,6 +587,25 @@ test('a torrent item is kept when qBittorrent cannot remove its torrent, and run
   }
 })
 
+test('an importing recovery item cannot be deleted', async () => {
+  const candidate = { id: 'candidate-1', backend: 'usenet', selected: 1, importedPath: null, provenanceJson: JSON.stringify({ job: { id: 'job-1', status: 'importing', progress: 100 } }) }
+  const db = torrentDeleteDatabase(candidate, 'importing')
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+    return new Response('{}', { status: 404 })
+  }
+  try {
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1', { method: 'DELETE', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' } }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+    assert.equal(response.status, 409)
+    assert.equal((await response.json()).error, 'recovery-job-active')
+    assert.equal(db.deleted.length, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 async function withRebootFetch({ admin, agent }, callback) {
   const originalFetch = globalThis.fetch
   const agentRequests = []
@@ -769,6 +788,34 @@ test('playlists stay with their owner until shared, and recipients get read-only
     await shareCall(env, 'Tom', '/api/playlist-shares/imported/imp-1', { method: 'PUT', body: JSON.stringify({ users: [] }) })
     assert.equal((await shareCall(env, 'anna', '/api/catalogue-playlists/imp-1')).status, 404)
   })
+})
+
+test('resolving an imported playlist can return a stale match to missing', async () => {
+  const db = await sqliteDatabase()
+  const env = { TOMIFY_DB: db }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+    return Response.json({ error: 'unexpected' }, { status: 500 })
+  }
+  try {
+    assert.equal((await shareCall(env, 'Tom', '/api/catalogue-playlists')).status, 200)
+    db.sqlite.prepare("INSERT INTO catalogue_playlists (id, username, name, provider, provider_playlist_id, source_url) VALUES ('imp-1', 'Tom', 'Spotify mix', 'spotify', 'sp1', 'https://open.spotify.com/playlist/sp1')").run()
+    const insert = db.sqlite.prepare("INSERT INTO catalogue_playlist_items (id, playlist_id, position, metadata_json, status, local_track_id, local_track_json, match_confidence) VALUES (?, 'imp-1', ?, ?, ?, ?, ?, ?)")
+    insert.run('stale', 0, JSON.stringify({ title: 'Gone', artists: ['A'] }), 'available', 'old-id', JSON.stringify({ id: 'old-id', title: 'Gone' }), 98)
+    insert.run('moved', 1, JSON.stringify({ title: 'Moved', artists: ['B'] }), 'available', 'old-2', JSON.stringify({ id: 'old-2', title: 'Moved' }), 98)
+    insert.run('pending', 2, JSON.stringify({ title: 'Pending', artists: ['C'] }), 'review', null, null, 80)
+    const response = await shareCall(env, 'Tom', '/api/catalogue-playlists/imp-1/resolve', { method: 'PATCH', body: JSON.stringify({ items: [{ id: 'stale', missing: true }, { id: 'moved', localTrack: { id: 'new-2', title: 'Moved' }, matchConfidence: 97 }, { id: 'pending', missing: true }] }) })
+    assert.equal(response.status, 200)
+    const rows = db.sqlite.prepare("SELECT id, status, local_track_id AS localTrackId, match_confidence AS confidence FROM catalogue_playlist_items WHERE playlist_id = 'imp-1' ORDER BY position").all().map((row) => ({ ...row }))
+    assert.deepEqual(rows, [
+      { id: 'stale', status: 'missing', localTrackId: null, confidence: 0 },
+      { id: 'moved', status: 'available', localTrackId: 'new-2', confidence: 97 },
+      { id: 'pending', status: 'review', localTrackId: null, confidence: 80 },
+    ], 'only available entries can be returned to missing')
+  } finally { globalThis.fetch = originalFetch }
 })
 
 test('only administrators can edit release metadata, change album artwork or run the completeness check', async () => {
