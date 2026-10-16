@@ -616,7 +616,7 @@ async function cancelTorrentJob(body) {
 const pollUsenetJob = createUsenetJobPoller({
   loadJob: loadUsenetJob,
   saveJob: saveUsenetJob,
-  downloaderStatus: (remoteId, job) => job?.downloader === 'qbittorrent' ? torrentStatus(job) : downloaderStatus(usenetDownloader, remoteId),
+  downloaderStatus: (remoteId, job) => job?.downloader === 'qbittorrent' ? torrentStatus(job) : downloaderStatus(usenetDownloader, remoteId, fetch, job),
   completeJob: async (job, state) => {
     const options = { recoveryRoot, masterRoot, probe, prepareArtwork, run, ffmpeg }
     if (job.downloader === 'qbittorrent') return completeTorrentJob(job, state, (files) => importUsenetCompletion(job, files, options))

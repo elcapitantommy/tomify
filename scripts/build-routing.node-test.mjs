@@ -587,6 +587,25 @@ test('a torrent item is kept when qBittorrent cannot remove its torrent, and run
   }
 })
 
+test('an importing recovery item cannot be deleted', async () => {
+  const candidate = { id: 'candidate-1', backend: 'usenet', selected: 1, importedPath: null, provenanceJson: JSON.stringify({ job: { id: 'job-1', status: 'importing', progress: 100 } }) }
+  const db = torrentDeleteDatabase(candidate, 'importing')
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+    return new Response('{}', { status: 404 })
+  }
+  try {
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1', { method: 'DELETE', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' } }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+    assert.equal(response.status, 409)
+    assert.equal((await response.json()).error, 'recovery-job-active')
+    assert.equal(db.deleted.length, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 async function withRebootFetch({ admin, agent }, callback) {
   const originalFetch = globalThis.fetch
   const agentRequests = []
