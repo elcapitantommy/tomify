@@ -9,6 +9,7 @@ import { selectCompletedAudio } from './usenet.mjs'
 import { foldName, preferRequestedName } from './text-encoding.mjs'
 import { cleanupCompletedDownload } from './commit.mjs'
 import { prepareImportStaging, removeImportStaging, runManifestImport, sha256File } from './manifest.mjs'
+import { existingTrackMatcher } from './preflight.mjs'
 
 function text(value) { return String(value ?? '').trim() }
 function inside(child, parent) { return child === parent || child.startsWith(parent + sep) }
@@ -325,6 +326,9 @@ export async function importUsenetCompletion(job, completedFiles, options) {
   const canonicalRecoveryRoot = await realpath(resolve(recoveryRoot))
   const plans = []
   const alreadyPresent = []
+  const skippedExisting = []
+  // skipExisting (duplicate preflight): a release leaves out tracks its destination already holds.
+  const skipExisting = searchMode === 'release' && job.request?.skipExisting === true
   const usedStems = new Set()
   for (const group of groups) {
     const finalDirectory = await resolveReleaseDirectory(recoveryRoot, group.artist, group.album)
@@ -335,10 +339,12 @@ export async function importUsenetCompletion(job, completedFiles, options) {
     sourceDirectory = await realpath(sourceDirectory)
     if (!inside(sourceDirectory, canonicalRecoveryRoot)) throw new Error('Unsafe recovery destination.')
     group.finalDirectory = finalDirectory
+    const alreadyInDestination = skipExisting ? await existingTrackMatcher(finalDirectory, { probe }) : null
 
     const discNumbers = new Set(group.items.map((item) => item.metadata.discNumber).filter((value) => Number.isInteger(value) && value > 0))
     const includeDiscInStem = discNumbers.size > 1 || [...discNumbers].some((value) => value > 1)
     for (const item of group.items) {
+      if (alreadyInDestination?.(item.metadata, item.quality)) { skippedExisting.push(item.file.path); continue }
       const sourceExtension = extname(item.file.path).toLowerCase() || '.mka'
       const derivativeExtension = recoveryDerivativeExtension(item.file.path, item.quality)
       const trackPrefix = Number.isInteger(item.metadata.trackNumber) && item.metadata.trackNumber > 0 ? String(item.metadata.trackNumber).padStart(2, '0') : ''
@@ -431,7 +437,7 @@ export async function importUsenetCompletion(job, completedFiles, options) {
     }
     const first = importedTracks[0]
     const albums = groups.map((group) => ({ artist: group.artist || null, album: group.album || null, trackCount: group.items.length }))
-    const result = { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, albums, alreadyPresentCount: alreadyPresent.length, artwork: first.artwork, sourceFiles: [...plans.map((plan) => plan.file.path), ...alreadyPresent], ...(completeness ? { completeness, extraFiles: completeness.extraFiles } : {}), downloadCleaned: false }
+    const result = { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, albums, alreadyPresentCount: alreadyPresent.length, skippedExistingCount: skippedExisting.length, artwork: first.artwork, sourceFiles: [...plans.map((plan) => plan.file.path), ...alreadyPresent, ...skippedExisting], ...(completeness ? { completeness, extraFiles: completeness.extraFiles } : {}), downloadCleaned: false }
     await runManifestImport({ stateRoot, id: importId, jobId: options.importId ? job.id : null, kind: torrent ? 'torrent' : 'usenet', root: canonicalRecoveryRoot, entries, result, afterCommit: options.afterCommit })
 
     const cleanupEnabled = options.sabnzbdCleanup ?? process.env.TOMIFY_SABNZBD_CLEANUP === 'true'
