@@ -9,7 +9,7 @@ export function createUsenetJobPoller({ loadJob, saveJob, downloaderStatus, comp
 
   async function pollOnce(id) {
     const job = await loadJob(id)
-    if (job.status === 'completed' || job.status === 'failed') return jobResponse(job)
+    if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') return jobResponse(job)
     try {
       const state = await downloaderStatus(job.remoteId, job)
       job.status = state.status

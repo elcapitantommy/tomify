@@ -15,7 +15,7 @@ import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './deri
 import { ffmpegMetadataArguments, ffprobeTagJsonFormat } from './metadata.mjs'
 import { decodeToolOutput } from './text-encoding.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
-import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
+import { assertNzbIndexCandidateComplete, cancelAgentJob, cancelDownloader, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
 import { importRemainingUsenetFiles, importUsenetCompletion, planDestination } from './usenet-import.mjs'
 import { validateRecoveryAuthConfig } from './config.mjs'
 import { createUsenetJobPoller } from './usenet-job.mjs'
@@ -479,7 +479,7 @@ async function savedUsenetJobs() {
   const jobs = []
   for (const name of names.filter((value) => /^[a-f0-9-]{36}\.json$/.test(value))) {
     const job = await loadUsenetJob(name.slice(0, -5)).catch(() => null)
-    if (job) jobs.push(job)
+    if (job && job.status !== 'cancelled') jobs.push(job)
   }
   return jobs
 }
@@ -590,22 +590,39 @@ async function completeTorrentJob(job, state, importFiles) {
   return result
 }
 
-// Deleting a torrent item from Recovery stops and removes its torrent and downloaded data, whatever state it is in.
-async function cancelTorrentJob(body) {
+// Stops any queued recovery job. If its poll has already begun importing, cancellation waits for that import
+// and reports its paths so the Worker can remove the raced recovery copy before returning to candidate review.
+async function cancelRecoveryJob(body) {
   let job
   try { job = await loadUsenetJob(String(body?.jobId || '')) }
-  catch (error) { if (error?.code === 'ENOENT') return { cancelled: true, torrentRemoved: false }; throw error }
-  if (job.downloader !== 'qbittorrent') throw new Error('Only torrent downloads can be cancelled.')
-  if (!qbittorrent) throw new Error('Torrent downloads are not configured on the recovery agent.')
-  // The runner may be importing this torrent right now; stop it advancing the job and wait so its files can be cleaned up too.
-  await jobRunner.forget(job.id)
-  await pollUsenetJob.settled(job.id)
-  job = await loadUsenetJob(job.id)
-  const torrentRemoved = await removeTorrent(job)
-  await rm(torrentExtractionPath(job), { recursive: true, force: true })
-  await unlink(usenetJobPath(job.id)).catch((error) => { if (error?.code !== 'ENOENT') throw error })
-  const importedPaths = (Array.isArray(job.importResult?.importedTracks) ? job.importResult.importedTracks : []).map((track) => track?.path).filter((path) => typeof path === 'string')
-  return { cancelled: true, torrentRemoved, importedPaths }
+  catch (error) { if (error?.code === 'ENOENT') return { cancelled: true, remoteRemoved: false, importedPaths: [] }; throw error }
+  if (job.status === 'cancelled') {
+    const importedPaths = (Array.isArray(job.importResult?.importedTracks) ? job.importResult.importedTracks : []).map((track) => track?.path).filter((path) => typeof path === 'string')
+    if (typeof job.importResult?.path === 'string' && job.importResult.path && !importedPaths.includes(job.importResult.path)) importedPaths.push(job.importResult.path)
+    return { cancelled: true, remoteRemoved: false, importedPaths }
+  }
+  const { remoteRemoved, importedPaths } = await cancelAgentJob(job, {
+    forget: (id) => jobRunner.forget(id),
+    settled: (id) => pollUsenetJob.settled(id),
+    reload: loadUsenetJob,
+    saveJob: saveUsenetJob,
+    removeRemote: async (current) => {
+      if (current.downloader === 'qbittorrent') {
+        if (!qbittorrent) throw new Error('Torrent downloads are not configured on the recovery agent.')
+        const removed = await removeTorrent(current)
+        await rm(torrentExtractionPath(current), { recursive: true, force: true })
+        return removed
+      }
+      if (current.downloader === 'sabnzbd' || current.downloader === 'nzbget') {
+        if (!usenetDownloader || usenetDownloader.type !== current.downloader) throw new Error('The job\'s Usenet downloader is not configured on the recovery agent.')
+        return cancelDownloader(usenetDownloader, current.remoteId)
+      }
+      // Direct YouTube and Internet Archive jobs have no remote queue. Waiting above lets an in-flight
+      // acquisition finish so its imported paths can be returned and cleaned up by the Worker.
+      return false
+    },
+  })
+  return { cancelled: true, remoteRemoved, ...(job.downloader === 'qbittorrent' ? { torrentRemoved: remoteRemoved } : {}), importedPaths }
 }
 
 const pollUsenetJob = createUsenetJobPoller({
@@ -744,7 +761,7 @@ createServer(async (request, response) => {
     }
     // Read-only: the job runner advances jobs, so asking for status never starts a download step or an import.
     if (request.url === '/v1/jobs/status') return send(response, 200, await pollUsenetJob.read(body.jobId))
-    if (request.url === '/v1/jobs/cancel') return send(response, 200, await cancelTorrentJob(body))
+    if (request.url === '/v1/jobs/cancel') return send(response, 200, await cancelRecoveryJob(body))
     if (request.url === '/v1/jobs/import-remaining') return send(response, 200, await importRemainingUsenet(body))
     if (request.url === '/v1/delete') return send(response, 200, await deleteImportedRecovery(body))
     if (request.url === '/v1/system/vpn/status') return send(response, 200, await vpn.status())

@@ -141,7 +141,7 @@ export interface RecoveryProvenance {
   importedRelease?: { artist?: string | null; album?: string | null } | null
   remainingImportedAt?: string | null
   searchMode?: RecoverySearchMode
-  job?: { id: string; status: 'queued' | 'downloading' | 'completed' | 'failed'; progress: number; provider?: string; downloader?: string; message?: string | null; error?: string | null; details?: TorrentTransferDetails | null } | null
+  job?: { id: string; status: 'queued' | 'downloading' | 'importing' | 'completed' | 'failed' | 'cancelled'; progress: number; provider?: string; downloader?: string; message?: string | null; error?: string | null; details?: TorrentTransferDetails | null } | null
   [key: string]: unknown
 }
 

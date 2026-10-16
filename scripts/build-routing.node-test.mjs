@@ -714,6 +714,27 @@ async function withRecoveryAgent(agent, callback) {
 const recoveryHeaders = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }
 const youtubeResult = { path: '/recovery/They Might Be Giants/Flood/Birdhouse in Your Soul.m4a', quality: { codec: 'aac', container: 'mp4', bitrate: 256000, sampleRate: 44100, channels: 2, duration: 200 }, provenance: { source: 'youtube', sourceUrl: 'https://www.youtube.com/watch?v=abc', archiveStatus: 'lossy-recovery-copy' } }
 
+test('Recovery cancels an active job for any backend, cleans up raced imports, and keeps its candidate', async () => {
+  const originalProvenance = { source: 'usenet', searchMode: 'track', raw: { providerId: 'indexer' }, job: { id: 'job-1', status: 'downloading', progress: 40 } }
+  const db = recoveryJobDatabase({ status: 'downloading', candidate: { id: 'candidate-1', backend: 'usenet', selected: 1, importedPath: null, url: 'https://indexer.test/details/1', title: 'Flood', channel: 'Indexer', provenanceJson: JSON.stringify(originalProvenance) } })
+  await withRecoveryAgent((path) => path === '/v1/jobs/cancel'
+    ? Response.json({ cancelled: true, remoteRemoved: true, importedPaths: ['/recovery/raced.flac'] })
+    : Response.json({ deleted: ['/recovery/raced.flac'] }), async (requests) => {
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/cancel', { method: 'POST', headers: recoveryHeaders }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+    assert.equal(response.status, 200)
+    const body = await response.json()
+    assert.equal(body.item.status, 'candidate-found')
+    assert.equal(body.item.candidates.length, 1)
+    assert.equal(body.item.candidates[0].selected, true)
+    assert.equal(body.item.candidates[0].provenance.job, undefined)
+    assert.equal(body.item.candidates[0].provenance.raw.providerId, 'indexer')
+    assert.deepEqual(requests, [
+      ['/v1/jobs/cancel', { jobId: 'job-1' }],
+      ['/v1/delete', { importedPaths: ['/recovery/raced.flac'] }],
+    ])
+  })
+})
+
 test('the Recovery page job poll reads the agent job and updates the item as it downloads and completes', async () => {
   const db = recoveryJobDatabase({ status: 'queued', candidate: { id: 'candidate-1', backend: 'usenet', selected: 1, importedPath: null, url: 'https://indexer.test/details/1', title: 'Flood', channel: 'Indexer', provenanceJson: JSON.stringify({ source: 'usenet', job: { id: 'job-1', status: 'queued', progress: 0 } }) } })
   let answer = { job: { id: 'job-1', status: 'downloading', progress: 40, message: 'Downloading' } }
@@ -885,7 +906,7 @@ test('Recovery routes require a signed-in Navidrome administrator', async () => 
   const unauthenticated = await worker.fetch(new Request('https://app.tomify.test/api/recovery'), { ...rebootEnv, TOMIFY_DB: wantedMusicDatabase() })
   assert.equal(unauthenticated.status, 401)
   await withRebootFetch({ admin: false, agent: () => Response.json({ backends: [] }) }, async (agentRequests) => {
-    for (const [path, method, body] of [['/api/recovery', 'GET'], ['/api/recovery', 'POST', { artist: 'They Might Be Giants', album: 'Flood' }], ['/api/recovery/recovery-1/search', 'POST', { backend: 'usenet' }], ['/api/recovery/recovery-1/job', 'GET'], ['/api/recovery/recovery-1', 'DELETE']]) {
+    for (const [path, method, body] of [['/api/recovery', 'GET'], ['/api/recovery', 'POST', { artist: 'They Might Be Giants', album: 'Flood' }], ['/api/recovery/recovery-1/search', 'POST', { backend: 'usenet' }], ['/api/recovery/recovery-1/job', 'GET'], ['/api/recovery/recovery-1/cancel', 'POST'], ['/api/recovery/recovery-1', 'DELETE']]) {
       const response = await recoveryCall(path, method, body)
       assert.equal(response.status, 403, `${method} ${path}`)
       assert.match((await response.json()).message, /Navidrome administrator/)

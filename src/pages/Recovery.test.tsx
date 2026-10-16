@@ -11,7 +11,7 @@ import type { RecoveryPlayback } from '../lib/recovery'
 
 vi.mock('../lib/recovery-api', () => ({
   recoveryApi: {
-    list: vi.fn(), add: vi.fn(), search: vi.fn(), addTorrentLink: vi.fn(), select: vi.fn(), acquire: vi.fn(), importRemaining: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), delete: vi.fn(), checkPlayback: vi.fn(), retryPlayback: vi.fn(),
+    list: vi.fn(), add: vi.fn(), search: vi.fn(), addTorrentLink: vi.fn(), select: vi.fn(), acquire: vi.fn(), importRemaining: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), cancel: vi.fn(), delete: vi.fn(), checkPlayback: vi.fn(), retryPlayback: vi.fn(),
   },
 }))
 
@@ -192,6 +192,26 @@ describe('Recovery page actions', () => {
     renderRecovery()
     fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
     expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled()
+  })
+
+  it.each(['queued', 'downloading', 'importing'] as const)('confirms before cancelling a %s job and keeps the candidate', async (status) => {
+    const candidate = { id: 'candidate-1', backend: 'usenet' as const, externalId: 'x', url: 'https://www.nzbindex.com/collection/x', title: 'Candidate', channel: 'NZBIndex', official: false, matchScore: 80, selected: true, provenance: { job: { id: 'job-1', status, progress: status === 'queued' ? 0 : 50 } } }
+    const active = item({ status, candidates: [candidate] })
+    const cancelled = item({ status: 'candidate-found', candidates: [{ ...candidate, provenance: {} }] })
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [active], backends })
+    vi.mocked(recoveryApi.pollJob).mockImplementation(() => new Promise(() => {}))
+    vi.mocked(recoveryApi.cancel).mockResolvedValue({ item: cancelled })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByText('Cancel this recovery job?')).toBeInTheDocument()
+    expect(recoveryApi.cancel).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel job' }))
+
+    expect(recoveryApi.cancel).toHaveBeenCalledWith('recovery-1')
+    expect(await screen.findByText('Review candidate')).toBeInTheDocument()
+    expect(screen.getByText('Candidate')).toBeInTheDocument()
   })
 
   it('continues from metadata and artwork review into source authorisation without resetting choices', async () => {

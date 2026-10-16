@@ -31,6 +31,7 @@ export const recoveryApi = {
   pollJob: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/job`),
   checkPlayback: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/playback`, { method: 'POST' }),
   retryPlayback: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/playback/retry`, { method: 'POST' }),
+  cancel: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
   delete: (id: string) => request<{ deleted: true; filesRemoved: boolean }>(`/api/recovery/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }
 
