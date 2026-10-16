@@ -65,6 +65,23 @@ describe('Library health', () => {
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ category: 'duplicates', paths: entry.paths, label: entry.label, restore: false })
     fireEvent.click(screen.getByRole('button', { name: 'Report again: Rammstein — Rammstein' }))
     expect(await screen.findByRole('button', { name: 'Mark as fine: Rammstein — Rammstein' })).toBeInTheDocument()
+    // The page updates from the change itself and never waits on a slow report recompute.
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/report'))).toHaveLength(1)
+  })
+
+  it('updates straight away even when the report is slow to recompute', async () => {
+    const entry = { kind: 'partial-album', label: 'The Beach Boys — Surfin USA', paths: ['/recovery/Beach Boys/Surfin USA/13.flac'] }
+    let reports = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path.endsWith('/dismiss')) return Response.json({ ok: true })
+      if (path.endsWith('/report')) { reports += 1; if (reports > 1) return new Promise<Response>(() => {}); return Response.json({ report: { ...emptyReport, partialAlbums: [entry] } }) }
+      return Response.json({ status: idleStatus })
+    }))
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Mark as fine: The Beach Boys — Surfin USA' }))
+    expect(await screen.findByRole('button', { name: 'Report again: The Beach Boys — Surfin USA' })).not.toBeDisabled()
+    expect(screen.getByText('No track-number gaps or incomplete cached editions found.')).toBeInTheDocument()
   })
 
   it('explains that an older recovery agent needs redeploying', async () => {
