@@ -14,8 +14,8 @@ function headers(): HeadersInit {
   return { 'x-tomify-user': session.username, 'x-tomify-token': session.token, 'x-tomify-salt': session.salt, 'content-type': 'application/json' }
 }
 
-async function request<T>(path: string, body: unknown = {}): Promise<T> {
-  const response = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body) })
+async function request<T>(path: string, body: unknown = {}, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body), signal })
   const result = await response.json().catch(() => ({})) as T & { error?: string; message?: string }
   if (response.status === 404 && result.error === 'inventory-not-available') throw new InventoryUnavailableError(result.message || 'Library inventory is unavailable.')
   if (!response.ok) throw new Error(result.message || result.error || 'The library inventory request failed.')
@@ -23,7 +23,7 @@ async function request<T>(path: string, body: unknown = {}): Promise<T> {
 }
 
 export async function loadInventoryReport() { return (await request<{ report: InventoryReport }>('/api/inventory/report')).report }
-export async function loadInventoryStatus() { return (await request<{ status: InventoryStatus }>('/api/inventory/status')).status }
+export async function loadInventoryStatus(signal?: AbortSignal) { return (await request<{ status: InventoryStatus }>('/api/inventory/status', {}, signal)).status }
 export async function startInventoryScan() { return request<{ started: boolean; status: InventoryStatus }>('/api/inventory/scan') }
 
 // Marks a finding as fine (or, with restore, reports it again). Stored in D1, so it applies to every administrator.

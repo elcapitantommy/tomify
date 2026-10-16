@@ -1,7 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { systemApi } from '../lib/recovery-api'
-import { VpnControl } from './VpnControl'
+import { VPN_POLL_MS, VpnControl } from './VpnControl'
 
 vi.mock('../lib/recovery-api', () => ({ systemApi: { vpnStatus: vi.fn(), changeVpn: vi.fn() } }))
 
@@ -34,6 +34,19 @@ describe('VpnControl', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Connect' }))
     expect(await screen.findByText('VPN connected')).toBeInTheDocument()
     expect(systemApi.changeVpn).toHaveBeenCalledWith('connect')
+  })
+
+  it('keeps checking while NordVPN is still connecting', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      vi.mocked(systemApi.vpnStatus).mockResolvedValueOnce(disconnected).mockResolvedValue(connected)
+      vi.mocked(systemApi.changeVpn).mockResolvedValue({ control: 'enabled', state: 'connecting' })
+      render(<VpnControl/>)
+      fireEvent.click(await screen.findByRole('button', { name: 'Connect' }))
+      expect(await screen.findByText('Connecting…')).toBeInTheDocument()
+      await act(async () => { await vi.advanceTimersByTimeAsync(VPN_POLL_MS) })
+      expect(await screen.findByText('VPN connected')).toBeInTheDocument()
+    } finally { vi.useRealTimers() }
   })
 
   it('shows why a change was refused', async () => {
