@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { recoveryApi } from '../lib/recovery-api'
@@ -49,6 +49,32 @@ describe('Recovery page access', () => {
 
 describe('Recovery page actions', () => {
   beforeEach(() => { vi.clearAllMocks(); useAuth.setState({ isAdmin: true }) })
+
+  it('waits for the current job-poll round to settle before scheduling another', async () => {
+    vi.useFakeTimers()
+    try {
+      let finishPoll!: (value: { item: RecoveryItem }) => void
+      const pendingPoll = new Promise<{ item: RecoveryItem }>((resolve) => { finishPoll = resolve })
+      const active = item({ status: 'downloading' })
+      vi.mocked(recoveryApi.list).mockResolvedValue({ items: [active], backends })
+      vi.mocked(recoveryApi.pollJob).mockReturnValue(pendingPoll)
+      renderRecovery()
+      await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+      act(() => { vi.advanceTimersByTime(3000) })
+      expect(recoveryApi.pollJob).toHaveBeenCalledTimes(1)
+      act(() => { vi.advanceTimersByTime(6000) })
+      expect(recoveryApi.pollJob).toHaveBeenCalledTimes(1)
+
+      await act(async () => { finishPoll({ item: active }); await pendingPoll })
+      act(() => { vi.advanceTimersByTime(2999) })
+      expect(recoveryApi.pollJob).toHaveBeenCalledTimes(1)
+      await act(async () => { vi.advanceTimersByTime(1); await Promise.resolve() })
+      expect(recoveryApi.pollJob).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 
   it.each([
     ['Search YouTube', 'Search Internet Archive'],

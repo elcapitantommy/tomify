@@ -1,10 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { access, mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, readdir, realpath, symlink, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { findCompletedAudio } from './usenet.mjs'
-import { albumArtistFor, folderAlbum, looseArtistKey, importRemainingUsenetFiles, importUsenetCompletion, importedUsenetSourceFiles, releaseTrackMetadata, selectUsenetImportFiles } from './usenet-import.mjs'
+import { albumArtistFor, folderAlbum, looseArtistKey, importRemainingUsenetFiles, importUsenetCompletion, importedUsenetSourceFiles, planDestination, releaseTrackMetadata, resolveReleaseDirectory, selectUsenetImportFiles } from './usenet-import.mjs'
 
 function job(searchMode, track = {}) {
   return {
@@ -41,6 +41,33 @@ test('track and artist modes import only the best matching completed audio file'
   assert.deepEqual(selectUsenetImportFiles(files, { title: 'Birdhouse in Your Soul' }, 'track').map((file) => file.name), ['07 - Birdhouse in Your Soul.mp3'])
   assert.deepEqual(selectUsenetImportFiles(files, { title: 'Birdhouse in Your Soul' }, 'artist').map((file) => file.name), ['07 - Birdhouse in Your Soul.mp3'])
   assert.equal(selectUsenetImportFiles(files, {}, 'release').length, 2)
+})
+
+test('YouTube and Internet Archive destination plans reuse existing case-insensitive release folders', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-destination-test-'))
+  const existing = join(recoveryRoot, 'They Might Be Giants', 'Flood')
+  await mkdir(existing, { recursive: true })
+  const track = { artist: 'they might be giants', album: 'flood', title: 'Birdhouse in Your Soul', trackNumber: 2 }
+
+  const youtube = await planDestination(recoveryRoot, track, '.webm', '.opus')
+  const archive = await planDestination(recoveryRoot, track, '.flac', '.flac')
+
+  assert.equal(youtube.finalDirectory, await realpath(existing))
+  assert.equal(archive.finalDirectory, await realpath(existing))
+  assert.equal(basename(youtube.finalPath), '02 - Birdhouse in Your Soul.opus')
+  assert.equal(basename(archive.originalPath), '02 - Birdhouse in Your Soul.flac')
+  assert.deepEqual(await readdir(recoveryRoot), ['They Might Be Giants'])
+})
+
+test('NFC and NFD release names resolve to one existing directory', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-unicode-directory-test-'))
+  const existing = join(recoveryRoot, 'Cafe\u0301 Tacvba', 'Re\u0301')
+  await mkdir(existing, { recursive: true })
+
+  const resolved = await resolveReleaseDirectory(recoveryRoot, 'Caf\u00e9 Tacvba', 'R\u00e9')
+
+  assert.equal(resolved, await realpath(existing))
+  assert.deepEqual(await readdir(recoveryRoot), ['Cafe\u0301 Tacvba'])
 })
 
 test('prefers embedded release tags and falls back to filename order without seed recording metadata', () => {

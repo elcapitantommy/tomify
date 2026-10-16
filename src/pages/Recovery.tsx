@@ -44,14 +44,26 @@ function RecoveryQueue() {
   }, [])
 
   useEffect(() => { void load() }, [load])
+  const activeJobKey = items.filter((item) => item.status === 'queued' || item.status === 'downloading').map((item) => item.id).sort().join('\0')
   useEffect(() => {
-    const active = items.filter((item) => item.status === 'queued' || item.status === 'downloading')
-    if (!active.length) return
-    const timer = window.setInterval(() => {
-      void Promise.all(active.map((item) => recoveryApi.pollJob(item.id).then(({ item: updated }) => setItems((current) => current.map((value) => value.id === updated.id ? updated : value))).catch((cause) => setError(cause instanceof Error ? cause.message : 'Could not refresh a recovery job.'))))
-    }, 3000)
-    return () => window.clearInterval(timer)
-  }, [items])
+    if (!activeJobKey) return
+    const activeIds = activeJobKey.split('\0')
+    let stopped = false
+    let timer: number | undefined
+    const pollRound = async () => {
+      const results = await Promise.allSettled(activeIds.map((id) => recoveryApi.pollJob(id)))
+      if (stopped) return
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          const updated = result.value.item
+          setItems((current) => current.map((value) => value.id === updated.id ? updated : value))
+        } else setError(result.reason instanceof Error ? result.reason.message : 'Could not refresh a recovery job.')
+      }
+      if (!stopped) timer = window.setTimeout(() => { void pollRound() }, 3000)
+    }
+    timer = window.setTimeout(() => { void pollRound() }, 3000)
+    return () => { stopped = true; if (timer !== undefined) window.clearTimeout(timer) }
+  }, [activeJobKey])
   const counts = useMemo(() => ({
     missing: items.filter((item) => item.status === 'missing' || item.status === 'candidate-found').length,
     recovered: items.filter((item) => item.status === 'recovered').length,

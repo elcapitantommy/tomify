@@ -44,7 +44,7 @@ MusicBrainz calls identify Tomify with a descriptive user agent and are serialis
 
 At import, the Worker reconstructs the effective metadata from the immutable wanted fields plus the user's per-field choices; it does not accept arbitrary replacement tags from the browser. Both `wantedMetadata` and `resolvedMetadata`, together with the MusicBrainz decision and confidence, are written to candidate provenance and the `.tomify.json` sidecar.
 
-The recovery agent uses the effective metadata for its recovery directory and filename and writes artist, title, album, date, track/disc number, MusicBrainz recording/release/release-group IDs and ISRC where the output container supports those tags. This does not change the recovery boundary: every artifact remains under `TOMIFY_RECOVERY_DIR`, separate from the canonical master tree.
+The recovery agent uses the effective metadata for its recovery directory and filename and writes artist, title, album, date, track/disc number, MusicBrainz recording/release/release-group IDs and ISRC where the output container supports those tags. YouTube, Internet Archive, Usenet and torrent imports all use the same safe directory resolver, reusing existing artist and album folders regardless of case or NFC/NFD Unicode composition. This does not change the recovery boundary: every artifact remains under `TOMIFY_RECOVERY_DIR`, separate from the canonical master tree.
 
 ## Artwork resolution and storage
 
@@ -444,7 +444,7 @@ For NZBGet, use `TOMIFY_NZBGET_URL`, `TOMIFY_NZBGET_USERNAME`, and `TOMIFY_NZBGE
 
 If a job disappears from both the downloader queue and history, Tomify records the first missing time in that job's state file. It keeps waiting during `TOMIFY_DOWNLOADER_LOST_MINUTES` (15 by default), including across agent restarts, then fails the job with `downloader-lost` instead of leaving it queued forever. If the downloader reports the job again before the timeout, the missing timer is cleared.
 
-Restart the service after editing the environment, then confirm that `/health` lists `usenet`:
+Restart the service after editing the environment, then confirm that the agent is healthy. The unauthenticated endpoint intentionally returns only `{"ok":true,"version":null}` unless `TOMIFY_VERSION` or a package version is available; backend details remain on authenticated `/v1/status` and in Recovery:
 
 ```bash
 sudo systemctl restart tomify-recovery
@@ -454,7 +454,7 @@ echo
 
 NZBIndex always counts as an available indexer, with or without its optional key. Usenet is available when exactly one downloader is configured and `TOMIFY_USENET_DOWNLOAD_DIR` is set; configured Newznab indexers are searched alongside NZBIndex.
 
-Acquisition is asynchronous. The UI reports queued, downloading, completed, or failed job state and progress while polling through the Worker. On completion, the agent resolves the downloader path and rejects anything outside `TOMIFY_USENET_DOWNLOAD_DIR`, symlinks, non-regular files, excessive file counts, and downloads over `TOMIFY_USENET_MAX_BYTES`. It verifies selected audio with FFprobe, preserves unchanged sources beneath `.tomify-source`, and creates Navidrome-facing derivatives through the same stream-copy and metadata pipeline as other Recovery sources. Existing recovery artifacts and canonical masters are never overwritten. When the downloader marks a job failed, its own reason (for example missing articles or a failed repair) is kept as the job error and shown on the Recovery item. A completed release job retains the backward-compatible primary `path`, `quality`, `derivative`, and `provenance` fields and also returns `importedCount`, `importedTracks`, plus release artist/album summaries. `album` is null when the release spanned several albums, and `albums` lists each album with its track count.
+Acquisition is asynchronous. The UI reports queued, downloading, importing, completed, or failed job state and progress while polling through the Worker. Poll rounds never overlap: the next three-second delay begins only after every active request in the current round has settled. When the downloader completes, the agent persists `importing` before touching the recovery library, and its per-job lock prevents overlapping requests from starting the import twice. The agent then resolves the downloader path and rejects anything outside `TOMIFY_USENET_DOWNLOAD_DIR`, symlinks, non-regular files, excessive file counts, and downloads over `TOMIFY_USENET_MAX_BYTES`. It verifies selected audio with FFprobe, preserves unchanged sources beneath `.tomify-source`, and creates Navidrome-facing derivatives through the same stream-copy and metadata pipeline as other Recovery sources. Existing recovery artifacts and canonical masters are never overwritten. When the downloader marks a job failed, its own reason (for example missing articles or a failed repair) is kept as the job error and shown on the Recovery item. A completed release job retains the backward-compatible primary `path`, `quality`, `derivative`, and `provenance` fields and also returns `importedCount`, `importedTracks`, plus release artist/album summaries. `album` is null when the release spanned several albums, and `albums` lists each album with its track count.
 
 ## Torrent links and qBittorrent
 
@@ -592,11 +592,11 @@ EOF
 unset QBT_PASSWORD QBT_HASH
 ```
 
-Then deploy the updated agent (see [Updating the recovery agent](#updating-the-recovery-agent); it includes the new `torrent.mjs`), restart it, and confirm `/health` lists `torrent`:
+Then deploy the updated agent (see [Updating the recovery agent](#updating-the-recovery-agent); it includes the new `torrent.mjs`), restart it, confirm `/health` returns `{"ok":true,...}`, and check that Recovery offers torrents:
 
 ```bash
 sudo systemctl restart tomify-recovery
-curl -s http://127.0.0.1:8788/health; echo           # "backends":[..., "torrent"]
+curl -s http://127.0.0.1:8788/health; echo
 ```
 
 Open Recovery on the site, paste a link into an item and check the progress line. If everything works, cancel the fail-safe:
@@ -635,7 +635,7 @@ sudo systemctl restart tomify-recovery
 curl -s http://127.0.0.1:8788/health
 ```
 
-Expected status includes `"youtubeAuthentication":"configured"`. To perform an authenticated extraction diagnostic through the protected API without returning video metadata or secrets:
+The public response does not reveal whether YouTube authentication is configured. To perform an authenticated extraction diagnostic through the protected API without returning video metadata or secrets:
 
 ```bash
 curl -s -X POST --config - http://127.0.0.1:8788/v1/diagnostics/youtube-auth -d '{}' <<EOF

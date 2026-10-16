@@ -19,10 +19,11 @@ test('concurrent status requests run one completed release import and share its 
   let saveCalls = 0
   const importStarted = deferred()
   const allowImport = deferred()
+  const savedStatuses = []
   const releaseResult = { importedCount: 2, importedTracks: [{ path: '/recovery/01.flac' }, { path: '/recovery/02.flac' }], artist: 'Artist', album: 'Album' }
   const poll = createUsenetJobPoller({
     loadJob: async () => structuredClone(stored),
-    saveJob: async (job) => { saveCalls += 1; stored = structuredClone(job) },
+    saveJob: async (job) => { saveCalls += 1; savedStatuses.push(job.status); stored = structuredClone(job) },
     downloaderStatus: async () => { downloaderCalls += 1; return { status: 'completed', progress: 100, completedPath: '/downloads/release' } },
     completeJob: async () => { importCalls += 1; importStarted.release(); await allowImport.promise; return releaseResult },
     sanitizeError: (error) => error.message,
@@ -31,13 +32,16 @@ test('concurrent status requests run one completed release import and share its 
 
   const first = poll('job-id')
   await importStarted.promise
+  assert.deepEqual(savedStatuses, ['importing'])
+  assert.equal(stored.status, 'importing')
   const second = poll('job-id')
   allowImport.release()
   const [firstResult, secondResult] = await Promise.all([first, second])
 
   assert.equal(downloaderCalls, 1)
   assert.equal(importCalls, 1)
-  assert.equal(saveCalls, 1)
+  assert.equal(saveCalls, 2)
+  assert.deepEqual(savedStatuses, ['importing', 'completed'])
   assert.deepEqual(firstResult, secondResult)
   assert.equal(firstResult.job.status, 'completed')
   assert.equal(firstResult.job.result.importedCount, 2)
@@ -47,7 +51,7 @@ test('concurrent status requests run one completed release import and share its 
   assert.deepEqual(laterResult, firstResult)
   assert.equal(downloaderCalls, 1)
   assert.equal(importCalls, 1)
-  assert.equal(saveCalls, 1)
+  assert.equal(saveCalls, 2)
 })
 
 test('completed jobs return their persisted result without downloader or import work', async () => {
