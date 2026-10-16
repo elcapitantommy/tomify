@@ -78,3 +78,19 @@ test('a large inventory is reported without comparing every file with every othe
   assert.equal(report.shadowedRecovery.length, 1)
   assert.equal(report.duplicates.filter((entry) => entry.kind === 'recording').length, 1)
 })
+
+test('a song on its original album and on a compilation is not a duplicate', () => {
+  const files = [
+    audio('/master/Queen/A Night at the Opera/11 Bohemian Rhapsody.flac', 'master', { artist: 'Queen', album: 'A Night at the Opera', title: 'Bohemian Rhapsody', duration: 355, recordingId: 'rec-bo-rhap' }),
+    audio('/master/Queen/Greatest Hits/01 Bohemian Rhapsody.flac', 'master', { artist: 'Queen', album: 'Greatest Hits', title: 'Bohemian Rhapsody', duration: 355, recordingId: 'rec-bo-rhap' }),
+    audio('/recovery/Queen/Greatest Hits/01 Bohemian Rhapsody.flac', 'recovery', { artist: 'Queen', album: 'Greatest Hits', title: 'Bohemian Rhapsody', duration: 356 }),
+    audio('/master/Queen/Greatest Hits/01 Bohemian Rhapsody (1).flac', 'master', { artist: 'Queen', album: 'Greatest Hits', title: 'Bohemian Rhapsody', duration: 355, recordingId: 'rec-bo-rhap' }),
+  ]
+  const report = reportLibraryInventory({ files, sidecars: [], sourceFiles: [], roots: { master: '/master', recovery: '/recovery' } })
+  const recordings = report.duplicates.filter((entry) => entry.kind === 'recording')
+  // Only the Greatest Hits copies count; the A Night at the Opera original stays out.
+  assert.equal(recordings.length, 1)
+  assert.deepEqual(recordings[0].paths, [files[1].path, files[3].path, files[2].path].sort())
+  assert.equal(report.shadowedRecovery.length, 1)
+  assert.equal(report.shadowedRecovery[0].masterPaths.includes(files[0].path), false)
+})
