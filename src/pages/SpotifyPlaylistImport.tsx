@@ -3,7 +3,7 @@ import { AlertTriangle, ArrowLeft, Check, CircleHelp, ExternalLink, LoaderCircle
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useApi } from '../lib/api-context'
 import { catalogueApi } from '../lib/catalogue-api'
-import { matchCatalogueItem, type CatalogueItemStatus, type CataloguePlaylistDraft } from '../lib/catalogue-import'
+import { findCatalogueMatch, type CatalogueItemStatus, type CataloguePlaylistDraft } from '../lib/catalogue-import'
 import { useAuth } from '../stores/auth'
 
 type Filter = 'all' | 'available' | 'missing' | 'review' | 'unavailable'
@@ -30,7 +30,7 @@ export function SpotifyPlaylistImport() {
       for (let offset = 0; offset < searchable.length; offset += 5) {
         setProgress(`Matching library tracks ${Math.min(offset + 5, searchable.length)} of ${searchable.length}…`)
         await Promise.all(searchable.slice(offset, offset + 5).map(async (item) => {
-          try { const found = await api.search(`${item.artists.join(' ')} ${item.title}`); items[item.position] = matchCatalogueItem(item, found.tracks) }
+          try { items[item.position] = await findCatalogueMatch(item, async (query) => (await api.search(query)).tracks) }
           catch { items[item.position] = { ...item, status: 'missing' } }
         }))
       }
