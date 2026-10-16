@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createVpnController, nordvpnEnvironment, parseNordSettings, parseNordStatus, vpnConfig, vpnSafetyProblem } from './vpn.mjs'
+import { createVpnController, nordvpnEnvironment, nordvpnFailureMessage, parseNordSettings, parseNordStatus, vpnConfig, vpnSafetyProblem } from './vpn.mjs'
 
 const connected = '\r-\r  \r\r-\r  \rStatus: Connected\nServer: United Kingdom #2214\nHostname: uk2214.nordvpn.com\nIP: 194.35.233.10\nCountry: United Kingdom\nCity: London\nCurrent technology: NORDLYNX\nCurrent protocol: UDP\nTransfer: 1.2 GiB received, 80 MiB sent\nUptime: 2 hours 5 minutes\n'
 const safeSettings = 'Technology: NORDLYNX\nFirewall: disabled\nFirewall Mark: 0xe1f1\nRouting: enabled\nAnalytics: disabled\nKill Switch: disabled\nThreat Protection Lite: disabled\nNotify: disabled\nAuto-connect: enabled\nIPv6: disabled\nMeshnet: disabled\nDNS: disabled\nLAN Discovery: enabled\nAllowlisted ports:\n\t      22 (TCP)\n'
@@ -105,4 +105,9 @@ test('only one change runs at a time', async () => {
 test('the CLI gets a writable home instead of the hidden /home/tom', () => {
   const env = nordvpnEnvironment({ HOME: '/home/tom', PATH: '/usr/bin' }, '/var/lib/tomify-recovery/nordvpn-cli')
   assert.deepEqual(env, { HOME: '/var/lib/tomify-recovery/nordvpn-cli', PATH: '/usr/bin', XDG_CONFIG_HOME: '/var/lib/tomify-recovery/nordvpn-cli/.config', XDG_CACHE_HOME: '/var/lib/tomify-recovery/nordvpn-cli/.cache' })
+})
+
+test('a failed command reports what nordvpn printed instead of a bare exit code', () => {
+  assert.equal(nordvpnFailureMessage('\r-\r  \r\r\\\r  \rYou are not logged in.\n'), 'You are not logged in.')
+  assert.equal(nordvpnFailureMessage('\r-\r  \r'), null)
 })
