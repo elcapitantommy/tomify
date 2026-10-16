@@ -30,6 +30,7 @@ Recovery is only for Navidrome administrators (accounts with `adminRole`). The W
 - Writes only into a dedicated recovery directory. Existing files are not overwritten and the configured FLAC master tree must be separate.
 - Deletes queue-only items directly from D1. For imported items, deletion first removes the recovery derivative, its `.tomify.json` sidecar and the matching preserved original under `.tomify-source`; D1 state is retained if that filesystem cleanup fails.
 - Classifies every import into a quality tier and marks it `recovered` when the tier meets the preferred quality set in Settings, otherwise `needs-upgrade`. See [Quality tiers](#quality-tiers). Either way the files stay recovery copies, never verified masters, and nothing is promoted to an archival master automatically.
+- Waits for Navidrome to scan each import before calling it playable. See [Library scan after import](#library-scan-after-import).
 - Marks Internet Archive imports `internet-archive-recovery-copy`. A lossless file is still a recovery source, not proof of an archival master.
 - Searches torrents through qBittorrent's search plugins, showing only results that have seeds, or accepts a pasted magnet or `.torrent` link per item. Either way it downloads the torrent with qBittorrent-nox over NordVPN, shows live speed, seeds, peers and time left, unpacks archives, imports the audio and then removes the torrent and its data. See [Torrent links and qBittorrent](#torrent-links-and-qbittorrent) and [Torrent search](#torrent-search).
 
@@ -53,6 +54,16 @@ The MP3 line is 240 kbps rather than 245 because LAME V0 is variable bitrate and
 Changing the target does not rewrite existing items. **Re-check quality labels** in the same section recomputes `recovered` and `needs-upgrade` for every imported item from the source quality stored at import (the `.tomify-source` probe in provenance, otherwise the candidate's codec and bitrate). It also re-checks items that were set by hand with **Mark acceptable**, so run it only when you want every label to follow the target.
 
 The agent writes the tier into each file's `TOMIFY_ARCHIVE_STATUS` tag (`lossless`, `transparent-lossy`, `lossy` or `unknown`). Files imported before this change keep their old `lossy-recovery-copy` tag. The provenance sidecar's `archiveStatus` still names the source, for example `usenet-recovery-copy`.
+
+## Library scan after import
+
+An imported file is not playable in Tomify until Navidrome has scanned it, so each imported item also carries a playback state next to its Recovered or Needs-upgrade status (D1 column `recovery_items.playback_json`, `drizzle/0011_recovery_playback.sql`; the Worker adds the column on first use, so deploying needs no extra step):
+
+- **Imported, waiting for library scan** (`scan-pending`). When an import completes, the Worker asks Navidrome for a quick scan (`startScan` without `fullScan`), unless a scan is already running. If one was running, it starts its own scan once that finishes, because the running scan may have passed the folder before the file landed.
+- **Ready to play** (`ready`). While the Recovery page is open it asks the Worker to look again, at most every 15 seconds per item. The Worker searches Navidrome (`search3`) by artist and title and keeps the track whose path matches the imported file when Navidrome reports a path, or whose MusicBrainz recording ID matches. The play button plays that Navidrome song through the normal player. For a release import it plays the wanted track, or the first imported track.
+- **Not found in library after scan** (`scan-failed`). The track is still missing ten minutes after the import. **Retry scan** starts another scan and waits ten more minutes. If it keeps failing, check that the recovery directory is inside one of Navidrome's music folders.
+
+The Worker code is in `scripts/library-scan-worker.mjs`.
 
 ## Canonical metadata review
 
