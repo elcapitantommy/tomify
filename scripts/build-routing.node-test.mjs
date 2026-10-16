@@ -906,6 +906,38 @@ test('library inventory routes require an administrator and pass all three actio
   })
 })
 
+test('library health report requires an administrator and adds D1 imports whose files are absent', async () => {
+  const db = {
+    prepare(sql) {
+      return {
+        args: [], bind(...args) { this.args = args; return this },
+        async all() {
+          if (sql.includes('FROM release_tracklists')) return { results: [{ tracklistJson: JSON.stringify({ albumId: 'album-1', title: 'Flood', artist: 'They Might Be Giants', tracks: [{ disc: 1, number: 1, title: 'Theme' }] }) }] }
+          return { results: [
+            { id: 'present-item', artist: 'The Kinks', title: 'Waterloo Sunset', album: 'Something Else', importedPath: '/recovery/present.flac' },
+            { id: 'missing-item', artist: 'The Kinks', title: 'Days', album: 'Village Green', importedPath: '/recovery/missing.flac' },
+          ] }
+        },
+      }
+    },
+  }
+  const env = { ...rebootEnv, TOMIFY_DB: db }
+  await withRebootFetch({ admin: false, agent: () => Response.json({}) }, async (agentRequests) => {
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/inventory/report', { method: 'POST', headers: recoveryHeaders, body: '{}' }), env)
+    assert.equal(response.status, 403)
+    assert.equal(agentRequests.length, 0)
+  })
+  await withRebootFetch({ admin: true, agent: () => Response.json({ report: { completedAt: '2026-10-16T12:00:00Z', duplicates: [], partialAlbums: [], orphanedSources: [], shadowedRecovery: [], checkedPaths: { '/recovery/present.flac': true, '/recovery/missing.flac': false } } }) }, async (agentRequests) => {
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/inventory/report', { method: 'POST', headers: recoveryHeaders, body: '{}' }), env)
+    assert.equal(response.status, 200)
+    const body = await response.json()
+    assert.deepEqual(body.report.missingD1Files, [{ kind: 'missing-d1-file', label: 'The Kinks — Days', paths: ['/recovery/missing.flac'], recoveryId: 'missing-item' }])
+    assert.equal(body.report.checkedPaths, undefined)
+    assert.equal(agentRequests[0].body.tracklists[0].albumId, 'album-1')
+    assert.deepEqual(agentRequests[0].body.checkPaths, ['/recovery/present.flac', '/recovery/missing.flac'])
+  })
+})
+
 const rebootRequest = (body) => new Request('https://app.tomify.test/api/system/reboot', { method: 'POST', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }, body: JSON.stringify(body) })
 
 test('Media server reboot requires a signed-in Navidrome administrator', async () => {

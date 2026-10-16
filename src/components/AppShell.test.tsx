@@ -52,6 +52,7 @@ describe('AppShell navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Account' }))
     const sheet = screen.getByRole('dialog', { name: 'Account' })
     expect(within(sheet).getByRole('link', { name: 'Recovery' })).toHaveAttribute('href', '/recovery')
+    expect(within(sheet).getByRole('link', { name: 'Library health' })).toHaveAttribute('href', '/library-health')
     expect(within(sheet).getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings')
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()

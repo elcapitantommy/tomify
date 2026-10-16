@@ -133,12 +133,17 @@ async function withAnonymousFallback(operation) {
   return { value: await operation(false), authenticatedAccessUsed: false, authenticationFallback: status.usable }
 }
 
+// The library health report carries every cached MusicBrainz tracklist and every imported path from D1, so it may be
+// larger than any other request.
+const largeBodyRoutes = new Set(['/v1/inventory/report'])
+
 async function parseBody(request) {
   const chunks = []
   let size = 0
+  const limit = largeBodyRoutes.has(request.url) ? 16 * 1024 * 1024 : 64 * 1024
   for await (const chunk of request) {
     size += chunk.length
-    if (size > 64 * 1024) throw new Error('Request body is too large.')
+    if (size > limit) throw new Error('Request body is too large.')
     chunks.push(chunk)
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
@@ -770,6 +775,7 @@ createServer(async (request, response) => {
     }
     if (request.url === '/v1/inventory/status') return send(response, 200, { status: await inventory.status() })
     if (request.url === '/v1/inventory/summary') return send(response, 200, { summary: await inventory.summary() })
+    if (request.url === '/v1/inventory/report') return send(response, 200, { report: await inventory.report(body) })
     // Read-only: the job runner advances jobs, so asking for status never starts a download step or an import.
     if (request.url === '/v1/jobs/status') return send(response, 200, await pollUsenetJob.read(body.jobId))
     if (request.url === '/v1/jobs/cancel') return send(response, 200, await cancelRecoveryJob(body))

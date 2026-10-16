@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { FolderSync, LoaderCircle } from 'lucide-react'
+import { Activity, FolderSync, LoaderCircle } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { useApi } from '../lib/api-context'
 import type { ScanStatus } from '../lib/navidrome'
 
@@ -32,8 +33,8 @@ export function LibraryScan() {
   const detail = error ?? (scanning ? `Rescanning every file${status?.count ? ` · ${status.count.toLocaleString()} tracks so far` : ''}…`
     : `Rescans every file in the library, not just changed folders, so edited tags and artwork show up.${status?.lastScan ? ` Last scan ${new Date(status.lastScan).toLocaleString()}.` : ''}`)
 
-  return <div className="setting-row"><FolderSync/><span><strong>Full library scan</strong><small role={error ? 'alert' : undefined}>{detail}</small></span>
+  return <><Link className="setting-row setting-link-row" to="/library-health"><Activity/><span><strong>Library health</strong><small>Inspect duplicates, partial albums, orphaned sources and missing Recovery files.</small></span></Link><div className="setting-row"><FolderSync/><span><strong>Full library scan</strong><small role={error ? 'alert' : undefined}>{detail}</small></span>
     {scanning ? <button className="button secondary" disabled><LoaderCircle className="spin"/>Scanning…</button>
       : <button className="button secondary" onClick={() => void scan()}>Scan library</button>}
-  </div>
+  </div></>
 }
