@@ -1,397 +1,161 @@
 # Tomify Architecture
 
+This describes Tomify as it is built on `main` today. For what is planned next, see [ROADMAP.md](ROADMAP.md) and [TOMIFY_ROADMAP.md](TOMIFY_ROADMAP.md).
+
 ## 1. Overview
 
-Tomify separates the valuable part of the system — the music library — from the replaceable parts — server software and clients.
+Tomify has three running parts:
+
+1. **The PWA**, a React app that runs in the browser and talks to Navidrome and to the Worker.
+2. **The Cloudflare Worker**, which serves the PWA, proxies Navidrome, and owns Tomify's own data in D1.
+3. **The Debian media server** (host `tomify`), which runs Navidrome, the music library under `/srv/music`, and the recovery agent.
 
 ```text
-                         ┌──────────────────────┐
-                         │       CD drive       │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │ Secure rip + tagging │
-                         │ FLAC + metadata      │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-┌────────────────────────────────────────────────────────────┐
-│                    Small Linux media server                │
-│                                                            │
-│  /srv/music     canonical FLAC library                     │
-│  /srv/tomify    application/config data                    │
-│  /srv/backup    optional local staging                     │
-│                                                            │
-│  Docker Compose                                            │
-│   ├── Navidrome                                            │
-│   ├── reverse proxy / TLS                                  │
-│   └── Tomify PWA/API helper services if required later     │
-└───────────────────────────┬────────────────────────────────┘
-                            │ HTTPS
-                ┌───────────┴───────────┐
-                │                       │
-                ▼                       ▼
-          Tomify PWA               Navidrome UI
-          primary client           fallback/admin client
-                │
-       ┌────────┴────────┐
-       │                 │
-       ▼                 ▼
-     Tom               Anna
-```
-
-## 2. Music library
-
-### Canonical format
-
-The server library should use **FLAC** for CD rips.
-
-Reasons:
-
-- Lossless archival copy.
-- No need to re-rip if a different delivery format is wanted later.
-- Suitable for direct playback on LAN.
-- Suitable as a source for server-side transcoding.
-
-The FLAC files are the irreplaceable output of the ripping effort and should be treated as primary data.
-
-### Suggested layout
-
-```text
-/srv/music/
-  Artist/
-    Album/
-      01 - Track.flac
-      02 - Track.flac
-```
-
-Folder names are for human sanity only. Tags should be regarded as the authoritative metadata used by the server.
-
-Important tags include:
-
-- Artist
-- Album artist
-- Album
-- Title
-- Track number
-- Disc number
-- Date/year
-- Genre where useful
-- MusicBrainz identifiers where available
-- Embedded or associated artwork
-
-Compilations and multi-disc releases need a consistent tagging policy before large-scale ripping begins.
-
-## 3. Ripping workflow
-
-Proposed first workflow:
-
-1. Insert CD into a desktop optical drive.
-2. Rip securely using Exact Audio Copy or an equivalent secure ripper.
-3. Verify the rip where possible.
-4. Retrieve/review metadata.
-5. Save as FLAC.
-6. Review artwork and naming.
-7. Copy/import the finished album into the canonical server library.
-8. Navidrome indexes the new material.
-9. Backup job captures the new master files.
-
-A future dedicated ingest workflow could automate steps 4–8, but the first priority is trustworthy rips rather than clever automation.
-
-## 4. Navidrome
-
-Navidrome is the initial backend because it solves the boring but substantial music-server problems immediately:
-
-- Library indexing.
-- User accounts.
-- Album/artist browsing.
-- Streaming.
-- Playlists.
-- Favourites.
-- Play counts/history.
-- Artwork.
-- Transcoding.
-- OpenSubsonic/Subsonic-compatible client access.
-
-The music directory should be mounted read-only into Navidrome where practical:
-
-```text
-host: /srv/music
-container: /music
-mode: read-only
-```
-
-Navidrome application data lives separately and is backed up independently.
-
-## 5. Tomify PWA
-
-The custom Tomify client should treat Navidrome as a service, not as its UI framework.
-
-### Core responsibilities
-
-- Authentication/user session.
-- Browse/search.
-- Playback.
-- Queue.
-- Playlists/favourites.
-- Responsive mobile/desktop UI.
-- Installable PWA behaviour.
-- Media Session integration.
-- Offline library.
-- Local download management.
-
-### Initial screens
-
-```text
-Home
-Artists
-Albums
-Playlists
-Favourites
-Downloads
-Search
-Settings
-Now Playing
-```
-
-### Player behaviour
-
-The player should support:
-
-- Play/pause.
-- Previous/next.
-- Seeking.
-- Queue display/editing.
-- Shuffle/repeat.
-- Artwork.
-- Lock-screen/headset controls where the platform permits.
-- Seamless selection between a local offline copy and the streamed version.
-
-The UI should not care which transport supplied the audio once playback begins.
-
-## 6. Offline design
-
-Offline playback is a core product requirement.
-
-### User flow
-
-Users should be able to download:
-
-- One track.
-- One album.
-- One playlist.
-
-Each item should expose a clear status:
-
-```text
-Not downloaded
-Queued
-Downloading
-Available offline
-Update available
-Download failed
-```
-
-### Local data
-
-For every offline track, store:
-
-- Track identifier.
-- Album/artist identifiers.
-- Title/artist/album metadata.
-- Duration.
-- Artwork reference or cached artwork.
-- Chosen offline quality.
-- Audio blob/file.
-- Source revision or equivalent information needed to detect replacement.
-
-IndexedDB or another appropriate persistent browser storage mechanism should be used for structured metadata and binary audio storage rather than relying only on the service-worker HTTP cache.
-
-### Playback resolution
-
-At play time:
-
-```text
-Is a valid offline copy present?
-        │
-    yes │ no
-        │
+ Browser / installed PWA
+        │  HTTPS
         ▼
-play local copy
-              or
-              ▼
-        request stream
+ Cloudflare Worker (dist/server/index.js) ──────────── D1: tomify-metadata
+   ├── static PWA assets (embedded in the bundle)
+   ├── /navidrome/*  ── proxy ──┐
+   ├── /api/*        Tomify API │
+   │                            │ Cloudflare Tunnel (cloudflared)
+   │   RECOVERY_AGENT_URL ──────┼──────────────────────────────┐
+   │                            ▼                              ▼
+   │                  Debian box "tomify"
+   │                   ├── Navidrome  ── reads /srv/music (incl. /srv/music/_Recovery)
+   │                   └── recovery agent (Node, 127.0.0.1:8788)
+   │                         ├── yt-dlp, Internet Archive
+   │                         ├── SABnzbd / NZBGet (Usenet)
+   │                         ├── qBittorrent-nox (torrents, over NordVPN)
+   │                         └── ffprobe / ffmpeg → writes /srv/music-recovery
+   └── external APIs: MusicBrainz, Spotify, Apple, Deezer, Cover Art Archive
 ```
 
-If the device is offline and no local copy exists, Tomify should fail cleanly rather than hanging on a dead network request.
+Navidrome stays the source of truth for accounts, the library, playlists, favourites, artwork and audio streams. Tomify adds what Navidrome lacks (recovery, Spotify playlist import, release metadata, artwork overrides, playlist sharing, live playback) and keeps that in D1.
 
-### Download quality
+## 2. The PWA
 
-Initial concept:
+- React 18, TypeScript and Vite, under `src/`. Routes are declared in `src/App.tsx`: Home, Artists, Albums, Search, Playlists (including Spotify import and imported playlists), Favourites, Downloads, Recovery and Settings.
+- `src/lib/navidrome.ts` is the single typed OpenSubsonic client. Signing in creates a salted token (`createAuthSession`); the password is never stored. When the server is the default (`https://tomify.tomdixon.uk`), requests go through the Worker's same-origin `/navidrome` proxy, which avoids CORS.
+- Calls to Tomify's own API (`src/lib/recovery-api.ts`, `catalogue-api.ts`, `completeness-api.ts`, `playlist-shares.ts` and the stores) send the Navidrome username, token and salt as `x-tomify-user`, `x-tomify-token` and `x-tomify-salt` headers.
+- State lives in Zustand stores under `src/stores/`: auth, the player and queue, live playback, album artwork overrides and release metadata.
+- `src/components/PlayerRuntime.tsx` owns one long-lived `<audio>` element. `src/lib/mediaSession.ts` sets lock-screen metadata and controls. `src/lib/sourceResolver.ts` is the seam for offline audio; today it always streams from Navidrome.
+- `src/components/LivePlaybackSync.tsx` publishes this device's playback state to the Worker and picks up commands from the user's other devices.
+- The service worker (Workbox via `vite-plugin-pwa`, configured in `vite.config.ts`) precaches the app shell and caches artwork. Its navigation fallback excludes `/api/` and `/navidrome/`. Audio is not cached.
+- Styles are one global stylesheet, `src/styles.css`.
+- Recovery and Settings are shown only to Navidrome administrators (`adminRole`). On mobile they sit behind the account button in the top bar.
 
-- Original
-- High
-- Normal
-- Space saver
+## 3. The Cloudflare Worker
 
-The exact codec/bitrate matrix is deliberately deferred until implementation testing across the target phones/browsers.
+The Worker is generated, not hand-written. `pnpm build` runs `tsc -b`, `vite build`, then `node scripts/build-worker.mjs`, which:
 
-The server should retain FLAC regardless of chosen mobile quality.
+1. reads every file in `dist/` and embeds it base64-encoded in an `assets` map;
+2. concatenates the source of each feature module (exported as a `...WorkerSource` string built from `fn.toString()`);
+3. writes the whole Worker as one string template to `dist/server/index.js`, which `wrangler.toml` deploys.
 
-### Keep downloaded
+| Module | Routes | Purpose |
+| --- | --- | --- |
+| `scripts/build-worker.mjs` | `/api/recovery*`, `/api/system/reboot`, `/api/system/vpn`, `/api/live-playback*`, `/api/release-meta*`, `/navidrome/*`, static assets | Core routes, auth, the Navidrome proxy and the agent client |
+| `scripts/catalogue-worker.mjs` (+ `catalogue-import.mjs`) | `/api/catalogue-auth/spotify/*`, `/api/catalogue-imports/spotify/analyse`, `/api/catalogue-playlists*` | Spotify OAuth, playlist import and matching |
+| `scripts/completeness-worker.mjs` | `/api/album-completeness/*` | MusicBrainz tracklists and "add missing to Recovery" |
+| `scripts/album-artwork-worker.mjs` | `/api/album-artwork*` | Apple, Deezer and Spotify artwork lookup, overrides and uploads |
+| `scripts/playlist-share-worker.mjs` | `/api/playlist-shares*` | Sharing playlists between Tomify accounts |
+| `scripts/recovery-metadata.mjs`, `scripts/recovery-artwork.mjs` | (helpers) | MusicBrainz metadata review and artwork resolution for Recovery |
 
-A later synchronisation mode should support:
+Unknown `/api/*` paths return a JSON `404`. Any other `GET` that accepts HTML falls back to `index.html` so client-side routes work.
 
-> Keep this playlist downloaded
+### Authentication and admin-only routes
 
-When a selected playlist changes, the PWA compares the desired set with local storage and downloads/removes items according to user settings when an appropriate connection is available.
+- `authenticate()` checks the `x-tomify-*` headers by calling Navidrome's `ping.view` and caches a success for 30 seconds.
+- `isNavidromeAdmin()` calls Navidrome's `getUser.view` and requires `adminRole: true`. It guards:
+  - every `/api/recovery` route;
+  - `/api/system/reboot` and `/api/system/vpn`;
+  - `/api/album-completeness/*`;
+  - album artwork lookups, uploads and changes;
+  - release metadata edits and MusicBrainz refreshes;
+  - Spotify imports that ask to create Recovery items.
 
-This should be explicit and predictable rather than silently consuming storage or mobile data.
+  Everyone else gets `403`.
+- `/api/album-artwork/image/<id>` serves uploaded covers without sign-in, because `<img>` tags cannot send the headers; the id is random.
 
-## 7. Accounts and family use
+### The Navidrome proxy
 
-Tom and Anna should have separate Navidrome-backed identities.
+`/navidrome/*` is forwarded to `https://tomify.tomdixon.uk` with the same method, query string and body, minus the `host` and `origin` headers. The upstream origin is currently hard-coded in the Worker.
 
-Separate:
+### Configuration
 
-- Listening history.
-- Favourites.
-- Personal playlists.
-- Preferences.
+Set as Worker variables or secrets: `RECOVERY_AGENT_URL`, `RECOVERY_AGENT_TOKEN`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`, `SPOTIFY_TOKEN_ENCRYPTION_KEY`, `SPOTIFY_MARKET`, `APPLE_CATALOGUE_COUNTRY`, `APPLE_ARTWORK_EMBEDDING_ENABLED` and `SPOTIFY_ARTWORK_EMBEDDING_ENABLED`. The D1 database is bound as `TOMIFY_DB`.
 
-Optionally shared:
+## 4. D1 database (`tomify-metadata`)
 
-- Shared playlists.
-- Family playlists.
-- Common music library.
+Migrations live in `drizzle/`:
 
-Tomify should avoid inventing its own account database unless the backend API proves insufficient.
+| Migration | Tables / changes |
+| --- | --- |
+| `0001_recovery.sql` | `recovery_items`, `recovery_candidates` and their indexes |
+| `0002_recovery_metadata.sql` | `recovery_items.metadata_resolution_json` |
+| `0003_recovery_artwork.sql` | `recovery_items.artwork_resolution_json` |
+| `0004_catalogue_playlists.sql` | `recovery_items.source_json`; `catalogue_playlists`, `catalogue_playlist_items`, `catalogue_oauth_states`, `catalogue_provider_tokens` |
+| `0005_release_tracklists.sql` | `release_tracklists` (MusicBrainz tracklists for completeness) |
+| `0006_album_artwork.sql` | `album_artwork` (per-album artwork overrides) |
+| `0007_playlist_shares.sql` | `playlist_shares`, `tomify_accounts` |
+| `0008_album_artwork_uploads.sql` | `album_artwork_uploads` (uploaded covers, base64) |
 
-## 8. Network and remote access
+Two tables exist only because the Worker creates them at runtime: `release_metadata` (release type and date per album) and `live_playback` (per-user playback state and remote commands). The Worker also runs `CREATE TABLE IF NOT EXISTS` for most of the migrated tables, so a fresh database works before migrations are applied. Making migrations the only source of schema is roadmap task 10.
 
-The service must work:
+Spotify OAuth tokens are stored encrypted with `SPOTIFY_TOKEN_ENCRYPTION_KEY`. No audio is ever stored in D1.
 
-- Locally on the home network.
-- Remotely over encrypted HTTPS.
-- In offline mode for downloaded music.
+## 5. The recovery agent
 
-The production deployment should not expose raw Navidrome ports directly to the public internet.
+`recovery-agent/` is a small Node.js HTTP service that runs on the Debian box as the `tomify-recovery` systemd unit (`tomify-recovery.service.example`). It is deployed by copying the files to `/opt/tomify/recovery-agent`, separately from the Worker. See [RECOVERY.md](RECOVERY.md#updating-the-recovery-agent).
 
-A reverse proxy or private-access design should terminate HTTPS and forward only the required service.
+- It listens on `127.0.0.1:8788`. A Cloudflare Tunnel run by the `tomify-recovery-cloudflared` Docker container exposes it at `RECOVERY_AGENT_URL`; the Worker never connects to the box directly.
+- `GET /health` is unauthenticated. Every `/v1/*` endpoint requires `Authorization: Bearer $TOMIFY_RECOVERY_TOKEN`, and the agent refuses to start without a token of at least 32 characters (`config.mjs`).
+- Endpoints: `/v1/status`, `/v1/search`, `/v1/acquire`, `/v1/jobs/status`, `/v1/jobs/cancel`, `/v1/jobs/import-remaining`, `/v1/delete`, `/v1/system/vpn/status`, `/v1/system/vpn`, `/v1/system/reboot`. The full contract is in [RECOVERY.md](RECOVERY.md#backend-contract).
 
-Before public exposure, document:
+| Backend | Code | How it acquires |
+| --- | --- | --- |
+| YouTube | `youtube.mjs` | `yt-dlp`, anonymous or with an optional cookie file; synchronous |
+| Internet Archive | `internet-archive.mjs` | Public Advanced Search and Metadata APIs; synchronous |
+| Usenet | `usenet.mjs`, `usenet-job.mjs`, `usenet-import.mjs` | NZBIndex or Newznab search, downloaded by SABnzbd or NZBGet; asynchronous job |
+| Torrents | `torrent.mjs` | qBittorrent search plugins or a pasted link, downloaded by qBittorrent-nox over NordVPN; asynchronous job |
 
-- DNS.
-- TLS certificate handling.
-- Authentication.
-- Rate limiting where useful.
-- Update policy.
-- Backup/restore.
-- Whether direct public HTTPS or a private overlay such as Tailscale is preferred.
+Usenet and torrent jobs are stored under the state directory (`TOMIFY_RECOVERY_STATE_DIR`, `/var/lib/tomify-recovery` on the box) and advanced when the Worker polls `/v1/jobs/status`; one in-process lock per job stops two polls importing the same download.
 
-The PWA origin and API origin should be planned to avoid unnecessary cross-origin complexity.
+Every import:
 
-## 9. Storage
+1. probes the source with `ffprobe`;
+2. keeps the original under a hidden `.tomify-source` folder;
+3. writes a tagged `ffmpeg` stream-copy derivative and a `.tomify.json` provenance sidecar;
+4. writes `cover.jpg` when artwork was chosen.
 
-Suggested server structure:
+`metadata.mjs`, `derivative.mjs` and `artwork.mjs` hold that logic. `deletion.mjs` removes only files inside the recovery directory. `system.mjs` and `vpn.mjs` back the reboot and NordVPN controls, which are off unless `TOMIFY_RECOVERY_ALLOW_REBOOT` / `TOMIFY_RECOVERY_ALLOW_VPN_CONTROL` are `true`.
 
-```text
-/srv/music/              # FLAC masters
-/srv/tomify/
-  navidrome/             # database/config/cache as appropriate
-  app/                   # custom app state if introduced later
-  proxy/                 # reverse proxy config
-  compose/               # deployment files
-```
+Configuration comes from `/etc/tomify/recovery-agent.env` (see `recovery-agent.env.example`).
 
-The library volume should be sized for growth rather than the current CD count alone.
+## 6. Storage on the media server
 
-## 10. Backups
+| Path | What it holds |
+| --- | --- |
+| `/srv/music` | The library SSD and Navidrome's music folder (`TOMIFY_MASTER_DIR`). The agent never writes here directly. |
+| `/srv/music/_Recovery` | Recovered files, on the same SSD, so Navidrome shows them alongside the masters |
+| `/srv/music-recovery` | Bind mount of `/srv/music/_Recovery`; the only place the agent writes audio (`TOMIFY_RECOVERY_DIR`) |
+| `/srv/usenet/completed` | Finished SABnzbd downloads, read-only to the agent |
+| `/srv/torrents` | In-progress torrent downloads on the NVMe disk, removed after import |
+| `/var/lib/tomify-recovery` | Agent state, including job records |
+| `/var/cache/tomify-recovery` | Agent cache |
+| `/opt/tomify/recovery-agent` | Deployed agent code |
+| `/etc/tomify/recovery-agent.env` | Agent configuration and token |
 
-The backup priority order is:
+See [RECOVERY.md](RECOVERY.md#recovery-files-on-the-library-ssd) for the `fstab` entries.
 
-1. FLAC master library.
-2. Navidrome database/config.
-3. Tomify application/config data.
-4. Deployment configuration.
-5. Rebuildable caches.
+## 7. Build, test and deploy
 
-The backup system should have at least one copy that is not on the same physical disk as the music server.
-
-Before a large ripping campaign, perform an actual restore test.
-
-The key rule:
-
-> A backup is not considered real until a sample album and application database have been restored from it.
-
-## 11. Failure model
-
-The system should degrade sensibly.
-
-### Navidrome unavailable
-
-- Existing downloaded music still plays.
-- PWA shows server unavailable.
-- Streaming/browsing uncached material is disabled.
-
-### Internet unavailable but home LAN works
-
-- Local server playback should continue.
-- Remote DNS dependencies should not unnecessarily prevent LAN use.
-
-### Tomify PWA bug
-
-- Navidrome's own web UI remains available as a fallback.
-
-### Server disk failure
-
-- Restore FLAC library and application data from backup.
-- No CD re-ripping should be required.
-
-### Phone storage pressure
-
-- User can inspect downloads by track/album/playlist.
-- Tomify can show total offline storage usage.
-- User can remove local copies without deleting server library items.
-
-## 12. Security boundaries
-
-- Music files should not be writable by the public-facing application unless a future ingest feature explicitly requires it.
-- Secrets belong in deployment configuration/environment files, not Git.
-- HTTPS is mandatory for remote use.
-- Tomify must never treat an offline cached session as permission to modify another user's server data.
-- Admin functionality should remain separate from normal playback where possible.
-
-## 13. Deliberately deferred choices
-
-These should be decided by testing rather than guessing now:
-
-- Final PWA framework.
-- Exact offline codec/bitrates.
-- Direct HTTPS vs private overlay for remote access.
-- Final reverse proxy.
-- Artwork caching strategy.
-- Whether any helper backend is needed between Tomify and Navidrome.
-- Chromecast/AirPlay implementation.
-- Native app requirement.
-
-## 14. Phase 1 frontend decision
-
-Tomify uses React, TypeScript and Vite with `vite-plugin-pwa`. React Router provides client routes and Zustand holds playback state outside page lifecycles. This is conventional, compact and well supported by installable-PWA tooling without adding a server-side rendering layer that a private music client does not need.
-
-```text
-React views
-    │
-    ├── typed NavidromeClient ── OpenSubsonic HTTPS API
-    │
-    └── central player store ── TrackSourceResolver
-                                  ├── IndexedDB copy (next phase)
-                                  └── Navidrome stream (today)
-```
-
-The browser holds only the username plus Subsonic salt/token pair; the password is discarded after the login check. API URL construction, authentication parameters and error mapping are centralised. A single audio element lives above routed screens and updates Media Session metadata synchronously with every track change.
-
-Static assets and navigations are precached. Artwork has a bounded runtime cache. Audio deliberately bypasses service-worker caching until the IndexedDB download repository can track quality, revisions, ownership, storage and removal correctly.
-
-The architecture should let these change without touching the canonical music collection.
+- Install: `npx -y pnpm@11 install --frozen-lockfile`.
+- Check: `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`.
+- Tests:
+  - vitest for `src/**/*.test.ts(x)`;
+  - `node --test` for `recovery-agent/*.node-test.mjs` and `scripts/*.node-test.mjs`;
+  - Worker routes are tested against the built bundle in `scripts/build-routing.node-test.mjs`.
+- Cloudflare builds the site from this repository and deploys `dist/server/index.js` as the Worker (`wrangler.toml`). D1 migrations in `drizzle/` are applied separately with `wrangler d1`.
+- The recovery agent is copied to the box by hand after any change under `recovery-agent/` ([RECOVERY.md](RECOVERY.md#updating-the-recovery-agent)).

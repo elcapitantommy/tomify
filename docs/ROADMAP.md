@@ -1,323 +1,53 @@
 # Tomify Roadmap
 
-This roadmap is deliberately staged so Tomify becomes useful early and remains usable while the custom client is being built.
-
-## Phase 0 — Decisions and hardware
-
-**Goal:** remove unknowns before ripping a large collection.
-
-- [ ] Choose the small Linux host.
-- [ ] Choose primary music storage.
-- [ ] Choose backup target.
-- [ ] Confirm optical drive/ripping workstation.
-- [ ] Decide initial remote-access method.
-- [ ] Decide the initial public/private hostname strategy.
-- [ ] Select a small representative test set of CDs:
-  - normal album
-  - compilation
-  - multi-disc album
-  - album with awkward metadata/artwork
-- [ ] Agree naming/tagging conventions.
-
-### Exit criteria
-
-We know where the masters live, how they are backed up, and how albums are tagged before bulk ripping starts.
-
----
-
-## Phase 1 — Ripping proof of concept
-
-**Goal:** prove the master-library workflow.
-
-- [ ] Configure secure CD ripping.
-- [ ] Rip test albums to FLAC.
-- [ ] Verify metadata and artwork.
-- [ ] Establish compilation handling.
-- [ ] Establish multi-disc handling.
-- [ ] Copy completed rips to the server library.
-- [ ] Back up the test library.
-- [ ] Delete/restore at least one test album to prove recovery.
-
-### Exit criteria
-
-A CD can go from shelf to correctly tagged FLAC on the server and be restored from backup.
-
----
-
-## Phase 2 — Navidrome MVP
-
-**Goal:** replace the basic Spotify use case as quickly as possible.
-
-- [ ] Install Docker/Compose on the server.
-- [ ] Deploy Navidrome.
-- [ ] Mount the music library read-only.
-- [ ] Create Tom account.
-- [ ] Create Anna account.
-- [ ] Verify library scanning.
-- [ ] Test browser playback on desktop.
-- [ ] Test browser playback on both phones.
-- [ ] Configure HTTPS/private remote access.
-- [ ] Test playback away from home.
-- [ ] Configure initial transcoding profiles.
-- [ ] Back up Navidrome application data.
-
-### Exit criteria
-
-Tom and Anna can independently sign in and stream the home FLAC library both locally and remotely.
-
-At this point **Tomify is already useful**, even before its own UI exists.
-
----
-
-## Phase 3 — Tomify PWA shell
-
-**Goal:** establish the custom client without attempting every feature.
-
-- [ ] Select front-end stack.
-- [ ] Create responsive app shell.
-- [ ] Add PWA manifest/icons.
-- [ ] Add installable home-screen experience.
-- [ ] Implement authentication.
-- [ ] Connect to Navidrome/OpenSubsonic.
-- [ ] Build navigation:
-  - Home
-  - Artists
-  - Albums
-  - Playlists
-  - Favourites
-  - Downloads
-  - Search
-  - Settings
-- [ ] Add basic offline app-shell caching.
-- [ ] Add clear server/connection state.
-
-### Exit criteria
-
-The PWA installs and can authenticate and browse the live library.
-
----
-
-## Phase 4 — Streaming player
-
-> The initial custom PWA implements the Phase 3 shell and the main Phase 4 playback surface. Physical iPhone lock-screen acceptance testing and recovered-stream retry remain operational checks before these phases are considered complete.
-
-**Goal:** make Tomify a credible everyday player.
-
-- [ ] Track playback.
-- [ ] Persistent mini-player.
-- [ ] Full now-playing screen.
-- [ ] Queue.
-- [ ] Previous/next.
-- [ ] Seek.
-- [ ] Shuffle.
-- [ ] Repeat.
-- [ ] Artwork.
-- [ ] Favourites.
-- [ ] Playlist playback.
-- [ ] Search.
-- [ ] Media Session API integration.
-- [ ] Test headset/lock-screen controls on target phones.
-- [ ] Handle lost/recovered network cleanly.
-
-### Exit criteria
-
-Tomify can replace the Navidrome web UI for normal online listening.
-
----
-
-## Phase 5 — Offline downloads
-
-**Goal:** make selected music work with no connection.
-
-### Track downloads
-
-- [ ] Download one track.
-- [ ] Store metadata locally.
-- [ ] Store artwork locally.
-- [ ] Store audio locally.
-- [ ] Play local copy transparently.
-- [ ] Remove download without touching server copy.
-
-### Album downloads
-
-- [ ] Download complete album.
-- [ ] Show aggregate progress.
-- [ ] Resume/retry failed tracks.
-- [ ] Remove album download.
-
-### Playlist downloads
-
-- [ ] Download complete playlist.
-- [ ] Handle duplicate tracks efficiently.
-- [ ] Maintain playlist order.
-- [ ] Remove playlist while retaining tracks still required by other downloads.
-
-### Offline experience
-
-- [ ] Downloads screen.
-- [ ] Offline-only browsing.
-- [ ] Clear download status.
-- [ ] Storage usage display.
-- [ ] Available storage information where platform APIs allow it.
-- [ ] Graceful behaviour when server cannot be contacted.
-- [ ] Test after force-closing/reopening app with no network.
-- [ ] Test after phone reboot where practical.
-
-### Quality
-
-- [ ] Original quality.
-- [ ] High-quality transcode.
-- [ ] Normal-quality transcode.
-- [ ] Space-saver transcode.
-- [ ] Per-user default.
-- [ ] Optionally override quality for an individual download.
-
-### Exit criteria
-
-Tom and Anna can deliberately take albums/playlists offline and reliably play them with airplane mode enabled.
-
----
-
-## Phase 6 — Offline sync
-
-**Goal:** make downloads feel like a streaming service rather than manually copied files.
-
-- [ ] “Keep downloaded” option for playlists.
-- [ ] Detect additions/removals.
-- [ ] Queue missing tracks.
-- [ ] Remove obsolete copies only when not used elsewhere.
-- [ ] Wi-Fi-only sync option.
-- [ ] Optional charging-only sync if platform behaviour makes this practical.
-- [ ] Display last successful sync.
-- [ ] Safe handling when background execution is restricted by the OS/browser.
-
-### Exit criteria
-
-A maintained playlist can stay locally synchronised with minimal user effort.
-
----
-
-## Phase 7 — Library polish
-
-**Goal:** make a large ripped collection pleasant to live with.
-
-- [ ] Recently added.
-- [ ] Recently played.
-- [ ] Better album/artist pages.
-- [ ] Disc-aware album presentation.
-- [ ] Compilation handling.
-- [ ] Sort/filter options.
-- [ ] Genre browsing if useful.
-- [ ] Ratings.
-- [ ] ReplayGain support/behaviour.
-- [ ] Better artwork management.
-- [ ] Duplicate detection/reporting.
-- [ ] Missing/bad metadata report.
-
----
-
-## Phase 8 — Ripping/ingest automation
-
-**Goal:** reduce the pain of adding the rest of the CD collection.
-
-Possible workflow:
-
-```text
-insert CD
-   ↓
-rip securely
-   ↓
-identify release
-   ↓
-fetch tags/artwork
-   ↓
-human review
-   ↓
-write FLAC/tags
-   ↓
-copy to staging
-   ↓
-validate
-   ↓
-move into library
-   ↓
-server rescan
-   ↓
-backup
-```
-
-Potential features:
-
-- [ ] Rip queue.
-- [ ] Accurate-rip verification status.
-- [ ] MusicBrainz release matching.
-- [ ] Artwork preview/selection.
-- [ ] Naming preview.
-- [ ] Duplicate-release warning.
-- [ ] One-click import after review.
-- [ ] Post-import backup trigger/report.
-
-Human review should remain in the loop for ambiguous releases.
-
----
-
-## Phase 9 — Family features
-
-**Goal:** lean into Tomify being for a household rather than a generic music server.
-
-- [ ] Shared playlists.
-- [ ] “Playing now” presence.
-- [ ] Family favourites.
-- [ ] Optional shared queue.
-- [ ] Listening statistics.
-- [ ] Per-user theme/preferences.
-- [ ] Easy switching on shared household screens.
-
----
-
-## Phase 10 — Nice-to-have integrations
-
-Investigate only after the core experience is boringly reliable:
-
-- [ ] Chromecast.
-- [ ] AirPlay.
-- [ ] Sonos.
-- [ ] Home Assistant.
-- [ ] Android Auto.
-- [ ] CarPlay.
-- [ ] Smart speakers.
-- [ ] Lyrics.
-- [ ] Artist/album biographies.
-- [ ] Smart playlists.
-- [ ] Recommendations based only on our own listening/library data.
-
----
-
-## Definition of done for v1
-
-Tomify v1 is complete when:
-
-1. The full CD library can be stored as backed-up FLAC masters.
-2. Tom and Anna have separate accounts.
-3. Both can stream securely at home and remotely.
-4. The Tomify PWA installs on their phones.
-5. Core browse/search/queue/playback is reliable.
-6. Selected tracks, albums and playlists can be downloaded.
-7. Downloaded music works reliably with no network.
-8. Offline storage can be inspected and cleaned up by the user.
-9. A failed Tomify release does not prevent fallback playback through Navidrome.
-10. A failed server disk does not mean re-ripping the CD collection.
-
-## Things we are explicitly not doing first
-
-These are deliberately postponed rather than forgotten:
-
-- Writing our own music backend.
-- Native apps before PWA limitations are demonstrated.
-- Recommendation AI.
-- Social/public sharing.
-- DRM.
-- Complex multi-household tenancy.
-- Fancy ingest automation before the ripping conventions are proven.
-
-The order is intentional: **protect the music first, get playback working second, make it beautiful third.**
+The roadmap now lives in [TOMIFY_ROADMAP.md](TOMIFY_ROADMAP.md), which comes from the [technical review](TOMIFY_TECHNICAL_REVIEW.md). The original pre-build plan that used to be here is in git history.
+
+The tables below record how far `main` has got with each numbered item, checked against the code on 2026-10-16. Update a row when a change lands.
+
+**Status:** Done · Partly done · Not started
+
+## Top 20 tasks
+
+| # | Task | Status | What is on `main` |
+| --- | --- | --- | --- |
+| 1 | Exclude API and proxy paths from the PWA navigation fallback | Done | `vite.config.ts` sets `navigateFallbackDenylist` for `/api/` and `/navidrome/`. The Worker returns a JSON 404 for unknown `/api/*`. Both are tested in `scripts/build-routing.node-test.mjs`. |
+| 2 | Serialise Usenet job advancement in the agent | Partly done | `recovery-agent/usenet-job.mjs` runs one poll per job at a time, with a concurrency test. The agent does not persist `importing` before importing, and `Recovery.tsx` still polls with `setInterval`. |
+| 3 | Agent-owned background job runner | Not started | Jobs still advance only when the Worker polls `/v1/jobs/status`. YouTube and Internet Archive acquisition is synchronous. |
+| 4 | Crash-safe import manifest and resume | Not started | Imports roll back on error, but nothing resumes or rolls back after a restart. |
+| 5 | Recovery agent auth guard and public health minimisation | Partly done | `recovery-agent/config.mjs` refuses to start without a 32-character token unless insecure loopback is set. `/health` still returns the backend list and YouTube cookie state. |
+| 6 | Lost-downloader detection and job cancel | Partly done | Torrent jobs can be cancelled (`/v1/jobs/cancel`, used when a torrent item is deleted). There is no lost-downloader timeout, no cancel for Usenet, and `importing` items can still be deleted. |
+| 7 | Version and contract reporting with a compatibility gate | Not started | No `/api/version` or agent version. The Worker only explains a bare 404 from an older agent. |
+| 8 | CI pipeline and pinned toolchain | Not started | No `.github/workflows` and no `packageManager` in `package.json`. |
+| 9 | Single-command, versioned release and agent deploy | Partly done | The systemd example now points at `/opt/tomify/recovery-agent`. There is no release script, symlink swap or added sandbox hardening. |
+| 10 | Migrations as the schema source of truth | Not started | `release_metadata` and `live_playback` have no migration, and the Worker still runs DDL on the request path. |
+| 11 | Unified release-directory resolver for every backend | Partly done | `resolveReleaseDirectory` in `usenet-import.mjs` matches existing folders ignoring case and accents, for Usenet and torrents. YouTube and Internet Archive imports in `index.mjs` still build paths with `safeName`. |
+| 12 | Truthful quality classification | Partly done | Lossless imports are marked `recovered` and lossy ones `needs-upgrade`. Every file is still tagged `lossy-recovery-copy` (`metadata.mjs`), and there are no quality tiers or target setting. |
+| 13 | Duplicate preflight before acquisition | Not started | |
+| 14 | Separate pipeline states through to "playable" | Not started | Settings can start a Navidrome scan, but Recovery items do not track scan or playability. |
+| 15 | Spotify matching fixes | Not started | `src/lib/catalogue-import.ts` and `scripts/catalogue-import.mjs` still each have a matcher, with no edition-suffix stripping or re-checking of `available` items. |
+| 16 | Make the Worker a real TypeScript module | Not started | The Worker is still the string template in `scripts/build-worker.mjs`, now split into `scripts/*-worker.mjs` modules. |
+| 17 | Read-only library inventory in the agent | Not started | |
+| 18 | Library health dashboard | Not started | |
+| 19 | Release import mapped to the MusicBrainz tracklist | Not started | Album completeness fetches MusicBrainz tracklists, but release imports do not use them. |
+| 20 | Mobile navigation, Albums paging and favourites | Partly done | On mobile, Playlists is in the tab bar, Spotify import is on the Playlists page, and Settings is in the account sheet. Downloads is not reachable on mobile, the Albums page loads at most 500 albums, and there is no star/unstar. |
+
+## Phase items without a numbered task
+
+| # | Item | Status | What is on `main` |
+| --- | --- | --- | --- |
+| 0.6 | Stop tagging lossless files `lossy-recovery-copy`; stop marking every import `needs-upgrade` | Partly done | See task 12. |
+| 0.7 | Pin pnpm | Not started | See task 8. |
+| 0.8 | Back up and record deployed versions before changes | Unknown | A manual step on the box, so the code cannot show it. |
+| 1.8 | Quieter live-playback sync | Not started | `LivePlaybackSync.tsx` polls and publishes on fixed intervals. |
+| 1.9 | Atomic final commits; never overwrite `cover.jpg`; clean up SAB downloads | Partly done | Usenet and torrent imports leave an existing `cover.jpg` alone. YouTube and Internet Archive imports replace it, and completed SABnzbd downloads are not removed. |
+| 1.10 | Nightly D1 export and agent state backup; uptime check | Not started | |
+| 1.11 | Replace the stale `ARCHITECTURE.md` and `ROADMAP.md`; add `DEPLOYMENT.md` | Partly done | Both documents are rewritten. There is no `DEPLOYMENT.md`. |
+| 2.9 | Mobile Library tab, Albums paging, recovery source badges, star/unstar, plainer language | Partly done | See task 20. |
+| 3.1 | Offline downloads v1 | Not started | The Downloads page is a placeholder, and `src/lib/sourceResolver.ts` always streams. |
+| 3.2 | Album completeness view and bulk "recover missing tracks" | Partly done | Administrators can check an album against MusicBrainz and add the missing tracks to Recovery, as one item per track rather than one release job. |
+| 3.3 | Supervised promotion and duplicate merge | Not started | |
+| 3.4 | Smart playlists, listening statistics, "Anna is playing…" | Not started | Live playback syncs one user's own devices, not other people's. |
+| 3.5 | LAN-direct streaming; short-lived Worker sessions | Not started | |
+| 3.6 | Scheduled Spotify playlist refresh | Not started | Imported playlists refresh only by hand. |
+
+Phase 2 items 2.1 to 2.8 match tasks 17, 18, 13, 14, 12, 15, 19 and 19, so they are not repeated here.

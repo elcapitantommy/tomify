@@ -124,7 +124,7 @@ Exact codecs/bitrates will be chosen during implementation based on browser supp
 
 A later **Keep downloaded** mode should keep selected playlists or albums synchronised when the device next has a suitable connection.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the proposed system design and [docs/ROADMAP.md](docs/ROADMAP.md) for the staged build plan.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how Tomify is built today and [docs/ROADMAP.md](docs/ROADMAP.md) for the roadmap and what is done.
 
 ## Non-goals for the first version
 
