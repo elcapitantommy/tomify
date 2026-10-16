@@ -57,7 +57,7 @@ The agent writes the tier into each file's `TOMIFY_ARCHIVE_STATUS` tag (`lossles
 
 ## Library scan after import
 
-An imported file is not playable in Tomify until Navidrome has scanned it, so each imported item also carries a playback state next to its Recovered or Needs-upgrade status (D1 column `recovery_items.playback_json`, `drizzle/0011_recovery_playback.sql`; the Worker adds the column on first use, so deploying needs no extra step):
+An imported file is not playable in Tomify until Navidrome has scanned it, so each imported item also carries a playback state next to its Recovered or Needs-upgrade status (D1 column `recovery_items.playback_json`, `drizzle/0011_recovery_playback.sql`):
 
 - **Imported, waiting for library scan** (`scan-pending`). When an import completes, the Worker asks Navidrome for a quick scan (`startScan` without `fullScan`), unless a scan is already running. If one was running, it starts its own scan once that finishes, because the running scan may have passed the folder before the file landed.
 - **Ready to play** (`ready`). While the Recovery page is open it asks the Worker to look again, at most every 15 seconds per item. The Worker searches Navidrome (`search3`) by artist and title and keeps the track whose path matches the imported file when Navidrome reports a path, or whose MusicBrainz recording ID matches. The play button plays that Navidrome song through the normal player. For a release import it plays the wanted track, or the first imported track.
@@ -108,7 +108,7 @@ Albums already in the Navidrome library can show catalogue artwork in place of t
 
 Titles are compared both as written and with trailing edition qualifiers removed (`(Remastered 2009)`, `[Deluxe]`, ` - Special Edition`), so a plain library title matches a catalogue's edition names; an exact edition match still ranks first. Any credited artist can satisfy the artist gate.
 
-- **Album page (administrators):** click the album artwork to open the *Album artwork* panel, which searches straight away and lists up to six matches across all catalogues (*Find better artwork* searches again). **Upload from device** picks an image file instead: the browser shrinks it to at most 1200px and saves it as JPEG, and the Worker checks it is a real JPEG, PNG or WebP under 1 MB before storing it in the D1 `album_artwork_uploads` table (`drizzle/0008_album_artwork_uploads.sql`; the Worker also creates it on first use). It is served from `/api/album-artwork/image/<id>` without sign-in, because image tags cannot send Tomify's headers; the id is random and changes with each upload. Choosing other artwork, keeping the library cover or undoing removes the stored upload. Like catalogue artwork, an upload is shown only in Tomify and never written to the music server. Choosing one, or *Keep library artwork*, is a manual choice; *Undo my choice* removes it.
+- **Album page (administrators):** click the album artwork to open the *Album artwork* panel, which searches straight away and lists up to six matches across all catalogues (*Find better artwork* searches again). **Upload from device** picks an image file instead: the browser shrinks it to at most 1200px and saves it as JPEG, and the Worker checks it is a real JPEG, PNG or WebP under 1 MB before storing it in the D1 `album_artwork_uploads` table (`drizzle/0008_album_artwork_uploads.sql`). It is served from `/api/album-artwork/image/<id>` without sign-in, because image tags cannot send Tomify's headers; the id is random and changes with each upload. Choosing other artwork, keeping the library cover or undoing removes the stored upload. Like catalogue artwork, an upload is shown only in Tomify and never written to the music server. Choosing one, or *Keep library artwork*, is a manual choice; *Undo my choice* removes it.
 - **Settings → Upgrade album artwork:** walks every library album and applies the best match only when it is a square image of at least 600px with at least 85% confidence, stopping at the first catalogue that gives one. Albums with a manual choice are skipped, and so are albums that already have Tomify artwork and albums the run checked in the last 30 days without a confident match (remembered in this browser), so pressing Upgrade again after an app update or a stop carries on rather than starting over. Albums whose check failed are retried. Apple allows roughly 20 searches a minute, so albums are spaced three seconds apart (about 25 minutes for 500 albums); the run lives in the app, not the page, so it keeps going while you browse, and it can be stopped at any time.
 
 A catalogue that fails or rate-limits is skipped while another still answers. Only when every catalogue fails is the album reported: rate limits return HTTP 429 with the shortest `retryAfter`, which the bulk run waits out before retrying the album; other failures return 502 with each catalogue's message and count as failed. The run stops after five failures in a row.
@@ -223,6 +223,35 @@ ssh -t tom@tomify "sudo cp /tmp/*.mjs /opt/tomify/recovery-agent/ && sudo mkdir 
 The agent imports `../shared/quality.mjs`, so the two legacy directories must remain siblings. After migration, use the release installer or its rollback command rather than modifying a release in place.
 
 The recovery directory may be added to Navidrome as a separate library path after review. It should not be merged over `/srv/music` by an automated job.
+
+## D1 migrations
+
+The D1 schema comes only from the numbered files in `drizzle/` (`migrations_dir` in `wrangler.toml`). The Worker no longer runs `CREATE TABLE` or `ALTER TABLE` on requests; when a query names a table or column that no migration has created, it answers 503 with `{"error": "schema-out-of-date"}` and the missing name.
+
+### Deploy order for the switch to migrations (do this first)
+
+Production D1 was built by the Worker's old request-time DDL, and 0001-0011 were never applied with wrangler, so it has no `d1_migrations` table. Applying 0002, 0003, 0004 or 0011 to it would fail (`duplicate column`). Before merging the change that removes the runtime DDL:
+
+1. **Back up.** `scripts/d1-baseline.sh --remote` runs `scripts/backup.sh` first and stops if it fails, so run it where the nightly backup is set up: on the media server as `tom`, after `set -a; . /etc/tomify/backup.env; set +a` if you use an API token. You can also run `scripts/backup.sh` by hand beforehand.
+2. **Baseline.** From a checkout of the branch on the media server (in the same shell, so wrangler has the same credentials):
+
+   ```bash
+   scripts/d1-baseline.sh --remote --dry-run   # backup dry run, then the SQL it would run and what stays pending
+   scripts/d1-baseline.sh --remote             # backup, then records 0001-0011 as applied
+   wrangler d1 migrations list tomify-metadata --remote   # shows only 0012_schema_catch_up.sql
+   ```
+
+   The script creates `d1_migrations` exactly as wrangler does and inserts one row per file name, `0001_recovery.sql` to `0011_recovery_playback.sql`. It refuses a database with no Tomify tables (apply the migrations normally instead) and a `recovery_items` table missing a column 0002-0011 would have added. Running it again changes nothing. `WRANGLER` and `TOMIFY_D1_DATABASE` work as for `backup.sh`. `--local` does the same against wrangler's local copy, without a backup. The old Worker keeps working after the baseline, because nothing in the schema changes.
+3. **Change the deploy command.** In the Cloudflare dashboard, under the tomify Worker's Settings → Build → Deploy command, replace `npx wrangler deploy` with `npx pnpm run deploy`. Until the merge, any other push to `main` fails at deploy (the script does not exist there yet) and the current Worker keeps running, so merge straight after this step. If the build later fails with an authorisation error from `d1 migrations apply`, give the build's API token the D1 Edit permission.
+4. **Merge.** The build runs `pnpm run deploy`: `wrangler d1 migrations apply tomify-metadata --remote` applies `0012_schema_catch_up.sql`, then `wrangler deploy` publishes the Worker.
+
+`0012_schema_catch_up.sql` creates `release_metadata` (which existed only as runtime DDL), repeats every other table in its current shape in case its route had never been used, and adds indexes for the Recovery list, uploaded covers, shared playlists and expired Spotify sign-in states. Every statement is `IF NOT EXISTS`, so it does nothing to objects the old Worker created.
+
+If something goes wrong: a failed `migrations apply` stops the deploy and leaves the old Worker running; fix the migration and push again. A 503 `schema-out-of-date` after the merge means the baseline or step 3 was skipped: run `scripts/d1-baseline.sh --remote`, then `wrangler d1 migrations apply tomify-metadata --remote`. To undo everything, restore the backup as in [Restoring from a backup](#restoring-from-a-backup).
+
+### Changing the schema later
+
+Add the next numbered file (`0013_<name>.sql`) and merge; the deploy applies it before the new Worker goes live. Never edit a file that has been applied. Test it locally with `npx wrangler d1 migrations apply tomify-metadata --local`; `scripts/d1-migrations.node-test.mjs` checks in CI that every SQL statement in the Worker matches the migrated schema.
 
 ## Backups and uptime checks
 

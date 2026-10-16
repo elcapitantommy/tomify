@@ -8,3 +8,4 @@ coverage/
 *.cookies
 youtube.cookies
 secrets/
+.wrangler/

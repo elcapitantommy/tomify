@@ -191,7 +191,7 @@ GitHub Actions runs the frozen-lockfile install, lint, typecheck, production bui
 - Navidrome token authentication, persisted without storing the password, with logout and useful failure states.
 - Home, artists, artist detail, albums, multi-disc album detail, debounced search, playlists, favourites, downloads placeholder and settings.
 - A heart on every track row and album card stars or unstars it in Navidrome. The heart changes at once and flips back if the server refuses, and the Favourites page updates without a reload.
-- Playlists are private to the account that made them, with a **Share** button for sharing one with other Tomify accounts (read-only; recipients see it under **Shared with you**). Navidrome itself would hand admins every user's playlists and everyone other users' public ones, so Tomify lists only your own plus those shared with you. Navidrome has no per-user sharing, so sharing a Navidrome playlist also marks it public in Navidrome (other Subsonic clients can then see it) and unsharing it from everyone makes it private again. An account appears in the Share list once it has signed in to Tomify. Shares live in the D1 `playlist_shares` table (`drizzle/0007_playlist_shares.sql`; the Worker also creates it on first use, so deploying needs no extra step).
+- Playlists are private to the account that made them, with a **Share** button for sharing one with other Tomify accounts (read-only; recipients see it under **Shared with you**). Navidrome itself would hand admins every user's playlists and everyone other users' public ones, so Tomify lists only your own plus those shared with you. Navidrome has no per-user sharing, so sharing a Navidrome playlist also marks it public in Navidrome (other Subsonic clients can then see it) and unsharing it from everyone makes it private again. An account appears in the Share list once it has signed in to Tomify. Shares live in the D1 `playlist_shares` table (`drizzle/0007_playlist_shares.sql`).
 - Persistent HTML5 player with queue, seek, volume, mute, shuffle, repeat, previous/next and full-screen mobile now playing.
 - Media Session metadata (absolute artwork in six sizes), transport controls and position updates.
 - Installable manifest, app icons, standalone mode, cached app shell and cached artwork.
@@ -204,6 +204,19 @@ GitHub Actions runs the frozen-lockfile install, lint, typecheck, production bui
 - Settings and Recovery are shown only to Navidrome administrators, and the Worker refuses Recovery requests from other accounts. On mobile they sit behind the account button in the top bar (with Sign out), and the bottom tab bar has Playlists in their place. Settings has a **Restart media server** button that reboots the home server through the recovery agent when SSH cannot reach it, NordVPN status with **Connect**/**Disconnect** buttons, and a **Full library scan** button (reboot and VPN control are off until enabled on the server; see docs/RECOVERY.md).
 - Usenet recovery through NZBIndex and/or Newznab indexers and SABnzbd or NZBGet, searching any mix of artist, album and track.
 - Torrent recovery from a torrent search (qBittorrent's search plugins, seeded results only) or a pasted magnet or `.torrent` link, downloaded by qBittorrent-nox over the box's VPN with live speed, seeds and time left, archives unpacked, audio imported, and the torrent removed afterwards (or when the item is deleted).
+
+### Deploying the site and D1 migrations
+
+**Before merging the change that makes migrations the only schema source (task 10), do these in order:**
+
+1. **Back up** D1 with `scripts/backup.sh` on the media server. `d1-baseline.sh` also runs it first and stops if it fails.
+2. **Baseline** the production database once, from a checkout of that branch on the media server: `scripts/d1-baseline.sh --remote --dry-run`, check it plans 0001-0011 and leaves only `0012_schema_catch_up.sql` pending, then `scripts/d1-baseline.sh --remote`.
+3. **Change the deploy command** in the Cloudflare dashboard (the tomify Worker's Settings → Build → Deploy command) from `npx wrangler deploy` to `npx pnpm run deploy`.
+4. **Merge.** The next build applies 0012 and then deploys the Worker.
+
+Details and recovery steps: [D1 migrations](docs/RECOVERY.md#d1-migrations).
+
+Cloudflare's Git integration builds and deploys the site on every push to `main`. The deploy command runs `pnpm run deploy`, which applies any new migration in `drizzle/` to the remote D1 database (`wrangler d1 migrations apply tomify-metadata --remote`) and only then runs `wrangler deploy`, so a failed migration leaves the previous Worker running. The migrations are the only source of the schema: the Worker never creates tables or columns, and a request that needs a table no migration has created yet gets a 503 `schema-out-of-date` instead. To change the schema, add the next numbered file to `drizzle/` and never edit one that has been applied. Note `pnpm deploy` without `run` is a different, built-in pnpm command.
 
 ### Recovery imports
 
@@ -237,7 +250,7 @@ Tomify works like Spotify Connect between the tabs and apps signed in to the sam
 - Syncing checks every 1–1.5 seconds while something is playing and backs off to every 10 seconds when nothing changes. A background tab that is playing keeps checking (so it still hears pause from your phone); a background tab that is not playing checks every 20 seconds.
 - An iPhone app in the background may stop checking in. Other devices then keep showing it as playing until its current track would have ended.
 
-The state lives in the D1 tables `live_playback` and `live_playback_devices` (`drizzle/0009_live_playback.sql`; the Worker also creates them on first use, so deploying needs no extra step). The Worker code is in `scripts/live-playback-worker.mjs`.
+The state lives in the D1 tables `live_playback` and `live_playback_devices` (`drizzle/0009_live_playback.sql`). The Worker code is in `scripts/live-playback-worker.mjs`.
 
 ### Known limitations
 

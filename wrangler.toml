@@ -8,3 +8,5 @@ workers_dev = true
 binding = "TOMIFY_DB"
 database_name = "tomify-metadata"
 database_id = "5147af2c-ce21-4e41-9ad7-09c3b36e7145"
+# The only source of the schema: "pnpm run deploy" applies new files here before deploying the Worker.
+migrations_dir = "drizzle"

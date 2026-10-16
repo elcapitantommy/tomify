@@ -1,6 +1,6 @@
 import test, { mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { build } from 'vite'
 import { catalogueWorkerSource } from './catalogue-worker.mjs'
 
@@ -933,9 +933,12 @@ test('only administrators can add album or playlist tracks to Recovery', async (
   })
 })
 
+// An in-memory D1 stand-in with every drizzle/ migration applied, as `wrangler d1 migrations apply` would.
 async function sqliteDatabase() {
   const { DatabaseSync } = await import('node:sqlite')
   const sqlite = new DatabaseSync(':memory:')
+  const migrations = new URL('../drizzle/', import.meta.url)
+  for (const name of (await readdir(migrations)).filter((file) => file.endsWith('.sql')).sort()) sqlite.exec(await readFile(new URL(name, migrations), 'utf8'))
   const statement = (sql, args = []) => ({
     bind: (...values) => statement(sql, values),
     async first() { return sqlite.prepare(sql).get(...args) ?? null },
@@ -1313,4 +1316,35 @@ test('the library check route refuses items that were never imported', async () 
     assert.equal((await recoveryPost(db, '/playback/retry')).status, 409)
     assert.equal((await (await recoveryPost(db, '/playback')).json()).item.playback, null)
   })
+})
+
+test('a database without a migrated table gets schema-out-of-date instead of the Worker creating it', async () => {
+  const statements = []
+  const missingTable = {
+    prepare(sql) {
+      statements.push(sql)
+      const fail = async () => { throw new Error('D1_ERROR: no such table: release_metadata: SQLITE_ERROR') }
+      return { bind() { return this }, first: fail, all: fail, run: fail }
+    },
+    async batch() { throw new Error('unexpected batch') },
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+  try {
+    const headers = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' }
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/release-meta', { headers }), { TOMIFY_DB: missingTable })
+    assert.equal(response.status, 503)
+    const body = await response.json()
+    assert.equal(body.error, 'schema-out-of-date')
+    assert.deepEqual(body.missing, { kind: 'table', name: 'release_metadata' })
+    assert.match(body.message, /Apply the D1 migrations/)
+    assert.deepEqual(statements.filter((sql) => /^\s*(CREATE|ALTER|DROP)\b/i.test(sql)), [])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('the built Worker runs no DDL on the request path', async () => {
+  const source = await readFile(new URL('../dist/server/index.js', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /\b(CREATE (UNIQUE )?(TABLE|INDEX)|ALTER TABLE)\b/)
 })

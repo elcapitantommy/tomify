@@ -9,12 +9,6 @@ const LIVE_PRESENCE_WRITE_MS = 15000
 // Commands are kept as a short list so two quick presses (next, next) are both delivered.
 const LIVE_COMMAND_HISTORY = 10
 
-async function ensureLivePlaybackTable(db) {
-  await db.batch([
-    db.prepare("CREATE TABLE IF NOT EXISTS live_playback (username TEXT PRIMARY KEY, device_id TEXT NOT NULL, device_name TEXT NOT NULL, state_json TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, command_json TEXT, command_revision INTEGER NOT NULL DEFAULT 0, command_target_device TEXT, command_updated_at INTEGER)"),
-    db.prepare('CREATE TABLE IF NOT EXISTS live_playback_devices (username TEXT NOT NULL, device_id TEXT NOT NULL, device_name TEXT NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY (username, device_id))'),
-  ])
-}
 
 function cleanDeviceName(value) {
   return typeof value === 'string' && value.trim() ? value.trim().slice(0, 64) : 'Web'
@@ -60,7 +54,6 @@ async function handleLivePlaybackRequest(request, env, url) {
   const username = await authenticate(request)
   if (!username) return json({ error: 'unauthorized' }, 401)
   const db = env.TOMIFY_DB
-  await ensureLivePlaybackTable(db)
   const selectRow = () => db.prepare('SELECT device_id AS deviceId, device_name AS deviceName, state_json AS stateJson, revision, updated_at AS updatedAt, command_json AS commandJson, command_revision AS commandRevision, command_target_device AS commandTargetDevice, command_updated_at AS commandUpdatedAt FROM live_playback WHERE username = ?').bind(username).first()
 
   if (url.pathname === '/api/live-playback' && request.method === 'GET') {
@@ -182,5 +175,5 @@ export const livePlaybackWorkerSource = [
   'const LIVE_DEVICE_ONLINE_MS = ' + LIVE_DEVICE_ONLINE_MS,
   'const LIVE_PRESENCE_WRITE_MS = ' + LIVE_PRESENCE_WRITE_MS,
   'const LIVE_COMMAND_HISTORY = ' + LIVE_COMMAND_HISTORY,
-  ...[ensureLivePlaybackTable, cleanDeviceName, parseLiveCommands, cleanQueuedTrack, onlineLiveDevices, touchLiveDevice, handleLivePlaybackRequest].map((fn) => fn.toString()),
+  ...[cleanDeviceName, parseLiveCommands, cleanQueuedTrack, onlineLiveDevices, touchLiveDevice, handleLivePlaybackRequest].map((fn) => fn.toString()),
 ].join('\n\n')

@@ -1,7 +1,7 @@
 // Album completeness: resolves a MusicBrainz release tracklist for a Navidrome album,
 // caches it in D1 and turns missing tracks into Recovery items. The pure helpers are
 // exported for tests; handleCompletenessRequest relies on Worker globals (authenticate,
-// json, musicBrainzJson, lookupMusicBrainzReleaseGroup, selectRelease, ensureRecoveryTables).
+// json, musicBrainzJson, lookupMusicBrainzReleaseGroup, selectRelease).
 
 export function completenessText(value) {
   return String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').normalize('NFC').toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[\u2019']/g, '').replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ').trim()
@@ -100,9 +100,6 @@ export function matchRecoveryItems(tracks, rows) {
   return matches
 }
 
-async function ensureTracklistTable(db) {
-  await db.prepare('CREATE TABLE IF NOT EXISTS release_tracklists (album_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, release_group_id TEXT, source TEXT NOT NULL, tracklist_json TEXT NOT NULL, editions_json TEXT, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by TEXT)').run()
-}
 
 async function selectTracklist(db, albumId) {
   const row = await db.prepare('SELECT tracklist_json AS tracklistJson, editions_json AS editionsJson FROM release_tracklists WHERE album_id = ?').bind(albumId).first()
@@ -178,9 +175,6 @@ async function handleCompletenessRequest(request, env, url) {
   const albumId = typeof body?.albumId === 'string' ? body.albumId.trim().slice(0, 200) : ''
   if (!albumId) return json({ error: 'invalid-album' }, 400)
   const db = env.TOMIFY_DB
-  await ensureTracklistTable(db)
-  await ensureReleaseTable(db)
-  await ensureRecoveryTables(db)
 
   if (url.pathname === '/api/album-completeness/tracklist') {
     let cached = await selectTracklist(db, albumId)
@@ -225,4 +219,4 @@ async function handleCompletenessRequest(request, env, url) {
   return json({ error: 'not-found' }, 404)
 }
 
-export const completenessWorkerSource = [completenessText, isMusicBrainzId, completenessCredit, summariseReleaseEditions, chooseReleaseEdition, editionFitsLocal, releaseGroupTypeFit, releaseTrackCount, mapReleaseTracklist, matchRecoveryItems, ensureTracklistTable, selectTracklist, fetchMusicBrainzRelease, releaseGroupEditions, resolveAlbumTracklist, completenessRecoveryRows, handleCompletenessRequest].map((fn) => fn.toString()).join('\n\n')
+export const completenessWorkerSource = [completenessText, isMusicBrainzId, completenessCredit, summariseReleaseEditions, chooseReleaseEdition, editionFitsLocal, releaseGroupTypeFit, releaseTrackCount, mapReleaseTracklist, matchRecoveryItems, selectTracklist, fetchMusicBrainzRelease, releaseGroupEditions, resolveAlbumTracklist, completenessRecoveryRows, handleCompletenessRequest].map((fn) => fn.toString()).join('\n\n')

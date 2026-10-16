@@ -100,8 +100,12 @@ Migrations live in `drizzle/`:
 | `0006_album_artwork.sql` | `album_artwork` (per-album artwork overrides) |
 | `0007_playlist_shares.sql` | `playlist_shares`, `tomify_accounts` |
 | `0008_album_artwork_uploads.sql` | `album_artwork_uploads` (uploaded covers, base64) |
+| `0009_live_playback.sql` | `live_playback`, `live_playback_devices` |
+| `0010_quality_settings.sql` | `tomify_settings` (site-wide settings such as the quality target) |
+| `0011_recovery_playback.sql` | `recovery_items.playback_json` |
+| `0012_schema_catch_up.sql` | `release_metadata`; every other table again with `IF NOT EXISTS`; indexes for the Recovery list, uploads, shares and OAuth state expiry |
 
-Two tables exist only because the Worker creates them at runtime: `release_metadata` (release type and date per album) and `live_playback` (per-user playback state and remote commands). The Worker also runs `CREATE TABLE IF NOT EXISTS` for most of the migrated tables, so a fresh database works before migrations are applied. Making migrations the only source of schema is roadmap task 10.
+The migrations are the only source of the schema: `pnpm run deploy` applies new ones before deploying the Worker, and the Worker runs no DDL. A query against a table no migration has created gets a 503 `schema-out-of-date`. Production was baselined with `scripts/d1-baseline.sh`; see [D1 migrations](RECOVERY.md#d1-migrations).
 
 Spotify OAuth tokens are stored encrypted with `SPOTIFY_TOKEN_ENCRYPTION_KEY`. No audio is ever stored in D1.
 

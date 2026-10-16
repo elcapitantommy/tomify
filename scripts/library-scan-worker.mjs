@@ -4,7 +4,7 @@
 // then `ready` with the Navidrome song id, or `scan-failed` when it is still missing after ten minutes.
 //
 // The pure helpers are exported for tests. The Worker functions rely on Worker globals (json,
-// authenticate, isNavidromeAdmin, recoveryItem, ensureRecoveryTables).
+// authenticate, isNavidromeAdmin, recoveryItem).
 
 export const PLAYBACK_CHECK_INTERVAL_MS = 15_000
 export const PLAYBACK_TIMEOUT_MS = 10 * 60_000
@@ -157,7 +157,6 @@ async function handleLibraryScanRequest(request, env, url) {
   if (!username) return json({ error: 'unauthorized' }, 401)
   if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can use Recovery.' }, 403)
   const db = env.TOMIFY_DB
-  await ensureRecoveryTables(db)
   const id = decodeURIComponent(match[1])
   const item = await recoveryItem(db, username, id)
   if (!item) return json({ error: 'recovery-item-not-found' }, 404)

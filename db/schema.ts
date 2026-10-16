@@ -1,5 +1,5 @@
-// Canonical D1 schema fragments. The production worker creates these defensively;
-// drizzle/ contains the deployable recovery migrations.
+// Names of D1 schema objects. The schema itself comes only from the migrations in drizzle/,
+// applied by `pnpm run deploy`; the Worker runs no DDL.
 export const recoverySchema = {
   items: 'recovery_items',
   candidates: 'recovery_candidates',

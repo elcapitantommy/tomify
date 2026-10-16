@@ -4,8 +4,7 @@
 // override instead of getCoverArt wherever it draws that album. The pure helpers are exported
 // for tests; handleAlbumArtworkRequest relies on Worker globals (authenticate, json,
 // spotifyAccessToken, spotifyTokenCache, spotifyUserToken, rankArtworkCandidates,
-// metadataTextSimilarity, artworkYearScore, cleanReleaseTitle, selectRelease,
-// ensureReleaseTable).
+// metadataTextSimilarity, artworkYearScore, cleanReleaseTitle, selectRelease).
 
 export const albumArtworkHosts = ['i.scdn.co', 'mosaic.scdn.co', 'image-cdn-ak.spotifycdn.com', 'image-cdn-fa.spotifycdn.com']
 export const albumArtworkHostSuffixes = ['.mzstatic.com', '.dzcdn.net']
@@ -108,15 +107,9 @@ export function albumArtworkRow(row) {
   }
 }
 
-async function ensureAlbumArtworkTable(db) {
-  await db.prepare("CREATE TABLE IF NOT EXISTS album_artwork (album_id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_id TEXT, url TEXT, width INTEGER, height INTEGER, confidence INTEGER, source TEXT NOT NULL, provider_album TEXT, provider_artist TEXT, store_url TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by TEXT)").run()
-}
 
 const albumArtworkColumns = 'album_id AS albumId, provider, provider_id AS providerId, url, width, height, confidence, source, provider_album AS providerAlbum, provider_artist AS providerArtist, store_url AS storeUrl, updated_at AS updatedAt'
 
-async function ensureAlbumArtworkUploadTable(db) {
-  await db.prepare('CREATE TABLE IF NOT EXISTS album_artwork_uploads (id TEXT PRIMARY KEY, album_id TEXT NOT NULL, content_type TEXT NOT NULL, data TEXT NOT NULL, size INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, uploaded_by TEXT)').run()
-}
 
 // Uploaded images no longer chosen for their album are removed so D1 only holds the current one.
 async function pruneAlbumArtworkUploads(db, albumId, keepId) {
@@ -236,7 +229,6 @@ async function handleAlbumArtworkRequest(request, env, url) {
   // image itself is public; its id is random and changes with every upload.
   const imageMatch = /^\/api\/album-artwork\/image\/([0-9a-f-]{36})$/.exec(url.pathname)
   if (imageMatch && request.method === 'GET') {
-    await ensureAlbumArtworkUploadTable(db)
     const image = await db.prepare('SELECT content_type AS contentType, data FROM album_artwork_uploads WHERE id = ?').bind(imageMatch[1]).first()
     if (!image) return json({ error: 'not-found' }, 404)
     const binary = atob(image.data)
@@ -246,7 +238,6 @@ async function handleAlbumArtworkRequest(request, env, url) {
   }
   const username = await authenticate(request)
   if (!username) return json({ error: 'unauthorized' }, 401)
-  await ensureAlbumArtworkTable(db)
 
   if (url.pathname === '/api/album-artwork' && request.method === 'GET') {
     const rows = await db.prepare('SELECT ' + albumArtworkColumns + ' FROM album_artwork ORDER BY album_id').all()
@@ -263,7 +254,6 @@ async function handleAlbumArtworkRequest(request, env, url) {
   if (url.pathname === '/api/album-artwork/lookup' || url.pathname === '/api/album-artwork/auto') {
     const album = { albumId, name: String(body.name || '').slice(0, 240), artist: String(body.artist || '').slice(0, 240), year: Number(body.year) || null }
     if (!album.name || !album.artist) return json({ error: 'invalid-album' }, 400)
-    await ensureReleaseTable(db)
     const existing = await selectAlbumArtwork(db, albumId)
     // A person's own choice, including keeping the library image, is never replaced automatically.
     if (url.pathname === '/api/album-artwork/auto' && existing?.source === 'manual') return json({ item: existing, applied: false, reason: 'manual-choice' })
@@ -283,7 +273,6 @@ async function handleAlbumArtworkRequest(request, env, url) {
   if (url.pathname === '/api/album-artwork/upload') {
     const upload = decodeAlbumArtworkUpload(body.image)
     if (upload.error) return json({ error: 'invalid-image', message: upload.error }, 400)
-    await ensureAlbumArtworkUploadTable(db)
     const id = crypto.randomUUID()
     await db.prepare('INSERT INTO album_artwork_uploads (id, album_id, content_type, data, size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)').bind(id, albumId, upload.contentType, upload.base64, upload.size, username).run()
     const item = await saveAlbumArtwork(db, albumId, { provider: 'upload', providerId: id, url: '/api/album-artwork/image/' + id, width: Math.round(Number(body.width)) || null, height: Math.round(Number(body.height)) || null }, 'manual', username)
@@ -292,7 +281,6 @@ async function handleAlbumArtworkRequest(request, env, url) {
   }
 
   if (url.pathname === '/api/album-artwork/select') {
-    await ensureAlbumArtworkUploadTable(db)
     if (body.provider === 'library') {
       const item = await saveAlbumArtwork(db, albumId, { provider: 'library' }, 'manual', username)
       await pruneAlbumArtworkUploads(db, albumId, null)
@@ -306,7 +294,6 @@ async function handleAlbumArtworkRequest(request, env, url) {
   }
 
   if (url.pathname === '/api/album-artwork/reset') {
-    await ensureAlbumArtworkUploadTable(db)
     await db.prepare('DELETE FROM album_artwork WHERE album_id = ?').bind(albumId).run()
     await pruneAlbumArtworkUploads(db, albumId, null)
     return json({ item: null })
@@ -315,4 +302,4 @@ async function handleAlbumArtworkRequest(request, env, url) {
   return json({ error: 'not-found' }, 404)
 }
 
-export const albumArtworkWorkerSource = `const albumArtworkHosts = ${JSON.stringify(albumArtworkHosts)}\nconst albumArtworkHostSuffixes = ${JSON.stringify(albumArtworkHostSuffixes)}\nconst albumArtworkProviders = ${JSON.stringify(albumArtworkProviders)}\nconst albumArtworkUploadMaxBytes = ${albumArtworkUploadMaxBytes}\nconst albumArtworkColumns = ${JSON.stringify(albumArtworkColumns)}\n\n` + [isAlbumArtworkUrl, baseAlbumTitle, albumArtworkSearchQueries, spotifyAlbumResult, appleAlbumResult, deezerAlbumResult, albumArtworkCandidate, chooseAutomaticAlbumArtwork, decodeAlbumArtworkUpload, albumArtworkRow, ensureAlbumArtworkTable, ensureAlbumArtworkUploadTable, pruneAlbumArtworkUploads, selectAlbumArtwork, saveAlbumArtwork, spotifySearchToken, searchSpotifyAlbums, searchAppleAlbums, searchDeezerAlbums, searchSpotifyArtwork, lookupAlbumArtwork, handleAlbumArtworkRequest].map((fn) => fn.toString()).join('\n\n')
+export const albumArtworkWorkerSource = `const albumArtworkHosts = ${JSON.stringify(albumArtworkHosts)}\nconst albumArtworkHostSuffixes = ${JSON.stringify(albumArtworkHostSuffixes)}\nconst albumArtworkProviders = ${JSON.stringify(albumArtworkProviders)}\nconst albumArtworkUploadMaxBytes = ${albumArtworkUploadMaxBytes}\nconst albumArtworkColumns = ${JSON.stringify(albumArtworkColumns)}\n\n` + [isAlbumArtworkUrl, baseAlbumTitle, albumArtworkSearchQueries, spotifyAlbumResult, appleAlbumResult, deezerAlbumResult, albumArtworkCandidate, chooseAutomaticAlbumArtwork, decodeAlbumArtworkUpload, albumArtworkRow, pruneAlbumArtworkUploads, selectAlbumArtwork, saveAlbumArtwork, spotifySearchToken, searchSpotifyAlbums, searchAppleAlbums, searchDeezerAlbums, searchSpotifyArtwork, lookupAlbumArtwork, handleAlbumArtworkRequest].map((fn) => fn.toString()).join('\n\n')
