@@ -2,6 +2,7 @@
   "name": "tomify",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "pnpm@11.28.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
