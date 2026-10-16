@@ -1,6 +1,7 @@
 name = "tomify"
 main = "dist/server/index.js"
 compatibility_date = "2026-10-11"
+minify = true
 
 workers_dev = true
 
@@ -10,3 +11,9 @@ database_name = "tomify-metadata"
 database_id = "5147af2c-ce21-4e41-9ad7-09c3b36e7145"
 # The only source of the schema: "pnpm run deploy" applies new files here before deploying the Worker.
 migrations_dir = "drizzle"
+
+[assets]
+directory = "./dist/client"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api", "/api/*", "/navidrome", "/navidrome/*"]

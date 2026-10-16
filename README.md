@@ -186,6 +186,8 @@ pnpm build
 
 GitHub Actions runs the frozen-lockfile install, lint, typecheck, production build, and complete test suite on every push and pull request. Build deliberately runs before tests because the Worker routing tests inspect the generated service worker and Worker bundle.
 
+`pnpm build` writes the Vite application to `dist/client/` and the generated Worker code to `dist/server/index.js`. Use `npx wrangler dev` when testing the complete local deployment, including Cloudflare's Static Assets routing; `pnpm dev` runs the frontend development server only.
+
 ### Implemented
 
 - Navidrome token authentication, persisted without storing the password, with logout and useful failure states.
@@ -217,7 +219,7 @@ GitHub Actions runs the frozen-lockfile install, lint, typecheck, production bui
 
 Details and recovery steps: [D1 migrations](docs/RECOVERY.md#d1-migrations).
 
-Cloudflare's Git integration builds and deploys the site on every push to `main`. The deploy command runs `pnpm run deploy`, which applies any new migration in `drizzle/` to the remote D1 database (`wrangler d1 migrations apply tomify-metadata --remote`) and only then runs `wrangler deploy`, so a failed migration leaves the previous Worker running. The migrations are the only source of the schema: the Worker never creates tables or columns, and a request that needs a table no migration has created yet gets a 503 `schema-out-of-date` instead. To change the schema, add the next numbered file to `drizzle/` and never edit one that has been applied. Note `pnpm deploy` without `run` is a different, built-in pnpm command.
+Cloudflare's Git integration builds and deploys the site on every push to `main`. The build command remains `pnpm build`, and the deploy command remains `npx pnpm run deploy`; no dashboard change is needed. Wrangler uploads `dist/client/` through Workers Static Assets and bundles `dist/server/index.js` separately. `/api*` and `/navidrome*` run through the Worker first, while other requests use the static asset service with SPA fallback. The deploy command applies any new migration in `drizzle/` to the remote D1 database (`wrangler d1 migrations apply tomify-metadata --remote`) and only then runs `wrangler deploy`, so a failed migration leaves the previous Worker running. The migrations are the only source of the schema: the Worker never creates tables or columns, and a request that needs a table no migration has created yet gets a 503 `schema-out-of-date` instead. To change the schema, add the next numbered file to `drizzle/` and never edit one that has been applied. Note `pnpm deploy` without `run` is a different, built-in pnpm command.
 
 ### Recovery imports
 

@@ -15,7 +15,7 @@ Tomify has three running parts:
         │  HTTPS
         ▼
  Cloudflare Worker (dist/server/index.js) ──────────── D1: tomify-metadata
-   ├── static PWA assets (embedded in the bundle)
+   ├── Workers Static Assets (dist/client/)
    ├── /navidrome/*  ── proxy ──┐
    ├── /api/*        Tomify API │
    │                            │ Cloudflare Tunnel (cloudflared)
@@ -49,20 +49,22 @@ Navidrome stays the source of truth for accounts, the library, playlists, favour
 
 The Worker is generated, not hand-written. `pnpm build` runs `tsc -b`, `vite build`, then `node scripts/build-worker.mjs`, which:
 
-1. reads every file in `dist/` and embeds it base64-encoded in an `assets` map;
+1. writes the Vite client build to `dist/client/`;
 2. concatenates the source of each feature module (exported as a `...WorkerSource` string built from `fn.toString()`);
-3. writes the whole Worker as one string template to `dist/server/index.js`, which `wrangler.toml` deploys.
+3. writes only the dynamic Worker code to `dist/server/index.js`.
+
+Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/client/`, applies the cache policy in `public/_headers`, and provides SPA fallback. The `run_worker_first` rules send `/api*` and `/navidrome*` to the Worker before asset lookup. If a non-route request reaches the Worker, it delegates to the `ASSETS` binding.
 
 | Module | Routes | Purpose |
 | --- | --- | --- |
-| `scripts/build-worker.mjs` | `/api/recovery*`, `/api/system/reboot`, `/api/system/vpn`, `/api/live-playback*`, `/api/release-meta*`, `/navidrome/*`, static assets | Core routes, auth, the Navidrome proxy and the agent client |
+| `scripts/build-worker.mjs` | `/api/recovery*`, `/api/system/reboot`, `/api/system/vpn`, `/api/live-playback*`, `/api/release-meta*`, `/navidrome/*` | Core routes, auth, the Navidrome proxy and the agent client |
 | `scripts/catalogue-worker.mjs` (+ `catalogue-import.mjs`) | `/api/catalogue-auth/spotify/*`, `/api/catalogue-imports/spotify/analyse`, `/api/catalogue-playlists*` | Spotify OAuth, playlist import and matching |
 | `scripts/completeness-worker.mjs` | `/api/album-completeness/*` | MusicBrainz tracklists and "add missing to Recovery" |
 | `scripts/album-artwork-worker.mjs` | `/api/album-artwork*` | Apple, Deezer and Spotify artwork lookup, overrides and uploads |
 | `scripts/playlist-share-worker.mjs` | `/api/playlist-shares*` | Sharing playlists between Tomify accounts |
 | `scripts/recovery-metadata.mjs`, `scripts/recovery-artwork.mjs` | (helpers) | MusicBrainz metadata review and artwork resolution for Recovery |
 
-Unknown `/api/*` paths return a JSON `404`. Any other `GET` that accepts HTML falls back to `index.html` so client-side routes work.
+Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configuration falls back to `index.html` for client-side routes.
 
 ### Authentication and admin-only routes
 
@@ -84,7 +86,7 @@ Unknown `/api/*` paths return a JSON `404`. Any other `GET` that accepts HTML fa
 
 ### Configuration
 
-Set as Worker variables or secrets: `RECOVERY_AGENT_URL`, `RECOVERY_AGENT_TOKEN`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`, `SPOTIFY_TOKEN_ENCRYPTION_KEY`, `SPOTIFY_MARKET`, `APPLE_CATALOGUE_COUNTRY`, `APPLE_ARTWORK_EMBEDDING_ENABLED` and `SPOTIFY_ARTWORK_EMBEDDING_ENABLED`. The D1 database is bound as `TOMIFY_DB`.
+Set as Worker variables or secrets: `RECOVERY_AGENT_URL`, `RECOVERY_AGENT_TOKEN`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`, `SPOTIFY_TOKEN_ENCRYPTION_KEY`, `SPOTIFY_MARKET`, `APPLE_CATALOGUE_COUNTRY`, `APPLE_ARTWORK_EMBEDDING_ENABLED` and `SPOTIFY_ARTWORK_EMBEDDING_ENABLED`. The D1 database is bound as `TOMIFY_DB`; Workers Static Assets is bound as `ASSETS`.
 
 ## 4. D1 database (`tomify-metadata`)
 
@@ -161,5 +163,5 @@ See [RECOVERY.md](RECOVERY.md#recovery-files-on-the-library-ssd) for the `fstab`
   - vitest for `src/**/*.test.ts(x)`;
   - `node --test` for `recovery-agent/*.node-test.mjs` and `scripts/*.node-test.mjs`;
   - Worker routes are tested against the built bundle in `scripts/build-routing.node-test.mjs`.
-- Cloudflare builds the site from this repository and deploys `dist/server/index.js` as the Worker (`wrangler.toml`). D1 migrations in `drizzle/` are applied separately with `wrangler d1`.
+- Cloudflare's unchanged `pnpm build` command produces `dist/client/` and `dist/server/index.js`. The unchanged `npx pnpm run deploy` command applies D1 migrations, uploads the static assets and deploys the Worker according to `wrangler.toml`.
 - The recovery agent is copied to the box by hand after any change under `recovery-agent/` ([RECOVERY.md](RECOVERY.md#updating-the-recovery-agent)).
