@@ -1,4 +1,5 @@
 import type { RecoveryBackend, RecoveryItem, RecoveryMetadataChoices, RecoverySearchField } from './recovery'
+import type { RecoveryPreflight, RecoveryPreflightMode } from './recovery-preflight'
 import { useAuth } from '../stores/auth'
 
 function headers(json = false): HeadersInit {
@@ -25,7 +26,8 @@ export const recoveryApi = {
   search: (id: string, backend: RecoveryBackend, searchFields?: RecoverySearchField[]) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/search`, { method: 'POST', body: JSON.stringify(searchFields ? { backend, searchFields } : { backend }) }),
   addTorrentLink: (id: string, link: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/search`, { method: 'POST', body: JSON.stringify({ backend: 'torrent', link }) }),
   select: (id: string, candidateId: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/select`, { method: 'POST', body: JSON.stringify({ candidateId }) }),
-  acquire: (id: string, candidateId: string, rightsBasis: string, metadataChoices: RecoveryMetadataChoices, artworkCandidateId: string | null) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/acquire`, { method: 'POST', body: JSON.stringify({ candidateId, rightsBasis, metadataChoices, artworkCandidateId, confirmedAuthorised: true }) }),
+  preflight: (id: string, mode: RecoveryPreflightMode) => request<RecoveryPreflight>(`/api/recovery/${encodeURIComponent(id)}/preflight?mode=${mode}`),
+  acquire: (id: string, candidateId: string, rightsBasis: string, metadataChoices: RecoveryMetadataChoices, artworkCandidateId: string | null, skipExisting = false) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/acquire`, { method: 'POST', body: JSON.stringify({ candidateId, rightsBasis, metadataChoices, artworkCandidateId, confirmedAuthorised: true, skipExisting }) }),
   updateStatus: (id: string, status: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
   importRemaining: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/import-remaining`, { method: 'POST' }),
   pollJob: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/job`),

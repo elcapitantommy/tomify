@@ -11,6 +11,7 @@ import { playlistShareWorkerSource } from './playlist-share-worker.mjs'
 import { livePlaybackWorkerSource } from './live-playback-worker.mjs'
 import { qualityWorkerSource } from './quality-worker.mjs'
 import { libraryScanWorkerSource } from './library-scan-worker.mjs'
+import { preflightWorkerSource } from './preflight-worker.mjs'
 
 const outputDirectory = new URL('../dist/', import.meta.url)
 const workerPath = new URL('../dist/server/index.js', import.meta.url)
@@ -77,6 +78,8 @@ ${livePlaybackWorkerSource}
 ${qualityWorkerSource}
 
 ${libraryScanWorkerSource}
+
+${preflightWorkerSource}
 
 function decode(value) {
   const binary = atob(value)
@@ -516,6 +519,8 @@ export default {
     if (qualityResponse) return qualityResponse
     const libraryScanResponse = await handleLibraryScanRequest(request, env, url)
     if (libraryScanResponse) return libraryScanResponse
+    const preflightResponse = await handlePreflightRequest(request, env, url)
+    if (preflightResponse) return preflightResponse
 
     if (pathname === '/api/version' && request.method === 'GET') return json({ version: TOMIFY_VERSION, contract: TOMIFY_AGENT_CONTRACT })
 
@@ -849,7 +854,7 @@ export default {
       try {
         // background asks the agent to queue YouTube and Internet Archive acquisitions as jobs (202) like Usenet and
         // torrents; an older agent ignores it and answers synchronously, which the branch below still handles.
-        const result = await callRecoveryAgent(env, '/v1/acquire', { backend: candidate.backend, background: true, candidate: { externalId: candidate.externalId, url: candidate.url, title: candidate.title, channel: candidate.channel, provenance: candidate.provenance?.raw || null }, track: resolvedMetadata, wantedMetadata, catalogueSource: item.catalogueSource || null, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, artwork: artwork ? { id: artwork.id, provider: artwork.provider, providerLabel: artwork.providerLabel, providerId: artwork.providerId, url: artwork.url, expectedWidth: artwork.width || null, expectedHeight: artwork.height || null, confidence: artwork.confidence } : null, authorisation: { confirmed: true, basis: body.rightsBasis, confirmedBy: username, confirmedAt: new Date().toISOString() } })
+        const result = await callRecoveryAgent(env, '/v1/acquire', { backend: candidate.backend, background: true, candidate: { externalId: candidate.externalId, url: candidate.url, title: candidate.title, channel: candidate.channel, provenance: candidate.provenance?.raw || null }, track: resolvedMetadata, wantedMetadata, catalogueSource: item.catalogueSource || null, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, artwork: artwork ? { id: artwork.id, provider: artwork.provider, providerLabel: artwork.providerLabel, providerId: artwork.providerId, url: artwork.url, expectedWidth: artwork.width || null, expectedHeight: artwork.height || null, confidence: artwork.confidence } : null, authorisation: { confirmed: true, basis: body.rightsBasis, confirmedBy: username, confirmedAt: new Date().toISOString() }, skipExisting: body.skipExisting === true })
         const quality = result.quality || {}
         const provenance = { ...(candidate.provenance || {}), ...(result.provenance || {}), source: result.provenance?.source || candidate.backend, sourceUrl: result.provenance?.sourceUrl || candidate.url, catalogueSource: item.catalogueSource || null, rightsBasis: body.rightsBasis, archiveStatus: result.provenance?.archiveStatus || 'recovery-copy', importedAt: result.job ? null : new Date().toISOString(), wantedMetadata, resolvedMetadata, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, job: result.job || null }
         if (result.job) {
