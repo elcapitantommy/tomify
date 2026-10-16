@@ -22,7 +22,7 @@ export function Albums() {
   const [filter, setFilter] = useState<ReleaseFilter>('album')
   const [sort, setSort] = useState<ReleaseSort>('newest')
   const { data, error, loading, retry } = useLoad(
-    (signal) => api.albums('alphabeticalByName', 500, signal),
+    (signal) => api.allAlbums(signal),
     [api],
     `albums:${api.session.username}`,
   )
