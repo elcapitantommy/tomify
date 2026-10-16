@@ -671,6 +671,122 @@ test('an importing recovery item cannot be deleted', async () => {
   }
 })
 
+// A recovery item and its one candidate, kept up to date by the UPDATE statements the Worker runs.
+function recoveryJobDatabase({ status, candidate }) {
+  const item = { id: 'recovery-1', artist: 'They Might Be Giants', title: 'Birdhouse in Your Soul', album: 'Flood', status, error: null, metadataResolutionJson: JSON.stringify({ candidateId: candidate.id, status: 'matched', confidence: 90, strong: false }), artworkResolutionJson: JSON.stringify({ candidateId: candidate.id, candidates: [] }) }
+  const columns = { imported_path: 'importedPath', provenance_json: 'provenanceJson', selected_candidate_id: 'selectedCandidateId' }
+  const apply = (sql, args) => {
+    const match = sql.match(/^UPDATE (recovery_items|recovery_candidates) SET (.+?) WHERE/)
+    if (!match) return
+    const row = match[1] === 'recovery_items' ? item : candidate
+    let index = 0
+    for (const assignment of match[2].split(/,\s*(?=\w+ = )/)) {
+      const [column, value] = assignment.split(' = ')
+      const key = columns[column] || column
+      if (value === '?') row[key] = args[index++]
+      else if (value.startsWith('COALESCE(?')) row[key] = args[index++] ?? row[key]
+      else if (value.startsWith("'")) row[key] = value.slice(1, -1)
+      else if (value === 'NULL') row[key] = null
+    }
+  }
+  const prepare = (sql) => ({
+    sql, args: [],
+    bind(...args) { this.args = args; return this },
+    async first() { return sql.startsWith('SELECT id, artist, title, album') ? { ...item } : null },
+    async all() { return { results: sql.includes('FROM recovery_candidates') ? [{ ...candidate }] : [] } },
+    async run() { apply(sql, this.args); return {} },
+  })
+  return { item, candidate, prepare, async batch(statements) { for (const statement of statements) apply(statement.sql, statement.args); return [] } }
+}
+
+async function withRecoveryAgent(agent, callback) {
+  const requests = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+    if (url.pathname.startsWith('/v1/')) { const body = JSON.parse(init.body); requests.push([url.pathname, body]); return agent(url.pathname, body) }
+    return new Response('{}', { status: 404 })
+  }
+  try { await callback(requests) } finally { globalThis.fetch = originalFetch }
+}
+
+const recoveryHeaders = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }
+const youtubeResult = { path: '/recovery/They Might Be Giants/Flood/Birdhouse in Your Soul.m4a', quality: { codec: 'aac', container: 'mp4', bitrate: 256000, sampleRate: 44100, channels: 2, duration: 200 }, provenance: { source: 'youtube', sourceUrl: 'https://www.youtube.com/watch?v=abc', archiveStatus: 'lossy-recovery-copy' } }
+
+test('the Recovery page job poll reads the agent job and updates the item as it downloads and completes', async () => {
+  const db = recoveryJobDatabase({ status: 'queued', candidate: { id: 'candidate-1', backend: 'usenet', selected: 1, importedPath: null, url: 'https://indexer.test/details/1', title: 'Flood', channel: 'Indexer', provenanceJson: JSON.stringify({ source: 'usenet', job: { id: 'job-1', status: 'queued', progress: 0 } }) } })
+  let answer = { job: { id: 'job-1', status: 'downloading', progress: 40, message: 'Downloading' } }
+  await withRecoveryAgent(() => Response.json(answer), async (requests) => {
+    const poll = () => worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/job', { headers: recoveryHeaders }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+    const downloading = await poll()
+    assert.equal(downloading.status, 200)
+    assert.equal((await downloading.json()).item.candidates[0].provenance.job.progress, 40)
+    assert.equal(db.item.status, 'downloading')
+
+    answer = { job: { id: 'job-1', status: 'importing', progress: 100 } }
+    await poll()
+    assert.equal(db.item.status, 'queued')
+
+    answer = { job: { id: 'job-1', status: 'completed', progress: 100, result: { ...youtubeResult, path: '/recovery/They Might Be Giants/Flood/01 - Birdhouse in Your Soul.flac', quality: { codec: 'flac' }, provenance: undefined } } }
+    const completed = await (await poll()).json()
+    assert.equal(db.item.status, 'recovered')
+    assert.equal(completed.item.candidates[0].importedPath, '/recovery/They Might Be Giants/Flood/01 - Birdhouse in Your Soul.flac')
+    assert.equal(completed.item.candidates[0].provenance.source, 'usenet')
+    assert.equal(completed.item.candidates[0].provenance.job.status, 'completed')
+
+    // The browser only ever reads the job; the agent's runner does the downloading and importing.
+    assert.deepEqual(requests, Array.from({ length: 3 }, () => ['/v1/jobs/status', { jobId: 'job-1' }]))
+  })
+})
+
+test('the Recovery page job poll reports a failed job and an unreachable agent', async () => {
+  const db = recoveryJobDatabase({ status: 'downloading', candidate: { id: 'candidate-1', backend: 'torrent', selected: 1, importedPath: null, url: 'magnet:?xt=urn:btih:abc', title: 'Flood', channel: 'Torrent link', provenanceJson: JSON.stringify({ source: 'torrent', job: { id: 'job-1', status: 'downloading', progress: 10 } }) } })
+  let agentUp = true
+  await withRecoveryAgent(() => agentUp ? Response.json({ job: { id: 'job-1', status: 'failed', progress: 10, error: 'No seeds.' } }) : Response.json({ error: 'recovery-agent-error', message: 'Invalid Usenet job id.' }, { status: 400 }), async () => {
+    const poll = () => worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/job', { headers: recoveryHeaders }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+    assert.equal((await poll()).status, 200)
+    assert.equal(db.item.status, 'failed')
+    assert.equal(db.item.error, 'No seeds.')
+    agentUp = false
+    const failed = await poll()
+    assert.equal(failed.status, 502)
+    assert.equal((await failed.json()).error, 'recovery-job-poll-failed')
+  })
+})
+
+test('a YouTube import is queued as an agent job, and an older agent that imports straight away still works', async () => {
+  const youtubeCandidate = () => ({ id: 'candidate-1', backend: 'youtube', selected: 1, importedPath: null, url: 'https://www.youtube.com/watch?v=abc', externalId: 'abc', title: 'Birdhouse in Your Soul', channel: 'They Might Be Giants', provenanceJson: JSON.stringify({ raw: null }) })
+  const acquire = (db) => worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/acquire', { method: 'POST', headers: recoveryHeaders, body: JSON.stringify({ candidateId: 'candidate-1', confirmedAuthorised: true, rightsBasis: 'uploader-authorised' }) }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+
+  const queuedDb = recoveryJobDatabase({ status: 'candidate-found', candidate: youtubeCandidate() })
+  await withRecoveryAgent((path) => path === '/v1/acquire' ? Response.json({ job: { id: 'job-1', status: 'queued', progress: 0, provider: 'YouTube', downloader: 'youtube' } }, { status: 202 }) : Response.json({ job: { id: 'job-1', status: 'completed', progress: 100, result: youtubeResult } }), async (requests) => {
+    const response = await acquire(queuedDb)
+    assert.equal(response.status, 202)
+    assert.equal(requests[0][0], '/v1/acquire')
+    assert.equal(requests[0][1].background, true)
+    assert.equal(requests[0][1].backend, 'youtube')
+    assert.equal(queuedDb.item.status, 'queued')
+    assert.equal(JSON.parse(queuedDb.candidate.provenanceJson).job.id, 'job-1')
+    assert.equal(queuedDb.candidate.importedPath, null)
+
+    const polled = await (await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/job', { headers: recoveryHeaders }), { TOMIFY_DB: queuedDb, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })).json()
+    assert.equal(queuedDb.item.status, 'needs-upgrade')
+    assert.equal(polled.item.candidates[0].importedPath, youtubeResult.path)
+    assert.equal(polled.item.candidates[0].provenance.source, 'youtube')
+    assert.equal(polled.item.candidates[0].provenance.archiveStatus, 'lossy-recovery-copy')
+  })
+
+  // An agent from before the job runner ignores background and returns the finished import.
+  const syncDb = recoveryJobDatabase({ status: 'candidate-found', candidate: youtubeCandidate() })
+  await withRecoveryAgent(() => Response.json(youtubeResult), async () => {
+    const response = await acquire(syncDb)
+    assert.equal(response.status, 200)
+    assert.equal(syncDb.item.status, 'needs-upgrade')
+    assert.equal(syncDb.candidate.importedPath, youtubeResult.path)
+  })
+})
+
 async function withRebootFetch({ admin, agent }, callback) {
   const originalFetch = globalThis.fetch
   const agentRequests = []
