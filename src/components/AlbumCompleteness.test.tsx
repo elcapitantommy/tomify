@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { completenessApi, type TracklistResponse } from '../lib/completeness-api'
 import type { Album, Track } from '../types'
 import { AlbumCompleteness } from './AlbumCompleteness'
+import { useAuth } from '../stores/auth'
 
 vi.mock('../lib/completeness-api', () => ({ completenessApi: { tracklist: vi.fn(), addMissing: vi.fn() } }))
 
@@ -24,6 +25,7 @@ function renderCompleteness() {
 
 describe('AlbumCompleteness', () => {
   beforeEach(() => {
+    useAuth.setState({ isAdmin: true })
     vi.mocked(completenessApi.tracklist).mockReset().mockResolvedValue(response)
     vi.mocked(completenessApi.addMissing).mockReset().mockResolvedValue({ created: 1, existing: 0, recovery: { ...response.recovery, '1-1': { id: 'recovery-1', status: 'missing' } } })
   })
@@ -42,6 +44,15 @@ describe('AlbumCompleteness', () => {
     expect(await screen.findByText('1 track added to Recovery.')).toBeInTheDocument()
     expect(completenessApi.addMissing).toHaveBeenCalledWith('album-1', ['1-1'])
     expect(screen.getByRole('button', { name: 'All missing tracks are in Recovery' })).toBeDisabled()
+  })
+
+  it('lists missing tracks for non-administrators without offering or linking to Recovery', async () => {
+    useAuth.setState({ isAdmin: false })
+    renderCompleteness()
+    expect(await screen.findByText('Incomplete · 1 of 3 tracks')).toBeInTheDocument()
+    expect(screen.getByText('Theme From Flood')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /In Recovery/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /missing to Recovery/ })).not.toBeInTheDocument()
   })
 
   it('reports a complete album without offering Recovery', async () => {

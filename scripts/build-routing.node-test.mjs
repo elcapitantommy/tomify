@@ -84,7 +84,7 @@ test('album completeness resolves a tagged release tracklist and adds only missi
   globalThis.fetch = async (input) => {
     const url = new URL(String(input))
     requested.push(url.hostname + url.pathname)
-    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
     if (url.pathname === `/ws/2/release/${releaseId}`) return Response.json({ id: releaseId, title: 'Flood', date: '1990-01-15', country: 'US', status: 'Official', 'release-group': { id: groupId }, 'artist-credit': [{ name: 'They Might Be Giants' }], media: [{ position: 1, format: 'CD', tracks: ['Theme From Flood', 'Birdhouse in Your Soul', 'Lucky Ball and Chain'].map((title, index) => ({ position: index + 1, title, length: 60_000 + index * 1000, recording: { id: recordingId(index + 1) } })) }] })
     if (url.pathname === '/ws/2/release' && url.searchParams.get('release-group') === groupId) return Response.json({ releases: [{ id: releaseId, title: 'Flood', status: 'Official', date: '1990-01-15', country: 'US', media: [{ format: 'CD', 'track-count': 3 }] }] })
     return new Response('{}', { status: 404 })
@@ -136,7 +136,7 @@ test('album completeness compares a twelve-track album with the album, not its s
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input) => {
     const url = new URL(String(input))
-    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
     // MusicBrainz ranks the promo single first; both share the title, artist and year.
     if (url.pathname === '/ws/2/release-group/') return Response.json({ 'release-groups': [
       { id: singleGroup, title: 'Out of Exile', score: 100, 'primary-type': 'Single', 'first-release-date': '2005', 'artist-credit': [{ name: 'Audioslave' }] },
@@ -214,7 +214,7 @@ test('Recovery accepts wanted music from any mix of artist, album and track and 
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
-    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
     if (url.pathname === '/v1/search') { agentRequests.push(JSON.parse(init.body)); return Response.json({ candidates: [] }) }
     return new Response('{}', { status: 404 })
   }
@@ -262,7 +262,7 @@ test('Recovery imports the rest of a single-track Usenet download and keeps ever
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
-    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
     if (url.pathname === '/v1/jobs/import-remaining') {
       agentRequests.push(JSON.parse(init.body))
       return Response.json({ result: { importedCount: 2, artist: 'They Might Be Giants', album: 'Flood', importedTracks: [{ path: '/recovery/They Might Be Giants/Flood/01 - Theme from Flood.mp3', title: 'Theme from Flood' }, { path: '/recovery/They Might Be Giants/Flood/03 - Lucky Ball and Chain.mp3', title: 'Lucky Ball and Chain' }] } })
@@ -314,7 +314,7 @@ test('album artwork falls back to Spotify, applies a confident match and never r
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input) => {
     const url = new URL(String(input))
-    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
     if (url.hostname === 'accounts.spotify.com') return Response.json({ access_token: 'spotify-token', expires_in: 3600 })
     if (url.hostname === 'itunes.apple.com') return Response.json({ results: [] })
     if (url.hostname === 'api.deezer.com') return Response.json({ data: [] })
@@ -381,7 +381,7 @@ async function withArtworkFetch(routes, run) {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
-    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
     if (url.hostname === 'accounts.spotify.com') return Response.json({ access_token: 'app-token', expires_in: 3600 })
     requested.push({ host: url.hostname, query: url.searchParams.get('q') || url.searchParams.get('term'), authorization: init?.headers?.authorization })
     return routes[url.hostname]?.(url) ?? new Response('{}', { status: 404 })
@@ -461,7 +461,7 @@ test('Recovery explains an out-of-date agent instead of showing not-found', asyn
     async batch() { return [] },
   }
   const originalFetch = globalThis.fetch
-  globalThis.fetch = async (input) => new URL(String(input)).pathname === '/rest/ping.view' ? Response.json({ 'subsonic-response': { status: 'ok' } }) : Response.json({ error: 'not-found' }, { status: 404 })
+  globalThis.fetch = async (input) => ['/rest/ping.view', '/rest/getUser.view'].includes(new URL(String(input)).pathname) ? Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } }) : Response.json({ error: 'not-found' }, { status: 404 })
   try {
     const response = await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/import-remaining', { method: 'POST', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' } }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
     assert.equal(response.status, 502)
@@ -476,7 +476,7 @@ test('Recovery hands a pasted torrent link to the agent as a torrent search', as
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
-    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
     if (url.pathname === '/v1/search') { agentRequests.push(JSON.parse(init.body)); return Response.json({ candidates: [{ externalId: 'torrent-external', url: 'magnet:?xt=urn:btih:abc', title: 'Flood', channel: 'Torrent link', provenance: { providerType: 'torrent', searchMode: 'release' } }] }) }
     return new Response('{}', { status: 404 })
   }
@@ -503,7 +503,7 @@ test('Recovery searches torrents by the chosen fields when no link is pasted', a
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
-    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
     if (url.pathname === '/v1/search') { agentRequests.push(JSON.parse(init.body)); return Response.json({ candidates: [{ externalId: 'torrent-search', url: 'https://thepiratebay.org/description.php?id=1', title: 'They Might Be Giants - Flood (1990) FLAC', channel: 'thepiratebay.org', provenance: { providerType: 'torrent', providerId: 'qbittorrent-search', seeds: 42, searchMode: 'release' } }] }) }
     return new Response('{}', { status: 404 })
   }
@@ -548,7 +548,7 @@ test('deleting a downloading torrent item removes the torrent first, plus anythi
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
-    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
     if (url.pathname === '/v1/jobs/cancel') { agentRequests.push(['cancel', JSON.parse(init.body)]); return Response.json({ cancelled: true, torrentRemoved: true, importedPaths: ['/recovery/They Might Be Giants/Flood/01 - Theme from Flood.flac'] }) }
     if (url.pathname === '/v1/delete') { agentRequests.push(['delete', JSON.parse(init.body)]); return Response.json({ deleted: [] }) }
     return new Response('{}', { status: 404 })
@@ -568,7 +568,7 @@ test('a torrent item is kept when qBittorrent cannot remove its torrent, and run
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input) => {
     const url = new URL(String(input))
-    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
     if (url.pathname === '/v1/jobs/cancel') return Response.json({ error: 'recovery-agent-error', message: 'qBittorrent rejected the configured username or password.' }, { status: 400 })
     return new Response('{}', { status: 404 })
   }
@@ -677,6 +677,40 @@ test('VPN changes report a refusal from the agent', async () => {
 })
 
 // A D1-shaped wrapper over node:sqlite so playlist sharing runs against real SQL.
+const adminHeaders = { 'x-tomify-user': 'guest', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }
+const recoveryCall = (path, method, body) => worker.fetch(new Request('https://app.tomify.test' + path, { method, headers: adminHeaders, ...(body ? { body: JSON.stringify(body) } : {}) }), { ...rebootEnv, TOMIFY_DB: wantedMusicDatabase() })
+
+test('Recovery routes require a signed-in Navidrome administrator', async () => {
+  const unauthenticated = await worker.fetch(new Request('https://app.tomify.test/api/recovery'), { ...rebootEnv, TOMIFY_DB: wantedMusicDatabase() })
+  assert.equal(unauthenticated.status, 401)
+  await withRebootFetch({ admin: false, agent: () => Response.json({ backends: [] }) }, async (agentRequests) => {
+    for (const [path, method, body] of [['/api/recovery', 'GET'], ['/api/recovery', 'POST', { artist: 'They Might Be Giants', album: 'Flood' }], ['/api/recovery/recovery-1/search', 'POST', { backend: 'usenet' }], ['/api/recovery/recovery-1/job', 'GET'], ['/api/recovery/recovery-1', 'DELETE']]) {
+      const response = await recoveryCall(path, method, body)
+      assert.equal(response.status, 403, `${method} ${path}`)
+      assert.match((await response.json()).message, /Navidrome administrator/)
+    }
+    assert.equal(agentRequests.length, 0)
+  })
+  await withRebootFetch({ admin: true, agent: () => Response.json({ backends: [] }) }, async () => {
+    assert.equal((await recoveryCall('/api/recovery', 'GET')).status, 200)
+  })
+})
+
+test('only administrators can add album or playlist tracks to Recovery', async () => {
+  await withRebootFetch({ admin: false, agent: () => Response.json({}) }, async () => {
+    const env = { TOMIFY_DB: completenessDatabase() }
+    const completeness = await worker.fetch(new Request('https://app.tomify.test/api/album-completeness/recovery', { method: 'POST', headers: adminHeaders, body: JSON.stringify({ albumId: 'album-1', trackKeys: ['1-1'] }) }), env)
+    assert.equal(completeness.status, 403)
+    assert.equal(env.TOMIFY_DB.recoveryItems.length, 0)
+    const db = await sqliteDatabase()
+    for (const [path, method] of [['/api/catalogue-playlists', 'POST'], ['/api/catalogue-playlists/playlist-1', 'PUT']]) {
+      const response = await worker.fetch(new Request('https://app.tomify.test' + path, { method, headers: adminHeaders, body: JSON.stringify({ playlist: { name: 'Mix', items: [] }, createRecovery: true }) }), { TOMIFY_DB: db })
+      assert.equal(response.status, 403, `${method} ${path}`)
+      assert.match((await response.json()).message, /Import the playlist without Recovery/)
+    }
+  })
+})
+
 async function sqliteDatabase() {
   const { DatabaseSync } = await import('node:sqlite')
   const sqlite = new DatabaseSync(':memory:')

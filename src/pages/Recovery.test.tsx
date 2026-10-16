@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { recoveryApi } from '../lib/recovery-api'
 import type { RecoveryItem } from '../lib/recovery'
 import { Recovery } from './Recovery'
+import { useAuth } from '../stores/auth'
 
 vi.mock('../lib/recovery-api', () => ({
   recoveryApi: {
@@ -28,8 +29,26 @@ function renderRecovery() {
   return render(<MemoryRouter><Recovery/></MemoryRouter>)
 }
 
-describe('Recovery page actions', () => {
+describe('Recovery page access', () => {
   beforeEach(() => { vi.clearAllMocks() })
+
+  it('tells non-administrators Recovery is admin-only and never loads the queue', () => {
+    useAuth.setState({ isAdmin: false })
+    renderRecovery()
+    expect(screen.getByText('Recovery is only available to Navidrome administrators.')).toBeInTheDocument()
+    expect(recoveryApi.list).not.toHaveBeenCalled()
+  })
+
+  it('waits for the role check before loading the queue', () => {
+    useAuth.setState({ isAdmin: null })
+    renderRecovery()
+    expect(screen.getByText('Checking your account…')).toBeInTheDocument()
+    expect(recoveryApi.list).not.toHaveBeenCalled()
+  })
+})
+
+describe('Recovery page actions', () => {
+  beforeEach(() => { vi.clearAllMocks(); useAuth.setState({ isAdmin: true }) })
 
   it.each([
     ['Search YouTube', 'Search Internet Archive'],

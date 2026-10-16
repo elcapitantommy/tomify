@@ -2,6 +2,10 @@
 
 Tomify Recovery is a queue for rebuilding missing tracks without confusing a convenience copy with an archival master. Wanted-track data, candidate decisions, measured quality, import state and provenance are stored in Tomify's D1 database. Audio remains on the home media server.
 
+## Who can use Recovery
+
+Recovery is only for Navidrome administrators (accounts with `adminRole`). The Worker checks the role with Navidrome's `getUser` API on every `/api/recovery` request, on **Add missing to Recovery** from an album's completeness panel and on Spotify imports that add missing tracks, and answers `403` for everyone else, so hiding the page is not the only guard. Other accounts still see which album tracks are missing and can import Spotify playlists without Recovery. In the PWA, administrators reach Recovery from the sidebar on desktop, and from the account button in the top bar on mobile, which also holds Settings and Sign out (non-administrators see only Sign out there). The mobile tab bar shows Playlists in Recovery's old place for everyone. This needs only a site deploy; the agent is unchanged.
+
 ## What v1 does
 
 - Adds wanted music from any combination of artist, album and track (at least one), plus optional duration and track number. Leaving the track blank asks for the whole album.
@@ -184,7 +188,7 @@ If the agent has reboot disabled or has not been updated, the button shows the r
 
 ## VPN and library scan controls in Settings
 
-Settings is only shown to Navidrome administrators: everyone else sees just a sign-out button, and the Worker and Navidrome check `adminRole` again on every admin action, so hiding the page is not the only guard.
+Settings is only shown to Navidrome administrators (on mobile, through the account button in the top bar): everyone else sees just a sign-out button, and the Worker and Navidrome check `adminRole` again on every admin action, so hiding the page is not the only guard.
 
 **Full library scan** calls Navidrome's `startScan` with `fullScan=true`, which rescans every file instead of only changed folders, then follows `getScanStatus` until it finishes. It needs no agent changes; Navidrome refuses it for non-administrators.
 

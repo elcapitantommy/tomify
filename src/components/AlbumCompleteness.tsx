@@ -6,6 +6,7 @@ import { completenessApi, type TracklistRequest, type TracklistResponse } from '
 import { formatDuration } from '../lib/format'
 import { recoveryStatusLabels, type RecoveryStatus } from '../lib/recovery'
 import type { Album, Track } from '../types'
+import { useAuth } from '../stores/auth'
 
 type LoadState = { status: 'loading' } | { status: 'ready'; data: TracklistResponse } | { status: 'unavailable'; message: string } | { status: 'error'; message: string }
 
@@ -14,6 +15,8 @@ export function AlbumCompleteness({ album, tracks }: { album: Album; tracks: Tra
   const [request, setRequest] = useState<{ releaseId?: string; force?: boolean; nonce: number }>({ nonce: 0 })
   const [adding, setAdding] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  // Recovery is for administrators; everyone else still sees which tracks are missing.
+  const isAdmin = useAuth((s) => s.isAdmin) === true
 
   useEffect(() => {
     const controller = new AbortController()
@@ -74,13 +77,13 @@ export function AlbumCompleteness({ album, tracks }: { album: Album; tracks: Tra
           <span className="album-completeness-position">{multiDisc ? `${track.disc}-${track.number}` : track.number}</span>
           <span className="album-completeness-title"><strong>{track.title}</strong>{track.artist && tracklist.artist && track.artist !== tracklist.artist && <small>{track.artist}</small>}</span>
           <span className="album-completeness-length">{track.length ? formatDuration(track.length) : ''}</span>
-          <RecoveryChip link={recovery[track.key]}/>
+          <RecoveryChip link={isAdmin ? recovery[track.key] : undefined}/>
         </li>)}
       </ol>
-      <div className="album-completeness-actions">
+      {isAdmin && <div className="album-completeness-actions">
         <button className="button primary" disabled={adding || notQueued.length === 0} onClick={() => void addMissing()}>{adding ? <LoaderCircle className="spin"/> : <LifeBuoy/>}{notQueued.length ? `Add ${notQueued.length} missing to Recovery` : 'All missing tracks are in Recovery'}</button>
         {notice && <span role="status">{notice}</span>}
-      </div>
+      </div>}
     </>}
 
     {result.duplicated > 0 && <p className="album-completeness-note">{result.duplicated} {result.duplicated === 1 ? 'track has' : 'tracks have'} more than one copy in your library.</p>}

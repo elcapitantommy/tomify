@@ -200,6 +200,7 @@ async function handleCompletenessRequest(request, env, url) {
   }
 
   if (url.pathname === '/api/album-completeness/recovery') {
+    if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can add tracks to Recovery.' }, 403)
     const cached = await selectTracklist(db, albumId)
     if (!cached) return json({ error: 'tracklist-required', message: 'Load the album tracklist before adding missing tracks.' }, 409)
     const keys = new Set((Array.isArray(body.trackKeys) ? body.trackKeys : []).filter((key) => typeof key === 'string').slice(0, 500))

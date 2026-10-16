@@ -100,7 +100,7 @@ async function authenticate(request) {
   }
 }
 
-// Only Navidrome administrators may reboot the media server or change its VPN.
+// Only Navidrome administrators may use Recovery, reboot the media server or change its VPN.
 async function isNavidromeAdmin(request, username) {
   try {
     const lookup = new URL('https://tomify.tomdixon.uk/rest/getUser.view')
@@ -496,6 +496,14 @@ export default {
       } catch (error) {
         return json({ error: 'vpn-failed', message: error instanceof Error ? error.message : 'The VPN could not be changed.' }, 502)
       }
+    }
+
+    // Recovery downloads and imports into the shared library, so every Recovery route is for administrators only.
+    if (pathname === '/api/recovery' || pathname.startsWith('/api/recovery/')) {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can use Recovery.' }, 403)
     }
 
     if (pathname === '/api/recovery' && request.method === 'GET') {
