@@ -154,6 +154,9 @@ async function saveCataloguePlaylist(db, username, draft, input) {
   return cataloguePlaylistDetail(db, username, id)
 }
 
+// Adding missing tracks to Recovery is for Navidrome administrators; anyone can import the playlist itself.
+function recoveryForbidden() { return json({ error: 'forbidden', message: 'Only a Navidrome administrator can add tracks to Recovery. Import the playlist without Recovery instead.' }, 403) }
+
 async function handleCatalogueRequest(request, env, url) {
   if (!url.pathname.startsWith('/api/catalogue-')) return null
   if (!env?.TOMIFY_DB) return json({ error: 'catalogue-store-unavailable' }, 503)
@@ -211,7 +214,7 @@ async function handleCatalogueRequest(request, env, url) {
     return json({ playlists: (rows.results || []).map(cataloguePlaylistRow) })
   }
   if (url.pathname === '/api/catalogue-playlists' && request.method === 'POST') {
-    try { const input = await request.json(); return json({ playlist: await saveCataloguePlaylist(env.TOMIFY_DB, username, input.playlist, input) }, 201) } catch (error) { return json({ error: 'catalogue-playlist-import-failed', message: error instanceof Error ? error.message : 'Playlist import failed.' }, 400) }
+    try { const input = await request.json(); if (input?.createRecovery && !(await isNavidromeAdmin(request, username))) return recoveryForbidden(); return json({ playlist: await saveCataloguePlaylist(env.TOMIFY_DB, username, input.playlist, input) }, 201) } catch (error) { return json({ error: 'catalogue-playlist-import-failed', message: error instanceof Error ? error.message : 'Playlist import failed.' }, 400) }
   }
   const match = url.pathname.match(/^\/api\/catalogue-playlists\/([^/]+)(?:\/(resolve))?$/)
   if (match && request.method === 'GET' && !match[2]) {
@@ -225,7 +228,7 @@ async function handleCatalogueRequest(request, env, url) {
     return shared ? json({ playlist: { ...shared, owner: ownerRow.username, sharedWithMe: true } }) : json({ error: 'playlist-not-found' }, 404)
   }
   if (match && request.method === 'PUT' && !match[2]) {
-    try { const input = await request.json(); return json({ playlist: await saveCataloguePlaylist(env.TOMIFY_DB, username, input.playlist, { ...input, mode: 'update', playlistId: match[1] }) }) } catch (error) { return json({ error: 'catalogue-playlist-update-failed', message: error instanceof Error ? error.message : 'Playlist update failed.' }, 400) }
+    try { const input = await request.json(); if (input?.createRecovery && !(await isNavidromeAdmin(request, username))) return recoveryForbidden(); return json({ playlist: await saveCataloguePlaylist(env.TOMIFY_DB, username, input.playlist, { ...input, mode: 'update', playlistId: match[1] }) }) } catch (error) { return json({ error: 'catalogue-playlist-update-failed', message: error instanceof Error ? error.message : 'Playlist update failed.' }, 400) }
   }
   if (match && match[2] === 'resolve' && request.method === 'PATCH') {
     const owner = await env.TOMIFY_DB.prepare('SELECT id FROM catalogue_playlists WHERE id = ? AND username = ?').bind(match[1], username).first()
@@ -238,4 +241,4 @@ async function handleCatalogueRequest(request, env, url) {
   return json({ error: 'not-found' }, 404)
 }
 
-export const catalogueWorkerSource = [spotifyRedirectUri, bytesToBase64, base64ToBytes, catalogueTokenKey, encryptCatalogueToken, decryptCatalogueToken, ensureCatalogueTables, spotifyTokenRequest, spotifyUserToken, spotifyApiJson, fetchSpotifyPlaylist, cataloguePlaylistRow, cataloguePlaylistDetail, saveCataloguePlaylist, handleCatalogueRequest].map((fn) => fn.toString()).join('\n\n')
+export const catalogueWorkerSource = [spotifyRedirectUri, bytesToBase64, base64ToBytes, catalogueTokenKey, encryptCatalogueToken, decryptCatalogueToken, ensureCatalogueTables, spotifyTokenRequest, spotifyUserToken, spotifyApiJson, fetchSpotifyPlaylist, cataloguePlaylistRow, cataloguePlaylistDetail, saveCataloguePlaylist, recoveryForbidden, handleCatalogueRequest].map((fn) => fn.toString()).join('\n\n')

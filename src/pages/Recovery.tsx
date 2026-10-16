@@ -1,9 +1,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, Check, ChevronDown, ChevronUp, CircleGauge, ExternalLink, FileAudio, Landmark, LoaderCircle, Magnet, Plus, Search, Server, ShieldCheck, Trash2, Youtube } from 'lucide-react'
+import { AlertTriangle, Check, LockKeyhole, ChevronDown, ChevronUp, CircleGauge, ExternalLink, FileAudio, Landmark, LoaderCircle, Magnet, Plus, Search, Server, ShieldCheck, Trash2, Youtube } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { recoveryApi } from '../lib/recovery-api'
 import { canImportRestOfDownload, qualityLabel, recoveryStatusLabels as statusLabels, type RecoveryBackend, defaultRecoverySearchFields, recoveryFieldValue, recoveryItemHeading, looksLikeTorrentLink, recoveryItemSubtitle, recoverySearchFields, torrentTransferSummary, recoverySearchFieldsReady, isTorrentSearchResult, torrentResultSummary, type RecoveryItem, type RecoveryMetadataChoices, type RecoverySearchField, type RecoveryStatus } from '../lib/recovery'
 import { formatDuration } from '../lib/format'
+import { useAuth } from '../stores/auth'
 
 type RecoveryBusyAction = 'add' | 'add-link' | 'search-youtube' | 'search-internet-archive' | 'search-usenet' | 'search-torrent' | 'select' | 'acquire' | 'import-remaining' | 'status' | 'delete'
 type RecoveryBusyState = { id: string; action: RecoveryBusyAction } | null
@@ -11,6 +12,13 @@ const searchBackendLabels: Record<RecoveryBackend, string> = { youtube: 'YouTube
 const sourceLabels: Record<RecoveryBackend, string> = { youtube: 'YouTube', 'internet-archive': 'Internet Archive', usenet: 'Usenet indexer', torrent: 'Torrent link' }
 
 export function Recovery() {
+  const isAdmin = useAuth((s) => s.isAdmin)
+  // Hidden from the navigation for everyone else; the Worker refuses Recovery requests from non-administrators too.
+  if (isAdmin !== true) return <div className="page narrow-page"><header className="page-header"><span className="eyebrow">Tomify</span><h1>Recovery</h1><p>{isAdmin === null ? 'Checking your account…' : 'Recovery is only available to Navidrome administrators.'}</p></header>{isAdmin === false && <section className="settings-card"><div className="setting-row"><LockKeyhole/><span><strong>Ask an administrator</strong><small>They can find and add missing music to the library for you.</small></span></div></section>}</div>
+  return <RecoveryQueue/>
+}
+
+function RecoveryQueue() {
   const [searchParams] = useSearchParams()
   const [items, setItems] = useState<RecoveryItem[]>([])
   const [backends, setBackends] = useState<Array<{ id: string; label: string; available: boolean; authentication?: 'configured' | 'not-configured' | 'not-required' | 'unavailable'; reason?: string; search?: boolean }>>([])
