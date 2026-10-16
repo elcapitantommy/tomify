@@ -298,11 +298,11 @@ function artworkDatabase() {
     },
     async all() { return { results: sql.includes('FROM album_artwork') ? [...rows.values()] : [] } },
     async run() {
-      if (sql.startsWith('INSERT INTO album_artwork')) {
+      if (sql.startsWith('INSERT INTO album_artwork (')) {
         const [albumId, provider, providerId, url, width, height, confidence, source, providerAlbum, providerArtist, storeUrl] = this.args
         rows.set(albumId, { albumId, provider, providerId, url, width, height, confidence, source, providerAlbum, providerArtist, storeUrl, updatedAt: 'now' })
       }
-      if (sql.startsWith('DELETE FROM album_artwork')) rows.delete(this.args[0])
+      if (sql.startsWith('DELETE FROM album_artwork WHERE')) rows.delete(this.args[0])
       return {}
     },
   })
@@ -788,6 +788,7 @@ test('only administrators can edit release metadata, change album artwork or run
       ['/api/album-artwork/lookup', 'POST', album],
       ['/api/album-artwork/select', 'POST', { albumId: 'album-1', provider: 'library' }],
       ['/api/album-artwork/reset', 'POST', { albumId: 'album-1' }],
+      ['/api/album-artwork/upload', 'POST', { albumId: 'album-1', image: 'data:image/jpeg;base64,/9j/4A==' }],
       ['/api/album-completeness/tracklist', 'POST', { ...album, localTrackCount: 1 }],
     ]) {
       const response = await call(path, method, body)
@@ -802,5 +803,36 @@ test('only administrators can edit release metadata, change album artwork or run
   await withRebootFetch({ admin: true, agent: () => Response.json({}, { status: 500 }) }, async () => {
     assert.equal((await call('/api/release-meta/album-1', 'PUT', { releaseType: 'single' })).status, 200)
     assert.equal((await call('/api/album-artwork/select', 'POST', { albumId: 'album-1', provider: 'library' })).status, 200)
+  })
+})
+
+test('administrators can upload album artwork from their device, served publicly and removed when replaced', async () => {
+  const db = await sqliteDatabase()
+  const env = { TOMIFY_DB: db }
+  const call = (path, body) => worker.fetch(new Request('https://app.tomify.test/api/album-artwork/' + path, { method: 'POST', headers: adminHeaders, body: JSON.stringify(body) }), env)
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70])
+  await withRebootFetch({ admin: true, agent: () => Response.json({}, { status: 500 }) }, async () => {
+    const rejected = await call('upload', { albumId: 'album-1', image: 'data:image/jpeg;base64,' + Buffer.from('<html>').toString('base64') })
+    assert.equal(rejected.status, 400)
+
+    const uploaded = await call('upload', { albumId: 'album-1', image: 'data:image/jpeg;base64,' + jpeg.toString('base64'), width: 1200, height: 1200 })
+    assert.equal(uploaded.status, 201)
+    const { item } = await uploaded.json()
+    assert.equal(item.provider, 'upload')
+    assert.equal(item.source, 'manual')
+    assert.match(item.url, /^\/api\/album-artwork\/image\/[0-9a-f-]{36}$/)
+
+    // Served without Tomify headers, since <img> cannot send them.
+    const image = await worker.fetch(new Request('https://app.tomify.test' + item.url), env)
+    assert.equal(image.status, 200)
+    assert.equal(image.headers.get('content-type'), 'image/jpeg')
+    assert.deepEqual(Buffer.from(await image.arrayBuffer()), jpeg)
+
+    // A second upload replaces the first, and choosing library artwork removes the upload.
+    const second = await (await call('upload', { albumId: 'album-1', image: 'data:image/jpeg;base64,' + jpeg.toString('base64') })).json()
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test' + item.url), env)).status, 404)
+    assert.equal((await call('select', { albumId: 'album-1', provider: 'library' })).status, 200)
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test' + second.item.url), env)).status, 404)
+    assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM album_artwork_uploads').get().count, 0)
   })
 })

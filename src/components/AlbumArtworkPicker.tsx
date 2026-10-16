@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Check, ImageUp, LoaderCircle, RotateCcw, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Check, FolderOpen, ImageUp, LoaderCircle, RotateCcw, X } from 'lucide-react'
 import type { Album } from '../types'
 import { useAlbumArtwork, type AlbumArtworkCandidate } from '../stores/albumArtwork'
 
@@ -12,6 +12,8 @@ export function AlbumArtworkPicker({ album, searchOnOpen = false, onClose }: { a
   const lookup = useAlbumArtwork((state) => state.lookup)
   const select = useAlbumArtwork((state) => state.select)
   const reset = useAlbumArtwork((state) => state.reset)
+  const upload = useAlbumArtwork((state) => state.upload)
+  const fileInput = useRef<HTMLInputElement>(null)
   const [state, setState] = useState<LookupState>({ status: 'idle' })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -31,15 +33,22 @@ export function AlbumArtworkPicker({ album, searchOnOpen = false, onClose }: { a
     try { await action() } catch (reason) { setError(reason instanceof Error ? reason.message : 'Artwork could not be saved.') } finally { setSaving(false) }
   }
 
-  const providerName = override && override.provider !== 'library' ? ({ apple: 'Apple', deezer: 'Deezer', spotify: 'Spotify' })[override.provider] : ''
-  const summary = override && override.provider !== 'library'
+  const providerName = override && override.provider !== 'library' && override.provider !== 'upload' ? ({ apple: 'Apple', deezer: 'Deezer', spotify: 'Spotify' })[override.provider] : ''
+  const summary = override?.provider === 'upload' ? 'Showing an image uploaded from a device.'
+    : override && override.provider !== 'library'
     ? `Showing ${providerName} artwork${override.providerAlbum ? ` from “${override.providerAlbum}”` : ''}${override.source === 'auto' ? ', matched automatically' : ', chosen by you'}.`
     : override?.provider === 'library' ? 'Keeping the library artwork. Automatic upgrades will skip this album.' : 'Showing the artwork from your music library.'
 
   return <section className="artwork-picker cloud-only" aria-label="Album artwork">
-    <div className="release-editor-title"><ImageUp/><div><strong>Album artwork</strong><small>{summary}{override && override.provider !== 'library' && override.storeUrl && <> <a href={override.storeUrl} target="_blank" rel="noreferrer">Open in {providerName}</a></>}</small></div>{onClose && <button type="button" className="icon-button artwork-picker-close" onClick={onClose} aria-label="Close album artwork options"><X/></button>}</div>
+    <div className="release-editor-title"><ImageUp/><div><strong>Album artwork</strong><small>{summary}{providerName && override?.storeUrl && <> <a href={override.storeUrl} target="_blank" rel="noreferrer">Open in {providerName}</a></>}</small></div>{onClose && <button type="button" className="icon-button artwork-picker-close" onClick={onClose} aria-label="Close album artwork options"><X/></button>}</div>
     <div className="artwork-picker-actions">
       <button className="button secondary" disabled={!available || state.status === 'loading' || saving} onClick={() => void search()}>{state.status === 'loading' ? <LoaderCircle className="spin"/> : <ImageUp/>}Find better artwork</button>
+      <button className="button secondary" disabled={saving} onClick={() => fileInput.current?.click()}>{saving ? <LoaderCircle className="spin"/> : <FolderOpen/>}Upload from device</button>
+      <input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp,image/*" hidden aria-label="Album artwork image" onChange={(event) => {
+        const file = event.target.files?.[0]
+        event.target.value = ''
+        if (file) void run(() => upload(album.id, file))
+      }}/>
       {override?.provider !== 'library' && <button className="button secondary" disabled={saving} onClick={() => void run(() => select(album.id, 'library'))}>Keep library artwork</button>}
       {override?.source === 'manual' && <button className="button secondary" disabled={saving} onClick={() => void run(() => reset(album.id))}><RotateCcw/>Undo my choice</button>}
     </div>
