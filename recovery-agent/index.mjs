@@ -466,7 +466,7 @@ async function queueUsenet(body) {
     downloader: submitted.downloader, remoteId: submitted.remoteId,
     indexer: { type: provider.type, id: provider.id, name: provider.name },
     result: { externalId: body.candidate.externalId || null, resultId: reference.resultId || reference.collectionId || reference.guid || null, title: body.candidate.title || null, detailsUrl: body.candidate.url || null, postedAt: reference.postedAt || null, searchMode: reference.searchMode || 'track', searchFields: Array.isArray(reference.searchFields) ? reference.searchFields : null, size: reference.size || null, ageDays: reference.ageDays || null },
-    request: { track: body.track || {}, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
+    request: { track: body.track || {}, tracklist: body.tracklist || null, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
   }
   await saveUsenetJob(job)
   jobRunner.track(id)
@@ -504,7 +504,7 @@ async function queueTorrent(body) {
     indexer: reference.providerId === 'qbittorrent-search' ? { type: 'torrent', id: 'qbittorrent-search', name: String(reference.providerName || 'Torrent search').slice(0, 120) } : { type: 'torrent', id: 'torrent-link', name: 'Torrent link' },
     torrent: { infoHash: candidate.provenance.infoHash, linkType: candidate.provenance.linkType },
     result: { externalId: body.candidate.externalId || null, resultId: candidate.provenance.resultId, title: body.candidate.title || null, detailsUrl: candidate.provenance.displayUrl, postedAt: null, searchMode, searchFields: Array.isArray(reference.searchFields) ? reference.searchFields : null, size: Number.isFinite(reference.size) ? reference.size : null, ageDays: null },
-    request: { track: body.track || {}, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
+    request: { track: body.track || {}, tracklist: body.tracklist || null, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
   }
   await saveUsenetJob(job)
   jobRunner.track(id)

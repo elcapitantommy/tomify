@@ -191,6 +191,84 @@ async function recoveryItem(db, username, id) {
   return { ...item, metadataResolution, artworkResolution, catalogueSource, playback: parseRecoveryPlayback(playbackJson), duration: row.duration == null ? null : Number(row.duration), trackNumber: row.trackNumber == null ? null : Number(row.trackNumber), discNumber: row.discNumber == null ? null : Number(row.discNumber), candidates: (candidates.results || []).map(recoveryCandidateRow) }
 }
 
+function isReleaseRecoveryCandidate(candidate) {
+  return (candidate?.backend === 'usenet' || candidate?.backend === 'torrent') && (candidate?.provenance?.searchMode === 'release' || candidate?.provenance?.raw?.searchMode === 'release')
+}
+
+async function recoveryReleaseTracklist(db, item, candidate, resolvedMetadata, username) {
+  if (!isReleaseRecoveryCandidate(candidate)) return null
+  const source = item.catalogueSource || {}
+  const albumId = typeof source.albumId === 'string' && source.albumId ? source.albumId : 'recovery:' + item.id
+  const requestedReleaseId = [source.releaseId, resolvedMetadata?.releaseId, item.metadataResolution?.metadata?.releaseId].find(isMusicBrainzId) || null
+  let cached = await selectTracklist(db, albumId)
+  if (!cached || (requestedReleaseId && cached.tracklist?.releaseId !== requestedReleaseId)) {
+    const resolved = await resolveAlbumTracklist(db, { albumId, name: resolvedMetadata?.album || item.album || '', artist: resolvedMetadata?.artist || item.artist || '', year: Number(String(resolvedMetadata?.releaseDate || source.releaseDate || '').slice(0, 4)) || null, musicBrainzId: requestedReleaseId, localTrackCount: 0 }, requestedReleaseId)
+    if (!resolved) return null
+    await db.prepare('INSERT INTO release_tracklists (album_id, release_id, release_group_id, source, tracklist_json, editions_json, fetched_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?) ON CONFLICT(album_id) DO UPDATE SET release_id = excluded.release_id, release_group_id = excluded.release_group_id, source = excluded.source, tracklist_json = excluded.tracklist_json, editions_json = excluded.editions_json, fetched_at = CURRENT_TIMESTAMP, updated_by = excluded.updated_by')
+      .bind(albumId, resolved.tracklist.releaseId, resolved.tracklist.releaseGroupId, resolved.tracklist.source, JSON.stringify(resolved.tracklist), JSON.stringify(resolved.editions), username).run()
+    cached = resolved
+  }
+  return cached?.tracklist || null
+}
+
+function importedTrackMetadata(track, result) {
+  const resolved = track?.provenance?.resolvedMetadata || {}
+  return {
+    path: track?.path || null, originalPath: track?.originalPath || null,
+    artist: track?.artist || resolved.artist || null, albumArtist: track?.albumArtist || resolved.albumArtist || result?.artist || null,
+    album: track?.album || resolved.album || result?.album || null, title: track?.title || resolved.title || null,
+    trackNumber: track?.trackNumber || resolved.trackNumber || null, discNumber: track?.discNumber || resolved.discNumber || null,
+    recordingId: resolved.recordingId || null, releaseId: resolved.releaseId || null, releaseGroupId: resolved.releaseGroupId || null, isrc: resolved.isrc || null,
+    quality: track?.quality || null, derivative: track?.derivative || null, provenance: track?.provenance || null,
+  }
+}
+
+async function linkReleaseImport(db, username, parentItem, parentCandidate, result) {
+  const tracks = (Array.isArray(result?.importedTracks) ? result.importedTracks : []).map((track) => importedTrackMetadata(track, result)).filter((track) => track.path && track.title)
+  if (!result?.completeness || !tracks.length) return
+  const rows = await db.prepare('SELECT id, artist, title, album, musicbrainz_id AS musicBrainzId FROM recovery_items WHERE username = ?').bind(username).all()
+  const recoveries = rows.results || []
+  const linked = []
+  for (const track of tracks) {
+    const artist = track.artist || track.albumArtist || result.artist || 'Unknown Artist'
+    const album = track.album || result.album || null
+    const sameRelease = (row) => completenessText(row.artist) === completenessText(artist) && completenessText(row.album) === completenessText(album)
+    let recovery = recoveries.find((row) => sameRelease(row) && track.recordingId && row.musicBrainzId === track.recordingId)
+      || recoveries.find((row) => sameRelease(row) && completenessText(row.title) === completenessText(track.title))
+    if (!recovery) {
+      recovery = { id: crypto.randomUUID(), artist, title: track.title, album, musicBrainzId: track.recordingId }
+      const source = { catalogueSource: 'musicbrainz', origin: 'release-import', parentRecoveryId: parentItem.id, releaseId: track.releaseId, releaseGroupId: track.releaseGroupId, recordingId: track.recordingId, isrc: track.isrc }
+      await db.prepare('INSERT INTO recovery_items (id, username, artist, title, album, duration, track_number, disc_number, musicbrainz_id, source_json, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .bind(recovery.id, username, String(artist).slice(0, 240), String(track.title).slice(0, 240), album ? String(album).slice(0, 240) : null, Number(track.quality?.duration) || null, Number(track.trackNumber) || null, Number(track.discNumber) || null, track.recordingId, JSON.stringify(source), recoveryImportStatus(track.quality)).run()
+      recoveries.push(recovery)
+    }
+    const existing = await db.prepare('SELECT id FROM recovery_candidates WHERE recovery_id = ? AND imported_path = ?').bind(recovery.id, track.path).first()
+    let candidateId = existing?.id || null
+    if (!candidateId && recovery.id === parentItem.id) {
+      candidateId = parentCandidate.id
+      await db.prepare('UPDATE recovery_candidates SET codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(track.quality?.codec || null, track.quality?.container || null, Number.isFinite(track.quality?.bitrate) ? track.quality.bitrate : null, Number.isFinite(track.quality?.sampleRate) ? track.quality.sampleRate : null, Number.isFinite(track.quality?.channels) ? track.quality.channels : null, Number.isFinite(track.quality?.duration) ? track.quality.duration : null, track.path, candidateId).run()
+    }
+    if (!candidateId && recovery.id !== parentItem.id) {
+      candidateId = crypto.randomUUID()
+      const provenance = { ...(track.provenance || {}), source: track.provenance?.source || parentCandidate.backend, parentRecoveryId: parentItem.id, parentCandidateId: parentCandidate.id, completeness: result.completeness }
+      await db.prepare('INSERT INTO recovery_candidates (id, recovery_id, backend, external_id, url, title, channel, duration, official, match_score, codec, container, bitrate, sample_rate, channels, imported_path, provenance_json, rights_basis, selected) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 100, ?, ?, ?, ?, ?, ?, ?, ?, 1)')
+        .bind(candidateId, recovery.id, parentCandidate.backend, String(parentCandidate.externalId || parentCandidate.id) + ':' + String(track.discNumber || 1) + '-' + String(track.trackNumber || 0), parentCandidate.url, track.title, parentCandidate.channel, Number(track.quality?.duration) || null, track.quality?.codec || null, track.quality?.container || null, Number.isFinite(track.quality?.bitrate) ? track.quality.bitrate : null, Number.isFinite(track.quality?.sampleRate) ? track.quality.sampleRate : null, Number.isFinite(track.quality?.channels) ? track.quality.channels : null, track.path, JSON.stringify(provenance), parentCandidate.provenance?.rightsBasis || null).run()
+    }
+    await db.prepare('UPDATE recovery_items SET selected_candidate_id = COALESCE(?, selected_candidate_id), musicbrainz_id = COALESCE(musicbrainz_id, ?), track_number = COALESCE(track_number, ?), disc_number = COALESCE(disc_number, ?), status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?').bind(candidateId, track.recordingId, Number(track.trackNumber) || null, Number(track.discNumber) || null, recoveryImportStatus(track.quality), recovery.id, username).run()
+    linked.push({ track, recoveryId: recovery.id })
+  }
+
+  const catalogueRows = await db.prepare("SELECT i.id, i.metadata_json AS metadataJson FROM catalogue_playlist_items i JOIN catalogue_playlists p ON p.id = i.playlist_id WHERE p.username = ? AND p.provider = 'spotify' AND i.status != 'unavailable'").bind(username).all()
+  const statements = []
+  for (const row of catalogueRows.results || []) {
+    let metadata = null
+    try { metadata = JSON.parse(row.metadataJson) } catch { continue }
+    const match = linked.find(({ track }) => (track.isrc && metadata?.isrc && completenessText(track.isrc) === completenessText(metadata.isrc)) || (completenessText(track.title) === completenessText(metadata?.title) && completenessText(track.album) === completenessText(metadata?.album) && (Array.isArray(metadata?.artists) ? metadata.artists : []).some((artist) => completenessText(artist) === completenessText(track.artist || track.albumArtist))))
+    if (match) statements.push(db.prepare("UPDATE catalogue_playlist_items SET status = 'missing', local_track_id = NULL, local_track_json = NULL, recovery_id = ?, match_confidence = 0, user_confirmed = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(match.recoveryId, row.id))
+  }
+  if (statements.length) await db.batch(statements)
+}
+
 function recoveryTokens(value) {
   return new Set(String(value || '').toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean))
 }
@@ -771,13 +849,14 @@ export default {
         const provenance = { ...candidate.provenance, job: { ...candidate.provenance.job, id: candidate.provenance.job.id, status: job.status || 'queued', progress: Number.isFinite(job.progress) ? job.progress : 0, message: job.message || null, error: job.error || null, details: job.details && typeof job.details === 'object' ? job.details : null } }
         if (job.status === 'completed' && job.result) {
           const quality = job.result.quality || {}
-          const importedTracks = Array.isArray(job.result.importedTracks) ? job.result.importedTracks.map((track) => ({ path: track?.path || null, originalPath: track?.originalPath || null, artist: track?.artist || null, albumArtist: track?.albumArtist || null, album: track?.album || null, title: track?.title || null, trackNumber: track?.trackNumber || null, discNumber: track?.discNumber || null, quality: track?.quality || null, derivative: track?.derivative || null })) : []
+          const importedTracks = Array.isArray(job.result.importedTracks) ? job.result.importedTracks.map((track) => importedTrackMetadata(track, job.result)) : []
           const importedCount = Number.isInteger(job.result.importedCount) ? job.result.importedCount : importedTracks.length || 1
-          const finalProvenance = { ...provenance, ...(job.result.provenance || {}), source: job.result.provenance?.source || candidate.backend, job: provenance.job, importedAt: new Date().toISOString(), importedCount, importedTracks, importedRelease: importedCount > 1 ? { artist: job.result.artist || null, album: job.result.album || null } : null }
+          const finalProvenance = { ...provenance, ...(job.result.provenance || {}), source: job.result.provenance?.source || candidate.backend, job: provenance.job, importedAt: new Date().toISOString(), importedCount, importedTracks, importedRelease: importedCount > 1 ? { artist: job.result.artist || null, album: job.result.album || null } : null, ...(job.result.completeness ? { completeness: job.result.completeness, extraFiles: job.result.extraFiles || [] } : {}) }
           await env.TOMIFY_DB.batch([
             env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, provenance_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(quality.codec || null, quality.container || null, Number.isFinite(quality.bitrate) ? quality.bitrate : null, Number.isFinite(quality.sampleRate) ? quality.sampleRate : null, Number.isFinite(quality.channels) ? quality.channels : null, Number.isFinite(quality.duration) ? quality.duration : null, String(job.result.path || '').slice(0, 1000), JSON.stringify(finalProvenance), candidate.id),
             env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(recoveryImportStatus(quality), item.id, username),
           ])
+          await linkReleaseImport(env.TOMIFY_DB, username, item, candidate, job.result)
           await markRecoveryScanPending(request, env.TOMIFY_DB, username, item.id)
         } else if (job.status === 'failed') {
           await env.TOMIFY_DB.batch([
@@ -847,9 +926,12 @@ export default {
       }
       await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'importing', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(item.id, username).run()
       try {
+        let tracklist = null
+        try { tracklist = await recoveryReleaseTracklist(env.TOMIFY_DB, item, candidate, resolvedMetadata, username) }
+        catch { /* Tracklists are optional so an unavailable MusicBrainz lookup keeps old-agent behaviour. */ }
         // background asks the agent to queue YouTube and Internet Archive acquisitions as jobs (202) like Usenet and
         // torrents; an older agent ignores it and answers synchronously, which the branch below still handles.
-        const result = await callRecoveryAgent(env, '/v1/acquire', { backend: candidate.backend, background: true, candidate: { externalId: candidate.externalId, url: candidate.url, title: candidate.title, channel: candidate.channel, provenance: candidate.provenance?.raw || null }, track: resolvedMetadata, wantedMetadata, catalogueSource: item.catalogueSource || null, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, artwork: artwork ? { id: artwork.id, provider: artwork.provider, providerLabel: artwork.providerLabel, providerId: artwork.providerId, url: artwork.url, expectedWidth: artwork.width || null, expectedHeight: artwork.height || null, confidence: artwork.confidence } : null, authorisation: { confirmed: true, basis: body.rightsBasis, confirmedBy: username, confirmedAt: new Date().toISOString() } })
+        const result = await callRecoveryAgent(env, '/v1/acquire', { backend: candidate.backend, background: true, candidate: { externalId: candidate.externalId, url: candidate.url, title: candidate.title, channel: candidate.channel, provenance: candidate.provenance?.raw || null }, track: resolvedMetadata, ...(tracklist ? { tracklist } : {}), wantedMetadata, catalogueSource: item.catalogueSource || null, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, artwork: artwork ? { id: artwork.id, provider: artwork.provider, providerLabel: artwork.providerLabel, providerId: artwork.providerId, url: artwork.url, expectedWidth: artwork.width || null, expectedHeight: artwork.height || null, confidence: artwork.confidence } : null, authorisation: { confirmed: true, basis: body.rightsBasis, confirmedBy: username, confirmedAt: new Date().toISOString() } })
         const quality = result.quality || {}
         const provenance = { ...(candidate.provenance || {}), ...(result.provenance || {}), source: result.provenance?.source || candidate.backend, sourceUrl: result.provenance?.sourceUrl || candidate.url, catalogueSource: item.catalogueSource || null, rightsBasis: body.rightsBasis, archiveStatus: result.provenance?.archiveStatus || 'recovery-copy', importedAt: result.job ? null : new Date().toISOString(), wantedMetadata, resolvedMetadata, metadataResolution: { authority: 'musicbrainz', status: item.metadataResolution.status, confidence: item.metadataResolution.confidence, strong: item.metadataResolution.strong, choices: metadataChoices }, job: result.job || null }
         if (result.job) {
