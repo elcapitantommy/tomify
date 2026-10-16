@@ -235,6 +235,8 @@ async function handleCatalogueRequest(request, env, url) {
     if (!owner) return json({ error: 'playlist-not-found' }, 404)
     const input = await request.json(); const updates = Array.isArray(input.items) ? input.items.slice(0, 500) : []
     const statements = updates.filter((item) => item?.id && item?.localTrack?.id).map((item) => env.TOMIFY_DB.prepare("UPDATE catalogue_playlist_items SET status = 'available', local_track_id = ?, local_track_json = ?, match_confidence = ?, user_confirmed = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND playlist_id = ?").bind(item.localTrack.id, JSON.stringify(item.localTrack), Number(item.matchConfidence || 0), item.userConfirmed ? 1 : 0, item.id, match[1]))
+    // A matched track that no longer exists in the library goes back to missing.
+    statements.push(...updates.filter((item) => item?.id && item.missing === true && !item.localTrack).map((item) => env.TOMIFY_DB.prepare("UPDATE catalogue_playlist_items SET status = 'missing', local_track_id = NULL, local_track_json = NULL, match_confidence = 0, user_confirmed = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND playlist_id = ? AND status = 'available'").bind(item.id, match[1])))
     for (let index = 0; index < statements.length; index += 75) await env.TOMIFY_DB.batch(statements.slice(index, index + 75))
     return json({ playlist: await cataloguePlaylistDetail(env.TOMIFY_DB, username, match[1]) })
   }

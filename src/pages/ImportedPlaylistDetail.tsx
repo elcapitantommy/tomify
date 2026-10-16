@@ -3,7 +3,7 @@ import { AlertTriangle, ArrowLeft, Check, CircleHelp, ExternalLink, ListMusic, L
 import { Link, useParams } from 'react-router-dom'
 import { useApi } from '../lib/api-context'
 import { catalogueApi } from '../lib/catalogue-api'
-import { matchCatalogueItem, type CataloguePlaylist } from '../lib/catalogue-import'
+import { revalidateCatalogueItems, type CataloguePlaylist } from '../lib/catalogue-import'
 import { SharePlaylist } from '../components/SharePlaylist'
 import { sharedWithFor, type PlaylistShares } from '../lib/playlist-shares'
 import { loadPlaylistShares, saveImportedPlaylistShares } from '../lib/playlist-sharing'
@@ -17,9 +17,7 @@ export function ImportedPlaylistDetail() {
     if (cancelled) return; setPlaylist(loaded); setLoading(false)
     // Recipients of a shared playlist can play it but only the owner's session records matches.
     if (loaded.sharedWithMe) return
-    const pending = loaded.items.filter((item) => item.id && (item.status === 'missing' || item.status === 'review'))
-    const resolved = []
-    for (let offset = 0; offset < pending.length; offset += 5) { const batch = await Promise.all(pending.slice(offset, offset + 5).map(async (item) => { try { const found = await api.search(`${item.artists.join(' ')} ${item.title}`); const matched = matchCatalogueItem(item, found.tracks); return matched.status === 'available' && matched.localTrack && item.id ? { id: item.id, localTrack: matched.localTrack, matchConfidence: matched.matchConfidence || 0 } : null } catch { return null } })); resolved.push(...batch.filter((value): value is NonNullable<typeof value> => Boolean(value))) }
+    const resolved = await revalidateCatalogueItems(loaded.items, api)
     if (resolved.length && !cancelled) { const updated = await catalogueApi.resolve(id, resolved); if (!cancelled) setPlaylist(updated.playlist) }
   }).catch((reason) => { if (!cancelled) { setError(reason instanceof Error ? reason.message : 'Playlist could not be loaded.'); setLoading(false) } }); return () => { cancelled = true } }, [api, id])
   if (loading) return <div className="page"><div className="state-card"><LoaderCircle className="spin"/><h2>Loading playlist</h2></div></div>

@@ -1,5 +1,4 @@
-import type { CataloguePlaylist, CataloguePlaylistDiff, CataloguePlaylistDraft, CataloguePlaylistSummary } from './catalogue-import'
-import type { Track } from '../types'
+import type { CataloguePlaylist, CatalogueResolution, CataloguePlaylistDiff, CataloguePlaylistDraft, CataloguePlaylistSummary } from './catalogue-import'
 import { useAuth } from '../stores/auth'
 
 function authHeaders(json = false): HeadersInit { const session = useAuth.getState().session; if (!session) throw new Error('Sign in to import playlists.'); return { 'x-tomify-user': session.username, 'x-tomify-token': session.token, 'x-tomify-salt': session.salt, ...(json ? { 'content-type': 'application/json' } : {}) } }
@@ -14,5 +13,5 @@ export const catalogueApi = {
   get: (id: string) => request<{ playlist: CataloguePlaylist }>(`/api/catalogue-playlists/${encodeURIComponent(id)}`),
   create: (playlist: CataloguePlaylistDraft, createRecovery: boolean) => request<{ playlist: CataloguePlaylist }>('/api/catalogue-playlists', { method: 'POST', body: JSON.stringify({ playlist, createRecovery, mode: 'copy' }) }),
   update: (id: string, playlist: CataloguePlaylistDraft, createRecovery: boolean) => request<{ playlist: CataloguePlaylist }>(`/api/catalogue-playlists/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ playlist, createRecovery }) }),
-  resolve: (id: string, items: Array<{ id: string; localTrack: Track; matchConfidence: number; userConfirmed?: boolean }>) => request<{ playlist: CataloguePlaylist }>(`/api/catalogue-playlists/${encodeURIComponent(id)}/resolve`, { method: 'PATCH', body: JSON.stringify({ items }) }),
+  resolve: (id: string, items: CatalogueResolution[]) => request<{ playlist: CataloguePlaylist }>(`/api/catalogue-playlists/${encodeURIComponent(id)}/resolve`, { method: 'PATCH', body: JSON.stringify({ items }) }),
 }
