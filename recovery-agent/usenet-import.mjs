@@ -1,14 +1,14 @@
-import { createReadStream } from 'node:fs'
-import { access, lstat, mkdir, mkdtemp, readdir, realpath, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { access, lstat, mkdir, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { buildArtworkProvenance, buildDerivativeArguments } from './artwork.mjs'
 import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './derivative.mjs'
 import { ffmpegMetadataArguments } from './metadata.mjs'
 import { selectCompletedAudio } from './usenet.mjs'
 import { foldName, preferRequestedName } from './text-encoding.mjs'
-import { cleanupCompletedDownload, commitCoverFile, commitTrackFiles } from './commit.mjs'
+import { cleanupCompletedDownload } from './commit.mjs'
+import { prepareImportStaging, removeImportStaging, runManifestImport, sha256File } from './manifest.mjs'
 
 function text(value) { return String(value ?? '').trim() }
 function inside(child, parent) { return child === parent || child.startsWith(parent + sep) }
@@ -198,8 +198,11 @@ export async function planDestination(recoveryRoot, track, sourceExtension, deri
 async function sameFileContents(left, right) {
   const [leftStat, rightStat] = await Promise.all([stat(left), stat(right)])
   if (!leftStat.isFile() || !rightStat.isFile() || leftStat.size !== rightStat.size) return false
-  const digest = async (path) => { const hash = createHash('sha256'); for await (const chunk of createReadStream(path)) hash.update(chunk); return hash.digest('hex') }
-  return await digest(left) === await digest(right)
+  return await sha256File(left) === await sha256File(right)
+}
+
+async function pathExists(path) {
+  try { await lstat(path); return true } catch (error) { if (error?.code === 'ENOENT') return false; throw error }
 }
 
 // Whether a recovery copy already uses this name: 'absent', 'same' (its preserved original is this very file) or 'other'.
@@ -288,73 +291,76 @@ export async function importUsenetCompletion(job, completedFiles, options) {
   if (new Set(destinations.map((path) => path.toLocaleLowerCase('en'))).size !== destinations.length) throw new Error('The completed release contains duplicate destination track names.')
   await ensureAbsent(destinations)
 
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'tomify-recovery-'))
-  const committed = []
-  const importedTracks = []
-  const createdCovers = []
+  // Everything is prepared in a staging directory first (derivatives, sidecars, artwork), then listed in a manifest
+  // with its sha256 before the first file is committed, so a restart part-way can finish or undo the import.
+  // The agent passes its state directory; the temporary fallback is for callers that need no crash recovery.
+  const stateRoot = options.stateRoot || join(tmpdir(), 'tomify-import-state')
+  const importId = options.importId || randomUUID()
+  const stagingRoot = await prepareImportStaging(stateRoot, importId)
   try {
-    const artwork = groups.some((group) => group.requested) ? await prepareArtwork(job.request.artwork, temporaryRoot) : null
+    const artwork = groups.some((group) => group.requested) ? await prepareArtwork(job.request.artwork, stagingRoot) : null
     const providerType = job.indexer.type || 'newznab'
     const sourceUrl = job.result.detailsUrl || `${providerType}:${job.indexer.id}:${job.result.externalId || 'result'}`
     const acquiredAt = new Date().toISOString()
-    const coverCommits = new Map()
+    const entries = []
+    const plannedCovers = new Set()
     for (const group of artwork ? groups.filter((value) => value.requested) : []) {
       const releaseCoverPath = resolve(group.finalDirectory, 'cover.jpg')
-      const coverCommit = await commitCoverFile(artwork.coverPath, releaseCoverPath)
-      coverCommits.set(group.finalDirectory, coverCommit)
-      if (coverCommit.created) createdCovers.push(releaseCoverPath)
+      if (await pathExists(releaseCoverPath)) continue
+      plannedCovers.add(group.finalDirectory)
+      entries.push({ role: 'cover', source: artwork.coverPath, destination: releaseCoverPath, optional: true })
     }
+    const importedTracks = []
     for (const plan of plans) {
-      const taggedPath = join(plan.group.finalDirectory, `.${randomUUID()}${plan.derivativeExtension}`)
-      try {
-        const comment = torrent
-          ? `Tomify authorised torrent recovery copy; infohash=${job.torrent?.infoHash || 'unknown'}; authorisation=${job.request.authorisation.basis}`
-          : `Tomify authorised Usenet recovery copy; provider=${job.indexer.name}; authorisation=${job.request.authorisation.basis}`
-        const tags = ffmpegMetadataArguments({ ...plan.metadata, sourceUrl }, comment, plan.quality)
-        // The chosen artwork belongs to the wanted album, so other albums in a discography keep none.
-        const planArtwork = plan.group.requested ? artwork : null
-        const derivativePlan = buildDerivativeArguments({ sourcePath: plan.file.path, outputPath: taggedPath, coverPath: planArtwork?.coverPath || null, tags })
-        await run(ffmpeg, derivativePlan.args, 5 * 60_000)
-        const derivativeQuality = await probe(taggedPath)
-        await commitTrackFiles({ originalSource: plan.file.path, derivativeSource: taggedPath, originalPath: plan.originalPath, derivativePath: plan.finalPath })
-        committed.push(plan.originalPath, plan.finalPath)
-        const baseArtworkProvenance = buildArtworkProvenance(planArtwork, derivativePlan, resolve(plan.group.finalDirectory, 'cover.jpg'))
-        const coverCommit = coverCommits.get(plan.group.finalDirectory)
-        const artworkProvenance = baseArtworkProvenance ? { ...baseArtworkProvenance, coverFileCreated: Boolean(coverCommit?.created), existingCoverKept: Boolean(coverCommit?.existingCoverKept) } : null
-        const provenance = {
-          source: torrent ? 'torrent' : 'usenet', sourceUrl, providerType, providerName: job.indexer.name, providerId: job.indexer.id, providerResultId: job.result.resultId || job.result.externalId, postedTitle: job.result.title, detailsUrl: job.result.detailsUrl,
-          searchMode, postedAt: job.result.postedAt, postedSize: job.result.size, ageDaysAtDiscovery: job.result.ageDays, downloader: job.downloader,
-          ...(providerType === 'newznab' ? { newznabProvider: job.indexer.name, newznabResultId: job.result.externalId, newznabTitle: job.result.title } : {}),
-          ...(torrent ? { torrentInfoHash: job.torrent?.infoHash || null, torrentLinkType: job.torrent?.linkType || null, extractedFromArchive: Boolean(job.extractedPath && inside(plan.file.path, job.extractedPath)) } : {}),
-          completedFileCount: completedFiles.length, acquiredAt, rightsBasis: job.request.authorisation.basis,
-          confirmedBy: job.request.authorisation.confirmedBy || null, confirmedAt: job.request.authorisation.confirmedAt || null,
-          archiveStatus: torrent ? 'torrent-recovery-copy' : 'usenet-recovery-copy', wantedMetadata: job.request.wantedMetadata, resolvedMetadata: plan.metadata,
-          catalogueSource: job.request.catalogueSource, metadataResolution: job.request.metadataResolution, artwork: artworkProvenance,
-          releaseImport: { multiTrack: searchMode === 'release', acquisitionId: job.id, importedTrackNumber: plan.index + 1, importedTrackCount: plans.length, albumCount: groups.length, artist: plan.group.artist || releaseArtist || null, album: plan.group.album || null },
-          sourceAudio: { path: plan.originalPath, extension: plan.sourceExtension, quality: plan.quality, preservedOriginal: true },
-          derivative: { path: plan.finalPath, extension: plan.derivativeExtension, containerRemuxed: plan.sourceExtension !== plan.derivativeExtension, createdByTomify: true, operation: recoveryDerivativeOperation(plan.sourceExtension, plan.derivativeExtension, derivativePlan.embedded), audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
-        }
-        await writeFile(plan.sidecarPath, JSON.stringify(provenance, null, 2), { encoding: 'utf8', flag: 'wx' }); committed.push(plan.sidecarPath)
-        importedTracks.push({ path: plan.finalPath, originalPath: plan.originalPath, artist: plan.metadata.artist || null, albumArtist: plan.metadata.albumArtist || null, album: plan.metadata.album || null, title: plan.metadata.title, trackNumber: plan.metadata.trackNumber || null, discNumber: plan.metadata.discNumber || null, quality: plan.quality, derivative: provenance.derivative, artwork: artworkProvenance, provenance })
-      } finally {
-        await unlink(taggedPath).catch(() => {})
+      const stagedDerivative = join(stagingRoot, `${plan.index}${plan.derivativeExtension}`)
+      const stagedSidecar = join(stagingRoot, `${plan.index}.tomify.json`)
+      const comment = torrent
+        ? `Tomify authorised torrent recovery copy; infohash=${job.torrent?.infoHash || 'unknown'}; authorisation=${job.request.authorisation.basis}`
+        : `Tomify authorised Usenet recovery copy; provider=${job.indexer.name}; authorisation=${job.request.authorisation.basis}`
+      const tags = ffmpegMetadataArguments({ ...plan.metadata, sourceUrl }, comment, plan.quality)
+      // The chosen artwork belongs to the wanted album, so other albums in a discography keep none.
+      const planArtwork = plan.group.requested ? artwork : null
+      const derivativePlan = buildDerivativeArguments({ sourcePath: plan.file.path, outputPath: stagedDerivative, coverPath: planArtwork?.coverPath || null, tags })
+      await run(ffmpeg, derivativePlan.args, 5 * 60_000)
+      const derivativeQuality = await probe(stagedDerivative)
+      const baseArtworkProvenance = buildArtworkProvenance(planArtwork, derivativePlan, resolve(plan.group.finalDirectory, 'cover.jpg'))
+      const coverCreated = plannedCovers.has(plan.group.finalDirectory)
+      const artworkProvenance = baseArtworkProvenance ? { ...baseArtworkProvenance, coverFileCreated: coverCreated, existingCoverKept: !coverCreated } : null
+      const provenance = {
+        source: torrent ? 'torrent' : 'usenet', sourceUrl, providerType, providerName: job.indexer.name, providerId: job.indexer.id, providerResultId: job.result.resultId || job.result.externalId, postedTitle: job.result.title, detailsUrl: job.result.detailsUrl,
+        searchMode, postedAt: job.result.postedAt, postedSize: job.result.size, ageDaysAtDiscovery: job.result.ageDays, downloader: job.downloader,
+        ...(providerType === 'newznab' ? { newznabProvider: job.indexer.name, newznabResultId: job.result.externalId, newznabTitle: job.result.title } : {}),
+        ...(torrent ? { torrentInfoHash: job.torrent?.infoHash || null, torrentLinkType: job.torrent?.linkType || null, extractedFromArchive: Boolean(job.extractedPath && inside(plan.file.path, job.extractedPath)) } : {}),
+        completedFileCount: completedFiles.length, acquiredAt, rightsBasis: job.request.authorisation.basis,
+        confirmedBy: job.request.authorisation.confirmedBy || null, confirmedAt: job.request.authorisation.confirmedAt || null,
+        archiveStatus: torrent ? 'torrent-recovery-copy' : 'usenet-recovery-copy', wantedMetadata: job.request.wantedMetadata, resolvedMetadata: plan.metadata,
+        catalogueSource: job.request.catalogueSource, metadataResolution: job.request.metadataResolution, artwork: artworkProvenance,
+        releaseImport: { multiTrack: searchMode === 'release', acquisitionId: job.id, importedTrackNumber: plan.index + 1, importedTrackCount: plans.length, albumCount: groups.length, artist: plan.group.artist || releaseArtist || null, album: plan.group.album || null },
+        sourceAudio: { path: plan.originalPath, extension: plan.sourceExtension, quality: plan.quality, preservedOriginal: true },
+        derivative: { path: plan.finalPath, extension: plan.derivativeExtension, containerRemuxed: plan.sourceExtension !== plan.derivativeExtension, createdByTomify: true, operation: recoveryDerivativeOperation(plan.sourceExtension, plan.derivativeExtension, derivativePlan.embedded), audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
       }
+      await writeFile(stagedSidecar, JSON.stringify(provenance, null, 2), { encoding: 'utf8', flag: 'wx' })
+      entries.push(
+        { role: 'original', source: plan.file.path, destination: plan.originalPath },
+        { role: 'derivative', source: stagedDerivative, destination: plan.finalPath },
+        { role: 'sidecar', source: stagedSidecar, destination: plan.sidecarPath },
+      )
+      importedTracks.push({ path: plan.finalPath, originalPath: plan.originalPath, artist: plan.metadata.artist || null, albumArtist: plan.metadata.albumArtist || null, album: plan.metadata.album || null, title: plan.metadata.title, trackNumber: plan.metadata.trackNumber || null, discNumber: plan.metadata.discNumber || null, quality: plan.quality, derivative: provenance.derivative, artwork: artworkProvenance, provenance })
     }
     const first = importedTracks[0]
     const albums = groups.map((group) => ({ artist: group.artist || null, album: group.album || null, trackCount: group.items.length }))
+    const result = { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, albums, alreadyPresentCount: alreadyPresent.length, artwork: first.artwork, sourceFiles: [...plans.map((plan) => plan.file.path), ...alreadyPresent], downloadCleaned: false }
+    await runManifestImport({ stateRoot, id: importId, jobId: options.importId ? job.id : null, kind: torrent ? 'torrent' : 'usenet', root: canonicalRecoveryRoot, entries, result, afterCommit: options.afterCommit })
+
     const cleanupEnabled = options.sabnzbdCleanup ?? process.env.TOMIFY_SABNZBD_CLEANUP === 'true'
     const cleanupRoot = options.usenetDownloadRoot ?? process.env.TOMIFY_USENET_DOWNLOAD_DIR
     const cleanup = options.cleanupCompletedDownload || cleanupCompletedDownload
     const downloadCleaned = !torrent && job.downloader === 'sabnzbd' && cleanupEnabled
       ? await cleanup(job.completedPath, cleanupRoot).catch(() => false)
       : false
-    return { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, albums, alreadyPresentCount: alreadyPresent.length, artwork: first.artwork, sourceFiles: [...plans.map((plan) => plan.file.path), ...alreadyPresent], downloadCleaned }
-  } catch (error) {
-    for (const path of committed.reverse()) await unlink(path).catch(() => {})
-    for (const path of createdCovers) await unlink(path).catch(() => {})
-    throw error
+    return { ...result, downloadCleaned }
   } finally {
-    await rm(temporaryRoot, { recursive: true, force: true })
+    await removeImportStaging(stateRoot, importId)
   }
 }
 
