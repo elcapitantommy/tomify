@@ -9,6 +9,7 @@ import { selectCompletedAudio } from './usenet.mjs'
 import { foldName, preferRequestedName } from './text-encoding.mjs'
 import { cleanupCompletedDownload } from './commit.mjs'
 import { prepareImportStaging, removeImportStaging, runManifestImport, sha256File } from './manifest.mjs'
+import { existingTrackMatcher } from './preflight.mjs'
 
 function text(value) { return String(value ?? '').trim() }
 function inside(child, parent) { return child === parent || child.startsWith(parent + sep) }
@@ -152,6 +153,77 @@ export function releaseTrackMetadata(sourcePath, quality, releaseFallback, fallb
   }
 }
 
+function titleSimilarity(left, right) {
+  const a = foldName(left).replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  const b = foldName(right).replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  if (!a || !b) return 0
+  if (a === b) return 1
+  if (a.includes(b) || b.includes(a)) return 0.9
+  const leftTokens = new Set(a.split(/\s+/))
+  const rightTokens = new Set(b.split(/\s+/))
+  let shared = 0
+  for (const token of leftTokens) if (rightTokens.has(token)) shared += 1
+  return shared * 2 / (leftTokens.size + rightTokens.size)
+}
+
+function canonicalTrackMetadata(track, tracklist) {
+  return {
+    artist: track.artist || tracklist.artist || null,
+    albumArtist: tracklist.artist || track.artist || null,
+    album: tracklist.title || null,
+    title: track.title,
+    trackNumber: track.number,
+    discNumber: track.disc,
+    releaseDate: tracklist.date || null,
+    releaseId: tracklist.releaseId || null,
+    releaseGroupId: tracklist.releaseGroupId || null,
+    recordingId: track.recordingId || null,
+    isrc: track.isrc || null,
+  }
+}
+
+// Maps each valid downloaded audio file to at most one canonical MusicBrainz track. Position tags win;
+// title plus duration is the fallback for bad/missing positions, then filename positions are tried last.
+export function mapReleaseTracklist(inspected, tracklist) {
+  const tracks = (Array.isArray(tracklist?.tracks) ? tracklist.tracks : []).filter((track) => Number.isInteger(Number(track?.disc)) && Number(track.disc) > 0 && Number.isInteger(Number(track?.number)) && Number(track.number) > 0 && text(track?.title))
+  const remaining = new Set(tracks)
+  const matched = new Map()
+  const position = (disc, number) => {
+    if (!Number.isInteger(number) || number < 1) return null
+    const candidates = [...remaining].filter((track) => Number(track.number) === number && (!disc || Number(track.disc) === disc))
+    return candidates.length === 1 ? candidates[0] : null
+  }
+  const assign = (item, track) => {
+    if (!track || matched.has(item) || !remaining.has(track)) return false
+    remaining.delete(track)
+    matched.set(item, track)
+    return true
+  }
+
+  for (const item of inspected) {
+    const tags = sourceTags(item.quality)
+    const number = numericTag(tags.tracknumber || tags.track)
+    const disc = numericTag(tags.discnumber || tags.disc)
+    assign(item, position(disc, number))
+  }
+  for (const item of inspected.filter((value) => !matched.has(value))) {
+    const candidates = [...remaining].filter((track) => Number.isFinite(Number(track.length)) && Number.isFinite(Number(item.quality?.duration)) && Math.abs(Number(track.length) - Number(item.quality.duration)) <= 3)
+      .map((track) => ({ track, score: titleSimilarity(item.metadata.title, track.title) }))
+      .filter((candidate) => candidate.score >= 0.65)
+      .sort((left, right) => right.score - left.score || Number(left.track.disc) - Number(right.track.disc) || Number(left.track.number) - Number(right.track.number))
+    if (candidates.length && (candidates.length === 1 || candidates[0].score > candidates[1].score)) assign(item, candidates[0].track)
+  }
+  for (const item of inspected.filter((value) => !matched.has(value))) {
+    const filename = filenameMetadata(item.file.path, null)
+    assign(item, position(filename.discNumber, filename.trackNumber))
+  }
+
+  const items = inspected.filter((item) => matched.has(item)).map((item) => ({ ...item, metadata: canonicalTrackMetadata(matched.get(item), tracklist), tracklistTrack: matched.get(item) }))
+  const extraFiles = inspected.filter((item) => !matched.has(item)).map((item) => ({ path: item.file.path, name: item.file.name, title: item.metadata.title || null, duration: Number(item.quality?.duration) || null }))
+  const missingTracks = tracks.filter((track) => remaining.has(track)).map((track) => ({ key: track.key || `${track.disc}-${track.number}`, disc: Number(track.disc), number: Number(track.number), title: track.title, artist: track.artist || tracklist.artist || null, recordingId: track.recordingId || null, isrc: track.isrc || null }))
+  return { items, completeness: { matched: items.length, total: tracks.length, missingTracks, extraFiles } }
+}
+
 export function selectUsenetImportFiles(files, track, searchMode) {
   const ordered = [...files].sort((left, right) => left.name.localeCompare(right.name, 'en', { numeric: true, sensitivity: 'base' }))
   if (searchMode === 'release') return ordered
@@ -223,7 +295,7 @@ export async function importUsenetCompletion(job, completedFiles, options) {
   const searchMode = job.result.searchMode || 'track'
   const selectedFiles = selectUsenetImportFiles(completedFiles, job.request.track || {}, searchMode)
   if (!selectedFiles.length) throw new Error('No completed audio file matched the wanted track.')
-  const inspected = []
+  let inspected = []
   for (const [index, file] of selectedFiles.entries()) {
     const quality = await probe(file.path)
     if (!quality.codec || !quality.duration) {
@@ -236,14 +308,27 @@ export async function importUsenetCompletion(job, completedFiles, options) {
   const torrent = job.downloader === 'qbittorrent'
   if (!inspected.length) throw new Error(`The completed ${torrent ? 'torrent' : 'Usenet download'} contains no valid supported audio files.`)
 
-  const unifiedArtist = searchMode === 'release' ? await unifyReleaseArtist(inspected, job.request.track || {}, masterRoot) : null
-  const groups = searchMode === 'release' ? releaseAlbumGroups(inspected, job.request.track || {}, unifiedArtist) : [{ items: inspected, artist: job.request.track?.artist, album: job.request.track?.album, requested: true }]
-  const releaseArtist = searchMode === 'release' ? mostCommon(inspected.map((item) => item.metadata.albumArtist || item.metadata.artist)) || job.request.track?.artist : job.request.track?.artist
+  const tracklist = searchMode === 'release' && Array.isArray(job.request?.tracklist?.tracks) && job.request.tracklist.tracks.length ? job.request.tracklist : null
+  let completeness = null
+  if (tracklist) {
+    const mapped = mapReleaseTracklist(inspected, tracklist)
+    inspected = mapped.items
+    completeness = mapped.completeness
+    if (!inspected.length) throw new Error('No downloaded audio file matched the MusicBrainz tracklist.')
+  }
+  const unifiedArtist = searchMode === 'release' && !tracklist ? await unifyReleaseArtist(inspected, job.request.track || {}, masterRoot) : tracklist?.artist || null
+  const groups = tracklist
+    ? [{ items: inspected, artist: tracklist.artist || job.request.track?.artist, album: tracklist.title || job.request.track?.album, requested: true }]
+    : searchMode === 'release' ? releaseAlbumGroups(inspected, job.request.track || {}, unifiedArtist) : [{ items: inspected, artist: job.request.track?.artist, album: job.request.track?.album, requested: true }]
+  const releaseArtist = tracklist?.artist || (searchMode === 'release' ? mostCommon(inspected.map((item) => item.metadata.albumArtist || item.metadata.artist)) || job.request.track?.artist : job.request.track?.artist)
   const releaseAlbum = groups.length === 1 ? groups[0].album : null
   await mkdir(resolve(recoveryRoot), { recursive: true })
   const canonicalRecoveryRoot = await realpath(resolve(recoveryRoot))
   const plans = []
   const alreadyPresent = []
+  const skippedExisting = []
+  // skipExisting (duplicate preflight): a release leaves out tracks its destination already holds.
+  const skipExisting = searchMode === 'release' && job.request?.skipExisting === true
   const usedStems = new Set()
   for (const group of groups) {
     const finalDirectory = await resolveReleaseDirectory(recoveryRoot, group.artist, group.album)
@@ -254,10 +339,12 @@ export async function importUsenetCompletion(job, completedFiles, options) {
     sourceDirectory = await realpath(sourceDirectory)
     if (!inside(sourceDirectory, canonicalRecoveryRoot)) throw new Error('Unsafe recovery destination.')
     group.finalDirectory = finalDirectory
+    const alreadyInDestination = skipExisting ? await existingTrackMatcher(finalDirectory, { probe }) : null
 
     const discNumbers = new Set(group.items.map((item) => item.metadata.discNumber).filter((value) => Number.isInteger(value) && value > 0))
     const includeDiscInStem = discNumbers.size > 1 || [...discNumbers].some((value) => value > 1)
     for (const item of group.items) {
+      if (alreadyInDestination?.(item.metadata, item.quality)) { skippedExisting.push(item.file.path); continue }
       const sourceExtension = extname(item.file.path).toLowerCase() || '.mka'
       const derivativeExtension = recoveryDerivativeExtension(item.file.path, item.quality)
       const trackPrefix = Number.isInteger(item.metadata.trackNumber) && item.metadata.trackNumber > 0 ? String(item.metadata.trackNumber).padStart(2, '0') : ''
@@ -335,6 +422,7 @@ export async function importUsenetCompletion(job, completedFiles, options) {
         confirmedBy: job.request.authorisation.confirmedBy || null, confirmedAt: job.request.authorisation.confirmedAt || null,
         archiveStatus: torrent ? 'torrent-recovery-copy' : 'usenet-recovery-copy', wantedMetadata: job.request.wantedMetadata, resolvedMetadata: plan.metadata,
         catalogueSource: job.request.catalogueSource, metadataResolution: job.request.metadataResolution, artwork: artworkProvenance,
+        ...(completeness ? { completeness } : {}),
         releaseImport: { multiTrack: searchMode === 'release', acquisitionId: job.id, importedTrackNumber: plan.index + 1, importedTrackCount: plans.length, albumCount: groups.length, artist: plan.group.artist || releaseArtist || null, album: plan.group.album || null },
         sourceAudio: { path: plan.originalPath, extension: plan.sourceExtension, quality: plan.quality, preservedOriginal: true },
         derivative: { path: plan.finalPath, extension: plan.derivativeExtension, containerRemuxed: plan.sourceExtension !== plan.derivativeExtension, createdByTomify: true, operation: recoveryDerivativeOperation(plan.sourceExtension, plan.derivativeExtension, derivativePlan.embedded), audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
@@ -349,7 +437,7 @@ export async function importUsenetCompletion(job, completedFiles, options) {
     }
     const first = importedTracks[0]
     const albums = groups.map((group) => ({ artist: group.artist || null, album: group.album || null, trackCount: group.items.length }))
-    const result = { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, albums, alreadyPresentCount: alreadyPresent.length, artwork: first.artwork, sourceFiles: [...plans.map((plan) => plan.file.path), ...alreadyPresent], downloadCleaned: false }
+    const result = { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, albums, alreadyPresentCount: alreadyPresent.length, skippedExistingCount: skippedExisting.length, artwork: first.artwork, sourceFiles: [...plans.map((plan) => plan.file.path), ...alreadyPresent, ...skippedExisting], ...(completeness ? { completeness, extraFiles: completeness.extraFiles } : {}), downloadCleaned: false }
     await runManifestImport({ stateRoot, id: importId, jobId: options.importId ? job.id : null, kind: torrent ? 'torrent' : 'usenet', root: canonicalRecoveryRoot, entries, result, afterCommit: options.afterCommit })
 
     const cleanupEnabled = options.sabnzbdCleanup ?? process.env.TOMIFY_SABNZBD_CLEANUP === 'true'
@@ -373,12 +461,14 @@ export function importedUsenetSourceFiles(job, completedFiles) {
   return new Set([...recorded, ...firstImport.map((file) => file.path)])
 }
 
-// Imports the audio files a single-track Usenet job left behind, as a release, without downloading again.
+// Imports audio files left behind by a single-track job, or extras excluded by a MusicBrainz tracklist,
+// as an ordinary release without downloading again.
 export async function importRemainingUsenetFiles(job, completedFiles, options) {
   if (job.status !== 'completed') throw new Error('Only a completed download can have its remaining files imported.')
-  if ((job.result?.searchMode || 'track') === 'release') throw new Error('This download was already imported as a whole release.')
+  const tracklistExtras = Array.isArray(job.importResult?.completeness?.extraFiles) && job.importResult.completeness.extraFiles.length > 0
+  if ((job.result?.searchMode || 'track') === 'release' && !tracklistExtras) throw new Error('This download was already imported as a whole release.')
   const imported = importedUsenetSourceFiles(job, completedFiles)
   const remaining = completedFiles.filter((file) => !imported.has(file.path))
   if (!remaining.length) throw new Error('Every audio file in this download has already been imported.')
-  return importUsenetCompletion({ ...job, result: { ...job.result, searchMode: 'release' } }, remaining, options)
+  return importUsenetCompletion({ ...job, request: { ...job.request, tracklist: null }, result: { ...job.result, searchMode: 'release' } }, remaining, options)
 }

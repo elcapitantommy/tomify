@@ -44,7 +44,7 @@ read -r -a wrangler <<<"${WRANGLER:-wrangler}"
 
 [[ "$keep" =~ ^[1-9][0-9]*$ ]] || fail "BACKUP_KEEP must be a positive whole number, got '$keep'."
 [[ ${#wrangler[@]} -gt 0 ]] || fail "WRANGLER is empty."
-command -v "${wrangler[0]}" >/dev/null || fail "'${wrangler[0]}' was not found on PATH. Install wrangler (sudo npm install -g wrangler) or set WRANGLER."
+command -v "${wrangler[0]}" >/dev/null || fail "'${wrangler[0]}' was not found on PATH. Install wrangler (docs/RECOVERY.md, Backups) or set WRANGLER."
 command -v tar >/dev/null || fail "tar was not found on PATH."
 [[ -d "$state_dir" && -r "$state_dir" ]] || fail "agent state directory '$state_dir' does not exist or is not readable. Set TOMIFY_RECOVERY_STATE_DIR."
 

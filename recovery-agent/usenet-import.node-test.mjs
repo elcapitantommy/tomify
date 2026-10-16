@@ -128,6 +128,79 @@ test('release mode imports every audio file with shared artwork, originals, deri
   await assert.rejects(importUsenetCompletion(job('release'), discovered.files, { recoveryRoot, ...harness(qualities) }), /already in the recovery library/)
 })
 
+test('a MusicBrainz tracklist overrides bad tags, maps a two-disc release in priority order, and leaves extras for Import rest', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-tracklist-import-test-'))
+  const completed = await mkdtemp(join(tmpdir(), 'tomify-tracklist-completed-test-'))
+  const fixtures = [
+    ['wrong-tags.flac', 'position'],
+    ['mystery-audio.flac', 'similarity'],
+    ['02-01 - unknown.flac', 'filename'],
+    ['bonus-track.flac', 'extra'],
+  ]
+  for (const [name, content] of fixtures) await writeFile(join(completed, name), content)
+  const discovered = await findCompletedAudio(completed)
+  const qualities = {
+    'wrong-tags.flac': { codec: 'flac', container: 'flac', duration: 61, tags: { title: 'Wrong title', artist: 'Wrong artist', album: 'Wrong album', track: '1', disc: '1' } },
+    'mystery-audio.flac': { codec: 'flac', container: 'flac', duration: 122, tags: { title: 'Canonical Second Song', artist: 'Wrong artist' } },
+    '02-01 - unknown.flac': { codec: 'flac', container: 'flac', duration: 999, tags: { title: 'No useful title' } },
+    'bonus-track.flac': { codec: 'flac', container: 'flac', duration: 45, tags: { title: 'Bonus Track' } },
+  }
+  const tracklist = {
+    albumId: 'album-1', releaseId: '11111111-1111-1111-1111-111111111111', releaseGroupId: '22222222-2222-2222-2222-222222222222',
+    title: 'Canonical Album', artist: 'Canonical Artist', date: '1990-01-02', discCount: 2,
+    tracks: [
+      { key: '1-1', disc: 1, number: 1, title: 'Canonical First Song', artist: 'Canonical Artist', length: 61, recordingId: '31111111-1111-1111-1111-111111111111', isrc: 'USAAA9000001' },
+      { key: '1-2', disc: 1, number: 2, title: 'Canonical Second Song', artist: 'Guest Artist', length: 120, recordingId: '32222222-2222-2222-2222-222222222222', isrc: 'USAAA9000002' },
+      { key: '2-1', disc: 2, number: 1, title: 'Canonical Disc Two Opener', artist: 'Canonical Artist', length: 180, recordingId: '33333333-3333-3333-3333-333333333333', isrc: 'USAAA9000003' },
+      { key: '2-2', disc: 2, number: 2, title: 'Missing Finale', artist: 'Canonical Artist', length: 200, recordingId: '34444444-4444-4444-4444-444444444444', isrc: 'USAAA9000004' },
+    ],
+  }
+  const mappedJob = { ...job('release'), request: { ...job('release').request, tracklist } }
+  const tools = harness(qualities, false)
+  const result = await importUsenetCompletion(mappedJob, discovered.files, { recoveryRoot, ...tools })
+
+  assert.deepEqual(result.importedTracks.map((track) => [track.discNumber, track.trackNumber, track.title]), [
+    [2, 1, 'Canonical Disc Two Opener'],
+    [1, 2, 'Canonical Second Song'],
+    [1, 1, 'Canonical First Song'],
+  ])
+  assert.deepEqual(result.completeness, {
+    matched: 3,
+    total: 4,
+    missingTracks: [{ key: '2-2', disc: 2, number: 2, title: 'Missing Finale', artist: 'Canonical Artist', recordingId: '34444444-4444-4444-4444-444444444444', isrc: 'USAAA9000004' }],
+    extraFiles: [{ path: join(completed, 'bonus-track.flac'), name: 'bonus-track.flac', title: 'Bonus Track', duration: 45 }],
+  })
+  assert.deepEqual(result.extraFiles, result.completeness.extraFiles)
+  assert.equal(result.sourceFiles.includes(join(completed, 'bonus-track.flac')), false)
+  assert.equal(tools.ffmpegCalls.some((args) => args.includes('title=Canonical First Song') && args.includes('artist=Canonical Artist') && args.includes('album=Canonical Album') && args.includes('track=1') && args.includes('disc=1') && args.includes('MUSICBRAINZ_TRACKID=31111111-1111-1111-1111-111111111111') && args.includes('MUSICBRAINZ_ALBUMID=11111111-1111-1111-1111-111111111111') && args.includes('MUSICBRAINZ_RELEASEGROUPID=22222222-2222-2222-2222-222222222222') && args.includes('ISRC=USAAA9000001')), true)
+
+  const rest = await importRemainingUsenetFiles({ ...mappedJob, status: 'completed', importResult: result }, discovered.files, { recoveryRoot, ...harness(qualities, false) })
+  assert.equal(rest.importedCount, 1)
+  assert.equal(rest.importedTracks[0].title, 'Bonus Track')
+})
+
+test('Flood imports 19 of 19 with MusicBrainz titles', async () => {
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-flood-tracklist-import-test-'))
+  const completed = await mkdtemp(join(tmpdir(), 'tomify-flood-tracklist-completed-test-'))
+  const canonicalTitles = Array.from({ length: 19 }, (_, index) => `MusicBrainz Flood Track ${index + 1}`)
+  const qualities = {}
+  for (const [index, title] of canonicalTitles.entries()) {
+    const name = `${String(index + 1).padStart(2, '0')} - badly tagged ${index + 1}.flac`
+    await writeFile(join(completed, name), title)
+    qualities[name] = { codec: 'flac', container: 'flac', duration: 100 + index, tags: { title: `Bad title ${index + 1}`, artist: 'Bad artist', album: 'Bad album', track: String(index + 1), disc: '1' } }
+  }
+  const tracklist = {
+    albumId: 'flood', releaseId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', releaseGroupId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', title: 'Flood', artist: 'They Might Be Giants', date: '1990', discCount: 1,
+    tracks: canonicalTitles.map((title, index) => ({ key: `1-${index + 1}`, disc: 1, number: index + 1, title, artist: 'They Might Be Giants', length: 100 + index, recordingId: `cccccccc-cccc-cccc-cccc-${String(index + 1).padStart(12, '0')}`, isrc: `USAAA90${String(index + 1).padStart(5, '0')}` })),
+  }
+  const floodJob = { ...job('release'), request: { ...job('release').request, tracklist } }
+  const result = await importUsenetCompletion(floodJob, (await findCompletedAudio(completed)).files, { recoveryRoot, ...harness(qualities, false) })
+
+  assert.equal(result.importedCount, 19)
+  assert.deepEqual(result.importedTracks.map((track) => track.title), canonicalTitles)
+  assert.deepEqual(result.completeness, { matched: 19, total: 19, missingTracks: [], extraFiles: [] })
+})
+
 test('release tags that differ only by accents, or were mangled to U+FFFD, use the requested artist and album', () => {
   const request = job('release', { artist: 'Mötley Crüe', album: 'Dr. Feelgood' }).request.track
   const mangled = releaseTrackMetadata('/release/01 - T.n.T. (Terror \'n Tryin\').flac', { tags: { ARTIST: 'M\ufffdtley Cr\ufffde', ALBUM: 'Dr. Feelgood' } }, request, 1)

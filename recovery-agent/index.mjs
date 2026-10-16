@@ -17,6 +17,7 @@ import { decodeToolOutput } from './text-encoding.mjs'
 import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, detectImageMime, validateArtworkUrl } from './artwork.mjs'
 import { assertNzbIndexCandidateComplete, cancelAgentJob, cancelDownloader, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
 import { importRemainingUsenetFiles, importUsenetCompletion, planDestination } from './usenet-import.mjs'
+import { preflightRelease } from './preflight.mjs'
 import { validateRecoveryAuthConfig } from './config.mjs'
 import { createUsenetJobPoller } from './usenet-job.mjs'
 import { createJobRunner, jobPollIntervalMs } from './jobs.mjs'
@@ -466,7 +467,7 @@ async function queueUsenet(body) {
     downloader: submitted.downloader, remoteId: submitted.remoteId,
     indexer: { type: provider.type, id: provider.id, name: provider.name },
     result: { externalId: body.candidate.externalId || null, resultId: reference.resultId || reference.collectionId || reference.guid || null, title: body.candidate.title || null, detailsUrl: body.candidate.url || null, postedAt: reference.postedAt || null, searchMode: reference.searchMode || 'track', searchFields: Array.isArray(reference.searchFields) ? reference.searchFields : null, size: reference.size || null, ageDays: reference.ageDays || null },
-    request: { track: body.track || {}, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
+    request: { track: body.track || {}, tracklist: body.tracklist || null, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation, skipExisting: body.skipExisting === true },
   }
   await saveUsenetJob(job)
   jobRunner.track(id)
@@ -504,7 +505,7 @@ async function queueTorrent(body) {
     indexer: reference.providerId === 'qbittorrent-search' ? { type: 'torrent', id: 'qbittorrent-search', name: String(reference.providerName || 'Torrent search').slice(0, 120) } : { type: 'torrent', id: 'torrent-link', name: 'Torrent link' },
     torrent: { infoHash: candidate.provenance.infoHash, linkType: candidate.provenance.linkType },
     result: { externalId: body.candidate.externalId || null, resultId: candidate.provenance.resultId, title: body.candidate.title || null, detailsUrl: candidate.provenance.displayUrl, postedAt: null, searchMode, searchFields: Array.isArray(reference.searchFields) ? reference.searchFields : null, size: Number.isFinite(reference.size) ? reference.size : null, ageDays: null },
-    request: { track: body.track || {}, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
+    request: { track: body.track || {}, tracklist: body.tracklist || null, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation, skipExisting: body.skipExisting === true },
   }
   await saveUsenetJob(job)
   jobRunner.track(id)
@@ -759,6 +760,8 @@ createServer(async (request, response) => {
       if (body.backend === 'torrent') return send(response, 202, await queueTorrent(body))
       throw new Error('Unsupported recovery backend.')
     }
+    // Read-only: lists what the release directory an acquisition would use already holds.
+    if (request.url === '/v1/preflight') return send(response, 200, await preflightRelease(recoveryRoot, body, { probe }))
     // Read-only: the job runner advances jobs, so asking for status never starts a download step or an import.
     if (request.url === '/v1/jobs/status') return send(response, 200, await pollUsenetJob.read(body.jobId))
     if (request.url === '/v1/jobs/cancel') return send(response, 200, await cancelRecoveryJob(body))

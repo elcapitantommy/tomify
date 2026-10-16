@@ -11,7 +11,7 @@ import type { RecoveryPlayback } from '../lib/recovery'
 
 vi.mock('../lib/recovery-api', () => ({
   recoveryApi: {
-    list: vi.fn(), add: vi.fn(), search: vi.fn(), addTorrentLink: vi.fn(), select: vi.fn(), acquire: vi.fn(), importRemaining: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), cancel: vi.fn(), delete: vi.fn(), checkPlayback: vi.fn(), retryPlayback: vi.fn(),
+    list: vi.fn(), add: vi.fn(), search: vi.fn(), addTorrentLink: vi.fn(), select: vi.fn(), acquire: vi.fn(), importRemaining: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), cancel: vi.fn(), delete: vi.fn(), checkPlayback: vi.fn(), retryPlayback: vi.fn(), preflight: vi.fn(),
   },
 }))
 
@@ -240,6 +240,55 @@ describe('Recovery page actions', () => {
     }
     expect(artistChoice).not.toBeChecked()
     expect(screen.getByText('No artwork selected')).toBeInTheDocument()
+  })
+
+  it('warns about tracks already in recovery and the library before import, and skips them by default', async () => {
+    const releaseCandidate = { id: 'candidate-1', backend: 'usenet' as const, externalId: 'nzb-1', url: 'https://indexer.test/details/1', title: 'They Might Be Giants - Flood', channel: 'NZBIndex', official: false, matchScore: 90, selected: true, provenance: { raw: { searchMode: 'release' } } }
+    const wanted = item({ artist: 'They Might Be Giants', title: '', album: 'Flood', candidates: [releaseCandidate],
+      metadataResolution: { authority: 'musicbrainz', status: 'matched', confidence: 95, strong: true, candidateId: 'candidate-1', resolvedAt: '2026-01-01', metadata: { artist: 'They Might Be Giants', album: 'Flood' } },
+      artworkResolution: { candidateId: 'candidate-1', resolvedAt: '2026-01-01', selectedCandidateId: null, candidates: [] } })
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [wanted], backends })
+    vi.mocked(recoveryApi.preflight).mockResolvedValue({
+      target: { artist: 'They Might Be Giants', album: 'Flood', title: '', mode: 'release' }, directory: '/recovery/They Might Be Giants/Flood',
+      recovery: [{ title: 'Birdhouse in Your Soul', trackNumber: 2, discNumber: null, recordingId: null, tier: 'lossless', path: '/recovery/They Might Be Giants/Flood/02 - Birdhouse in Your Soul.flac' }],
+      library: [{ kind: 'album', id: 'album-1', title: 'Flood', artist: 'They Might Be Giants', songCount: 12 }],
+    })
+    vi.mocked(recoveryApi.acquire).mockResolvedValue({ item: wanted })
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /flood/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue to import' }))
+
+    expect(await screen.findByText('1 track already in recovery, Flood is already in your library (12 tracks)')).toBeInTheDocument()
+    expect(recoveryApi.preflight).toHaveBeenCalledWith('recovery-1', 'release')
+    const skip = screen.getByRole('checkbox', { name: 'Skip tracks I already have' })
+    expect(skip).toBeChecked()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'other-authorisation' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and import' }))
+    await act(async () => {})
+    expect(recoveryApi.acquire).toHaveBeenCalledWith('recovery-1', 'candidate-1', 'other-authorisation', expect.any(Object), null, true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue to import' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Skip tracks I already have' }))
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'other-authorisation' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and import' }))
+    await act(async () => {})
+    expect(recoveryApi.acquire).toHaveBeenLastCalledWith('recovery-1', 'candidate-1', 'other-authorisation', expect.any(Object), null, false)
+  })
+
+  it('shows no duplicate warning when nothing matches or the check fails', async () => {
+    const selectedCandidate = { id: 'candidate-1', backend: 'youtube' as const, externalId: 'video-1', url: 'https://www.youtube.com/watch?v=video-1', title: 'Zara Larsson - Lush Life', channel: 'Zara Larsson', official: true, matchScore: 97, selected: true }
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item({ candidates: [selectedCandidate],
+      metadataResolution: { authority: 'musicbrainz', status: 'matched', confidence: 97, strong: true, candidateId: 'candidate-1', resolvedAt: '2026-01-01', metadata: { artist: 'Zara Larsson', title: 'Lush Life' } },
+      artworkResolution: { candidateId: 'candidate-1', resolvedAt: '2026-01-01', selectedCandidateId: null, candidates: [] } })], backends })
+    vi.mocked(recoveryApi.preflight).mockRejectedValue(new Error('offline'))
+    renderRecovery()
+    fireEvent.click(await screen.findByRole('button', { name: /lush life/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue to import' }))
+    await act(async () => {})
+    expect(recoveryApi.preflight).toHaveBeenCalledWith('recovery-1', 'track')
+    expect(screen.queryByText(/already in/)).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: 'Skip tracks I already have' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Confirm and import' })).toBeInTheDocument()
   })
 
   it('shows the imported track count for a completed Usenet release', async () => {

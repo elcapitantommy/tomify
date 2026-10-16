@@ -809,6 +809,66 @@ test('a YouTube import is queued as an agent job, and an older agent that import
   })
 })
 
+test('release acquisition sends the cached MusicBrainz tracklist, then links imported tracks and requeues catalogue matches', async () => {
+  const db = await sqliteDatabase()
+  // sqliteDatabase() applies drizzle/, which creates every table this test uses.
+  const releaseId = '11111111-1111-1111-1111-111111111111'
+  const releaseGroupId = '22222222-2222-2222-2222-222222222222'
+  const tracklist = {
+    albumId: 'album-1', releaseId, releaseGroupId, title: 'Flood', artist: 'They Might Be Giants', date: '1990', discCount: 1, source: 'manual',
+    tracks: [
+      { key: '1-1', disc: 1, number: 1, title: 'Theme from Flood', artist: 'They Might Be Giants', length: 45, recordingId: '31111111-1111-1111-1111-111111111111', isrc: 'USAAA9000001' },
+      { key: '1-2', disc: 1, number: 2, title: 'Birdhouse in Your Soul', artist: 'They Might Be Giants', length: 190, recordingId: '32222222-2222-2222-2222-222222222222', isrc: 'USAAA9000002' },
+    ],
+  }
+  const metadataResolution = JSON.stringify({ candidateId: 'candidate-1', authority: 'musicbrainz', status: 'matched', confidence: 100, strong: true, metadata: { artist: 'They Might Be Giants', album: 'Flood', releaseId } })
+  const artworkResolution = JSON.stringify({ candidateId: 'candidate-1', candidates: [], selectedCandidateId: null })
+  db.sqlite.prepare('INSERT INTO recovery_items (id, username, artist, title, album, musicbrainz_id, metadata_resolution_json, artwork_resolution_json, source_json, status, selected_candidate_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('recovery-1', 'tom', 'They Might Be Giants', 'Flood', 'Flood', releaseGroupId, metadataResolution, artworkResolution, JSON.stringify({ albumId: 'album-1', releaseId }), 'candidate-found', 'candidate-1')
+  db.sqlite.prepare('INSERT INTO recovery_items (id, username, artist, title, album, musicbrainz_id, status) VALUES (?, ?, ?, ?, ?, ?, ?)').run('existing-track', 'tom', 'They Might Be Giants', 'Theme from Flood', 'Flood', tracklist.tracks[0].recordingId, 'missing')
+  db.sqlite.prepare('INSERT INTO recovery_candidates (id, recovery_id, backend, external_id, url, title, channel, match_score, selected, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('candidate-1', 'recovery-1', 'usenet', 'nzb-1', 'https://indexer.test/details/1', 'They Might Be Giants - Flood', 'Indexer', 100, 1, JSON.stringify({ searchMode: 'release', raw: { searchMode: 'release', providerId: 'indexer' } }))
+  db.sqlite.prepare('INSERT INTO release_tracklists (album_id, release_id, release_group_id, source, tracklist_json, editions_json) VALUES (?, ?, ?, ?, ?, ?)').run('album-1', releaseId, releaseGroupId, 'manual', JSON.stringify(tracklist), '[]')
+  db.sqlite.prepare('INSERT INTO catalogue_playlists (id, username, name, provider, provider_playlist_id, source_url) VALUES (?, ?, ?, ?, ?, ?)').run('playlist-1', 'tom', 'Flood', 'spotify', 'spotify-1', 'https://open.spotify.com/playlist/spotify-1')
+  for (const [index, track] of tracklist.tracks.entries()) db.sqlite.prepare('INSERT INTO catalogue_playlist_items (id, playlist_id, position, metadata_json, status, local_track_id, local_track_json, match_confidence, user_confirmed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(`catalogue-${index + 1}`, 'playlist-1', index, JSON.stringify({ title: track.title, album: 'Flood', artists: ['They Might Be Giants'], isrc: track.isrc }), 'available', `old-${index + 1}`, '{}', 100, 1)
+
+  const importedTracks = tracklist.tracks.map((track) => ({
+    path: `/recovery/They Might Be Giants/Flood/${String(track.number).padStart(2, '0')} - ${track.title}.flac`, originalPath: `/recovery/They Might Be Giants/Flood/.tomify-source/${track.title}.flac`,
+    artist: track.artist, albumArtist: 'They Might Be Giants', album: 'Flood', title: track.title, trackNumber: track.number, discNumber: track.disc,
+    quality: { codec: 'flac', container: 'flac', duration: track.length, sampleRate: 44100, channels: 2 },
+    provenance: { source: 'usenet', resolvedMetadata: { artist: track.artist, albumArtist: 'They Might Be Giants', album: 'Flood', title: track.title, trackNumber: track.number, discNumber: track.disc, recordingId: track.recordingId, releaseId, releaseGroupId, isrc: track.isrc } },
+  }))
+  let jobComplete = false
+  await withRecoveryAgent((path) => {
+    if (path === '/v1/status') return Response.json({ contract: 2 })
+    if (path === '/v1/acquire') return Response.json({ job: { id: 'release-job', status: 'queued', progress: 0, provider: 'Indexer', downloader: 'sabnzbd' } }, { status: 202 })
+    if (path === '/v1/jobs/status' && jobComplete) return Response.json({ job: { id: 'release-job', status: 'completed', progress: 100, result: { ...importedTracks[0], artist: 'They Might Be Giants', album: 'Flood', importedCount: 2, importedTracks, completeness: { matched: 2, total: 2, missingTracks: [], extraFiles: [] }, extraFiles: [] } } })
+    return Response.json({ error: 'unexpected-agent-request' }, { status: 500 })
+  }, async (requests) => {
+    const acquired = await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/acquire', { method: 'POST', headers: recoveryHeaders, body: JSON.stringify({ candidateId: 'candidate-1', confirmedAuthorised: true, rightsBasis: 'uploader-authorised' }) }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+    assert.equal(acquired.status, 202)
+    const acquireBody = requests.find(([path]) => path === '/v1/acquire')[1]
+    assert.deepEqual(acquireBody.tracklist, tracklist)
+    jobComplete = true
+    const completed = await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/job', { headers: recoveryHeaders }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+    assert.equal(completed.status, 200)
+  })
+
+  const recoveries = db.sqlite.prepare("SELECT id, title, musicbrainz_id AS recordingId, status FROM recovery_items WHERE username = 'tom' AND title != 'Flood' ORDER BY title").all().map((row) => ({ ...row }))
+  assert.equal(recoveries.length, 2)
+  assert.equal(recoveries.find((row) => row.title === 'Theme from Flood').id, 'existing-track')
+  assert.deepEqual(recoveries.map((row) => [row.title, row.recordingId, row.status]), [
+    ['Birdhouse in Your Soul', tracklist.tracks[1].recordingId, 'recovered'],
+    ['Theme from Flood', tracklist.tracks[0].recordingId, 'recovered'],
+  ])
+  const importedCandidates = db.sqlite.prepare("SELECT recovery_id AS recoveryId, imported_path AS importedPath FROM recovery_candidates WHERE recovery_id != 'recovery-1' ORDER BY imported_path").all().map((row) => ({ ...row }))
+  assert.equal(importedCandidates.length, 2)
+  assert.equal(importedCandidates.every((candidate) => candidate.importedPath.endsWith('.flac')), true)
+  const catalogue = db.sqlite.prepare('SELECT status, local_track_id AS localTrackId, local_track_json AS localTrackJson, recovery_id AS recoveryId, match_confidence AS confidence, user_confirmed AS confirmed FROM catalogue_playlist_items ORDER BY position').all().map((row) => ({ ...row }))
+  assert.deepEqual(catalogue.map((row) => ({ ...row, hasRecovery: Boolean(row.recoveryId), recoveryId: undefined })), [
+    { status: 'missing', localTrackId: null, localTrackJson: null, confidence: 0, confirmed: 0, hasRecovery: true, recoveryId: undefined },
+    { status: 'missing', localTrackId: null, localTrackJson: null, confidence: 0, confirmed: 0, hasRecovery: true, recoveryId: undefined },
+  ])
+})
+
 async function withRebootFetch({ admin, agent }, callback) {
   const originalFetch = globalThis.fetch
   const agentRequests = []
@@ -1347,4 +1407,70 @@ test('a database without a migrated table gets schema-out-of-date instead of the
 test('the built Worker runs no DDL on the request path', async () => {
   const source = await readFile(new URL('../dist/server/index.js', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /\b(CREATE (UNIQUE )?(TABLE|INDEX)|ALTER TABLE)\b/)
+})
+
+async function withPreflightStubs({ agent, albums = [], songs = [] }, callback) {
+  const calls = { agent: [], search3: [] }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    const ok = (body) => Response.json({ 'subsonic-response': { status: 'ok', ...body } })
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return ok({ user: { adminRole: true } })
+    if (url.pathname === '/rest/search3.view') { calls.search3.push(Object.fromEntries(url.searchParams)); return ok({ searchResult3: { album: albums, song: songs } }) }
+    if (url.pathname === '/v1/preflight') { calls.agent.push(JSON.parse(init.body)); return agent() }
+    return new Response('{}', { status: 404 })
+  }
+  try { await callback(calls) } finally { globalThis.fetch = originalFetch }
+}
+
+const preflightItem = () => recoveryJobDatabase({ status: 'candidate-found', candidate: { id: 'candidate-1', backend: 'usenet', selected: 1, importedPath: null, url: 'https://indexer.test/details/1', title: 'Flood', channel: 'Indexer', provenanceJson: JSON.stringify({ raw: { searchMode: 'release' } }) } })
+const preflightGet = (db, query = '') => worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/preflight' + query, { headers: recoveryHeaders }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+const floodExisting = [
+  { file: '02 - Birdhouse in Your Soul.flac', path: '/recovery/They Might Be Giants/Flood/02 - Birdhouse in Your Soul.flac', title: 'Birdhouse in Your Soul', trackNumber: 2, discNumber: null, recordingId: null, tier: 'lossless', source: 'sidecar' },
+  { file: '03 - Lucky Ball and Chain.mp3', path: '/recovery/They Might Be Giants/Flood/03 - Lucky Ball and Chain.mp3', title: 'Lucky Ball and Chain', trackNumber: 3, discNumber: null, recordingId: null, tier: 'lossy', source: 'tags' },
+]
+
+test('the duplicate preflight reports the recovery release directory and the same album already in the library', async () => {
+  const albums = [{ id: 'album-1', name: 'Flood', artist: 'They Might Be Giants', songCount: 19 }, { id: 'album-2', name: 'Flood', artist: 'Boris', songCount: 4 }, { id: 'album-3', name: 'Flood (Deluxe)', artist: 'They Might Be Giants', songCount: 25 }]
+  await withPreflightStubs({ agent: () => Response.json({ directory: '/recovery/They Might Be Giants/Flood', mode: 'release', existing: floodExisting }), albums }, async (calls) => {
+    const response = await preflightGet(preflightItem(), '?mode=release')
+    assert.equal(response.status, 200)
+    const body = await response.json()
+    assert.deepEqual(calls.agent, [{ artist: 'They Might Be Giants', album: 'Flood', title: 'Birdhouse in Your Soul', mode: 'release' }])
+    assert.equal(calls.search3[0].query, 'Flood')
+    assert.equal(calls.search3[0].albumCount, '20')
+    assert.equal(body.directory, '/recovery/They Might Be Giants/Flood')
+    assert.deepEqual(body.recovery.map((track) => track.title), ['Birdhouse in Your Soul', 'Lucky Ball and Chain'])
+    assert.deepEqual(body.library, [{ kind: 'album', id: 'album-1', title: 'Flood', artist: 'They Might Be Giants', songCount: 19 }])
+  })
+})
+
+test('a track preflight only counts the same title, in recovery and in the library', async () => {
+  const songs = [{ id: 'song-1', title: 'Birdhouse In Your Soul', artist: 'They Might Be Giants', album: 'Flood', path: 'They Might Be Giants/Flood/02.flac' }, { id: 'song-2', title: 'Birdhouse in Your Soul', artist: 'Someone Covering It', album: 'Covers' }]
+  await withPreflightStubs({ agent: () => Response.json({ directory: '/recovery/They Might Be Giants/Flood', mode: 'track', existing: floodExisting }), songs }, async (calls) => {
+    const body = await (await preflightGet(preflightItem(), '?mode=track')).json()
+    assert.equal(calls.search3[0].query, 'Birdhouse in Your Soul')
+    assert.deepEqual(body.recovery.map((track) => track.title), ['Birdhouse in Your Soul'])
+    assert.deepEqual(body.library.map((song) => song.id), ['song-1'])
+  })
+})
+
+test('the duplicate preflight treats an older agent without /v1/preflight as unknown, not as a failure', async () => {
+  await withPreflightStubs({ agent: () => Response.json({ error: 'not-found' }, { status: 404 }), albums: [{ id: 'album-1', name: 'Flood', artist: 'They Might Be Giants', songCount: 19 }] }, async () => {
+    const response = await preflightGet(preflightItem(), '?mode=release')
+    assert.equal(response.status, 200)
+    const body = await response.json()
+    assert.equal(body.recovery, null)
+    assert.equal(body.directory, null)
+    assert.equal(body.library.length, 1)
+  })
+})
+
+test('acquire passes skipExisting on to the agent', async () => {
+  const db = recoveryJobDatabase({ status: 'candidate-found', candidate: { id: 'candidate-1', backend: 'usenet', selected: 1, importedPath: null, url: 'https://indexer.test/details/1', externalId: 'x', title: 'Flood', channel: 'Indexer', provenanceJson: JSON.stringify({ raw: { searchMode: 'release' } }) } })
+  await withRecoveryAgent((path) => path === '/v1/status' ? Response.json({ contract: 2, backends: [] }) : Response.json({ job: { id: 'job-1', status: 'queued', progress: 0 } }, { status: 202 }), async (requests) => {
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/acquire', { method: 'POST', headers: recoveryHeaders, body: JSON.stringify({ candidateId: 'candidate-1', confirmedAuthorised: true, rightsBasis: 'other-authorisation', skipExisting: true }) }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+    assert.equal(response.status, 202)
+    assert.equal(requests.find(([path]) => path === '/v1/acquire')[1].skipExisting, true)
+  })
 })
