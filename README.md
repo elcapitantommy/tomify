@@ -211,6 +211,8 @@ Every import is sorted into a quality tier (lossless, transparent lossy, lossy o
 
 See [docs/RECOVERY.md](docs/RECOVERY.md) for the agent setup, backend contract and legal/quality boundaries.
 
+Downloads and imports finish on the media server even with no browser open: the agent advances its own queued jobs every `TOMIFY_JOB_POLL_SECONDS` (10 by default), and the Recovery page only shows their progress (see [Background jobs](docs/RECOVERY.md#background-jobs)).
+
 The recovery agent is deployed separately from the site. After any change under `recovery-agent/` or `shared/` (the agent imports `shared/quality.mjs`) is merged, copy it to the media server and restart it (see [Updating the recovery agent](docs/RECOVERY.md#updating-the-recovery-agent)); an out-of-date agent makes newer Recovery features fail.
 
 `scripts/backup.sh` backs up the D1 database and the agent's state nightly on the media server, and an external uptime check should watch the site and the agent's `/health`; see [Backups and uptime checks](docs/RECOVERY.md#backups-and-uptime-checks).

@@ -1,5 +1,5 @@
-import { constants as fsConstants, createReadStream } from 'node:fs'
-import { access, copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { access, lstat, mkdir, mkdtemp, readdir, realpath, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
@@ -8,6 +8,7 @@ import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './deri
 import { ffmpegMetadataArguments } from './metadata.mjs'
 import { selectCompletedAudio } from './usenet.mjs'
 import { foldName, preferRequestedName } from './text-encoding.mjs'
+import { cleanupCompletedDownload, commitCoverFile, commitTrackFiles } from './commit.mjs'
 
 function text(value) { return String(value ?? '').trim() }
 function inside(child, parent) { return child === parent || child.startsWith(parent + sep) }
@@ -296,6 +297,13 @@ export async function importUsenetCompletion(job, completedFiles, options) {
     const providerType = job.indexer.type || 'newznab'
     const sourceUrl = job.result.detailsUrl || `${providerType}:${job.indexer.id}:${job.result.externalId || 'result'}`
     const acquiredAt = new Date().toISOString()
+    const coverCommits = new Map()
+    for (const group of artwork ? groups.filter((value) => value.requested) : []) {
+      const releaseCoverPath = resolve(group.finalDirectory, 'cover.jpg')
+      const coverCommit = await commitCoverFile(artwork.coverPath, releaseCoverPath)
+      coverCommits.set(group.finalDirectory, coverCommit)
+      if (coverCommit.created) createdCovers.push(releaseCoverPath)
+    }
     for (const plan of plans) {
       const taggedPath = join(plan.group.finalDirectory, `.${randomUUID()}${plan.derivativeExtension}`)
       try {
@@ -308,9 +316,11 @@ export async function importUsenetCompletion(job, completedFiles, options) {
         const derivativePlan = buildDerivativeArguments({ sourcePath: plan.file.path, outputPath: taggedPath, coverPath: planArtwork?.coverPath || null, tags })
         await run(ffmpeg, derivativePlan.args, 5 * 60_000)
         const derivativeQuality = await probe(taggedPath)
-        await copyFile(plan.file.path, plan.originalPath, fsConstants.COPYFILE_EXCL); committed.push(plan.originalPath)
-        await copyFile(taggedPath, plan.finalPath, fsConstants.COPYFILE_EXCL); committed.push(plan.finalPath)
-        const artworkProvenance = buildArtworkProvenance(planArtwork, derivativePlan, resolve(plan.group.finalDirectory, 'cover.jpg'))
+        await commitTrackFiles({ originalSource: plan.file.path, derivativeSource: taggedPath, originalPath: plan.originalPath, derivativePath: plan.finalPath })
+        committed.push(plan.originalPath, plan.finalPath)
+        const baseArtworkProvenance = buildArtworkProvenance(planArtwork, derivativePlan, resolve(plan.group.finalDirectory, 'cover.jpg'))
+        const coverCommit = coverCommits.get(plan.group.finalDirectory)
+        const artworkProvenance = baseArtworkProvenance ? { ...baseArtworkProvenance, coverFileCreated: Boolean(coverCommit?.created), existingCoverKept: Boolean(coverCommit?.existingCoverKept) } : null
         const provenance = {
           source: torrent ? 'torrent' : 'usenet', sourceUrl, providerType, providerName: job.indexer.name, providerId: job.indexer.id, providerResultId: job.result.resultId || job.result.externalId, postedTitle: job.result.title, detailsUrl: job.result.detailsUrl,
           searchMode, postedAt: job.result.postedAt, postedSize: job.result.size, ageDaysAtDiscovery: job.result.ageDays, downloader: job.downloader,
@@ -330,17 +340,15 @@ export async function importUsenetCompletion(job, completedFiles, options) {
         await unlink(taggedPath).catch(() => {})
       }
     }
-    for (const group of artwork ? groups.filter((value) => value.requested) : []) {
-      const releaseCoverPath = resolve(group.finalDirectory, 'cover.jpg')
-      try { await access(releaseCoverPath) } catch (error) {
-        if (error?.code !== 'ENOENT') throw error
-        const stagedCoverPath = join(group.finalDirectory, `.${randomUUID()}.cover.jpg`)
-        try { await copyFile(artwork.coverPath, stagedCoverPath, fsConstants.COPYFILE_EXCL); await rename(stagedCoverPath, releaseCoverPath); createdCovers.push(releaseCoverPath) } finally { await unlink(stagedCoverPath).catch(() => {}) }
-      }
-    }
     const first = importedTracks[0]
     const albums = groups.map((group) => ({ artist: group.artist || null, album: group.album || null, trackCount: group.items.length }))
-    return { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, albums, alreadyPresentCount: alreadyPresent.length, artwork: first.artwork, sourceFiles: [...plans.map((plan) => plan.file.path), ...alreadyPresent] }
+    const cleanupEnabled = options.sabnzbdCleanup ?? process.env.TOMIFY_SABNZBD_CLEANUP === 'true'
+    const cleanupRoot = options.usenetDownloadRoot ?? process.env.TOMIFY_USENET_DOWNLOAD_DIR
+    const cleanup = options.cleanupCompletedDownload || cleanupCompletedDownload
+    const downloadCleaned = !torrent && job.downloader === 'sabnzbd' && cleanupEnabled
+      ? await cleanup(job.completedPath, cleanupRoot).catch(() => false)
+      : false
+    return { ...first, importedCount: importedTracks.length, importedTracks, artist: releaseArtist || null, album: releaseAlbum || null, albums, alreadyPresentCount: alreadyPresent.length, artwork: first.artwork, sourceFiles: [...plans.map((plan) => plan.file.path), ...alreadyPresent], downloadCleaned }
   } catch (error) {
     for (const path of committed.reverse()) await unlink(path).catch(() => {})
     for (const path of createdCovers) await unlink(path).catch(() => {})

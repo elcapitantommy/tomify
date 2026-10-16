@@ -83,6 +83,7 @@ test('release mode imports every audio file with shared artwork, originals, deri
   const recoveryRoot = await mkdtemp(join(tmpdir(), 'tomify-release-import-test-'))
   const canonicalAlbum = join(recoveryRoot, 'They Might Be Giants', 'Flood')
   await mkdir(canonicalAlbum, { recursive: true })
+  await writeFile(join(canonicalAlbum, 'cover.jpg'), 'existing library cover')
   const completed = await mkdtemp(join(tmpdir(), 'tomify-release-completed-test-'))
   await writeFile(join(completed, '01 - Theme from Flood.mp3'), 'one')
   await writeFile(join(completed, '02 - Birdhouse in Your Soul.mp3'), 'two')
@@ -102,7 +103,7 @@ test('release mode imports every audio file with shared artwork, originals, deri
   assert.equal(result.artist, 'They Might Be Giants')
   assert.equal(result.album, 'Flood')
   assert.equal(tools.artworkCalls, 1)
-  await access(join(canonicalAlbum, 'cover.jpg'))
+  assert.equal(await readFile(join(canonicalAlbum, 'cover.jpg'), 'utf8'), 'existing library cover')
   for (const track of result.importedTracks) {
     assert.equal(track.path.startsWith(canonicalAlbum), true)
     assert.equal(track.originalPath.startsWith(join(canonicalAlbum, '.tomify-source')), true)
@@ -114,6 +115,8 @@ test('release mode imports every audio file with shared artwork, originals, deri
     assert.equal(provenance.releaseImport.multiTrack, true)
     assert.equal(provenance.releaseImport.acquisitionId, 'release-acquisition-id')
     assert.equal(provenance.resolvedMetadata.recordingId, null)
+    assert.equal(provenance.artwork.coverFileCreated, false)
+    assert.equal(provenance.artwork.existingCoverKept, true)
   }
   assert.equal(result.importedTracks[0].title, 'Theme from Flood')
   assert.equal(result.importedTracks[0].trackNumber, 1)
@@ -162,7 +165,30 @@ test('single-track mode preserves the existing one-result payload shape', async 
   assert.equal(result.importedTracks.length, 1)
   assert.equal(result.path, result.importedTracks[0].path)
   assert.equal(result.provenance.searchMode, 'track')
+  assert.equal(result.downloadCleaned, false)
+  await access(completed)
   assert.equal((await readdir(join(recoveryRoot, 'they might be giants', 'flood'))).filter((name) => name.endsWith('.mp3')).length, 1)
+})
+
+test('the SABnzbd cleanup flag removes only a completed folder inside the download root', async () => {
+  const downloadRoot = await mkdtemp(join(tmpdir(), 'tomify-sab-cleanup-root-'))
+  const completed = join(downloadRoot, 'inside-job')
+  const outside = await mkdtemp(join(tmpdir(), 'tomify-sab-cleanup-outside-'))
+  await mkdir(completed)
+  const insideFile = join(completed, '07 - Birdhouse in Your Soul.mp3')
+  const outsideFile = join(outside, '07 - Birdhouse in Your Soul.mp3')
+  await writeFile(insideFile, 'inside')
+  await writeFile(outsideFile, 'outside')
+
+  const insideJob = { ...job('track'), completedPath: completed }
+  const insideResult = await importUsenetCompletion(insideJob, [{ name: basename(insideFile), path: insideFile }], { recoveryRoot: await mkdtemp(join(tmpdir(), 'tomify-sab-cleanup-recovery-')), ...harness({}, false), sabnzbdCleanup: true, usenetDownloadRoot: downloadRoot })
+  assert.equal(insideResult.downloadCleaned, true)
+  await assert.rejects(access(completed))
+
+  const outsideJob = { ...job('track'), completedPath: outside }
+  const outsideResult = await importUsenetCompletion(outsideJob, [{ name: basename(outsideFile), path: outsideFile }], { recoveryRoot: await mkdtemp(join(tmpdir(), 'tomify-sab-outside-recovery-')), ...harness({}, false), sabnzbdCleanup: true, usenetDownloadRoot: downloadRoot })
+  assert.equal(outsideResult.downloadCleaned, false)
+  await access(outside)
 })
 
 test('a discography torrent imports each album into its own folder instead of failing on clashing track names', async () => {

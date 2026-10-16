@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
 import { createWriteStream } from 'node:fs'
-import { access, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, timingSafeEqual } from 'node:crypto'
@@ -20,10 +20,12 @@ import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, fi
 import { importRemainingUsenetFiles, importUsenetCompletion, planDestination } from './usenet-import.mjs'
 import { validateRecoveryAuthConfig } from './config.mjs'
 import { createUsenetJobPoller } from './usenet-job.mjs'
+import { createJobRunner, jobPollIntervalMs } from './jobs.mjs'
 import { rebootConfig, scheduleReboot } from './system.mjs'
 import { createVpnController, nordvpnEnvironment, nordvpnFailureMessage, vpnConfig } from './vpn.mjs'
 import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobState, torrentCandidate, torrentCapability, torrentConfig, torrentSearchCandidates } from './torrent.mjs'
 import { healthResponse, recoveryAgentPackageVersion } from './health.mjs'
+import { commitCoverFile, commitTrackFiles } from './commit.mjs'
 
 let authConfiguration
 try { authConfiguration = validateRecoveryAuthConfig() }
@@ -315,27 +317,23 @@ async function acquireYouTube(body) {
 
     const artwork = await prepareArtwork(body.artwork, temporaryRoot)
     const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${derivativeExtension}`)
-    const stagedCoverPath = join(finalDirectory, `.${crypto.randomUUID()}.cover.jpg`)
     const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
     if (!inside(releaseCoverPath, recoveryRoot)) throw new Error('Unsafe recovery artwork destination.')
     const comment = `Tomify lossy recovery copy; source=${sourceUrl}; authorisation=${body.authorisation.basis}`
     const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment, sourceQuality)
     const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
-    let originalCommitted = false
-    let derivativeCommitted = false
+    let trackCommitted = false
+    let coverCreated = false
     try {
       await run(ffmpeg, derivativePlan.args, 5 * 60_000)
       const derivativeQuality = await probe(taggedPath)
-      await copyFile(sourcePath, originalPath, fsConstants.COPYFILE_EXCL)
-      originalCommitted = true
-      await copyFile(taggedPath, finalPath, fsConstants.COPYFILE_EXCL)
-      derivativeCommitted = true
-      if (artwork) {
-        await copyFile(artwork.coverPath, stagedCoverPath, fsConstants.COPYFILE_EXCL)
-        await rename(stagedCoverPath, releaseCoverPath)
-      }
+      await commitTrackFiles({ originalSource: sourcePath, derivativeSource: taggedPath, originalPath, derivativePath: finalPath })
+      trackCommitted = true
+      const coverCommit = artwork ? await commitCoverFile(artwork.coverPath, releaseCoverPath) : null
+      coverCreated = Boolean(coverCommit?.created)
       const importedAt = new Date().toISOString()
-      const artworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+      const baseArtworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+      const artworkProvenance = baseArtworkProvenance ? { ...baseArtworkProvenance, coverFileCreated: coverCreated, existingCoverKept: Boolean(coverCommit?.existingCoverKept) } : null
       const provenance = {
         source: 'youtube', sourceUrl, videoId: String(metadata.id || body.candidate.externalId || ''), sourceTitle: String(metadata.title || body.candidate.title || ''),
         sourceChannel: String(metadata.channel || metadata.uploader || body.candidate.channel || ''), acquisitionMode: acquisition.authenticatedAccessUsed ? 'authenticated-youtube-session' : 'anonymous-youtube',
@@ -351,12 +349,14 @@ async function acquireYouTube(body) {
       return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
     } catch (error) {
       await unlink(`${finalPath}.tomify.json`).catch(() => {})
-      if (derivativeCommitted) await unlink(finalPath).catch(() => {})
-      if (originalCommitted) await unlink(originalPath).catch(() => {})
+      if (coverCreated) await unlink(releaseCoverPath).catch(() => {})
+      if (trackCommitted) {
+        await unlink(finalPath).catch(() => {})
+        await unlink(originalPath).catch(() => {})
+      }
       throw error
     } finally {
       await unlink(taggedPath).catch(() => {})
-      await unlink(stagedCoverPath).catch(() => {})
     }
   } finally {
     const resolvedTemporaryRoot = resolve(temporaryRoot)
@@ -389,28 +389,24 @@ async function acquireInternetArchive(body) {
     }
     const artwork = await prepareArtwork(body.artwork, temporaryRoot)
     const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${derivativeExtension}`)
-    const stagedCoverPath = join(finalDirectory, `.${crypto.randomUUID()}.cover.jpg`)
     const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
     if (!inside(releaseCoverPath, recoveryRoot)) throw new Error('Unsafe recovery artwork destination.')
     const sourceUrl = `https://archive.org/details/${encodeURIComponent(identifier)}`
     const comment = `Tomify Internet Archive recovery copy; source=${sourceUrl}; authorisation=${body.authorisation.basis}`
     const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment, sourceQuality)
     const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
-    let originalCommitted = false
-    let derivativeCommitted = false
+    let trackCommitted = false
+    let coverCreated = false
     try {
       await run(ffmpeg, derivativePlan.args, 5 * 60_000)
       const derivativeQuality = await probe(taggedPath)
-      await copyFile(sourcePath, originalPath, fsConstants.COPYFILE_EXCL)
-      originalCommitted = true
-      await copyFile(taggedPath, finalPath, fsConstants.COPYFILE_EXCL)
-      derivativeCommitted = true
-      if (artwork) {
-        await copyFile(artwork.coverPath, stagedCoverPath, fsConstants.COPYFILE_EXCL)
-        await rename(stagedCoverPath, releaseCoverPath)
-      }
+      await commitTrackFiles({ originalSource: sourcePath, derivativeSource: taggedPath, originalPath, derivativePath: finalPath })
+      trackCommitted = true
+      const coverCommit = artwork ? await commitCoverFile(artwork.coverPath, releaseCoverPath) : null
+      coverCreated = Boolean(coverCommit?.created)
       const acquiredAt = new Date().toISOString()
-      const artworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+      const baseArtworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+      const artworkProvenance = baseArtworkProvenance ? { ...baseArtworkProvenance, coverFileCreated: coverCreated, existingCoverKept: Boolean(coverCommit?.existingCoverKept) } : null
       const provenance = {
         source: 'internet-archive', sourceUrl, archiveIdentifier: identifier, archiveFilename: filename,
         archiveDownloadUrl: download.finalUrl, archiveItemTitle: metadata.metadata?.title || null, archiveCreator: metadata.metadata?.creator || null,
@@ -426,12 +422,14 @@ async function acquireInternetArchive(body) {
       return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
     } catch (error) {
       await unlink(`${finalPath}.tomify.json`).catch(() => {})
-      if (derivativeCommitted) await unlink(finalPath).catch(() => {})
-      if (originalCommitted) await unlink(originalPath).catch(() => {})
+      if (coverCreated) await unlink(releaseCoverPath).catch(() => {})
+      if (trackCommitted) {
+        await unlink(finalPath).catch(() => {})
+        await unlink(originalPath).catch(() => {})
+      }
       throw error
     } finally {
       await unlink(taggedPath).catch(() => {})
-      await unlink(stagedCoverPath).catch(() => {})
     }
   } finally {
     const resolvedTemporaryRoot = resolve(temporaryRoot)
@@ -487,6 +485,7 @@ async function queueUsenet(body) {
     request: { track: body.track || {}, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
   }
   await saveUsenetJob(job)
+  jobRunner.track(id)
   return { job: { id, status: 'queued', progress: 0, provider: provider.name, downloader: submitted.downloader } }
 }
 
@@ -524,7 +523,31 @@ async function queueTorrent(body) {
     request: { track: body.track || {}, wantedMetadata: body.wantedMetadata || null, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: body.artwork || null, authorisation: body.authorisation },
   }
   await saveUsenetJob(job)
+  jobRunner.track(id)
   return { job: { id, status: 'queued', progress: 0, provider: job.indexer.name, downloader: submitted.downloader } }
+}
+
+const directAcquisitions = { youtube: { name: 'YouTube', acquire: (request) => acquireYouTube(request) }, 'internet-archive': { name: 'Internet Archive', acquire: (request) => acquireInternetArchive(request) } }
+
+// A YouTube or Internet Archive acquisition queued as a job for the runner, for a Worker that asks for one with
+// `background: true`. Older Workers do not, and still get the synchronous result.
+async function queueDirectAcquisition(body) {
+  if (body?.authorisation?.confirmed !== true || !body.authorisation.basis) throw new Error('Explicit source authorisation is required.')
+  const backend = directAcquisitions[body.backend]
+  if (body.backend === 'youtube') youtubeUrl(body?.candidate?.url)
+  if (body.backend === 'internet-archive' && (!body?.candidate?.provenance?.identifier || !body.candidate.provenance.filename)) throw new Error('The selected Internet Archive file is no longer valid.')
+  const id = crypto.randomUUID()
+  const { background: _background, ...request } = body
+  const job = {
+    id, version: 1, status: 'queued', progress: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    downloader: body.backend, remoteId: null,
+    indexer: { type: body.backend, id: body.backend, name: backend.name },
+    result: { externalId: body.candidate?.externalId || null, resultId: null, title: body.candidate?.title || null, detailsUrl: body.candidate?.url || null },
+    request,
+  }
+  await saveUsenetJob(job)
+  jobRunner.track(id)
+  return { job: { id, status: 'queued', progress: 0, provider: backend.name, downloader: body.backend } }
 }
 
 async function torrentStatus(job) {
@@ -590,7 +613,8 @@ async function cancelTorrentJob(body) {
   catch (error) { if (error?.code === 'ENOENT') return { cancelled: true, torrentRemoved: false }; throw error }
   if (job.downloader !== 'qbittorrent') throw new Error('Only torrent downloads can be cancelled.')
   if (!qbittorrent) throw new Error('Torrent downloads are not configured on the recovery agent.')
-  // A status poll may be importing this torrent right now; wait for it so its files can be cleaned up too.
+  // The runner may be importing this torrent right now; stop it advancing the job and wait so its files can be cleaned up too.
+  await jobRunner.forget(job.id)
   await pollUsenetJob.settled(job.id)
   job = await loadUsenetJob(job.id)
   const torrentRemoved = await removeTorrent(job)
@@ -603,8 +627,13 @@ async function cancelTorrentJob(body) {
 const pollUsenetJob = createUsenetJobPoller({
   loadJob: loadUsenetJob,
   saveJob: saveUsenetJob,
-  downloaderStatus: (remoteId, job) => job?.downloader === 'qbittorrent' ? torrentStatus(job) : downloaderStatus(usenetDownloader, remoteId, fetch, job),
+  downloaderStatus: (remoteId, job) => {
+    // A direct acquisition has no separate downloader: it downloads and imports in one step.
+    if (directAcquisitions[job?.downloader]) return { status: 'completed', progress: 0, message: `Downloading from ${directAcquisitions[job.downloader].name}` }
+    return job?.downloader === 'qbittorrent' ? torrentStatus(job) : downloaderStatus(usenetDownloader, remoteId, fetch, job)
+  },
   completeJob: async (job, state) => {
+    if (directAcquisitions[job.downloader]) return directAcquisitions[job.downloader].acquire(job.request)
     const options = { recoveryRoot, masterRoot, probe, prepareArtwork, run, ffmpeg }
     if (job.downloader === 'qbittorrent') return completeTorrentJob(job, state, (files) => importUsenetCompletion(job, files, options))
     const completedPath = await validateCompletedPath(state.completedPath, usenetDownloadRoot, usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null)
@@ -612,7 +641,15 @@ const pollUsenetJob = createUsenetJobPoller({
     job.completedPath = completedPath
     return importUsenetCompletion(job, discovered.files, options)
   },
-  sanitizeError: (error) => sanitizeToolError(error instanceof Error ? error.message : 'Usenet recovery failed.', []),
+  sanitizeError: (error) => sanitizeToolError(error instanceof Error ? error.message : 'Usenet recovery failed.', [youtubeCookies]),
+})
+
+// Advances every queued job in the background, so downloads and imports finish with no browser open.
+const jobRunner = createJobRunner({
+  listJobs: savedUsenetJobs,
+  advance: pollUsenetJob,
+  intervalMs: jobPollIntervalMs(),
+  log: (message) => process.stderr.write(`${message}\n`),
 })
 
 const remainingImports = new Map()
@@ -622,6 +659,7 @@ async function importRemainingUsenet(body) {
   if (remainingImports.has(key)) throw new Error('The remaining files from this download are already being imported.')
   const operation = (async () => {
     const job = await loadUsenetJob(key)
+    if (directAcquisitions[job.downloader]) throw new Error('Only a completed Usenet import can have the rest of its download imported.')
     if (job.downloader === 'qbittorrent') throw new Error('Torrents are removed from qBittorrent once imported, so there is nothing left to import. Add the album as wanted music (leave the track blank) and paste the link again.')
     let reportedPath = job.completedPath
     if (!reportedPath) {
@@ -698,13 +736,15 @@ createServer(async (request, response) => {
       throw new Error('Unsupported recovery backend.')
     }
     if (request.url === '/v1/acquire') {
+      if (directAcquisitions[body.backend] && body.background === true) return send(response, 202, await queueDirectAcquisition(body))
       if (body.backend === 'youtube') return send(response, 200, await acquireYouTube(body))
       if (body.backend === 'internet-archive') return send(response, 200, await acquireInternetArchive(body))
       if (body.backend === 'usenet') return send(response, 202, await queueUsenet(body))
       if (body.backend === 'torrent') return send(response, 202, await queueTorrent(body))
       throw new Error('Unsupported recovery backend.')
     }
-    if (request.url === '/v1/jobs/status') return send(response, 200, await pollUsenetJob(body.jobId))
+    // Read-only: the job runner advances jobs, so asking for status never starts a download step or an import.
+    if (request.url === '/v1/jobs/status') return send(response, 200, await pollUsenetJob.read(body.jobId))
     if (request.url === '/v1/jobs/cancel') return send(response, 200, await cancelTorrentJob(body))
     if (request.url === '/v1/jobs/import-remaining') return send(response, 200, await importRemainingUsenet(body))
     if (request.url === '/v1/delete') return send(response, 200, await deleteImportedRecovery(body))
@@ -717,3 +757,5 @@ createServer(async (request, response) => {
     return send(response, 400, { error: 'recovery-agent-error', message })
   }
 }).listen(port, host, () => process.stdout.write(`Tomify recovery agent listening on http://${host}:${port}\n`))
+
+await jobRunner.start()
