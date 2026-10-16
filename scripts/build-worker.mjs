@@ -12,6 +12,7 @@ import { livePlaybackWorkerSource } from './live-playback-worker.mjs'
 import { qualityWorkerSource } from './quality-worker.mjs'
 import { libraryScanWorkerSource } from './library-scan-worker.mjs'
 import { preflightWorkerSource } from './preflight-worker.mjs'
+import { inventoryWorkerSource } from './inventory-worker.mjs'
 
 const outputDirectory = new URL('../dist/', import.meta.url)
 const workerPath = new URL('../dist/server/index.js', import.meta.url)
@@ -80,6 +81,8 @@ ${qualityWorkerSource}
 ${libraryScanWorkerSource}
 
 ${preflightWorkerSource}
+
+${inventoryWorkerSource}
 
 function decode(value) {
   const binary = atob(value)
@@ -584,6 +587,8 @@ const tomifyRoutes = {
     if (libraryScanResponse) return libraryScanResponse
     const preflightResponse = await handlePreflightRequest(request, env, url)
     if (preflightResponse) return preflightResponse
+    const inventoryResponse = await handleInventoryRequest(request, env, url)
+    if (inventoryResponse) return inventoryResponse
 
     if (pathname === '/api/version' && request.method === 'GET') return json({ version: TOMIFY_VERSION, contract: TOMIFY_AGENT_CONTRACT })
 

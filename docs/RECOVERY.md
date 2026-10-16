@@ -55,6 +55,31 @@ Changing the target does not rewrite existing items. **Re-check quality labels**
 
 The agent writes the tier into each file's `TOMIFY_ARCHIVE_STATUS` tag (`lossless`, `transparent-lossy`, `lossy` or `unknown`). Files imported before this change keep their old `lossy-recovery-copy` tag. The provenance sidecar's `archiveStatus` still names the source, for example `usenet-recovery-copy`.
 
+## Read-only library inventory
+
+The recovery agent can inventory both `TOMIFY_MASTER_DIR` and `TOMIFY_RECOVERY_DIR` without changing either library. It walks regular audio files without following symbolic links and records each file's absolute path, byte size, modification time, FFprobe codec/bitrate/sample-rate/duration summary, shared quality tier, key music tags and MusicBrainz identifiers. Recovery provenance sidecars are linked to their audio and preserved `.tomify-source` path; malformed and orphan sidecars are retained in the inventory so the library-health work can report them later. Hidden directories are skipped, so the `.tomify-source` originals behind recovery derivatives are not counted as library tracks (they are reachable through their sidecars). The recovery library is only counted once: a directory inside `TOMIFY_MASTER_DIR` that is the recovery library itself, such as the `/srv/music/_Recovery` bind mount on the media server, is left out of the master walk.
+
+The result is `library-inventory.json` under `TOMIFY_RECOVERY_STATE_DIR` (normally `/var/lib/tomify-recovery`). The box runs Node.js 20 and the agent has no npm dependencies, so this is JSON rather than SQLite. It is written to a temporary file in the same state directory and renamed into place only after a complete scan. Later scans reuse an entry when its size and modification time are unchanged, probe only new or changed audio, and remove files that disappeared. The inventory scanner performs no write, rename, directory creation or deletion in either music library; its only writes are under the state directory.
+
+One scan runs in the background at a time. The authenticated agent endpoints are:
+
+- `POST /v1/inventory/scan` starts a scan and returns `202`; another start while it is running returns the same running status without starting a second scan.
+- `POST /v1/inventory/status` returns progress, discovered/processed/probed/reused counts and the last completed scan time.
+- `POST /v1/inventory/summary` returns file and byte totals plus counts by master/recovery library, quality tier and provenance-sidecar backend.
+
+The Worker exposes the same operations to Navidrome administrators at `/api/inventory/scan`, `/api/inventory/status` and `/api/inventory/summary`. There is no page for them yet. An older deployed agent returns `inventory-not-available` instead of changing the agent contract or blocking other Recovery features.
+
+To start a scan directly on the media server, load the protected token into the administrative shell and use standard input for curl's configuration so the token is not placed on the process command line:
+
+```bash
+curl -s -X POST --config - http://127.0.0.1:8788/v1/inventory/scan -d '{}' <<EOF
+header = "Authorization: Bearer ${TOMIFY_RECOVERY_TOKEN}"
+header = "Content-Type: application/json"
+EOF
+```
+
+Use `/v1/inventory/status` and `/v1/inventory/summary` the same way. The inventory endpoints need the agent redeployed with `scripts/deploy-agent.ps1` after this change is merged.
+
 ## Library scan after import
 
 An imported file is not playable in Tomify until Navidrome has scanned it, so each imported item also carries a playback state next to its Recovered or Needs-upgrade status (D1 column `recovery_items.playback_json`, `drizzle/0011_recovery_playback.sql`):
@@ -845,6 +870,7 @@ An acquisition backend exposes:
 - `POST /v1/acquire` with `{ backend, candidate, track, artwork, authorisation, background? }`, returning `{ path, quality, artwork, provenance }`. With `background: true`, YouTube and Internet Archive acquisitions return `202` and `{ job }` instead, and the job's final result carries the same fields.
 - For asynchronous Usenet and torrent acquisition (always) and YouTube and Internet Archive acquisition (with `background: true`), `POST /v1/acquire` returns an opaque job that the agent's job runner advances, and `POST /v1/jobs/status` with `{ jobId }` reports queued/downloading/importing/completed/failed state, progress, and the final import result. Status is read-only: it never asks the downloader or starts an import. Torrent jobs also report `details` (`downloadSpeed`, `uploadSpeed`, `seeds`, `seedsInSwarm`, `peers`, `peersInSwarm`, `eta`, `size`, `downloaded`).
 - `POST /v1/preflight` with `{ artist, album, title, mode }`, returning `{ directory, mode, existing }`: the release directory an acquisition would import into (matched ignoring case and Unicode normalisation, as imports do; `null` when there is none yet) and its audio files with `title`, `trackNumber`, `discNumber`, `recordingId` and quality `tier`, read from `.tomify.json` sidecars, or from the file's tags when there is no sidecar. It is read-only and never creates a directory. `POST /v1/acquire` accepts `skipExisting: true` for Usenet and torrent release imports.
+- `POST /v1/inventory/scan`, `/v1/inventory/status` and `/v1/inventory/summary`, starting and observing the read-only incremental master/recovery inventory described above. The contract remains `2`; Workers treat a 404 from an older agent as inventory unavailable.
 - `POST /v1/jobs/cancel` with `{ jobId }`, stopping a torrent job and removing the torrent and its data from qBittorrent. It waits for any import in progress and returns the `importedPaths` that import created, so they can be deleted too. Idempotent once the job is gone.
 - `POST /v1/jobs/import-remaining` with `{ jobId }`, importing the audio files a completed single-track Usenet job left in its download as a release, without downloading again. Files already imported by that job are skipped, and a job that was already imported as a release is refused.
 - `POST /v1/delete` with `{ importedPaths }`, removing only each recovery derivative, its sidecar and its matching `.tomify-source` original.
