@@ -607,7 +607,33 @@ export default {
       return json({ item: await recoveryItem(env.TOMIFY_DB, username, id) }, 201)
     }
 
-    const recoveryMatch = pathname.match(/^\\/api\\/recovery\\/([^/]+)(?:\\/(search|select|acquire|job|import-remaining))?$/)
+    const recoveryMatch = pathname.match(/^\\/api\\/recovery\\/([^/]+)(?:\\/(search|select|acquire|job|cancel|import-remaining))?$/)
+    if (recoveryMatch && recoveryMatch[2] === 'cancel' && request.method === 'POST') {
+      if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      await ensureRecoveryTables(env.TOMIFY_DB)
+      const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
+      if (!item) return json({ error: 'recovery-item-not-found' }, 404)
+      const candidate = item.candidates.find((value) => value.selected && value.provenance?.job?.id)
+      if (!candidate) return json({ error: 'recovery-job-not-found' }, 404)
+      if (!['queued', 'downloading', 'importing'].includes(item.status)) return json({ error: 'recovery-job-not-active', message: 'This recovery job is no longer active.' }, 409)
+      try {
+        const cancelled = await callRecoveryAgent(env, '/v1/jobs/cancel', { jobId: candidate.provenance.job.id })
+        const importedPaths = [...new Set((Array.isArray(cancelled?.importedPaths) ? cancelled.importedPaths : []).filter((path) => typeof path === 'string' && path))]
+        if (importedPaths.length) await callRecoveryAgent(env, '/v1/delete', { importedPaths })
+        const provenance = { ...candidate.provenance }
+        for (const key of ['job', 'importedAt', 'importedCount', 'importedTracks', 'importedRelease', 'remainingImportedAt', 'sourceAudio', 'derivative']) delete provenance[key]
+        await env.TOMIFY_DB.batch([
+          env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET imported_path = NULL, provenance_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(JSON.stringify(provenance), candidate.id),
+          env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'candidate-found', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(item.id, username),
+        ])
+        return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'The recovery job could not be cancelled.'
+        return json({ error: 'recovery-cancel-failed', message }, 502)
+      }
+    }
     if (recoveryMatch && request.method === 'DELETE' && !recoveryMatch[2]) {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request)

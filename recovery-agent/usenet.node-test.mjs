@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { assertNzbIndexCandidateComplete, downloaderConfig, downloaderStatus, findCompletedAudio, nzbIndexConfig, nzbIndexDownloadUrl, nzbIndexSearchUrl, parseIndexerConfig, parseNewznabResults, parseNzbIndexResults, searchNzbIndex, searchUsenetProviders, selectCompletedAudio, submitDownloader, usenetCapability, usenetSearchQuery, usenetSearchSpec, validateCompletedPath } from './usenet.mjs'
+import { assertNzbIndexCandidateComplete, cancelAgentJob, cancelDownloader, downloaderConfig, downloaderStatus, findCompletedAudio, nzbIndexConfig, nzbIndexDownloadUrl, nzbIndexSearchUrl, parseIndexerConfig, parseNewznabResults, parseNzbIndexResults, searchNzbIndex, searchUsenetProviders, selectCompletedAudio, submitDownloader, usenetCapability, usenetSearchQuery, usenetSearchSpec, validateCompletedPath } from './usenet.mjs'
 
 function sabStatusFetch({ queue = [], history = [] }) {
   return async (requestUrl) => {
@@ -214,6 +214,74 @@ test('keeps downloader credentials in server-side requests and uses the NZBGet a
   assert.equal(request.params[0], 'Tomify test.nzb')
   assert.equal(request.params[1], 'https://indexer.test/api?t=get&id=abc&apikey=hidden')
   assert.match(calls[0].init.headers.authorization, /^Basic /)
+})
+
+test('cancels a SABnzbd queue item and deletes its files', async () => {
+  const calls = []
+  const config = downloaderConfig({ TOMIFY_SABNZBD_URL: 'http://127.0.0.1:8080', TOMIFY_SABNZBD_API_KEY: 'secret' })
+  const removed = await cancelDownloader(config, 'sab-job', async (requestUrl) => {
+    const url = new URL(requestUrl)
+    calls.push(url)
+    return { ok: true, json: async () => url.searchParams.get('name') === 'delete' ? { status: true } : { queue: { slots: [{ nzo_id: 'sab-job' }] } } }
+  })
+  assert.equal(removed, true)
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].searchParams.get('mode'), 'queue')
+  assert.equal(calls[1].searchParams.get('name'), 'delete')
+  assert.equal(calls[1].searchParams.get('value'), 'sab-job')
+  assert.equal(calls[1].searchParams.get('del_files'), '1')
+})
+
+test('cancels a completed SABnzbd item from history and deletes its files', async () => {
+  const calls = []
+  const config = downloaderConfig({ TOMIFY_SABNZBD_URL: 'http://127.0.0.1:8080', TOMIFY_SABNZBD_API_KEY: 'secret' })
+  const removed = await cancelDownloader(config, 'sab-done', async (requestUrl) => {
+    const url = new URL(requestUrl)
+    calls.push(url)
+    const mode = url.searchParams.get('mode')
+    const deleting = url.searchParams.get('name') === 'delete'
+    return { ok: true, json: async () => deleting ? { status: true } : mode === 'queue' ? { queue: { slots: [] } } : { history: { slots: [{ nzo_id: 'sab-done' }] } } }
+  })
+  assert.equal(removed, true)
+  assert.equal(calls.length, 3)
+  assert.equal(calls[2].searchParams.get('mode'), 'history')
+  assert.equal(calls[2].searchParams.get('name'), 'delete')
+  assert.equal(calls[2].searchParams.get('value'), 'sab-done')
+  assert.equal(calls[2].searchParams.get('del_files'), '1')
+})
+
+test('cancels an NZBGet queue group with GroupFinalDelete', async () => {
+  const calls = []
+  const config = downloaderConfig({ TOMIFY_NZBGET_URL: 'http://127.0.0.1:6789', TOMIFY_NZBGET_USERNAME: 'tom', TOMIFY_NZBGET_PASSWORD: 'secret' })
+  const removed = await cancelDownloader(config, '42', async (url, init) => { calls.push({ url, init }); return { ok: true, json: async () => ({ result: true }) } })
+  assert.equal(removed, true)
+  const request = JSON.parse(calls[0].init.body)
+  assert.equal(request.method, 'editqueue')
+  assert.deepEqual(request.params, ['GroupFinalDelete', 0, '', [42]])
+  assert.match(calls[0].init.headers.authorization, /^Basic /)
+})
+
+test('cancelling during an import waits, marks the job cancelled, and reports imported paths', async () => {
+  let stored = { id: 'job-id', downloader: 'sabnzbd', remoteId: 'sab-job', status: 'importing', progress: 100 }
+  let releaseImport
+  const importing = new Promise((resolve) => { releaseImport = () => { stored = { ...stored, status: 'completed', importResult: { path: '/recovery/first.flac', importedTracks: [{ path: '/recovery/first.flac' }, { path: '/recovery/second.flac' }] } }; resolve() } })
+  let removed = false
+  const cancellation = cancelAgentJob(stored, {
+    forget: async () => {},
+    settled: async () => importing,
+    reload: async () => structuredClone(stored),
+    removeRemote: async () => { removed = true; return true },
+    saveJob: async (job) => { stored = structuredClone(job) },
+    now: () => '2026-10-16T12:00:00.000Z',
+  })
+  await Promise.resolve()
+  assert.equal(removed, false)
+  releaseImport()
+  const result = await cancellation
+  assert.equal(removed, true)
+  assert.equal(stored.status, 'cancelled')
+  assert.equal(stored.updatedAt, '2026-10-16T12:00:00.000Z')
+  assert.deepEqual(result.importedPaths, ['/recovery/first.flac', '/recovery/second.flac'])
 })
 
 test('reports SAB queue downloads with their existing progress and status text', async () => {

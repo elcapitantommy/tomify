@@ -234,6 +234,43 @@ export async function submitDownloader(config, nzbUrl, name, fetchImpl = fetch) 
   return { downloader: 'nzbget', remoteId: String(body.result) }
 }
 
+export async function cancelDownloader(config, remoteId, fetchImpl = fetch) {
+  if (config.type === 'sabnzbd') {
+    const request = async (mode, parameters = {}) => {
+      const url = apiEndpoint(config.url)
+      for (const [key, value] of Object.entries({ output: 'json', apikey: config.apiKey, mode, ...parameters })) url.searchParams.set(key, value)
+      return jsonRequest(url, { method: 'GET' }, `SABnzbd ${mode}`, fetchImpl)
+    }
+    const queued = await request('queue', { nzo_ids: remoteId })
+    if (queued?.queue?.slots?.some((value) => String(value.nzo_id) === String(remoteId))) {
+      const deleted = await request('queue', { name: 'delete', value: remoteId, del_files: '1' })
+      return deleted?.status !== false
+    }
+    const completed = await request('history', { nzo_ids: remoteId, limit: '20' })
+    if (!completed?.history?.slots?.some((value) => String(value.nzo_id) === String(remoteId))) return false
+    const deleted = await request('history', { name: 'delete', value: remoteId, del_files: '1' })
+    return deleted?.status !== false
+  }
+  const body = await jsonRequest(`${config.url}/jsonrpc`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: basicAuth(config) }, body: JSON.stringify({ method: 'editqueue', params: ['GroupFinalDelete', 0, '', [Number(remoteId)]] }) }, 'NZBGet editqueue', fetchImpl)
+  return body?.result !== false
+}
+
+export async function cancelAgentJob(job, { forget, settled, reload, removeRemote, saveJob, now = () => new Date().toISOString() }) {
+  await forget(job.id)
+  await settled(job.id)
+  job = await reload(job.id)
+  const remoteRemoved = await removeRemote(job)
+  job.status = 'cancelled'
+  job.progress = Number(job.progress) || 0
+  job.message = null
+  job.error = null
+  job.updatedAt = now()
+  await saveJob(job)
+  const importedPaths = (Array.isArray(job.importResult?.importedTracks) ? job.importResult.importedTracks : []).map((track) => track?.path).filter((path) => typeof path === 'string')
+  if (typeof job.importResult?.path === 'string' && job.importResult.path && !importedPaths.includes(job.importResult.path)) importedPaths.push(job.importResult.path)
+  return { job, remoteRemoved, importedPaths }
+}
+
 function downloaderPresent(job) {
   if (job && Object.hasOwn(job, 'downloaderMissingSince')) delete job.downloaderMissingSince
 }
