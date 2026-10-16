@@ -434,12 +434,15 @@ TOMIFY_SABNZBD_DOWNLOAD_DIR=/downloads
 TOMIFY_USENET_DOWNLOAD_DIR=/srv/usenet/completed
 TOMIFY_USENET_CATEGORY=music
 TOMIFY_USENET_MAX_BYTES=2147483648
+TOMIFY_DOWNLOADER_LOST_MINUTES=15
 TOMIFY_RECOVERY_STATE_DIR=/var/lib/tomify-recovery
 ```
 
 `TOMIFY_USENET_DOWNLOAD_DIR` is the completed-download root visible to the Tomify host. Set `TOMIFY_SABNZBD_DOWNLOAD_DIR` only when SABnzbd reports a different root, such as `/downloads` inside a Docker container mapped to the host's `/srv/usenet/completed`. Tomify accepts a SAB completion path only when it is contained beneath that downloader-visible root, translates the relative suffix to the host root, then applies the existing realpath, containment, file-type, symlink, file-count, and size checks.
 
 For NZBGet, use `TOMIFY_NZBGET_URL`, `TOMIFY_NZBGET_USERNAME`, and `TOMIFY_NZBGET_PASSWORD` instead of the SABnzbd settings. `TOMIFY_SABNZBD_DOWNLOAD_DIR` does not apply to NZBGet. Indexer URLs must use HTTPS, except for loopback development services. Credentials and credential-bearing NZB download URLs are used only by the recovery agent; they are never returned to the Worker, browser, D1, or provenance.
+
+If a job disappears from both the downloader queue and history, Tomify records the first missing time in that job's state file. It keeps waiting during `TOMIFY_DOWNLOADER_LOST_MINUTES` (15 by default), including across agent restarts, then fails the job with `downloader-lost` instead of leaving it queued forever. If the downloader reports the job again before the timeout, the missing timer is cleared.
 
 Restart the service after editing the environment, then confirm that the agent is healthy. The unauthenticated endpoint intentionally returns only `{"ok":true,"version":null}` unless `TOMIFY_VERSION` or a package version is available; backend details remain on authenticated `/v1/status` and in Recovery:
 
@@ -464,7 +467,7 @@ When qBittorrent finishes, the agent:
 3. Imports the audio through the same pipeline as Usenet: wanted music with a track title imports the best matching file, and wanted music without one (an album, or anything by an artist) imports the whole download as a release, with originals preserved in `.tomify-source`, stream-copy derivatives, artwork and `.tomify.json` sidecars marked `torrent-recovery-copy`.
 4. Removes the torrent and its downloaded data from qBittorrent, and deletes the unpacked archive copy. A failed removal is recorded on the job without undoing the import. Because nothing is left behind, torrents do not offer **Import rest of download**; for a whole album, leave the track blank on the wanted item before pasting the link.
 
-**Delete** works on a torrent item at any time, including while it downloads: the agent stops the torrent and removes it and its data from qBittorrent first, then Tomify deletes any imported files and the queue entry. If qBittorrent cannot be reached the item is kept so you can retry. Usenet downloads still have to finish before their item can be deleted.
+**Delete** works on a queued or downloading torrent item: the agent stops the torrent and removes it and its data from qBittorrent first, then Tomify deletes any imported files and the queue entry. If qBittorrent cannot be reached the item is kept so you can retry. Deletion is blocked while any backend is importing, and active Usenet downloads still have to finish before their item can be deleted.
 
 Links are validated on the agent: magnet links need a BitTorrent info hash, and `.torrent` links must be `http(s)` on a public host, without embedded credentials. The full link (including trackers or a private-tracker passkey) is stored with the candidate so it can be queued later, but the Recovery page and provenance show it without trackers or query strings. Torrents are removed as soon as they are imported, so they do not keep seeding; respect any ratio rules of a private tracker you use.
 

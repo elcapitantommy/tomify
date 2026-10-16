@@ -170,7 +170,7 @@ function RecoveryRow({ item, expanded, busyAction, searchNote, youtubeAvailable,
   const busy = busyAction !== null || item.status === 'queued' || item.status === 'downloading'
   // A running torrent can still be deleted: the agent stops it and removes its data from qBittorrent.
   const torrentRunning = (item.status === 'queued' || item.status === 'downloading') && selected?.backend === 'torrent'
-  const deleteBlocked = busyAction !== null || ((item.status === 'queued' || item.status === 'downloading') && !torrentRunning)
+  const deleteBlocked = busyAction !== null || item.status === 'importing' || ((item.status === 'queued' || item.status === 'downloading') && !torrentRunning)
   const hasImportedAudio = item.candidates.some((candidate) => Boolean(candidate.importedPath))
   const importedCount = Number(selected?.provenance?.importedCount || 0)
   const resolution = item.metadataResolution?.candidateId === selected?.id ? item.metadataResolution : null

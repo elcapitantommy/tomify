@@ -240,11 +240,39 @@ test('reports only genuine SAB terminal states as completed or failed', async ()
   assert.deepEqual(unfamiliar, { status: 'downloading', progress: 100, message: 'Finalizing files' })
 })
 
+test('fails a SAB job only after its persisted missing timeout', async () => {
+  const config = downloaderConfig({ TOMIFY_SABNZBD_URL: 'http://127.0.0.1:8080', TOMIFY_SABNZBD_API_KEY: 'secret' })
+  const job = {}
+  const started = Date.UTC(2026, 9, 16, 9, 0, 0)
+  const missing = sabStatusFetch({})
+  const first = await downloaderStatus(config, 'sab-lost', missing, job, { now: () => started, lostMinutes: 15 })
+  assert.deepEqual(first, { status: 'queued', progress: 0, message: 'Waiting for downloader' })
+  assert.equal(job.downloaderMissingSince, '2026-10-16T09:00:00.000Z')
+  const before = await downloaderStatus(config, 'sab-lost', missing, job, { now: () => started + 14 * 60_000, lostMinutes: 15 })
+  assert.equal(before.status, 'queued')
+  const after = await downloaderStatus(config, 'sab-lost', missing, job, { now: () => started + 16 * 60_000, lostMinutes: 15 })
+  assert.deepEqual(after, { status: 'failed', progress: 0, message: 'downloader-lost: the job is no longer in the downloader' })
+})
+
 test('keeps NZBGet status handling unchanged', async () => {
   const config = downloaderConfig({ TOMIFY_NZBGET_URL: 'http://127.0.0.1:6789', TOMIFY_NZBGET_USERNAME: 'tom', TOMIFY_NZBGET_PASSWORD: 'secret' })
   const responses = [{ result: [] }, { result: [{ NZBID: 42, Status: 'SUCCESS/ALL', DestDir: '/srv/usenet/completed/album' }] }]
   const state = await downloaderStatus(config, '42', async () => ({ ok: true, json: async () => responses.shift() }))
   assert.deepEqual(state, { status: 'completed', progress: 100, completedPath: '/srv/usenet/completed/album' })
+})
+
+test('fails an NZBGet job only after its persisted missing timeout', async () => {
+  const config = downloaderConfig({ TOMIFY_NZBGET_URL: 'http://127.0.0.1:6789', TOMIFY_NZBGET_USERNAME: 'tom', TOMIFY_NZBGET_PASSWORD: 'secret' })
+  const job = {}
+  const started = Date.UTC(2026, 9, 16, 9, 0, 0)
+  const missing = async () => ({ ok: true, json: async () => ({ result: [] }) })
+  const first = await downloaderStatus(config, '42', missing, job, { now: () => started, lostMinutes: 15 })
+  assert.equal(first.status, 'queued')
+  assert.equal(job.downloaderMissingSince, '2026-10-16T09:00:00.000Z')
+  const before = await downloaderStatus(config, '42', missing, job, { now: () => started + 14 * 60_000, lostMinutes: 15 })
+  assert.equal(before.status, 'queued')
+  const after = await downloaderStatus(config, '42', missing, job, { now: () => started + 16 * 60_000, lostMinutes: 15 })
+  assert.deepEqual(after, { status: 'failed', progress: 0, message: 'downloader-lost: the job is no longer in the downloader' })
 })
 
 test('maps a SAB container completion path to the host root before validation', async () => {
