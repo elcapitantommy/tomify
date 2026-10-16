@@ -247,7 +247,7 @@ export interface RecoveryItem {
   playback?: RecoveryPlayback | null
 }
 
-/** Whether an imported item is in the Navidrome library yet; scripts/library-scan-worker.mjs keeps it up to date. */
+/** Whether an imported item is in the Navidrome library yet; worker/features/library-scan.ts keeps it up to date. */
 export interface RecoveryPlayback {
   state: 'scan-pending' | 'ready' | 'scan-failed'
   since: string

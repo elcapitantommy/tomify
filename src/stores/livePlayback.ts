@@ -58,7 +58,7 @@ export interface LivePlaybackResponse {
   now?: number
 }
 
-// Must match the Worker (scripts/live-playback-worker.mjs).
+// Must match the Worker (worker/features/live-playback.ts).
 export const DEVICE_ONLINE_MS = 45_000
 // A paused session on another open device stays in control for this long, so it can be resumed from here.
 export const PAUSED_REMOTE_MS = 60_000

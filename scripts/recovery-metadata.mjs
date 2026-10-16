@@ -127,4 +127,3 @@ export function applyRecoveryMetadataChoices(wanted, resolution, choices) {
 
 // A lossless import (FLAC, ALAC, WAV and similar) is an acceptable recovery; anything lossy still needs a better copy.
 // Either way it stays a recovery copy, never a verified archival master.
-export const recoveryMetadataWorkerSource = [normaliseMetadataText, editDistance, metadataTextSimilarity, creditedArtist, numericTrack, releaseDetails, durationConfidence, resolveRecoveryMetadata, applyRecoveryMetadataChoices].map((fn) => fn.toString()).join('\n\n')

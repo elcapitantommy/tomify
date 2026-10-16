@@ -3,9 +3,11 @@
 // shared/quality.mjs. handleQualityRequest relies on Worker globals (authenticate, isNavidromeAdmin,
 // json).
 //
-// The job and acquire routes in build-worker.mjs call recoveryImportStatus(quality) synchronously, so
+// The job and acquire routes in worker/routes/recovery.ts call recoveryImportStatus(quality) synchronously, so
 // handleQualityRequest loads the saved target into qualityTargetState before any /api/recovery route runs.
-import { classifyQuality, defaultQualityTarget, qualityKbps, qualityLooksV0, qualityMeetsTarget, qualityRuleFor, qualityRules, qualityTargets, qualityTierDescription, qualityTiers } from '../shared/quality.mjs'
+import { classifyQuality, defaultQualityTarget, qualityMeetsTarget, qualityTargets, qualityTierDescription } from '../../shared/quality.mjs'
+import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
+import { json } from '../lib/http.ts'
 
 export const qualityTargetState = { target: 'transparent-lossy' }
 
@@ -13,7 +15,6 @@ export const qualityTargetState = { target: 'transparent-lossy' }
 export function recoveryStatusForTier(tier, target) {
   return qualityMeetsTarget(tier, target) ? 'recovered' : 'needs-upgrade'
 }
-
 export function recoveryStatusForQuality(quality, target) {
   return recoveryStatusForTier(classifyQuality(quality).tier, target)
 }
@@ -98,9 +99,3 @@ export async function handleQualityRequest(request, env, url) {
   }
   return json({ error: 'method-not-allowed' }, 405)
 }
-
-export const qualityWorkerSource = [
-  "const qualityTargetState = { target: 'transparent-lossy' }",
-  ...[qualityTiers, qualityTargets, defaultQualityTarget, qualityRules, qualityRuleFor, qualityLooksV0, qualityKbps, classifyQuality, qualityMeetsTarget, qualityTierDescription,
-    recoveryStatusForTier, recoveryStatusForQuality, recoveryImportStatus, qualityTargetOptions, storedSourceQuality, qualityRecheckChanges, loadQualityTarget, handleQualityRequest].map((fn) => fn.toString()),
-].join('\n\n')

@@ -6,13 +6,16 @@
 // The pure helpers are exported for tests. The Worker functions rely on Worker globals (json,
 // authenticate, isNavidromeAdmin, recoveryItem).
 
+import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
+import { json } from '../lib/http.ts'
+import { recoveryItem } from '../routes/recovery.ts'
+
 export const PLAYBACK_CHECK_INTERVAL_MS = 15_000
 export const PLAYBACK_TIMEOUT_MS = 10 * 60_000
 
 export function libraryScanText(value) {
   return String(value || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[’']/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
-
 export function parseRecoveryPlayback(value) {
   try {
     const playback = value ? JSON.parse(value) : null
@@ -80,7 +83,7 @@ export function playbackTimedOut(playback, now = Date.now()) {
   return Number.isFinite(since) && now - since >= PLAYBACK_TIMEOUT_MS
 }
 
-async function navidromeCall(request, endpoint, params = {}) {
+export async function navidromeCall(request, endpoint, params = {}) {
   const url = new URL('https://tomify.tomdixon.uk/rest/' + endpoint + '.view')
   const base = { u: request.headers.get('x-tomify-user') || '', t: request.headers.get('x-tomify-token') || '', s: request.headers.get('x-tomify-salt') || '', v: '1.16.1', c: 'Tomify', f: 'json' }
   for (const [key, value] of Object.entries({ ...base, ...params })) url.searchParams.set(key, String(value))
@@ -115,7 +118,7 @@ async function saveRecoveryPlayback(db, username, id, playback) {
 }
 
 /** Called once an import completes: records `scan-pending` and asks Navidrome for a scan. Never throws. */
-async function markRecoveryScanPending(request, db, username, id) {
+export async function markRecoveryScanPending(request, db, username, id) {
   try {
     const item = await recoveryItem(db, username, id)
     const target = recoveryPlaybackTarget(item)
@@ -127,7 +130,7 @@ async function markRecoveryScanPending(request, db, username, id) {
   } catch { /* the import itself succeeded; a missing playback record only hides the scan state */ }
 }
 
-async function refreshRecoveryPlayback(request, db, username, item) {
+export async function refreshRecoveryPlayback(request, db, username, item) {
   const playback = item.playback
   if (!playbackCheckDue(playback)) return item
   const now = Date.now()
@@ -148,7 +151,7 @@ async function refreshRecoveryPlayback(request, db, username, item) {
   return recoveryItem(db, username, item.id)
 }
 
-async function handleLibraryScanRequest(request, env, url) {
+export async function handleLibraryScanRequest(request, env, url) {
   const match = url.pathname.match(/^\/api\/recovery\/([^/]+)\/playback(\/retry)?$/)
   if (!match) return null
   if (request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405)
@@ -171,10 +174,3 @@ async function handleLibraryScanRequest(request, env, url) {
   }
   return json({ item: await refreshRecoveryPlayback(request, db, username, item) })
 }
-
-export const libraryScanWorkerSource = [
-  `const PLAYBACK_CHECK_INTERVAL_MS = ${PLAYBACK_CHECK_INTERVAL_MS}`,
-  `const PLAYBACK_TIMEOUT_MS = ${PLAYBACK_TIMEOUT_MS}`,
-  ...[libraryScanText, parseRecoveryPlayback, recoveryPlaybackTarget, pendingRecoveryPlayback, pathsMatch, matchLibrarySong, playbackCheckDue, playbackTimedOut,
-    navidromeCall, requestLibraryScan, findImportedSong, saveRecoveryPlayback, markRecoveryScanPending, refreshRecoveryPlayback, handleLibraryScanRequest].map((fn) => fn.toString()),
-].join('\n\n')

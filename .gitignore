@@ -9,3 +9,4 @@ coverage/
 youtube.cookies
 secrets/
 .wrangler/
+worker/generated/

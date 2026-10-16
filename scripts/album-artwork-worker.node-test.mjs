@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { albumArtworkCandidate, albumArtworkSearchQueries, appleAlbumResult, baseAlbumTitle, chooseAutomaticAlbumArtwork, decodeAlbumArtworkUpload, deezerAlbumResult, isAlbumArtworkUrl, spotifyAlbumResult } from './album-artwork-worker.mjs'
+import { albumArtworkCandidate, albumArtworkSearchQueries, appleAlbumResult, baseAlbumTitle, chooseAutomaticAlbumArtwork, decodeAlbumArtworkUpload, deezerAlbumResult, isAlbumArtworkUrl, spotifyAlbumResult } from '../worker/features/album-artwork.ts'
 import { metadataTextSimilarity } from './recovery-metadata.mjs'
 
 const candidate = (patch = {}) => ({ id: 'spotify:1', provider: 'spotify', url: 'https://i.scdn.co/image/ab67616d0000b273', confidence: 96, square: true, minimumDimension: 640, ...patch })

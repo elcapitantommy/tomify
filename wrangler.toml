@@ -1,9 +1,11 @@
 name = "tomify"
-main = "dist/server/index.js"
+main = "worker/index.ts"
 compatibility_date = "2026-10-11"
 minify = true
-
 workers_dev = true
+
+[build]
+command = "node scripts/build-worker-info.mjs"
 
 [[d1_databases]]
 binding = "TOMIFY_DB"

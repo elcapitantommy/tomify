@@ -1,3 +1,8 @@
+import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
+import { json } from '../lib/http.ts'
+import { diffCataloguePlaylist, mapSpotifyPlaylist, occurrenceKeys, parseSpotifyPlaylistId, reusableRecoveryId, shouldCreateRecovery } from '../../scripts/catalogue-import.mjs'
+import { playlistShareFor } from './playlist-share.ts'
+
 function spotifyRedirectUri(env, request) {
   return String(env.SPOTIFY_REDIRECT_URI || new URL('/api/catalogue-auth/spotify/callback', request.url))
 }
@@ -40,7 +45,7 @@ async function spotifyTokenRequest(env, parameters) {
   return body
 }
 
-async function spotifyUserToken(env, db, username, forceRefresh = false) {
+export async function spotifyUserToken(env, db, username, forceRefresh = false) {
   const row = await db.prepare("SELECT encrypted_token AS encryptedToken FROM catalogue_provider_tokens WHERE username = ? AND provider = 'spotify'").bind(username).first()
   if (!row?.encryptedToken) throw new Error('Connect Spotify before importing a playlist.')
   const stored = await decryptCatalogueToken(env, row.encryptedToken)
@@ -90,7 +95,7 @@ async function cataloguePlaylistDetail(db, username, id) {
   const row = await db.prepare("SELECT p.id, p.name, p.provider, p.provider_playlist_id AS providerPlaylistId, p.source_url AS sourceUrl, p.snapshot_id AS snapshotId, p.artwork_url AS artworkUrl, p.provenance_json AS provenanceJson, p.created_at AS createdAt, p.updated_at AS updatedAt, COUNT(i.id) AS total, SUM(CASE WHEN i.status = 'available' THEN 1 ELSE 0 END) AS available, SUM(CASE WHEN i.status = 'missing' THEN 1 ELSE 0 END) AS missing, SUM(CASE WHEN i.status = 'review' THEN 1 ELSE 0 END) AS review, SUM(CASE WHEN i.status = 'unavailable' THEN 1 ELSE 0 END) AS unavailable FROM catalogue_playlists p LEFT JOIN catalogue_playlist_items i ON i.playlist_id = p.id WHERE p.id = ? AND p.username = ? GROUP BY p.id").bind(id, username).first()
   if (!row) return null
   const itemRows = await db.prepare('SELECT id, position, provider_track_id AS providerTrackId, metadata_json AS metadataJson, status, local_track_id AS localTrackId, local_track_json AS localTrackJson, recovery_id AS recoveryId, match_confidence AS matchConfidence, user_confirmed AS userConfirmed FROM catalogue_playlist_items WHERE playlist_id = ? ORDER BY position').bind(id).all()
-  const items = (itemRows.results || []).map((item) => { let metadata = {}; let localTrack = null; try { metadata = JSON.parse(item.metadataJson) } catch {} try { localTrack = item.localTrackJson ? JSON.parse(item.localTrackJson) : null } catch {} return { id: item.id, position: Number(item.position), providerTrackId: item.providerTrackId || null, ...metadata, status: item.status, localTrackId: item.localTrackId || null, localTrack, recoveryId: item.recoveryId || null, matchConfidence: Number(item.matchConfidence || 0), userConfirmed: Boolean(item.userConfirmed) } })
+  const items = (itemRows.results || []).map((item) => { let metadata = {}; let localTrack = null; try { metadata = JSON.parse(item.metadataJson) } catch { /* ignore corrupt cached metadata */ } try { localTrack = item.localTrackJson ? JSON.parse(item.localTrackJson) : null } catch { /* ignore a corrupt cached match */ } return { id: item.id, position: Number(item.position), providerTrackId: item.providerTrackId || null, ...metadata, status: item.status, localTrackId: item.localTrackId || null, localTrack, recoveryId: item.recoveryId || null, matchConfidence: Number(item.matchConfidence || 0), userConfirmed: Boolean(item.userConfirmed) } })
   return { ...cataloguePlaylistRow(row), items }
 }
 
@@ -105,10 +110,10 @@ async function saveCataloguePlaylist(db, username, draft, input) {
     existingItems = existing.items
   }
   const oldKeys = occurrenceKeys(existingItems)
-  const retained = new Map(oldKeys.map((key, index) => [key, existingItems[index]]))
+  const retained = new Map<string, Record<string, unknown>>(oldKeys.map((key, index) => [key, existingItems[index]]))
   const newKeys = occurrenceKeys(draft.items)
   const recoveryRows = input.createRecovery ? await db.prepare('SELECT id, artist, title, source_json AS sourceJson FROM recovery_items WHERE username = ?').bind(username).all() : { results: [] }
-  const knownRecoveries = (recoveryRows.results || []).map((row) => { let catalogueSource = null; try { catalogueSource = row.sourceJson ? JSON.parse(row.sourceJson) : null } catch {} return { id: row.id, artist: row.artist, title: row.title, catalogueSource } })
+  const knownRecoveries = (recoveryRows.results || []).map((row) => { let catalogueSource = null; try { catalogueSource = row.sourceJson ? JSON.parse(row.sourceJson) : null } catch { /* ignore corrupt source metadata */ } return { id: row.id, artist: row.artist, title: row.title, catalogueSource } })
   const newRecoveries = []
   const itemValues = []
   for (let index = 0; index < draft.items.length; index += 1) {
@@ -145,7 +150,7 @@ async function saveCataloguePlaylist(db, username, draft, input) {
 // Adding missing tracks to Recovery is for Navidrome administrators; anyone can import the playlist itself.
 function recoveryForbidden() { return json({ error: 'forbidden', message: 'Only a Navidrome administrator can add tracks to Recovery. Import the playlist without Recovery instead.' }, 403) }
 
-async function handleCatalogueRequest(request, env, url) {
+export async function handleCatalogueRequest(request, env, url) {
   if (!url.pathname.startsWith('/api/catalogue-')) return null
   if (!env?.TOMIFY_DB) return json({ error: 'catalogue-store-unavailable' }, 503)
 
@@ -228,4 +233,4 @@ async function handleCatalogueRequest(request, env, url) {
   return json({ error: 'not-found' }, 404)
 }
 
-export const catalogueWorkerSource = [spotifyRedirectUri, bytesToBase64, base64ToBytes, catalogueTokenKey, encryptCatalogueToken, decryptCatalogueToken, spotifyTokenRequest, spotifyUserToken, spotifyApiJson, fetchSpotifyPlaylist, cataloguePlaylistRow, cataloguePlaylistDetail, saveCataloguePlaylist, recoveryForbidden, handleCatalogueRequest].map((fn) => fn.toString()).join('\n\n')
+export { encryptCatalogueToken }

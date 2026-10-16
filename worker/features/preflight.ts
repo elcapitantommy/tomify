@@ -6,10 +6,15 @@
 // The pure helpers are exported for tests. handlePreflightRequest relies on Worker globals (json, authenticate,
 // isNavidromeAdmin, recoveryItem, callRecoveryAgent, and navidromeCall from library-scan-worker.mjs).
 
+import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
+import { callRecoveryAgent } from '../lib/agent.ts'
+import { json } from '../lib/http.ts'
+import { recoveryItem } from '../routes/recovery.ts'
+import { navidromeCall } from './library-scan.ts'
+
 export function preflightText(value) {
   return String(value || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[’']/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
-
 /** What to check for: the wanted item, with blanks filled from its MusicBrainz match. A whole-album item checks the release. */
 export function preflightTarget(item, requestedMode) {
   const matched = item?.metadataResolution?.metadata || {}
@@ -48,7 +53,7 @@ export function libraryPreflightMatches(searchResult, target) {
     .map((value) => ({ kind: 'song', id: value.id, title: String(value.title || ''), artist: value.artist || null, album: value.album || null, path: value.path || null }))
 }
 
-async function handlePreflightRequest(request, env, url) {
+export async function handlePreflightRequest(request, env, url) {
   const match = url.pathname.match(/^\/api\/recovery\/([^/]+)\/preflight$/)
   if (!match) return null
   if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405)
@@ -78,5 +83,3 @@ async function handlePreflightRequest(request, env, url) {
   } else library = []
   return json({ target, directory, recovery, library })
 }
-
-export const preflightWorkerSource = [preflightText, preflightTarget, artistMatches, recoveryPreflightMatches, libraryPreflightMatches, handlePreflightRequest].map((fn) => fn.toString()).join('\n\n')
