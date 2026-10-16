@@ -29,12 +29,30 @@ Recovery is only for Navidrome administrators (accounts with `adminRole`). The W
 - Validates selected artwork server-side by HTTPS host, response MIME, file signature, byte size and FFprobe dimensions. It writes release-level `cover.jpg` and embeds attached art only for supported MP4/M4A, MP3 and FLAC derivatives; WebM/Opus and other containers remain audio-only with `cover.jpg` alongside them.
 - Writes only into a dedicated recovery directory. Existing files are not overwritten and the configured FLAC master tree must be separate.
 - Deletes queue-only items directly from D1. For imported items, deletion first removes the recovery derivative, its `.tomify.json` sidecar and the matching preserved original under `.tomify-source`; D1 state is retained if that filesystem cleanup fails.
-- Marks every YouTube result `lossy-recovery-copy` and initially `needs-upgrade`; it is never promoted to an archival master automatically.
-- Sets any import from any source to `recovered` when its audio is lossless (FLAC, ALAC, WAV/PCM and similar) and `needs-upgrade` when it is lossy. Either way the files stay recovery copies, never verified masters. Items imported before this rule can be cleared with Mark acceptable.
+- Classifies every import into a quality tier and marks it `recovered` when the tier meets the preferred quality set in Settings, otherwise `needs-upgrade`. See [Quality tiers](#quality-tiers). Either way the files stay recovery copies, never verified masters, and nothing is promoted to an archival master automatically.
 - Marks Internet Archive imports `internet-archive-recovery-copy`. A lossless file is still a recovery source, not proof of an archival master.
 - Searches torrents through qBittorrent's search plugins, showing only results that have seeds, or accepts a pasted magnet or `.torrent` link per item. Either way it downloads the torrent with qBittorrent-nox over NordVPN, shows live speed, seeds, peers and time left, unpacks archives, imports the audio and then removes the torrent and its data. See [Torrent links and qBittorrent](#torrent-links-and-qbittorrent) and [Torrent search](#torrent-search).
 
 Tomify does not capture credentials, accept Google passwords, circumvent DRM or bypass access controls. Exported cookies are sensitive session credentials: they stay entirely on the media server and are never stored in D1, browser storage, frontend code, Worker assets, logs or API responses.
+
+## Quality tiers
+
+Tomify sorts every recovered file into one of four tiers. The classifier is `shared/quality.mjs`, used by the Worker, the recovery agent and the Recovery page alike, and it works from the source file as FFprobe measured it.
+
+| Tier | Meaning |
+| --- | --- |
+| `lossless` | FLAC, ALAC, WAV/PCM or AIFF (also APE, WavPack, TTA, TrueHD and MLP). |
+| `transparent-lossy` | Lossy, but at a bitrate that sounds the same as lossless: Opus from 128 kbps, AAC from 192 kbps, MP3 from 240 kbps or tagged as LAME V0. |
+| `lossy` | Any other lossy file with a measured bitrate, including Vorbis. |
+| `unknown` | No usable codec or bitrate. |
+
+The MP3 line is 240 kbps rather than 245 because LAME V0 is variable bitrate and averages roughly 240–260 kbps, so a 243 kbps V0 rip counts as transparent. Quieter V0 material that averages lower is still transparent when its encoder settings tag says V0.
+
+**Settings → Recovery quality → Preferred quality** (administrators only) chooses which tier is good enough: **Lossless only**, **Transparent or better** (the default) or **Any copy**. The value is stored in D1 (`tomify_settings`, key `quality_target`). When an import completes, the Worker marks the item `recovered` if its tier meets the target and `needs-upgrade` if not; `unknown` never meets a target. The Recovery page shows each candidate's tier with a short explanation next to its codec and bitrate.
+
+Changing the target does not rewrite existing items. **Re-check quality labels** in the same section recomputes `recovered` and `needs-upgrade` for every imported item from the source quality stored at import (the `.tomify-source` probe in provenance, otherwise the candidate's codec and bitrate). It also re-checks items that were set by hand with **Mark acceptable**, so run it only when you want every label to follow the target.
+
+The agent writes the tier into each file's `TOMIFY_ARCHIVE_STATUS` tag (`lossless`, `transparent-lossy`, `lossy` or `unknown`). Files imported before this change keep their old `lossy-recovery-copy` tag. The provenance sidecar's `archiveStatus` still names the source, for example `usenet-recovery-copy`.
 
 ## Canonical metadata review
 
@@ -140,7 +158,7 @@ Earlier deployments did it the other way round: the files sat on the NVMe at `/s
 
 ### Updating the recovery agent
 
-The agent is not deployed with the site. Deploying the Worker updates the Recovery page and API only, so every merged change under `recovery-agent/` must also be copied to the media server. The deployment workflow is Windows-to-Debian rather than Git-on-Debian:
+The agent is not deployed with the site. Deploying the Worker updates the Recovery page and API only, so every merged change under `recovery-agent/` or `shared/` must also be copied to the media server. The deployment workflow is Windows-to-Debian rather than Git-on-Debian:
 
 1. Update and validate branch `feat/phase-1-pwa` in `C:\Users\TomDixon\Documents\tomify` (`git pull`).
 2. Copy the agent files to `/tmp` on the Debian host. The `tom` account cannot write `/opt/tomify/recovery-agent` directly, so a straight `scp` there fails with *Permission denied*.
@@ -150,8 +168,11 @@ From PowerShell in the Windows checkout:
 
 ```powershell
 scp recovery-agent\*.mjs tom@tomify:/tmp/
-ssh -t tom@tomify "sudo cp /tmp/*.mjs /opt/tomify/recovery-agent/ && sudo systemctl restart tomify-recovery"
+scp shared\*.mjs tom@tomify:/tmp/tomify-shared/
+ssh -t tom@tomify "sudo cp /tmp/*.mjs /opt/tomify/recovery-agent/ && sudo mkdir -p /opt/tomify/shared && sudo cp /tmp/tomify-shared/*.mjs /opt/tomify/shared/ && sudo systemctl restart tomify-recovery"
 ```
+
+The agent imports `../shared/quality.mjs`, so `shared/` must sit next to `recovery-agent/` as `/opt/tomify/shared`. Create the staging folder once with `ssh tom@tomify mkdir -p /tmp/tomify-shared`. Without `shared/` the agent fails to start with `ERR_MODULE_NOT_FOUND`.
 
 The `*.node-test.mjs` files are copied too; they are harmless and never loaded by the service. To confirm the new code is live, `grep` a string from the change in the deployed file (for example `ssh tom@tomify "grep -c import-remaining /opt/tomify/recovery-agent/index.mjs"` should print a non-zero count), then check `curl -s http://127.0.0.1:8788/health` on the host.
 

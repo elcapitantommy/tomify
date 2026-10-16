@@ -13,7 +13,10 @@ describe('recovery candidate matching', () => {
 
   it('does not claim unknown quality before inspection', () => {
     expect(qualityLabel({})).toBe('Quality measured after import')
-    expect(qualityLabel({ codec: 'aac', bitrate: 128_000, sampleRate: 44_100, channels: 2 })).toBe('AAC · 128 kbps · 44.1 kHz · 2 ch')
+    expect(qualityLabel({ codec: 'aac', bitrate: 128_000, sampleRate: 44_100, channels: 2 })).toBe('AAC · 128 kbps · 44.1 kHz · 2 ch · Lossy: compression may be audible, worth upgrading')
+    expect(qualityLabel({ codec: 'mp3', bitrate: 243_000 })).toBe('MP3 · 243 kbps · Transparent: lossy, but sounds the same as lossless')
+    expect(qualityLabel({ codec: 'flac', sampleRate: 96_000 })).toBe('FLAC · 96.0 kHz · Lossless: identical to the CD or master')
+    expect(qualityLabel({ codec: 'opus' })).toBe('OPUS · Unknown: not enough data to judge')
   })
 })
 

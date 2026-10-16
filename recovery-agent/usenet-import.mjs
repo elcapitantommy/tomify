@@ -302,7 +302,7 @@ export async function importUsenetCompletion(job, completedFiles, options) {
         const comment = torrent
           ? `Tomify authorised torrent recovery copy; infohash=${job.torrent?.infoHash || 'unknown'}; authorisation=${job.request.authorisation.basis}`
           : `Tomify authorised Usenet recovery copy; provider=${job.indexer.name}; authorisation=${job.request.authorisation.basis}`
-        const tags = ffmpegMetadataArguments({ ...plan.metadata, sourceUrl }, comment)
+        const tags = ffmpegMetadataArguments({ ...plan.metadata, sourceUrl }, comment, plan.quality)
         // The chosen artwork belongs to the wanted album, so other albums in a discography keep none.
         const planArtwork = plan.group.requested ? artwork : null
         const derivativePlan = buildDerivativeArguments({ sourcePath: plan.file.path, outputPath: taggedPath, coverPath: planArtwork?.coverPath || null, tags })

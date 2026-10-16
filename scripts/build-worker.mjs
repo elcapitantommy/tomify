@@ -8,6 +8,7 @@ import { completenessWorkerSource } from './completeness-worker.mjs'
 import { albumArtworkWorkerSource } from './album-artwork-worker.mjs'
 import { playlistShareWorkerSource } from './playlist-share-worker.mjs'
 import { livePlaybackWorkerSource } from './live-playback-worker.mjs'
+import { qualityWorkerSource } from './quality-worker.mjs'
 
 const outputDirectory = new URL('../dist/', import.meta.url)
 const workerPath = new URL('../dist/server/index.js', import.meta.url)
@@ -60,6 +61,8 @@ ${albumArtworkWorkerSource}
 ${playlistShareWorkerSource}
 
 ${livePlaybackWorkerSource}
+
+${qualityWorkerSource}
 
 function decode(value) {
   const binary = atob(value)
@@ -470,6 +473,8 @@ export default {
     if (playlistShareResponse) return playlistShareResponse
     const livePlaybackResponse = await handleLivePlaybackRequest(request, env, url)
     if (livePlaybackResponse) return livePlaybackResponse
+    const qualityResponse = await handleQualityRequest(request, env, url)
+    if (qualityResponse) return qualityResponse
 
     if (pathname === '/api/system/reboot' && request.method === 'POST') {
       const username = await authenticate(request)
