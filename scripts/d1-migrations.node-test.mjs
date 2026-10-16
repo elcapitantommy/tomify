@@ -12,6 +12,8 @@ const scripts = fileURLToPath(new URL('./', import.meta.url))
 const baselineScript = join(scripts, 'd1-baseline.sh')
 const runtimeDdl = readFileSync(join(scripts, 'fixtures', 'd1-runtime-ddl.sql'), 'utf8')
 const migrations = readdirSync(drizzle).filter((name) => name.endsWith('.sql')).sort()
+// The migrations from the runtime-DDL era, which scripts/d1-baseline.sh and the legacy schema comparison cover.
+const baselineEra = migrations.filter((name) => name < '0013')
 const skip = process.platform === 'win32' && 'd1-baseline.sh runs on the Debian box and needs bash'
 
 // wrangler's own d1_migrations table and per-file bookkeeping (wrangler-dist getCreateMigrationsTableQuery
@@ -95,9 +97,9 @@ test('every migration applies in order to an empty database, and the Worker SQL 
   assertWorkerSqlMatches(db)
 })
 
-test('the migrations build the same tables and columns as the old runtime DDL, plus the new indexes', () => {
+test('0001-0012 build the same tables and columns as the old runtime DDL, plus the new indexes', () => {
   const migrated = new DatabaseSync(':memory:')
-  for (const name of migrations) applyMigration(migrated, name)
+  for (const name of baselineEra) applyMigration(migrated, name)
   const legacy = legacyDatabase()
   assert.deepEqual(schemaOf(migrated), schemaOf(legacy))
   const legacyIndexes = indexesOf(legacy)
@@ -159,30 +161,30 @@ function setup(prepare) {
 
 const legacy = (db) => db.exec(runtimeDdl)
 
-test('baseline dry run on a database built by the old runtime DDL plans 0001-0011 and leaves only 0012 pending', { skip }, () => {
+test('baseline dry run on a database built by the old runtime DDL plans 0001-0011 and leaves 0012 onwards pending', { skip }, () => {
   const { db, run, calls } = setup(legacy)
   const before = schemaOf(db)
   const result = run('--local', '--dry-run')
   assert.equal(result.status, 0, result.stderr)
   for (const name of migrations.slice(0, 11)) assert.match(result.stdout, new RegExp(`INSERT OR IGNORE INTO "d1_migrations" \\(name\\) VALUES \\('${name}'\\);`))
   assert.doesNotMatch(result.stdout, /VALUES \('0012/)
-  assert.match(result.stdout, /\[dry-run\] pending migrations afterwards: 0012_schema_catch_up\.sql\n/)
+  assert.match(result.stdout, new RegExp(`\\[dry-run\\] pending migrations afterwards: ${migrations.slice(11).join(' ').replace(/\./g, '\\.')}\\n`))
   assert.deepEqual(appliedMigrations(db), [])
   assert.deepEqual(schemaOf(db), before)
   assert.ok(calls().every((call) => call.includes(' --json ')), 'a dry run only reads')
 })
 
-test('baseline records 0001-0011 the way wrangler does, then 0012 applies and the Worker SQL matches', { skip }, () => {
+test('baseline records 0001-0011 the way wrangler does, then 0012 onwards apply and the Worker SQL matches', { skip }, () => {
   // A production database whose album artwork upload and live playback routes were never used.
   const { db, run } = setup((database) => { legacy(database); database.exec('DROP TABLE album_artwork_uploads; DROP TABLE live_playback; DROP TABLE live_playback_devices') })
   const result = run('--local')
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(appliedMigrations(db), migrations.slice(0, 11))
-  assert.deepEqual(pendingMigrations(db), ['0012_schema_catch_up.sql'])
+  assert.deepEqual(pendingMigrations(db), migrations.slice(11))
   assert.match(result.stdout, /Migrations to be applied: 0012_schema_catch_up\.sql/)
   assert.equal(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'd1_migrations'").get().sql, wranglerMigrationsTable.replace('CREATE TABLE IF NOT EXISTS', 'CREATE TABLE').replace(/;$/, ''))
 
-  applyMigration(db, '0012_schema_catch_up.sql')
+  for (const name of migrations.slice(11)) applyMigration(db, name)
   assert.deepEqual(pendingMigrations(db), [])
   const fresh = new DatabaseSync(':memory:')
   for (const name of migrations) applyMigration(fresh, name)
@@ -193,7 +195,7 @@ test('baseline records 0001-0011 the way wrangler does, then 0012 applies and th
   const again = run('--local')
   assert.equal(again.status, 0, again.stderr)
   assert.match(again.stdout, /already baselined/)
-  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM d1_migrations').get().count, 12)
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM d1_migrations').get().count, migrations.length)
 })
 
 test('remote baseline backs up first, and a dry run passes --dry-run to the backup', { skip }, () => {

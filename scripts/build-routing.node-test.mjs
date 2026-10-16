@@ -989,6 +989,7 @@ test('library health report requires an administrator and adds D1 imports whose 
         args: [], bind(...args) { this.args = args; return this },
         async all() {
           if (sql.includes('FROM release_tracklists')) return { results: [{ tracklistJson: JSON.stringify({ albumId: 'album-1', title: 'Flood', artist: 'They Might Be Giants', tracks: [{ disc: 1, number: 1, title: 'Theme' }] }) }] }
+          if (sql.includes('FROM library_health_dismissals')) return { results: [] }
           return { results: [
             { id: 'present-item', artist: 'The Kinks', title: 'Waterloo Sunset', album: 'Something Else', importedPath: '/recovery/present.flac' },
             { id: 'missing-item', artist: 'The Kinks', title: 'Days', album: 'Village Green', importedPath: '/recovery/missing.flac', updatedAt: '2026-10-16 11:00:00' },
@@ -1022,6 +1023,45 @@ test('library health report requires an administrator and adds D1 imports whose 
   await withRebootFetch({ admin: true, agent: () => Response.json({ report: { completedAt: null, duplicates: [], partialAlbums: [], orphanedSources: [], shadowedRecovery: [], checkedPaths: { '/recovery/present.flac': false, '/recovery/missing.flac': false } } }) }, async () => {
     const body = await (await worker.fetch(new Request('https://app.tomify.test/api/inventory/report', { method: 'POST', headers: recoveryHeaders, body: '{}' }), env)).json()
     assert.deepEqual(body.report.missingD1Files, [])
+  })
+})
+
+test('library health findings marked as fine move to the dismissed list until their paths change', async () => {
+  const dismissals = new Map()
+  const db = {
+    prepare(sql) {
+      return {
+        args: [], bind(...args) { this.args = args; return this },
+        async run() {
+          if (sql.startsWith('INSERT OR REPLACE INTO library_health_dismissals')) dismissals.set(`${this.args[0]}\0${this.args[1]}`, { category: this.args[0], pathsKey: this.args[1], dismissedBy: this.args[3], createdAt: '2026-10-16 21:30:00' })
+          if (sql.startsWith('DELETE FROM library_health_dismissals')) dismissals.delete(`${this.args[0]}\0${this.args[1]}`)
+          return {}
+        },
+        async all() { return { results: sql.includes('FROM library_health_dismissals') ? [...dismissals.values()] : [] } },
+      }
+    },
+  }
+  const env = { ...rebootEnv, TOMIFY_DB: db }
+  const rammstein = { kind: 'recording', label: 'Rammstein — Rammstein', paths: ['/master/Rammstein/4-04.flac', '/master/Rammstein/3-04.flac'] }
+  const nofx = { kind: 'recording', label: 'NOFX — Lower', paths: ['/master/NOFX/1-05.mp3', '/master/NOFX/2-06.mp3'] }
+  const agentReport = () => Response.json({ report: { completedAt: '2026-10-16T21:00:00Z', duplicates: [rammstein, nofx], partialAlbums: [], orphanedSources: [], shadowedRecovery: [], checkedPaths: {} } })
+  const post = (path, body) => worker.fetch(new Request(`https://app.tomify.test/api/inventory/${path}`, { method: 'POST', headers: recoveryHeaders, body: JSON.stringify(body) }), env)
+  await withRebootFetch({ admin: false, agent: agentReport }, async () => {
+    assert.equal((await post('dismiss', { category: 'duplicates', paths: rammstein.paths })).status, 403)
+  })
+  await withRebootFetch({ admin: true, agent: agentReport }, async (agentRequests) => {
+    assert.equal((await post('dismiss', { category: 'missingD1Files', paths: ['/x'] })).status, 400)
+    assert.equal((await post('dismiss', { category: 'duplicates', paths: [] })).status, 400)
+    // Paths are matched in any order.
+    assert.equal((await post('dismiss', { category: 'duplicates', paths: [...rammstein.paths].reverse(), label: rammstein.label })).status, 200)
+    assert.equal(agentRequests.length, 0)
+    let report = (await (await post('report', {})).json()).report
+    assert.deepEqual(report.duplicates.map((entry) => entry.label), ['NOFX — Lower'])
+    assert.deepEqual(report.dismissed.map((entry) => [entry.category, entry.label, entry.dismissedBy]), [['duplicates', 'Rammstein — Rammstein', 'tom']])
+    assert.equal((await post('dismiss', { category: 'duplicates', paths: rammstein.paths, restore: true })).status, 200)
+    report = (await (await post('report', {})).json()).report
+    assert.equal(report.duplicates.length, 2)
+    assert.deepEqual(report.dismissed, [])
   })
 })
 
