@@ -1,5 +1,4 @@
-import { readdir, readFile, writeFile } from 'node:fs/promises'
-import { extname, join, relative, sep } from 'node:path'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { recoveryMetadataWorkerSource } from './recovery-metadata.mjs'
 import { recoveryArtworkWorkerSource } from './recovery-artwork.mjs'
@@ -14,7 +13,6 @@ import { libraryScanWorkerSource } from './library-scan-worker.mjs'
 import { preflightWorkerSource } from './preflight-worker.mjs'
 import { inventoryWorkerSource } from './inventory-worker.mjs'
 
-const outputDirectory = new URL('../dist/', import.meta.url)
 const workerPath = new URL('../dist/server/index.js', import.meta.url)
 const TOMIFY_AGENT_CONTRACT = 2
 
@@ -24,40 +22,7 @@ function buildVersion() {
 }
 
 const TOMIFY_VERSION = buildVersion()
-const mimeTypes = {
-  '.css': 'text/css; charset=utf-8',
-  '.html': 'text/html; charset=utf-8',
-  '.ico': 'image/x-icon',
-  '.js': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-  '.webmanifest': 'application/manifest+json; charset=utf-8',
-}
-
-async function collectFiles(directory) {
-  const entries = await readdir(directory, { withFileTypes: true })
-  const files = []
-  for (const entry of entries) {
-    if (entry.name === 'server' || entry.name === '.openai') continue
-    const path = join(directory, entry.name)
-    files.push(...(entry.isDirectory() ? await collectFiles(path) : [path]))
-  }
-  return files
-}
-
-const root = outputDirectory.pathname.replace(/^\/(.:\/)/, '$1')
-const assets = Object.fromEntries(
-  await Promise.all(
-    (await collectFiles(root)).map(async (path) => {
-      const pathname = `/${relative(root, path).split(sep).join('/')}`
-      return [pathname, { body: (await readFile(path)).toString('base64'), type: mimeTypes[extname(path)] ?? 'application/octet-stream' }]
-    }),
-  ),
-)
-
-const worker = `const assets = ${JSON.stringify(assets)}
-const TOMIFY_VERSION = ${JSON.stringify(TOMIFY_VERSION)}
+const worker = `const TOMIFY_VERSION = ${JSON.stringify(TOMIFY_VERSION)}
 const TOMIFY_AGENT_CONTRACT = ${TOMIFY_AGENT_CONTRACT}
 
 ${recoveryMetadataWorkerSource}
@@ -83,13 +48,6 @@ ${libraryScanWorkerSource}
 ${preflightWorkerSource}
 
 ${inventoryWorkerSource}
-
-function decode(value) {
-  const binary = atob(value)
-  const bytes = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
-  return bytes
-}
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } })
@@ -1009,14 +967,10 @@ const tomifyRoutes = {
       })
     }
 
-    if (pathname === '/') pathname = '/index.html'
-    let asset = assets[pathname]
-    if (!asset && request.method === 'GET' && request.headers.get('accept')?.includes('text/html')) asset = assets['/index.html']
-    if (!asset || !['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 404 })
-
-    const headers = new Headers({ 'content-type': asset.type })
-    headers.set('cache-control', pathname === '/index.html' || pathname === '/sw.js' ? 'no-cache' : 'public, max-age=31536000, immutable')
-    return new Response(request.method === 'HEAD' ? null : decode(asset.body), { headers })
+    // Static Assets normally handles these requests before this Worker runs. The binding keeps direct
+    // Worker invocations (including local route tests) aligned with the deployed routing behavior.
+    if (env?.ASSETS) return env.ASSETS.fetch(request)
+    return new Response(null, { status: 404 })
   },
 }
 
@@ -1033,4 +987,5 @@ export default {
 }
 `
 
+await mkdir(new URL('../dist/server/', import.meta.url), { recursive: true })
 await writeFile(workerPath, worker)

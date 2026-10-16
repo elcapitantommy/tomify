@@ -1,6 +1,8 @@
 import test, { mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { readdir, readFile } from 'node:fs/promises'
+import { spawn, spawnSync } from 'node:child_process'
+import { createServer } from 'node:net'
 import { build } from 'vite'
 import { catalogueWorkerSource } from './catalogue-worker.mjs'
 
@@ -21,8 +23,46 @@ function mockDatabase() {
 await build({ configFile: new URL('../vite.config.ts', import.meta.url).pathname.replace(/^\/(.:\/)/, '$1'), logLevel: 'silent' })
 await import(`./build-worker.mjs?test=${Date.now()}`)
 
-const serviceWorker = await readFile(new URL('../dist/sw.js', import.meta.url), 'utf8')
-const { default: worker } = await import(`../dist/server/index.js?test=${Date.now()}`)
+const serviceWorker = await readFile(new URL('../dist/client/sw.js', import.meta.url), 'utf8')
+const { default: builtWorker } = await import(`../dist/server/index.js?test=${Date.now()}`)
+const clientIndex = await readFile(new URL('../dist/client/index.html', import.meta.url), 'utf8')
+// Direct module imports do not get Cloudflare's ASSETS binding. Supply the SPA response here so the
+// route suite exercises the same hand-off as the deployed Worker without changing route assertions.
+const worker = { fetch(request, env = {}) { return builtWorker.fetch(request, { ASSETS: { fetch: async () => new Response(clientIndex, { headers: { 'content-type': 'text/html; charset=utf-8' } }) }, ...env }) } }
+
+async function availablePort() {
+  const server = createServer()
+  await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  await new Promise((resolve) => server.close(resolve))
+  return address.port
+}
+
+async function withStaticAssetsWorker(callback) {
+  const port = await availablePort()
+  const windows = process.platform === 'win32'
+  const command = windows ? process.env.ComSpec : 'npx'
+  const args = windows
+    ? ['/d', '/s', '/c', `npx --yes wrangler@4 dev --local --ip 127.0.0.1 --port ${port}`]
+    : ['--yes', 'wrangler@4', 'dev', '--local', '--ip', '127.0.0.1', '--port', String(port)]
+  const child = spawn(command, args, { cwd: new URL('..', import.meta.url), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  let output = ''
+  child.stdout.on('data', (chunk) => { output += chunk })
+  child.stderr.on('data', (chunk) => { output += chunk })
+  try {
+    let ready = false
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      if (child.exitCode !== null) throw new Error(`wrangler dev exited before it was ready.\n${output}`)
+      try { const response = await fetch(`http://127.0.0.1:${port}/api/does-not-exist`); ready = response.status === 404; if (ready) break } catch { /* keep waiting */ }
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    if (!ready) throw new Error(`wrangler dev did not become ready.\n${output}`)
+    await callback(`http://127.0.0.1:${port}`)
+  } finally {
+    if (windows) spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' })
+    else child.kill('SIGTERM')
+  }
+}
 
 test('generated service worker excludes API and Navidrome navigations from the SPA fallback', () => {
   assert.equal(serviceWorker.includes('denylist:[/^\\/api\\//,/^\\/navidrome\\//]'), true)
@@ -903,6 +943,38 @@ test('library inventory routes require an administrator and pass all three actio
     const response = await worker.fetch(new Request('https://app.tomify.test/api/inventory/summary', { method: 'POST', headers: recoveryHeaders, body: '{}' }), rebootEnv)
     assert.equal(response.status, 404)
     assert.equal((await response.json()).error, 'inventory-not-available')
+  })
+})
+
+test('Workers Static Assets serves SPA deep links with the intended cache rules while API paths reach the Worker', { timeout: 30000 }, async () => {
+  const config = await readFile(new URL('../wrangler.toml', import.meta.url), 'utf8')
+  const headerRules = await readFile(new URL('../dist/client/_headers', import.meta.url), 'utf8')
+  assert.match(config, /directory = "\.\/dist\/client"/)
+  assert.match(config, /not_found_handling = "single-page-application"/)
+  for (const route of ['/api', '/api/*', '/navidrome', '/navidrome/*']) assert.ok(config.includes(`"${route}"`))
+  assert.match(headerRules, /\/index\.html\s+Cache-Control: no-cache/)
+  assert.match(headerRules, /\/sw\.js\s+Cache-Control: no-cache/)
+  assert.match(headerRules, /\/assets\/\*\s+Cache-Control: public, max-age=31536000, immutable/)
+
+  const index = await readFile(new URL('../dist/client/index.html', import.meta.url), 'utf8')
+  const hashedAsset = index.match(/(?:src|href)="(\/assets\/[^"]+)"/)?.[1]
+  assert.ok(hashedAsset)
+  await withStaticAssetsWorker(async (origin) => {
+    const deepLink = await fetch(`${origin}/albums/123`, { headers: { accept: 'text/html' } })
+    assert.equal(deepLink.status, 200)
+    assert.match(await deepLink.text(), /<div id="root"><\/div>/)
+    const indexResponse = await fetch(`${origin}/index.html`, { redirect: 'manual' })
+    assert.equal(indexResponse.headers.get('cache-control'), 'no-cache')
+    const serviceWorkerResponse = await fetch(`${origin}/sw.js`)
+    assert.equal(serviceWorkerResponse.headers.get('cache-control'), 'no-cache')
+    const hashedResponse = await fetch(`${origin}${hashedAsset}`)
+    assert.equal(hashedResponse.headers.get('cache-control'), 'public, max-age=31536000, immutable')
+    const api = await fetch(`${origin}/api/does-not-exist`, { headers: { accept: 'text/html' } })
+    assert.equal(api.status, 404)
+    assert.match(api.headers.get('content-type') || '', /^application\/json/)
+    assert.deepEqual(await api.json(), { error: 'not-found' })
+    const obsoleteServerAsset = await fetch(`${origin}/server/index.js`)
+    assert.match(await obsoleteServerAsset.text(), /<div id="root"><\/div>/)
   })
 })
 

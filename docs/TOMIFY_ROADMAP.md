@@ -220,6 +220,7 @@ Each task is written so it can be pasted into a GitHub issue or handed to a codi
 - **Complexity:** M · **Dependencies:** none.
 
 ### 16. Make the Worker a real TypeScript module
+- **Status:** In progress. PR 16a moves the Vite output to Workers Static Assets and keeps the generated Worker for dynamic routes; the TypeScript module conversion follows separately.
 - **Scope:** F-16. Incremental; no behaviour change in the first PR.
 - **Files:**
   - A new `worker/` directory: `index.ts`, `routes/*.ts`, `lib/auth.ts`, `lib/d1.ts`.
