@@ -204,6 +204,7 @@ GitHub Actions runs the frozen-lockfile install, lint, typecheck, production bui
 - Settings and Recovery are shown only to Navidrome administrators, and the Worker refuses Recovery requests from other accounts. On mobile they sit behind the account button in the top bar (with Sign out), and the bottom tab bar has Playlists in their place. Settings has a **Restart media server** button that reboots the home server through the recovery agent when SSH cannot reach it, NordVPN status with **Connect**/**Disconnect** buttons, and a **Full library scan** button (reboot and VPN control are off until enabled on the server; see docs/RECOVERY.md).
 - Usenet recovery through NZBIndex and/or Newznab indexers and SABnzbd or NZBGet, searching any mix of artist, album and track.
 - Torrent recovery from a torrent search (qBittorrent's search plugins, seeded results only) or a pasted magnet or `.torrent` link, downloaded by qBittorrent-nox over the box's VPN with live speed, seeds and time left, archives unpacked, audio imported, and the torrent removed afterwards (or when the item is deleted).
+- A read-only, incremental recovery-agent inventory of the master and recovery libraries, including FFprobe metadata, shared quality tiers and provenance-sidecar sources. It is stored atomically under the agent state directory and is available through admin-only API routes; the library-health UI is a later task.
 
 ### Deploying the site and D1 migrations
 
@@ -227,6 +228,8 @@ Every import is sorted into a quality tier (lossless, transparent lossy, lossy o
 See [docs/RECOVERY.md](docs/RECOVERY.md) for the agent setup, backend contract and legal/quality boundaries.
 
 Downloads and imports finish on the media server even with no browser open: the agent advances its own queued jobs every `TOMIFY_JOB_POLL_SECONDS` (10 by default), and the Recovery page only shows their progress (see [Background jobs](docs/RECOVERY.md#background-jobs)).
+
+The agent also runs the library inventory in the background, one scan at a time. It never writes to either music library and only re-probes files whose size or modification time changed; see [Read-only library inventory](docs/RECOVERY.md#read-only-library-inventory).
 
 The recovery agent is deployed separately from the site. After any change under `recovery-agent/` or `shared/` is merged, deploy it from Windows with `.\scripts\deploy-agent.ps1` (or `./scripts/deploy-agent.sh` on Linux/macOS). Releases switch atomically, are health-checked, and roll back automatically if startup fails; see [Updating the recovery agent](docs/RECOVERY.md#updating-the-recovery-agent). An out-of-date agent makes newer Recovery features fail.
 

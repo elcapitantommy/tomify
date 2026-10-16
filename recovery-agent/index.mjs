@@ -18,6 +18,7 @@ import { buildArtworkProvenance, buildDerivativeArguments, coverDimensions, dete
 import { assertNzbIndexCandidateComplete, cancelAgentJob, cancelDownloader, downloaderConfig, downloaderStatus, findCompletedAudio, newznabDownloadUrl, nzbIndexConfig, nzbIndexDownloadUrl, parseIndexerConfig, searchUsenetProviders, submitDownloader, usenetCapability, usenetSearchQuery, validateCompletedPath } from './usenet.mjs'
 import { importRemainingUsenetFiles, importUsenetCompletion, planDestination } from './usenet-import.mjs'
 import { preflightRelease } from './preflight.mjs'
+import { createInventoryController } from './inventory.mjs'
 import { validateRecoveryAuthConfig } from './config.mjs'
 import { createUsenetJobPoller } from './usenet-job.mjs'
 import { createJobRunner, jobPollIntervalMs } from './jobs.mjs'
@@ -722,6 +723,7 @@ async function deleteImportedRecovery(body) {
 const nordvpnHome = join(usenetStateRoot, 'nordvpn-cli')
 await mkdir(nordvpnHome, { recursive: true, mode: 0o700 })
 const vpn = createVpnController({ config: vpnSettings, run: (command, args) => run(command, args, 60_000, nordvpnEnvironment(process.env, nordvpnHome), nordvpnFailureMessage) })
+const inventory = createInventoryController({ masterRoot, recoveryRoot, stateRoot: usenetStateRoot, probe, log: (message) => process.stderr.write(`${message}\n`) })
 
 await mkdir(recoveryRoot, { recursive: true })
 await mkdir(usenetStateRoot, { recursive: true })
@@ -762,6 +764,12 @@ createServer(async (request, response) => {
     }
     // Read-only: lists what the release directory an acquisition would use already holds.
     if (request.url === '/v1/preflight') return send(response, 200, await preflightRelease(recoveryRoot, body, { probe }))
+    if (request.url === '/v1/inventory/scan') {
+      const result = await inventory.start()
+      return send(response, result.started ? 202 : 200, result)
+    }
+    if (request.url === '/v1/inventory/status') return send(response, 200, { status: await inventory.status() })
+    if (request.url === '/v1/inventory/summary') return send(response, 200, { summary: await inventory.summary() })
     // Read-only: the job runner advances jobs, so asking for status never starts a download step or an import.
     if (request.url === '/v1/jobs/status') return send(response, 200, await pollUsenetJob.read(body.jobId))
     if (request.url === '/v1/jobs/cancel') return send(response, 200, await cancelRecoveryJob(body))

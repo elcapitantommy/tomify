@@ -883,6 +883,29 @@ async function withRebootFetch({ admin, agent }, callback) {
 }
 
 const rebootEnv = { RECOVERY_AGENT_URL: 'https://agent.tomify.test', RECOVERY_AGENT_TOKEN: 'agent-token' }
+test('library inventory routes require an administrator and pass all three actions to the agent', async () => {
+  await withRebootFetch({ admin: false, agent: () => Response.json({}) }, async (agentRequests) => {
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/inventory/status', { method: 'POST', headers: recoveryHeaders, body: '{}' }), rebootEnv)
+    assert.equal(response.status, 403)
+    assert.equal(agentRequests.length, 0)
+  })
+
+  await withRebootFetch({ admin: true, agent: () => Response.json({ ok: true }) }, async (agentRequests) => {
+    for (const action of ['scan', 'status', 'summary']) {
+      const response = await worker.fetch(new Request(`https://app.tomify.test/api/inventory/${action}`, { method: 'POST', headers: recoveryHeaders, body: '{}' }), rebootEnv)
+      assert.equal(response.status, 200)
+      assert.deepEqual(await response.json(), { ok: true })
+    }
+    assert.deepEqual(agentRequests.map((request) => new URL(request.url).pathname), ['/v1/inventory/scan', '/v1/inventory/status', '/v1/inventory/summary'])
+  })
+
+  await withRebootFetch({ admin: true, agent: () => Response.json({ error: 'not-found' }, { status: 404 }) }, async () => {
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/inventory/summary', { method: 'POST', headers: recoveryHeaders, body: '{}' }), rebootEnv)
+    assert.equal(response.status, 404)
+    assert.equal((await response.json()).error, 'inventory-not-available')
+  })
+})
+
 const rebootRequest = (body) => new Request('https://app.tomify.test/api/system/reboot', { method: 'POST', headers: { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt', 'content-type': 'application/json' }, body: JSON.stringify(body) })
 
 test('Media server reboot requires a signed-in Navidrome administrator', async () => {
