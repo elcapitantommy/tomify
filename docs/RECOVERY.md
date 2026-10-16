@@ -67,7 +67,9 @@ Spotify credentials and access tokens remain server-side and are never included 
 
 The recovery agent accepts only allow-listed artwork hosts, follows HTTPS redirects, caps downloads at 25 MiB and accepts JPEG, PNG or WebP only when the declared MIME agrees with the file signature. FFprobe verifies the fetched dimensions. Images larger than 1200px are reduced to approximately 1200px without upscaling smaller fallbacks, and the stored release image is normalised to JPEG.
 
-For MP4/M4A, MP3 and FLAC, FFmpeg maps the preserved audio stream with `-c:a copy` and adds a separate attached-picture stream. WebM, Opus, Ogg, MKA and other unsupported or unreliable attached-art containers are kept audio-only with the same stream-copy rule. In particular, an Opus stream downloaded in WebM remains an unchanged `.webm` original but is remuxed without transcoding into a Navidrome-compatible `.opus` derivative. Every selected image is also written atomically as `Artist/Album/cover.jpg` so Navidrome can detect release artwork independently of embedded-art support. Because that file is shared by a recovered release, deleting an individual Recovery track does not delete `cover.jpg`.
+For MP4/M4A, MP3 and FLAC, FFmpeg maps the preserved audio stream with `-c:a copy` and adds a separate attached-picture stream. WebM, Opus, Ogg, MKA and other unsupported or unreliable attached-art containers are kept audio-only with the same stream-copy rule. In particular, an Opus stream downloaded in WebM remains an unchanged `.webm` original but is remuxed without transcoding into a Navidrome-compatible `.opus` derivative. Every selected image is also published atomically as `Artist/Album/cover.jpg` so Navidrome can detect release artwork independently of embedded-art support. An existing `cover.jpg` is never replaced; provenance records that the existing cover was kept. Because that file is shared by a recovered release, deleting an individual Recovery track does not delete `cover.jpg`.
+
+The preserved original and Navidrome derivative are first copied to hidden temporary files in their destination directories, then published atomically without replacing an existing name. If either publish or the later sidecar write fails, Tomify removes every file created by that track import, including a newly created cover, leaving the release directory as it was.
 
 Artwork provenance records the provider and provider ID, original and final fetched URLs, fetched and final dimensions, source and final MIME types, acquisition time, `cover.jpg` path, storage mode and whether the derivative received embedded art.
 
@@ -493,6 +495,7 @@ Configure exactly one downloader:
 ```text
 TOMIFY_SABNZBD_URL=http://127.0.0.1:8080
 TOMIFY_SABNZBD_API_KEY=replace-me
+TOMIFY_SABNZBD_CLEANUP=false
 TOMIFY_SABNZBD_DOWNLOAD_DIR=/downloads
 TOMIFY_USENET_DOWNLOAD_DIR=/srv/usenet/completed
 TOMIFY_USENET_CATEGORY=music
@@ -502,6 +505,8 @@ TOMIFY_RECOVERY_STATE_DIR=/var/lib/tomify-recovery
 ```
 
 `TOMIFY_USENET_DOWNLOAD_DIR` is the completed-download root visible to the Tomify host. Set `TOMIFY_SABNZBD_DOWNLOAD_DIR` only when SABnzbd reports a different root, such as `/downloads` inside a Docker container mapped to the host's `/srv/usenet/completed`. Tomify accepts a SAB completion path only when it is contained beneath that downloader-visible root, translates the relative suffix to the host root, then applies the existing realpath, containment, file-type, symlink, file-count, and size checks.
+
+`TOMIFY_SABNZBD_CLEANUP=true` optionally removes SABnzbd's completed download folder after every selected track has imported successfully. It defaults to off. Cleanup resolves the real host path again and deletes only a directory strictly inside `TOMIFY_USENET_DOWNLOAD_DIR`; it refuses the root itself, files, and paths outside that root. Enabling it means **Import rest of download** is no longer available after the first import because the completed source has been removed.
 
 For NZBGet, use `TOMIFY_NZBGET_URL`, `TOMIFY_NZBGET_USERNAME`, and `TOMIFY_NZBGET_PASSWORD` instead of the SABnzbd settings. `TOMIFY_SABNZBD_DOWNLOAD_DIR` does not apply to NZBGet. Indexer URLs must use HTTPS, except for loopback development services. Credentials and credential-bearing NZB download URLs are used only by the recovery agent; they are never returned to the Worker, browser, D1, or provenance.
 
