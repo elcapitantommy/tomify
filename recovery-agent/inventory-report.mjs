@@ -13,19 +13,6 @@ function ancestorDirectories(path) {
   const absolute = value(path).startsWith('/')
   return parts.slice(1).map((_, index) => `${absolute ? '/' : ''}${parts.slice(0, index + 2).join('/')}`)
 }
-function sameRecording(left, right) {
-  const leftId = value(left?.tags?.recordingId).toLowerCase()
-  const rightId = value(right?.tags?.recordingId).toLowerCase()
-  if (leftId && rightId && leftId === rightId) return true
-  const leftArtist = normalizeInventoryText(left?.tags?.artist || left?.tags?.albumArtist)
-  const rightArtist = normalizeInventoryText(right?.tags?.artist || right?.tags?.albumArtist)
-  const leftTitle = normalizeInventoryText(left?.tags?.title)
-  const rightTitle = normalizeInventoryText(right?.tags?.title)
-  if (!leftArtist || leftArtist !== rightArtist || !leftTitle || leftTitle !== rightTitle) return false
-  const leftDuration = Number(left?.probe?.duration)
-  const rightDuration = Number(right?.probe?.duration)
-  return Number.isFinite(leftDuration) && Number.isFinite(rightDuration) && Math.abs(leftDuration - rightDuration) <= 2
-}
 function fingerprint(file) {
   return value(file?.fingerprint || file?.audioFingerprint || file?.hash || file?.sha256 || file?.probe?.fingerprint || file?.probe?.hash).toLowerCase() || null
 }
@@ -40,8 +27,11 @@ function groupBy(items, key) {
   }
   return groups
 }
+// Numbers name different things (Volume 1 / Volume 2, Live 1974 / Live 1975), so a one-character difference only
+// counts as a typo when no digit is involved.
 function editDistanceAtMostOne(left, right) {
   if (left === right) return true
+  if (left.replace(/\D/g, '') !== right.replace(/\D/g, '')) return false
   if (Math.abs(left.length - right.length) > 1 || Math.min(left.length, right.length) < 5) return false
   let changes = 0
   for (let a = 0, b = 0; a < left.length && b < right.length;) {
@@ -55,29 +45,77 @@ function editDistanceAtMostOne(left, right) {
 }
 function distinct(values) { return [...new Set(values.filter(Boolean))] }
 
-function duplicateDirectories(files) {
-  const directories = distinct(files.flatMap((file) => ancestorDirectories(file.path))).map((path) => ({ path, name: basename(path), normalized: normalizeInventoryText(basename(path)) }))
+// The directory a library starts at: the stored root, else the deepest directory every file of that library shares.
+function libraryRoots(files, roots) {
+  const result = {}
+  for (const library of distinct(files.map((file) => file.library))) {
+    const stored = value(roots?.[library]).replace(/\\/g, '/').replace(/\/+$/, '')
+    if (stored) { result[library] = stored; continue }
+    let common = null
+    for (const file of files) {
+      if (file.library !== library) continue
+      const parts = pathParts(file.path).slice(0, -1)
+      if (common === null) { common = parts; continue }
+      let length = 0
+      while (length < common.length && length < parts.length && common[length] === parts[length]) length += 1
+      common = common.slice(0, length)
+    }
+    const absolute = value(files.find((file) => file.library === library)?.path).startsWith('/')
+    result[library] = `${absolute ? '/' : ''}${(common || []).join('/')}`
+  }
+  return result
+}
+
+// Directories are only compared with others at the same place in either library (artist folders with artist folders,
+// album folders with the albums of a matching artist), so the work grows with the folders that could be confused.
+function duplicateDirectories(files, roots) {
+  const rootFor = libraryRoots(files, roots)
+  const seen = new Map()
+  for (const file of files) {
+    const root = rootFor[file.library] || ''
+    for (const path of ancestorDirectories(file.path)) {
+      if (seen.has(path) || !path.startsWith(`${root}/`)) continue
+      const relative = pathParts(path.slice(root.length))
+      const name = relative.at(-1) || ''
+      seen.set(path, { path, name, normalized: normalizeInventoryText(name), parentKey: relative.slice(0, -1).map(normalizeInventoryText).join('/') })
+    }
+  }
+  const directories = [...seen.values()].map((entry, index) => ({ ...entry, index }))
   const parent = directories.map((_, index) => index)
   const root = (index) => parent[index] === index ? index : (parent[index] = root(parent[index]))
-  for (let left = 0; left < directories.length; left += 1) for (let right = left + 1; right < directories.length; right += 1) {
-    const a = directories[left]
-    const b = directories[right]
-    if (a.name !== b.name && a.normalized && editDistanceAtMostOne(a.normalized, b.normalized)) parent[root(right)] = root(left)
+  for (const siblings of groupBy(directories, (entry) => `parent:${entry.parentKey}`).values()) {
+    for (let left = 0; left < siblings.length; left += 1) for (let right = left + 1; right < siblings.length; right += 1) {
+      const a = siblings[left]
+      const b = siblings[right]
+      if (a.name !== b.name && a.normalized && editDistanceAtMostOne(a.normalized, b.normalized)) parent[root(b.index)] = root(a.index)
+    }
   }
   const groups = new Map()
-  directories.forEach((entry, index) => {
-    const key = root(index)
+  for (const entry of directories) {
+    const key = root(entry.index)
     const group = groups.get(key) || []
     group.push(entry)
     groups.set(key, group)
-  })
-  return [...groups.values()].filter((entries) => entries.length > 1).map((entries) => ({ kind: 'directory', label: distinct(entries.map((entry) => entry.name)).join(' / '), paths: entries.map((entry) => entry.path).sort() }))
+  }
+  return [...groups.values()].filter((entries) => distinct(entries.map((entry) => entry.name)).length > 1).map((entries) => ({ kind: 'directory', label: distinct(entries.map((entry) => entry.name)).join(' / '), paths: entries.map((entry) => entry.path).sort() }))
 }
 
+// The same recording: a matching MusicBrainz recording id, or the same artist and title within two seconds. Files are
+// bucketed by id and by artist and title first, so a large library is never compared file against file.
 function recordingGroups(files) {
   const parent = files.map((_, index) => index)
   const root = (index) => parent[index] === index ? index : (parent[index] = root(parent[index]))
-  for (let left = 0; left < files.length; left += 1) for (let right = left + 1; right < files.length; right += 1) if (sameRecording(files[left], files[right])) parent[root(right)] = root(left)
+  const union = (left, right) => { parent[root(right)] = root(left) }
+  const keyed = files.map((file, index) => {
+    const artist = normalizeInventoryText(file?.tags?.artist || file?.tags?.albumArtist)
+    const title = normalizeInventoryText(file?.tags?.title)
+    return { index, recordingId: value(file?.tags?.recordingId).toLowerCase(), duration: Number(file?.probe?.duration), name: artist && title ? `${artist}\0${title}` : null }
+  })
+  for (const group of groupBy(keyed, (entry) => entry.recordingId).values()) for (const entry of group.slice(1)) union(group[0].index, entry.index)
+  for (const group of groupBy(keyed.filter((entry) => Number.isFinite(entry.duration)), (entry) => entry.name).values()) {
+    group.sort((left, right) => left.duration - right.duration)
+    for (let index = 1; index < group.length; index += 1) if (group[index].duration - group[index - 1].duration <= 2) union(group[index - 1].index, group[index].index)
+  }
   const groups = new Map()
   files.forEach((file, index) => { const key = root(index); const group = groups.get(key) || []; group.push(file); groups.set(key, group) })
   return [...groups.values()].filter((group) => group.length > 1)
@@ -148,9 +186,10 @@ export function reportLibraryInventory(inventory, { tracklists = [], checkPaths 
   const files = allFiles.filter((file) => !pathParts(file.path).includes('.tomify-source'))
   const duplicates = []
   for (const group of groupBy(files.filter(fingerprint), (file) => `${Number(file.size) || 0}\0${fingerprint(file)}`).values()) if (group.length > 1) duplicates.push({ kind: 'content', label: 'Matching audio fingerprint and size', paths: group.map((file) => file.path).sort() })
-  for (const group of recordingGroups(files)) duplicates.push({ kind: 'recording', label: `${value(group[0].tags?.artist || group[0].tags?.albumArtist)} — ${value(group[0].tags?.title)}`, paths: group.map((file) => file.path).sort() })
-  duplicates.push(...duplicateDirectories(files))
-  const shadows = recordingGroups(files).filter((group) => group.some((file) => file.library === 'master') && group.some((file) => file.library === 'recovery')).map((group) => ({
+  const recordings = recordingGroups(files)
+  for (const group of recordings) duplicates.push({ kind: 'recording', label: `${value(group[0].tags?.artist || group[0].tags?.albumArtist)} — ${value(group[0].tags?.title)}`, paths: group.map((file) => file.path).sort() })
+  duplicates.push(...duplicateDirectories(files, inventory?.roots))
+  const shadows = recordings.filter((group) => group.some((file) => file.library === 'master') && group.some((file) => file.library === 'recovery')).map((group) => ({
     kind: 'shadowed-recovery', label: `${value(group[0].tags?.artist || group[0].tags?.albumArtist)} — ${value(group[0].tags?.title)}`,
     masterPaths: group.filter((file) => file.library === 'master').map((file) => file.path).sort(), recoveryPaths: group.filter((file) => file.library === 'recovery').map((file) => file.path).sort(), paths: group.map((file) => file.path).sort(),
   }))

@@ -133,12 +133,17 @@ async function withAnonymousFallback(operation) {
   return { value: await operation(false), authenticatedAccessUsed: false, authenticationFallback: status.usable }
 }
 
+// The library health report carries every cached MusicBrainz tracklist and every imported path from D1, so it may be
+// larger than any other request.
+const largeBodyRoutes = new Set(['/v1/inventory/report'])
+
 async function parseBody(request) {
   const chunks = []
   let size = 0
+  const limit = largeBodyRoutes.has(request.url) ? 16 * 1024 * 1024 : 64 * 1024
   for await (const chunk of request) {
     size += chunk.length
-    if (size > 64 * 1024) throw new Error('Request body is too large.')
+    if (size > limit) throw new Error('Request body is too large.')
     chunks.push(chunk)
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')

@@ -171,7 +171,7 @@ export async function scanLibraryInventory({ masterRoot = null, recoveryRoot, st
     update({ filesProcessed, filesProbed: progress.filesProbed + 1, progress: discoveredFiles.length ? Math.round(filesProcessed / discoveredFiles.length * 100) : 100 })
   }
   const completedAt = now()
-  const inventory = { version: 2, completedAt, files, sidecars, sourceFiles }
+  const inventory = { version: 2, completedAt, roots: { master: masterRoot ? resolve(masterRoot) : null, recovery: recoveryRoot ? resolve(recoveryRoot) : null }, files, sidecars, sourceFiles }
   await writeJsonAtomic(statePath, inventory)
   update({ state: 'completed', progress: 100, completedAt, currentLibrary: null, currentPath: null })
   return inventory

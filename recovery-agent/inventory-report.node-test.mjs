@@ -54,3 +54,27 @@ test('equal sizes without a hash or fingerprint are not reported as identical co
   const report = reportLibraryInventory({ files, sidecars: [], sourceFiles: [] })
   assert.equal(report.duplicates.some((entry) => entry.kind === 'content'), false)
 })
+
+test('numbered folders and folders under different artists are not reported as similar directories', () => {
+  const files = [
+    audio('/master/Queen/Greatest Hits 1/01.flac', 'master', { artist: 'Queen', album: 'Greatest Hits 1', title: 'Bohemian Rhapsody' }),
+    audio('/master/Queen/Greatest Hits 2/01.flac', 'master', { artist: 'Queen', album: 'Greatest Hits 2', title: 'A Kind of Magic' }),
+    audio('/master/Blur/Parklife/01.flac', 'master', { artist: 'Blur', album: 'Parklife', title: 'Girls & Boys' }),
+    audio('/master/Pulp/Parklive/01.flac', 'master', { artist: 'Pulp', album: 'Parklive', title: 'Common People' }),
+  ]
+  const report = reportLibraryInventory({ files, sidecars: [], sourceFiles: [], roots: { master: '/master' } })
+  assert.deepEqual(report.duplicates.filter((entry) => entry.kind === 'directory'), [])
+})
+
+test('a large inventory is reported without comparing every file with every other', () => {
+  const files = []
+  for (let artist = 0; artist < 400; artist += 1) for (let track = 1; track <= 50; track += 1) {
+    files.push(audio(`/master/Artist ${artist}/Album/${track}.flac`, 'master', { artist: `Artist ${artist}`, album: 'Album', title: `Song ${track}`, track, duration: 100 + track * 5 }))
+  }
+  files.push(audio('/recovery/Artist 7/Album/3.flac', 'recovery', { artist: 'Artist 7', album: 'Album', title: 'Song 3', track: 3, duration: 116 }))
+  const started = Date.now()
+  const report = reportLibraryInventory({ files, sidecars: [], sourceFiles: [], roots: { master: '/master', recovery: '/recovery' } })
+  assert.ok(Date.now() - started < 5000, `report took ${Date.now() - started} ms`)
+  assert.equal(report.shadowedRecovery.length, 1)
+  assert.equal(report.duplicates.filter((entry) => entry.kind === 'recording').length, 1)
+})
