@@ -1,5 +1,5 @@
-import { lstat, readFile, realpath, unlink } from 'node:fs/promises'
-import { basename, dirname, extname, isAbsolute, resolve, sep } from 'node:path'
+import { lstat, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 function inside(child, parent) {
   return child === parent || child.startsWith(parent + sep)
@@ -25,7 +25,20 @@ export function recoveryArtifactPaths(importedPath, recoveryRoot, masterRoot = n
   return paths
 }
 
-export async function deleteRecoveryArtifacts(importedPath, recoveryRoot, masterRoot = null) {
+// Deleting moves artifacts into a hidden trash folder in the recovery library instead of erasing them, so a deleted
+// Recovery item's files can be put back. The folder is hidden and holds an empty .ndignore, so neither Navidrome nor the
+// library inventory sees it; empty it by hand once nothing in it is wanted.
+export const recoveryTrashDirectory = '.tomify-deleted'
+
+async function trashDestination(path, trashRoot, root) {
+  const destination = join(trashRoot, relative(root, path))
+  for (let attempt = 0; ; attempt += 1) {
+    const candidate = attempt ? `${destination}.${attempt}` : destination
+    try { await lstat(candidate) } catch (error) { if (error?.code === 'ENOENT') return candidate; throw error }
+  }
+}
+
+export async function deleteRecoveryArtifacts(importedPath, recoveryRoot, masterRoot = null, { now = () => new Date() } = {}) {
   const root = resolve(recoveryRoot)
   let paths = recoveryArtifactPaths(importedPath, root, masterRoot)
   const canonicalRoot = await realpath(root)
@@ -53,8 +66,16 @@ export async function deleteRecoveryArtifacts(importedPath, recoveryRoot, master
   }
 
   const deleted = []
+  const trashed = []
+  const trashBase = join(root, recoveryTrashDirectory)
+  const trashRoot = join(trashBase, now().toISOString().replace(/[:.]/g, '-'))
   for (const path of paths) {
-    try { await unlink(path); deleted.push(path) } catch (error) { if (error?.code !== 'ENOENT') throw error }
+    try { await lstat(path) } catch (error) { if (error?.code === 'ENOENT') continue; throw error }
+    await mkdir(trashBase, { recursive: true })
+    await writeFile(join(trashBase, '.ndignore'), '', { flag: 'a' })
+    const destination = await trashDestination(path, trashRoot, root)
+    await mkdir(dirname(destination), { recursive: true })
+    try { await rename(path, destination); deleted.push(path); trashed.push(destination) } catch (error) { if (error?.code !== 'ENOENT') throw error }
   }
-  return { deleted }
+  return { deleted, trashed }
 }

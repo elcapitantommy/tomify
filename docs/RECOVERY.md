@@ -28,7 +28,7 @@ Recovery is only for Navidrome administrators (accounts with `adminRole`). The W
 - Retains the original downloaded audio in a hidden `.tomify-source` directory, creates a separately identified FFmpeg stream-copy/tagging derivative, and writes a `.tomify.json` provenance sidecar. A future compatibility transcode must retain the source and record `transcoded: true`.
 - Validates selected artwork server-side by HTTPS host, response MIME, file signature, byte size and FFprobe dimensions. It writes release-level `cover.jpg` and embeds attached art only for supported MP4/M4A, MP3 and FLAC derivatives; WebM/Opus and other containers remain audio-only with `cover.jpg` alongside them.
 - Writes only into a dedicated recovery directory. Existing files are not overwritten and the configured FLAC master tree must be separate.
-- Deletes queue-only items directly from D1. For imported items, deletion first removes the recovery derivative, its `.tomify.json` sidecar and the matching preserved original under `.tomify-source`; D1 state is retained if that filesystem cleanup fails.
+- Deletes queue-only items directly from D1. For imported items, deletion first moves the recovery derivative, its `.tomify.json` sidecar and the matching preserved original under `.tomify-source` into the recovery trash, `TOMIFY_RECOVERY_DIR/.tomify-deleted/<UTC timestamp>/`, keeping their relative paths; D1 state is retained if that move fails. Nothing is erased: the trash is a hidden folder with an empty `.ndignore`, so Navidrome and Library health ignore it, and a file is restored by moving it back to the same relative path under `TOMIFY_RECOVERY_DIR` and running a full library scan. Empty the trash by hand (`rm -r /srv/music-recovery/.tomify-deleted/<timestamp>`) once nothing in it is wanted.
 - Classifies every import into a quality tier and marks it `recovered` when the tier meets the preferred quality set in Settings, otherwise `needs-upgrade`. See [Quality tiers](#quality-tiers). Either way the files stay recovery copies, never verified masters, and nothing is promoted to an archival master automatically.
 - Waits for Navidrome to scan each import before calling it playable. See [Library scan after import](#library-scan-after-import).
 - Marks Internet Archive imports `internet-archive-recovery-copy`. A lossless file is still a recovery source, not proof of an archival master.
@@ -160,7 +160,7 @@ Recovery page
            +-- CD rip / purchased download / recovered file (future)
 ```
 
-The hosted Worker cannot execute media binaries. `recovery-agent/index.mjs` is a deliberately small Node.js service for the Linux media server. It shells out without a command shell, validates destinations and source hosts, and never writes to or deletes from the canonical master tree. Artifact deletion accepts only absolute imported paths that remain inside `TOMIFY_RECOVERY_DIR`, rejects non-regular files and is idempotent when an artifact has already been removed.
+The hosted Worker cannot execute media binaries. `recovery-agent/index.mjs` is a deliberately small Node.js service for the Linux media server. It shells out without a command shell, validates destinations and source hosts, and never writes to or deletes from the canonical master tree. Artifact deletion accepts only absolute imported paths that remain inside `TOMIFY_RECOVERY_DIR`, rejects non-regular files, moves artifacts into the `.tomify-deleted` trash rather than erasing them, and is idempotent when an artifact has already been removed.
 
 ## Media-server setup
 
