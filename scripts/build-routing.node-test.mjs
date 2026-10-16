@@ -706,7 +706,8 @@ test('a YouTube import is queued as an agent job, and an older agent that import
     assert.equal(queuedDb.candidate.importedPath, null)
 
     const polled = await (await worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1/job', { headers: recoveryHeaders }), { TOMIFY_DB: queuedDb, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })).json()
-    assert.equal(queuedDb.item.status, 'needs-upgrade')
+    // 256 kbps AAC is transparent lossy, which meets the default preferred quality.
+    assert.equal(queuedDb.item.status, 'recovered')
     assert.equal(polled.item.candidates[0].importedPath, youtubeResult.path)
     assert.equal(polled.item.candidates[0].provenance.source, 'youtube')
     assert.equal(polled.item.candidates[0].provenance.archiveStatus, 'lossy-recovery-copy')
@@ -717,7 +718,7 @@ test('a YouTube import is queued as an agent job, and an older agent that import
   await withRecoveryAgent(() => Response.json(youtubeResult), async () => {
     const response = await acquire(syncDb)
     assert.equal(response.status, 200)
-    assert.equal(syncDb.item.status, 'needs-upgrade')
+    assert.equal(syncDb.item.status, 'recovered')
     assert.equal(syncDb.candidate.importedPath, youtubeResult.path)
   })
 })
