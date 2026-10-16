@@ -100,8 +100,15 @@ function duplicateDirectories(files, roots) {
   return [...groups.values()].filter((entries) => distinct(entries.map((entry) => entry.name)).length > 1).map((entries) => ({ kind: 'directory', label: distinct(entries.map((entry) => entry.name)).join(' / '), paths: entries.map((entry) => entry.path).sort() }))
 }
 
-// The same recording: a matching MusicBrainz recording id, or the same artist and title within two seconds. Files are
-// bucketed by id and by artist and title first, so a large library is never compared file against file.
+// The album a file belongs to: its album artist and album tags, else the folder it sits in.
+function albumKey(file) {
+  const album = normalizeInventoryText(file?.tags?.album) || normalizeInventoryText(pathParts(file?.path).at(-2))
+  return `${normalizeInventoryText(file?.tags?.albumArtist || file?.tags?.artist)}\0${album}`
+}
+
+// The same recording on the same album: a matching MusicBrainz recording id, or the same artist and title within two
+// seconds. A song on both its original album and a compilation is not a duplicate. Files are bucketed by album and id,
+// and by album, artist and title, so a large library is never compared file against file.
 function recordingGroups(files) {
   const parent = files.map((_, index) => index)
   const root = (index) => parent[index] === index ? index : (parent[index] = root(parent[index]))
@@ -109,7 +116,9 @@ function recordingGroups(files) {
   const keyed = files.map((file, index) => {
     const artist = normalizeInventoryText(file?.tags?.artist || file?.tags?.albumArtist)
     const title = normalizeInventoryText(file?.tags?.title)
-    return { index, recordingId: value(file?.tags?.recordingId).toLowerCase(), duration: Number(file?.probe?.duration), name: artist && title ? `${artist}\0${title}` : null }
+    const album = albumKey(file)
+    const recordingId = value(file?.tags?.recordingId).toLowerCase()
+    return { index, recordingId: recordingId ? `${album}\0${recordingId}` : null, duration: Number(file?.probe?.duration), name: artist && title ? `${album}\0${artist}\0${title}` : null }
   })
   for (const group of groupBy(keyed, (entry) => entry.recordingId).values()) for (const entry of group.slice(1)) union(group[0].index, entry.index)
   for (const group of groupBy(keyed.filter((entry) => Number.isFinite(entry.duration)), (entry) => entry.name).values()) {

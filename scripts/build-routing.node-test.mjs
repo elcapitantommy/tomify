@@ -915,7 +915,9 @@ test('library health report requires an administrator and adds D1 imports whose 
           if (sql.includes('FROM release_tracklists')) return { results: [{ tracklistJson: JSON.stringify({ albumId: 'album-1', title: 'Flood', artist: 'They Might Be Giants', tracks: [{ disc: 1, number: 1, title: 'Theme' }] }) }] }
           return { results: [
             { id: 'present-item', artist: 'The Kinks', title: 'Waterloo Sunset', album: 'Something Else', importedPath: '/recovery/present.flac' },
-            { id: 'missing-item', artist: 'The Kinks', title: 'Days', album: 'Village Green', importedPath: '/recovery/missing.flac' },
+            { id: 'missing-item', artist: 'The Kinks', title: 'Days', album: 'Village Green', importedPath: '/recovery/missing.flac', updatedAt: '2026-10-16 11:00:00' },
+            { id: 'artist-only-item', artist: 'The Beatles', title: '', album: null, importedPath: '/recovery/The Beatles/Past Masters I/01.flac', updatedAt: '2026-10-16 11:30:00' },
+            { id: 'imported-after-scan', artist: 'ELO', title: 'Overture', album: null, importedPath: '/recovery/after.flac', updatedAt: '2026-10-16 12:30:00' },
           ] }
         },
       }
@@ -927,14 +929,23 @@ test('library health report requires an administrator and adds D1 imports whose 
     assert.equal(response.status, 403)
     assert.equal(agentRequests.length, 0)
   })
-  await withRebootFetch({ admin: true, agent: () => Response.json({ report: { completedAt: '2026-10-16T12:00:00Z', duplicates: [], partialAlbums: [], orphanedSources: [], shadowedRecovery: [], checkedPaths: { '/recovery/present.flac': true, '/recovery/missing.flac': false } } }) }, async (agentRequests) => {
+  await withRebootFetch({ admin: true, agent: () => Response.json({ report: { completedAt: '2026-10-16T12:00:00Z', duplicates: [], partialAlbums: [], orphanedSources: [], shadowedRecovery: [], checkedPaths: { '/recovery/present.flac': true, '/recovery/missing.flac': false, '/recovery/The Beatles/Past Masters I/01.flac': false, '/recovery/after.flac': false } } }) }, async (agentRequests) => {
     const response = await worker.fetch(new Request('https://app.tomify.test/api/inventory/report', { method: 'POST', headers: recoveryHeaders, body: '{}' }), env)
     assert.equal(response.status, 200)
     const body = await response.json()
-    assert.deepEqual(body.report.missingD1Files, [{ kind: 'missing-d1-file', label: 'The Kinks — Days', paths: ['/recovery/missing.flac'], recoveryId: 'missing-item' }])
+    // The ELO import is newer than the scan, so the inventory has not seen it yet; that is not a missing file.
+    assert.deepEqual(body.report.missingD1Files, [
+      { kind: 'missing-d1-file', label: 'The Kinks — Days', paths: ['/recovery/missing.flac'], recoveryId: 'missing-item' },
+      { kind: 'missing-d1-file', label: 'The Beatles — Past Masters I', paths: ['/recovery/The Beatles/Past Masters I/01.flac'], recoveryId: 'artist-only-item' },
+    ])
     assert.equal(body.report.checkedPaths, undefined)
     assert.equal(agentRequests[0].body.tracklists[0].albumId, 'album-1')
-    assert.deepEqual(agentRequests[0].body.checkPaths, ['/recovery/present.flac', '/recovery/missing.flac'])
+    assert.deepEqual(agentRequests[0].body.checkPaths, ['/recovery/present.flac', '/recovery/missing.flac', '/recovery/The Beatles/Past Masters I/01.flac', '/recovery/after.flac'])
+  })
+  // Before the first completed scan the inventory is empty, so nothing can be called missing.
+  await withRebootFetch({ admin: true, agent: () => Response.json({ report: { completedAt: null, duplicates: [], partialAlbums: [], orphanedSources: [], shadowedRecovery: [], checkedPaths: { '/recovery/present.flac': false, '/recovery/missing.flac': false } } }) }, async () => {
+    const body = await (await worker.fetch(new Request('https://app.tomify.test/api/inventory/report', { method: 'POST', headers: recoveryHeaders, body: '{}' }), env)).json()
+    assert.deepEqual(body.report.missingD1Files, [])
   })
 })
 
