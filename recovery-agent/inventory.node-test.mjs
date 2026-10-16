@@ -56,8 +56,9 @@ test('inventory is read-only, keeps case-distinct directories and orphan sidecar
   assert.equal((await controller.start()).started, false)
   const inventory = await controller.settled()
 
-  assert.equal(inventory.files.length, 4)
+  assert.equal(inventory.files.length, 3)
   assert.equal(inventory.files.some((file) => file.path.endsWith('linked-copy.flac')), false)
+  assert.equal(inventory.files.some((file) => file.path === paths.sourceFlac), false)
   assert.equal(inventory.files.some((file) => file.path.includes(join('master', 'Kinks'))), true)
   assert.equal(inventory.files.some((file) => file.path.includes(join('recovery', 'kinks'))), true)
   assert.equal(inventory.sidecars.find((sidecar) => sidecar.path.endsWith('orphan.flac.tomify.json')).orphan, true)
@@ -65,13 +66,13 @@ test('inventory is read-only, keeps case-distinct directories and orphan sidecar
   assert.deepEqual(recovered.sidecar, { path: `${paths.recoveryFlac}.tomify.json`, backend: 'usenet', sourcePath: paths.sourceFlac })
   assert.deepEqual(recovered.probe, { codec: 'flac', bitrate: 900000, sampleRate: 44100, duration: 180, tier: 'lossless' })
   assert.deepEqual(recovered.tags, { artist: 'The Kinks', albumArtist: 'The Kinks', album: 'The Kinks Are the Village Green Preservation Society', title: basename(paths.recoveryFlac), trackNumber: 1, discNumber: 1, recordingId: 'recording-id', releaseId: 'release-id', releaseGroupId: 'release-group-id', artistId: null, albumArtistId: null })
-  assert.equal(calls.length, 4)
+  assert.equal(calls.length, 3)
   assert.deepEqual(await controller.summary(), {
     completedAt: inventory.completedAt,
-    byLibrary: { master: 2, recovery: 2 },
-    byQualityTier: { lossless: 3, 'transparent-lossy': 0, lossy: 1, unknown: 0 },
-    bySource: { unknown: 3, usenet: 1 },
-    totals: { files: 4, bytes: 45, sidecars: 2, orphanSidecars: 1 },
+    byLibrary: { master: 2, recovery: 1 },
+    byQualityTier: { lossless: 2, 'transparent-lossy': 0, lossy: 1, unknown: 0 },
+    bySource: { unknown: 2, usenet: 1 },
+    totals: { files: 3, bytes: 34, sidecars: 2, orphanSidecars: 1 },
   })
   assert.deepEqual(await treeSnapshot(paths.masterRoot), beforeMaster)
   assert.deepEqual(await treeSnapshot(paths.recoveryRoot), beforeRecovery)
@@ -84,7 +85,7 @@ test('a second inventory probes only the audio file whose size or mtime changed 
   const firstCalls = []
   const first = createInventoryController({ ...paths, probe: async (path) => { firstCalls.push(path); return { codec: path.endsWith('.mp3') ? 'mp3' : 'flac', bitrate: 128000, sampleRate: 44100, duration: 100, tags: {} } } })
   await first.start(); await first.settled()
-  assert.equal(firstCalls.length, 4)
+  assert.equal(firstCalls.length, 3)
 
   await writeFile(paths.masterMp3, 'changed master mp3 with a different size')
   await rm(paths.sourceFlac)
@@ -106,4 +107,21 @@ test('a second inventory probes only the audio file whose size or mtime changed 
   assert.equal(inventory.files.find((file) => file.path === paths.masterMp3).tags.title, 'Changed')
   assert.deepEqual(await treeSnapshot(paths.masterRoot), beforeMaster)
   assert.deepEqual(await treeSnapshot(paths.recoveryRoot), beforeRecovery)
+})
+
+test('the recovery library mounted inside the master library is only inventoried as recovery', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tomify-inventory-test-'))
+  const masterRoot = join(root, 'master')
+  // On the media server /srv/music/_Recovery is a bind mount of /srv/music-recovery: the same directory under both roots.
+  const recoveryRoot = join(masterRoot, '_Recovery')
+  const stateRoot = join(root, 'state')
+  await mkdir(join(masterRoot, 'Kinks'), { recursive: true })
+  await mkdir(join(recoveryRoot, 'Flood'), { recursive: true })
+  await mkdir(stateRoot)
+  await writeFile(join(masterRoot, 'Kinks', '01.flac'), 'master')
+  await writeFile(join(recoveryRoot, 'Flood', '01.flac'), 'recovery')
+  const controller = createInventoryController({ masterRoot, recoveryRoot, stateRoot, probe: async () => ({ codec: 'flac', tags: {} }) })
+  await controller.start()
+  const inventory = await controller.settled()
+  assert.deepEqual(inventory.files.map((file) => [file.library, file.path]), [['master', join(masterRoot, 'Kinks', '01.flac')], ['recovery', join(recoveryRoot, 'Flood', '01.flac')]])
 })

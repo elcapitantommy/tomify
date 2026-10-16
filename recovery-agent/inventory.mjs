@@ -1,4 +1,4 @@
-import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, stat, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { classifyQuality, qualityTiers } from '../shared/quality.mjs'
@@ -39,7 +39,16 @@ async function writeJsonAtomic(path, value) {
   } finally { await rm(temporary, { force: true }).catch(() => {}) }
 }
 
-async function walkLibrary(root, library, progress) {
+// The identity of a directory, so a bind mount of it is recognised under another path.
+async function directoryIdentity(path) {
+  if (!path) return null
+  try { const details = await stat(resolve(path)); return details.isDirectory() ? `${details.dev}:${details.ino}` : null } catch { return null }
+}
+
+// Hidden directories are skipped: `.tomify-source` holds the originals behind recovery derivatives (linked from their
+// sidecars, not library tracks), and Navidrome ignores dot-directories too. `skip` holds directory identities to leave
+// out, such as the recovery library bind-mounted inside the master one (/srv/music/_Recovery on the media server).
+async function walkLibrary(root, library, progress, skip = new Set()) {
   if (!root) return { files: [], sidecars: [] }
   const absoluteRoot = resolve(root)
   let rootDetails
@@ -53,6 +62,7 @@ async function walkLibrary(root, library, progress) {
     try {
       const details = await lstat(directory)
       if (!details.isDirectory() || details.isSymbolicLink()) continue
+      if (skip.has(`${details.dev}:${details.ino}`)) continue
     } catch (error) { if (error?.code === 'ENOENT') continue; throw error }
     progress({ currentLibrary: library, currentPath: directory })
     const entries = await readdir(directory, { withFileTypes: true }).catch((error) => { if (error?.code === 'ENOENT') return []; throw error })
@@ -60,7 +70,7 @@ async function walkLibrary(root, library, progress) {
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue
       const path = join(directory, entry.name)
-      if (entry.isDirectory()) { directories.push(path); continue }
+      if (entry.isDirectory()) { if (!entry.name.startsWith('.')) directories.push(path); continue }
       if (!entry.isFile()) continue
       if (audioExtensions.has(extname(entry.name).toLowerCase())) {
         const details = await lstat(path).catch((error) => { if (error?.code === 'ENOENT') return null; throw error })
@@ -117,7 +127,9 @@ export async function scanLibraryInventory({ masterRoot = null, recoveryRoot, st
   const progress = { state: 'running', progress: 0, filesDiscovered: 0, filesProcessed: 0, filesProbed: 0, filesReused: 0, currentLibrary: null, currentPath: null }
   const update = (change = {}) => { Object.assign(progress, change); onProgress({ ...progress }) }
   const collected = []
-  for (const [library, root] of [['master', masterRoot], ['recovery', recoveryRoot]]) collected.push(await walkLibrary(root, library, update))
+  const recoveryIdentity = await directoryIdentity(recoveryRoot)
+  collected.push(await walkLibrary(masterRoot, 'master', update, new Set(recoveryIdentity ? [recoveryIdentity] : [])))
+  collected.push(await walkLibrary(recoveryRoot, 'recovery', update))
   const discoveredFiles = collected.flatMap((value) => value.files).sort((left, right) => left.library.localeCompare(right.library) || left.path.localeCompare(right.path, 'en', { sensitivity: 'variant' }))
   const discoveredSidecars = collected.flatMap((value) => value.sidecars).sort((left, right) => left.path.localeCompare(right.path, 'en', { sensitivity: 'variant' }))
   update({ filesDiscovered: discoveredFiles.length, currentLibrary: null, currentPath: null })
