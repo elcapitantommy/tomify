@@ -55,10 +55,14 @@ test('equal sizes without a hash or fingerprint are not reported as identical co
   assert.equal(report.duplicates.some((entry) => entry.kind === 'content'), false)
 })
 
-test('numbered folders and folders under different artists are not reported as similar directories', () => {
+test('numbered or Roman-numbered folders and folders under different artists are not reported as similar directories', () => {
   const files = [
     audio('/master/Queen/Greatest Hits 1/01.flac', 'master', { artist: 'Queen', album: 'Greatest Hits 1', title: 'Bohemian Rhapsody' }),
     audio('/master/Queen/Greatest Hits 2/01.flac', 'master', { artist: 'Queen', album: 'Greatest Hits 2', title: 'A Kind of Magic' }),
+    audio('/master/Beatles/Past Masters I/01.flac', 'master', { artist: 'The Beatles', album: 'Past Masters I', title: 'From Me to You' }),
+    audio('/master/Beatles/Past Masters II/01.flac', 'master', { artist: 'The Beatles', album: 'Past Masters II', title: 'Day Tripper' }),
+    audio('/master/Billy Talent/Billy Talent II/01.flac', 'master', { artist: 'Billy Talent', album: 'Billy Talent II', title: 'Devil in a Midnight Mass' }),
+    audio('/master/Billy Talent/Billy Talent III/01.flac', 'master', { artist: 'Billy Talent', album: 'Billy Talent III', title: 'Rusted from the Rain' }),
     audio('/master/Blur/Parklife/01.flac', 'master', { artist: 'Blur', album: 'Parklife', title: 'Girls & Boys' }),
     audio('/master/Pulp/Parklive/01.flac', 'master', { artist: 'Pulp', album: 'Parklive', title: 'Common People' }),
   ]

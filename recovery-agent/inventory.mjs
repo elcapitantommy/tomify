@@ -48,6 +48,8 @@ async function directoryIdentity(path) {
 
 // Hidden directories are skipped. `.tomify-source` is the exception: its direct audio children are recorded as
 // unprobed sourceFiles so health checks can find broken provenance, but they are not counted as library tracks.
+// A directory holding an empty `.ndignore` is skipped with everything under it, as Navidrome does, so folders kept
+// out of Navidrome (such as /srv/music/_Duplicates) are not counted either.
 // `skip` holds directory identities to leave out, such as the recovery bind mount inside the master library.
 async function walkLibrary(root, library, progress, skip = new Set()) {
   if (!root) return { files: [], sidecars: [], sourceFiles: [] }
@@ -68,6 +70,11 @@ async function walkLibrary(root, library, progress, skip = new Set()) {
     } catch (error) { if (error?.code === 'ENOENT') continue; throw error }
     progress({ currentLibrary: library, currentPath: directory })
     const entries = await readdir(directory, { withFileTypes: true }).catch((error) => { if (error?.code === 'ENOENT') return []; throw error })
+    const ignore = entries.find((entry) => entry.name === '.ndignore' && entry.isFile())
+    if (ignore && directory !== absoluteRoot) {
+      const details = await lstat(join(directory, ignore.name)).catch(() => null)
+      if (details?.isFile() && details.size === 0) continue
+    }
     entries.sort((left, right) => left.name.localeCompare(right.name, 'en', { numeric: true, sensitivity: 'variant' }))
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue

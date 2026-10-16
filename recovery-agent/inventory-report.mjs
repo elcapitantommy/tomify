@@ -27,11 +27,13 @@ function groupBy(items, key) {
   }
   return groups
 }
-// Numbers name different things (Volume 1 / Volume 2, Live 1974 / Live 1975), so a one-character difference only
-// counts as a typo when no digit is involved.
+// Numbers name different things (Volume 1 / Volume 2, Live 1974 / Live 1975, Past Masters I / Past Masters II), so a
+// one-character difference only counts as a typo when no digit or Roman numeral is involved.
+function romanNumerals(text) { return text.split(' ').filter((word) => /^[ivxl]+$/.test(word)).join(' ') }
 function editDistanceAtMostOne(left, right) {
   if (left === right) return true
   if (left.replace(/\D/g, '') !== right.replace(/\D/g, '')) return false
+  if (romanNumerals(left) !== romanNumerals(right)) return false
   if (Math.abs(left.length - right.length) > 1 || Math.min(left.length, right.length) < 5) return false
   let changes = 0
   for (let a = 0, b = 0; a < left.length && b < right.length;) {
