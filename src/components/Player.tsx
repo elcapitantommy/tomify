@@ -3,6 +3,7 @@ import { Artwork } from './Artwork'
 import { formatDuration } from '../lib/format'
 import { usePlayer } from '../stores/player'
 import { localPlaybackDeviceId, sendLivePlaybackCommand, useLivePlayback } from '../stores/livePlayback'
+import { LIVE_PLAYBACK_FRESH_MS } from '../lib/live-playback-timing'
 
 function usePlaybackView() {
   const player = usePlayer()
@@ -10,7 +11,7 @@ function usePlaybackView() {
   const remote = Boolean(
     live &&
     live.deviceId !== localPlaybackDeviceId &&
-    Date.now() - live.updatedAt < 10_000 &&
+    Date.now() - live.updatedAt < LIVE_PLAYBACK_FRESH_MS &&
     live.queue[live.currentIndex],
   )
 

@@ -6,6 +6,7 @@ import { PlayerRuntime } from './PlayerRuntime'
 import { LivePlaybackSync } from './LivePlaybackSync'
 import { usePlayer } from '../stores/player'
 import { localPlaybackDeviceId, useLivePlayback } from '../stores/livePlayback'
+import { LIVE_PLAYBACK_FRESH_MS } from '../lib/live-playback-timing'
 import { useAuth } from '../stores/auth'
 
 const primary = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }]
@@ -26,7 +27,7 @@ export function AppShell() {
   const localTrack = localQueue[localCurrentIndex]
   const remoteTrack = live &&
     live.deviceId !== localPlaybackDeviceId &&
-    Date.now() - live.updatedAt < 10_000
+    Date.now() - live.updatedAt < LIVE_PLAYBACK_FRESH_MS
       ? live.queue[live.currentIndex]
       : undefined
   const titleTrack = remoteTrack ?? localTrack

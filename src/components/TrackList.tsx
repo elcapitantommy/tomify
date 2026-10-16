@@ -3,6 +3,7 @@ import type { Track } from '../types'
 import { formatDuration } from '../lib/format'
 import { usePlayer } from '../stores/player'
 import { localPlaybackDeviceId, useLivePlayback } from '../stores/livePlayback'
+import { LIVE_PLAYBACK_FRESH_MS } from '../lib/live-playback-timing'
 
 export function TrackList({ tracks, discAware = false }: { tracks: Track[]; discAware?: boolean }) {
   const playTracks = usePlayer((s) => s.playTracks); const add = usePlayer((s) => s.addToQueue)
@@ -11,7 +12,7 @@ export function TrackList({ tracks, discAware = false }: { tracks: Track[]; disc
   const live = useLivePlayback((s) => s.snapshot)
   const remoteTrack = live &&
     live.deviceId !== localPlaybackDeviceId &&
-    Date.now() - live.updatedAt < 10_000
+    Date.now() - live.updatedAt < LIVE_PLAYBACK_FRESH_MS
       ? live.queue[live.currentIndex]
       : undefined
   const currentTrackId = remoteTrack?.id ?? localQueue[localCurrentIndex]?.id
