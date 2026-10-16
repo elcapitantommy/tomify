@@ -266,6 +266,8 @@ To enable it on the box:
 
 If the button shows *VPN control is turned off*, step 1 is missing; *NordVPN did not answer* usually means step 2 is missing or `nordvpnd` is not running.
 
+When Connect or Disconnect fails, the card shows what `nordvpn` printed (for example *You are not logged in*). Agents before this change showed only `nordvpn failed: exit 1`; run the same command on the box (`nordvpn connect United_Kingdom`) to see the reason.
+
 The agent's unit hides `/home` (`ProtectHome=true`), so the agent gives the `nordvpn` CLI its own home under the state directory (`<TOMIFY_RECOVERY_STATE_DIR>/nordvpn-cli`). An older agent fails with `mkdir /home/tom: permission denied`; copying the current agent files fixes it.
 
 ## Running recovery downloads over NordVPN

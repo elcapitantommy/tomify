@@ -33,6 +33,12 @@ function cleanLines(text) {
     .filter(Boolean)
 }
 
+// nordvpn prints its errors to stdout, so a failed command's reason is the last few lines there.
+export function nordvpnFailureMessage(stdout) {
+  const message = cleanLines(stdout).slice(-3).join(' ').slice(0, 500)
+  return message || null
+}
+
 function fields(text) {
   const result = {}
   for (const line of cleanLines(text)) {
