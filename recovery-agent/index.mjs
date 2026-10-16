@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
 import { createWriteStream } from 'node:fs'
-import { access, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, timingSafeEqual } from 'node:crypto'
@@ -25,6 +25,7 @@ import { rebootConfig, scheduleReboot } from './system.mjs'
 import { createVpnController, nordvpnEnvironment, nordvpnFailureMessage, vpnConfig } from './vpn.mjs'
 import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobState, torrentCandidate, torrentCapability, torrentConfig, torrentSearchCandidates } from './torrent.mjs'
 import { healthResponse, recoveryAgentPackageVersion } from './health.mjs'
+import { commitCoverFile, commitTrackFiles } from './commit.mjs'
 
 let authConfiguration
 try { authConfiguration = validateRecoveryAuthConfig() }
@@ -316,27 +317,23 @@ async function acquireYouTube(body) {
 
     const artwork = await prepareArtwork(body.artwork, temporaryRoot)
     const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${derivativeExtension}`)
-    const stagedCoverPath = join(finalDirectory, `.${crypto.randomUUID()}.cover.jpg`)
     const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
     if (!inside(releaseCoverPath, recoveryRoot)) throw new Error('Unsafe recovery artwork destination.')
     const comment = `Tomify lossy recovery copy; source=${sourceUrl}; authorisation=${body.authorisation.basis}`
     const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment)
     const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
-    let originalCommitted = false
-    let derivativeCommitted = false
+    let trackCommitted = false
+    let coverCreated = false
     try {
       await run(ffmpeg, derivativePlan.args, 5 * 60_000)
       const derivativeQuality = await probe(taggedPath)
-      await copyFile(sourcePath, originalPath, fsConstants.COPYFILE_EXCL)
-      originalCommitted = true
-      await copyFile(taggedPath, finalPath, fsConstants.COPYFILE_EXCL)
-      derivativeCommitted = true
-      if (artwork) {
-        await copyFile(artwork.coverPath, stagedCoverPath, fsConstants.COPYFILE_EXCL)
-        await rename(stagedCoverPath, releaseCoverPath)
-      }
+      await commitTrackFiles({ originalSource: sourcePath, derivativeSource: taggedPath, originalPath, derivativePath: finalPath })
+      trackCommitted = true
+      const coverCommit = artwork ? await commitCoverFile(artwork.coverPath, releaseCoverPath) : null
+      coverCreated = Boolean(coverCommit?.created)
       const importedAt = new Date().toISOString()
-      const artworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+      const baseArtworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+      const artworkProvenance = baseArtworkProvenance ? { ...baseArtworkProvenance, coverFileCreated: coverCreated, existingCoverKept: Boolean(coverCommit?.existingCoverKept) } : null
       const provenance = {
         source: 'youtube', sourceUrl, videoId: String(metadata.id || body.candidate.externalId || ''), sourceTitle: String(metadata.title || body.candidate.title || ''),
         sourceChannel: String(metadata.channel || metadata.uploader || body.candidate.channel || ''), acquisitionMode: acquisition.authenticatedAccessUsed ? 'authenticated-youtube-session' : 'anonymous-youtube',
@@ -352,12 +349,14 @@ async function acquireYouTube(body) {
       return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
     } catch (error) {
       await unlink(`${finalPath}.tomify.json`).catch(() => {})
-      if (derivativeCommitted) await unlink(finalPath).catch(() => {})
-      if (originalCommitted) await unlink(originalPath).catch(() => {})
+      if (coverCreated) await unlink(releaseCoverPath).catch(() => {})
+      if (trackCommitted) {
+        await unlink(finalPath).catch(() => {})
+        await unlink(originalPath).catch(() => {})
+      }
       throw error
     } finally {
       await unlink(taggedPath).catch(() => {})
-      await unlink(stagedCoverPath).catch(() => {})
     }
   } finally {
     const resolvedTemporaryRoot = resolve(temporaryRoot)
@@ -390,28 +389,24 @@ async function acquireInternetArchive(body) {
     }
     const artwork = await prepareArtwork(body.artwork, temporaryRoot)
     const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${derivativeExtension}`)
-    const stagedCoverPath = join(finalDirectory, `.${crypto.randomUUID()}.cover.jpg`)
     const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
     if (!inside(releaseCoverPath, recoveryRoot)) throw new Error('Unsafe recovery artwork destination.')
     const sourceUrl = `https://archive.org/details/${encodeURIComponent(identifier)}`
     const comment = `Tomify Internet Archive recovery copy; source=${sourceUrl}; authorisation=${body.authorisation.basis}`
     const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment)
     const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
-    let originalCommitted = false
-    let derivativeCommitted = false
+    let trackCommitted = false
+    let coverCreated = false
     try {
       await run(ffmpeg, derivativePlan.args, 5 * 60_000)
       const derivativeQuality = await probe(taggedPath)
-      await copyFile(sourcePath, originalPath, fsConstants.COPYFILE_EXCL)
-      originalCommitted = true
-      await copyFile(taggedPath, finalPath, fsConstants.COPYFILE_EXCL)
-      derivativeCommitted = true
-      if (artwork) {
-        await copyFile(artwork.coverPath, stagedCoverPath, fsConstants.COPYFILE_EXCL)
-        await rename(stagedCoverPath, releaseCoverPath)
-      }
+      await commitTrackFiles({ originalSource: sourcePath, derivativeSource: taggedPath, originalPath, derivativePath: finalPath })
+      trackCommitted = true
+      const coverCommit = artwork ? await commitCoverFile(artwork.coverPath, releaseCoverPath) : null
+      coverCreated = Boolean(coverCommit?.created)
       const acquiredAt = new Date().toISOString()
-      const artworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+      const baseArtworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+      const artworkProvenance = baseArtworkProvenance ? { ...baseArtworkProvenance, coverFileCreated: coverCreated, existingCoverKept: Boolean(coverCommit?.existingCoverKept) } : null
       const provenance = {
         source: 'internet-archive', sourceUrl, archiveIdentifier: identifier, archiveFilename: filename,
         archiveDownloadUrl: download.finalUrl, archiveItemTitle: metadata.metadata?.title || null, archiveCreator: metadata.metadata?.creator || null,
@@ -427,12 +422,14 @@ async function acquireInternetArchive(body) {
       return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
     } catch (error) {
       await unlink(`${finalPath}.tomify.json`).catch(() => {})
-      if (derivativeCommitted) await unlink(finalPath).catch(() => {})
-      if (originalCommitted) await unlink(originalPath).catch(() => {})
+      if (coverCreated) await unlink(releaseCoverPath).catch(() => {})
+      if (trackCommitted) {
+        await unlink(finalPath).catch(() => {})
+        await unlink(originalPath).catch(() => {})
+      }
       throw error
     } finally {
       await unlink(taggedPath).catch(() => {})
-      await unlink(stagedCoverPath).catch(() => {})
     }
   } finally {
     const resolvedTemporaryRoot = resolve(temporaryRoot)
