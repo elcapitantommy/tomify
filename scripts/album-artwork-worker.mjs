@@ -213,6 +213,8 @@ async function handleAlbumArtworkRequest(request, env, url) {
   }
 
   if (request.method !== 'POST') return json({ error: 'not-found' }, 404)
+  // Everyone sees the chosen artwork; only administrators can look up, change or reset it.
+  if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can change album artwork.' }, 403)
   const body = await request.json().catch(() => null)
   const albumId = typeof body?.albumId === 'string' ? body.albumId.trim().slice(0, 200) : ''
   if (!albumId) return json({ error: 'invalid-album' }, 400)

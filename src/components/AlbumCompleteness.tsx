@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CircleAlert, CircleCheck, LifeBuoy, LoaderCircle, RefreshCw } from 'lucide-react'
+import { CircleAlert, CircleCheck, LifeBuoy, ListChecks, LoaderCircle, RefreshCw } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { assessAlbumCompleteness, distinctLocalTrackCount, editionLabel, type RecoveryLink } from '../lib/album-completeness'
 import { completenessApi, type TracklistRequest, type TracklistResponse } from '../lib/completeness-api'
@@ -8,17 +8,21 @@ import { recoveryStatusLabels, type RecoveryStatus } from '../lib/recovery'
 import type { Album, Track } from '../types'
 import { useAuth } from '../stores/auth'
 
-type LoadState = { status: 'loading' } | { status: 'ready'; data: TracklistResponse } | { status: 'unavailable'; message: string } | { status: 'error'; message: string }
+type LoadState = { status: 'idle' } | { status: 'loading' } | { status: 'ready'; data: TracklistResponse } | { status: 'unavailable'; message: string } | { status: 'error'; message: string }
 
+// Shown to administrators only. Nothing is fetched from MusicBrainz until the check is asked for.
 export function AlbumCompleteness({ album, tracks }: { album: Album; tracks: Track[] }) {
-  const [state, setState] = useState<LoadState>({ status: 'loading' })
+  const [state, setState] = useState<LoadState>({ status: 'idle' })
   const [request, setRequest] = useState<{ releaseId?: string; force?: boolean; nonce: number }>({ nonce: 0 })
   const [adding, setAdding] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
-  // Recovery is for administrators; everyone else still sees which tracks are missing.
   const isAdmin = useAuth((s) => s.isAdmin) === true
 
+  // A different album starts unchecked again.
+  useEffect(() => { setState({ status: 'idle' }); setRequest({ nonce: 0 }); setNotice(null) }, [album.id])
+
   useEffect(() => {
+    if (!request.nonce) return
     const controller = new AbortController()
     const input: TracklistRequest = { albumId: album.id, name: album.name, artist: album.artist, year: album.year, musicBrainzId: album.musicBrainzId, localTrackCount: distinctLocalTrackCount(tracks), releaseId: request.releaseId, force: request.force }
     setState((current) => current.status === 'ready' ? current : { status: 'loading' })
@@ -34,6 +38,8 @@ export function AlbumCompleteness({ album, tracks }: { album: Album; tracks: Tra
   const data = state.status === 'ready' ? state.data : null
   const result = useMemo(() => data ? assessAlbumCompleteness(data.tracklist, tracks) : null, [data, tracks])
 
+  if (!isAdmin) return null
+  if (state.status === 'idle') return <div className="album-completeness-start"><button className="button secondary" onClick={() => setRequest((current) => ({ ...current, nonce: current.nonce + 1 }))}><ListChecks/>Check completeness</button><small>Compare this album with its MusicBrainz tracklist.</small></div>
   if (state.status === 'loading') return <p className="variant-loading album-completeness-loading"><LoaderCircle className="spin"/>Checking the MusicBrainz tracklist…</p>
   if (state.status === 'unavailable') return <p className="variant-loading">Album completeness unavailable: {state.message}</p>
   if (state.status === 'error') return <p className="variant-loading">Album completeness could not be checked: {state.message} <button className="link-button" onClick={() => setRequest((current) => ({ ...current, nonce: current.nonce + 1 }))}>Try again</button></p>
@@ -77,13 +83,13 @@ export function AlbumCompleteness({ album, tracks }: { album: Album; tracks: Tra
           <span className="album-completeness-position">{multiDisc ? `${track.disc}-${track.number}` : track.number}</span>
           <span className="album-completeness-title"><strong>{track.title}</strong>{track.artist && tracklist.artist && track.artist !== tracklist.artist && <small>{track.artist}</small>}</span>
           <span className="album-completeness-length">{track.length ? formatDuration(track.length) : ''}</span>
-          <RecoveryChip link={isAdmin ? recovery[track.key] : undefined}/>
+          <RecoveryChip link={recovery[track.key]}/>
         </li>)}
       </ol>
-      {isAdmin && <div className="album-completeness-actions">
+      <div className="album-completeness-actions">
         <button className="button primary" disabled={adding || notQueued.length === 0} onClick={() => void addMissing()}>{adding ? <LoaderCircle className="spin"/> : <LifeBuoy/>}{notQueued.length ? `Add ${notQueued.length} missing to Recovery` : 'All missing tracks are in Recovery'}</button>
         {notice && <span role="status">{notice}</span>}
-      </div>}
+      </div>
     </>}
 
     {result.duplicated > 0 && <p className="album-completeness-note">{result.duplicated} {result.duplicated === 1 ? 'track has' : 'tracks have'} more than one copy in your library.</p>}

@@ -20,7 +20,9 @@ const response: TracklistResponse = {
 const tracks: Track[] = [{ id: 'track-2', title: 'Birdhouse In Your Soul', artist: 'They Might Be Giants', album: 'Flood', duration: 61 }]
 
 function renderCompleteness() {
-  return render(<MemoryRouter><AlbumCompleteness album={album} tracks={tracks}/></MemoryRouter>)
+  const view = render(<MemoryRouter><AlbumCompleteness album={album} tracks={tracks}/></MemoryRouter>)
+  fireEvent.click(screen.getByRole('button', { name: 'Check completeness' }))
+  return view
 }
 
 describe('AlbumCompleteness', () => {
@@ -46,13 +48,20 @@ describe('AlbumCompleteness', () => {
     expect(screen.getByRole('button', { name: 'All missing tracks are in Recovery' })).toBeDisabled()
   })
 
-  it('lists missing tracks for non-administrators without offering or linking to Recovery', async () => {
-    useAuth.setState({ isAdmin: false })
-    renderCompleteness()
+  it('does not ask MusicBrainz until the check is run', async () => {
+    render(<MemoryRouter><AlbumCompleteness album={album} tracks={tracks}/></MemoryRouter>)
+    expect(screen.getByRole('button', { name: 'Check completeness' })).toBeInTheDocument()
+    expect(completenessApi.tracklist).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Check completeness' }))
     expect(await screen.findByText('Incomplete · 1 of 3 tracks')).toBeInTheDocument()
-    expect(screen.getByText('Theme From Flood')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: /In Recovery/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /missing to Recovery/ })).not.toBeInTheDocument()
+    expect(completenessApi.tracklist).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows nothing to non-administrators and never runs the check', () => {
+    useAuth.setState({ isAdmin: false })
+    const { container } = render(<MemoryRouter><AlbumCompleteness album={album} tracks={tracks}/></MemoryRouter>)
+    expect(container).toBeEmptyDOMElement()
+    expect(completenessApi.tracklist).not.toHaveBeenCalled()
   })
 
   it('reports a complete album without offering Recovery', async () => {
@@ -67,6 +76,7 @@ describe('AlbumCompleteness', () => {
     const local: Track[] = titles.map((title, index) => ({ id: `t${index}`, title, artist: 'Audioslave', album: 'Out Of Exile', track: index + 1 }))
     vi.mocked(completenessApi.tracklist).mockResolvedValue({ ...response, tracklist: { ...response.tracklist, title: 'Out of Exile', format: 'CD-R', tracks: [{ key: '1-1', disc: 1, number: 1, title: 'Out of Exile', artist: 'Audioslave', length: null, recordingId: null }] } })
     render(<MemoryRouter><AlbumCompleteness album={{ ...album, name: 'Out Of Exile', artist: 'Audioslave' }} tracks={local}/></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Check completeness' }))
     expect(await screen.findByText('Edition does not match · 1 of 1 tracks')).toBeInTheDocument()
     expect(screen.getByText(/probably a different release with the same title/)).toBeInTheDocument()
   })
