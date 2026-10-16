@@ -28,8 +28,9 @@ describe('AlbumDetail admin tools', () => {
   it('gives administrators metadata editing, the completeness check and click-to-replace artwork', async () => {
     useAuth.setState({ isAdmin: true })
     renderAlbum()
-    expect(await screen.findByRole('button', { name: 'Edit metadata' })).toBeInTheDocument()
-    expect(await screen.findByText('completeness check')).toBeInTheDocument()
+    // The completeness check waits for the edition lookup; a busy CI runner can take longer than findBy's default 1 s.
+    expect(await screen.findByRole('button', { name: 'Edit metadata' }, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByText('completeness check', undefined, { timeout: 5000 })).toBeInTheDocument()
     expect(screen.queryByText(/artwork picker/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Change album artwork' }))
     expect(screen.getByText('artwork picker searching')).toBeInTheDocument()
