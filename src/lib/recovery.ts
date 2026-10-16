@@ -244,7 +244,23 @@ export interface RecoveryItem {
   createdAt: string
   updatedAt: string
   candidates: RecoveryCandidate[]
+  playback?: RecoveryPlayback | null
 }
+
+/** Whether an imported item is in the Navidrome library yet; scripts/library-scan-worker.mjs keeps it up to date. */
+export interface RecoveryPlayback {
+  state: 'scan-pending' | 'ready' | 'scan-failed'
+  since: string
+  checkedAt?: string | null
+  songId?: string | null
+  readyAt?: string | null
+  failedAt?: string | null
+  lastError?: string | null
+  target?: { path?: string | null; title?: string | null; artist?: string | null; recordingId?: string | null } | null
+}
+
+/** How often the Recovery page asks the Worker to look for a pending import in the library. */
+export const RECOVERY_PLAYBACK_POLL_MS = 15_000
 
 const noise = /\b(live|remix|karaoke|nightcore|sped up|slowed|cover|instrumental|reaction)\b/i
 const official = /\b(official|topic|vevo|records|recordings|music)\b/i

@@ -29,6 +29,8 @@ export const recoveryApi = {
   updateStatus: (id: string, status: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
   importRemaining: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/import-remaining`, { method: 'POST' }),
   pollJob: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/job`),
+  checkPlayback: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/playback`, { method: 'POST' }),
+  retryPlayback: (id: string) => request<{ item: RecoveryItem }>(`/api/recovery/${encodeURIComponent(id)}/playback/retry`, { method: 'POST' }),
   delete: (id: string) => request<{ deleted: true; filesRemoved: boolean }>(`/api/recovery/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }
 
