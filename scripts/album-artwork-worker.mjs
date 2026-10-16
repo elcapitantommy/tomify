@@ -78,6 +78,26 @@ export function chooseAutomaticAlbumArtwork(candidates, minimumConfidence = 85) 
     albumArtworkProviders.includes(candidate?.provider) && isAlbumArtworkUrl(candidate.url) && candidate.square && Number(candidate.minimumDimension || 0) >= 600 && Number(candidate.confidence || 0) >= minimumConfidence) || null
 }
 
+// Images an administrator uploads from their device are stored in D1 (capped well under D1's
+// 2 MB value limit; the PWA shrinks them to at most 1200px JPEG first) and served from
+// /api/album-artwork/image/<id>. Only JPEG, PNG and WebP are accepted, checked by file signature.
+export const albumArtworkUploadMaxBytes = 1_000_000
+
+export function decodeAlbumArtworkUpload(dataUrl) {
+  const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(String(dataUrl || ''))
+  if (!match) return { error: 'Upload a JPEG, PNG or WebP image.' }
+  let binary
+  try { binary = atob(match[2]) } catch { return { error: 'The image could not be read.' } }
+  if (binary.length > albumArtworkUploadMaxBytes) return { error: 'The image is too large; upload one under 1 MB.' }
+  const bytes = Array.from(binary.slice(0, 12), (character) => character.charCodeAt(0))
+  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+  const png = bytes[0] === 0x89 && binary.slice(1, 4) === 'PNG'
+  const webp = binary.slice(0, 4) === 'RIFF' && binary.slice(8, 12) === 'WEBP'
+  const detected = jpeg ? 'image/jpeg' : png ? 'image/png' : webp ? 'image/webp' : null
+  if (!detected || detected !== match[1]) return { error: 'The file is not a JPEG, PNG or WebP image.' }
+  return { contentType: detected, base64: match[2], size: binary.length }
+}
+
 export function albumArtworkRow(row) {
   if (!row) return null
   return {
@@ -93,6 +113,15 @@ async function ensureAlbumArtworkTable(db) {
 }
 
 const albumArtworkColumns = 'album_id AS albumId, provider, provider_id AS providerId, url, width, height, confidence, source, provider_album AS providerAlbum, provider_artist AS providerArtist, store_url AS storeUrl, updated_at AS updatedAt'
+
+async function ensureAlbumArtworkUploadTable(db) {
+  await db.prepare('CREATE TABLE IF NOT EXISTS album_artwork_uploads (id TEXT PRIMARY KEY, album_id TEXT NOT NULL, content_type TEXT NOT NULL, data TEXT NOT NULL, size INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, uploaded_by TEXT)').run()
+}
+
+// Uploaded images no longer chosen for their album are removed so D1 only holds the current one.
+async function pruneAlbumArtworkUploads(db, albumId, keepId) {
+  await db.prepare('DELETE FROM album_artwork_uploads WHERE album_id = ? AND id != ?').bind(albumId, keepId || '').run()
+}
 
 async function selectAlbumArtwork(db, albumId) {
   return albumArtworkRow(await db.prepare('SELECT ' + albumArtworkColumns + ' FROM album_artwork WHERE album_id = ?').bind(albumId).first())
@@ -202,9 +231,21 @@ async function lookupAlbumArtwork(env, db, username, album, { stopAtConfident = 
 async function handleAlbumArtworkRequest(request, env, url) {
   if (url.pathname !== '/api/album-artwork' && !url.pathname.startsWith('/api/album-artwork/')) return null
   if (!env?.TOMIFY_DB) return json({ error: 'artwork-store-unavailable' }, 503)
+  const db = env.TOMIFY_DB
+  // Uploaded covers are drawn by <img> tags, which cannot send Tomify's auth headers, so the
+  // image itself is public; its id is random and changes with every upload.
+  const imageMatch = /^\/api\/album-artwork\/image\/([0-9a-f-]{36})$/.exec(url.pathname)
+  if (imageMatch && request.method === 'GET') {
+    await ensureAlbumArtworkUploadTable(db)
+    const image = await db.prepare('SELECT content_type AS contentType, data FROM album_artwork_uploads WHERE id = ?').bind(imageMatch[1]).first()
+    if (!image) return json({ error: 'not-found' }, 404)
+    const binary = atob(image.data)
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+    return new Response(bytes, { headers: { 'content-type': image.contentType, 'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff' } })
+  }
   const username = await authenticate(request)
   if (!username) return json({ error: 'unauthorized' }, 401)
-  const db = env.TOMIFY_DB
   await ensureAlbumArtworkTable(db)
 
   if (url.pathname === '/api/album-artwork' && request.method === 'GET') {
@@ -239,19 +280,39 @@ async function handleAlbumArtworkRequest(request, env, url) {
     return json({ item: await saveAlbumArtwork(db, albumId, chosen, 'auto', username), applied: true })
   }
 
+  if (url.pathname === '/api/album-artwork/upload') {
+    const upload = decodeAlbumArtworkUpload(body.image)
+    if (upload.error) return json({ error: 'invalid-image', message: upload.error }, 400)
+    await ensureAlbumArtworkUploadTable(db)
+    const id = crypto.randomUUID()
+    await db.prepare('INSERT INTO album_artwork_uploads (id, album_id, content_type, data, size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)').bind(id, albumId, upload.contentType, upload.base64, upload.size, username).run()
+    const item = await saveAlbumArtwork(db, albumId, { provider: 'upload', providerId: id, url: '/api/album-artwork/image/' + id, width: Math.round(Number(body.width)) || null, height: Math.round(Number(body.height)) || null }, 'manual', username)
+    await pruneAlbumArtworkUploads(db, albumId, id)
+    return json({ item }, 201)
+  }
+
   if (url.pathname === '/api/album-artwork/select') {
-    if (body.provider === 'library') return json({ item: await saveAlbumArtwork(db, albumId, { provider: 'library' }, 'manual', username) })
+    await ensureAlbumArtworkUploadTable(db)
+    if (body.provider === 'library') {
+      const item = await saveAlbumArtwork(db, albumId, { provider: 'library' }, 'manual', username)
+      await pruneAlbumArtworkUploads(db, albumId, null)
+      return json({ item })
+    }
     const candidate = body.candidate
     if (!albumArtworkProviders.includes(candidate?.provider) || !isAlbumArtworkUrl(candidate.url)) return json({ error: 'invalid-artwork', message: 'Only Apple, Deezer or Spotify artwork can be selected.' }, 400)
-    return json({ item: await saveAlbumArtwork(db, albumId, candidate, 'manual', username) })
+    const item = await saveAlbumArtwork(db, albumId, candidate, 'manual', username)
+    await pruneAlbumArtworkUploads(db, albumId, null)
+    return json({ item })
   }
 
   if (url.pathname === '/api/album-artwork/reset') {
+    await ensureAlbumArtworkUploadTable(db)
     await db.prepare('DELETE FROM album_artwork WHERE album_id = ?').bind(albumId).run()
+    await pruneAlbumArtworkUploads(db, albumId, null)
     return json({ item: null })
   }
 
   return json({ error: 'not-found' }, 404)
 }
 
-export const albumArtworkWorkerSource = `const albumArtworkHosts = ${JSON.stringify(albumArtworkHosts)}\nconst albumArtworkHostSuffixes = ${JSON.stringify(albumArtworkHostSuffixes)}\nconst albumArtworkProviders = ${JSON.stringify(albumArtworkProviders)}\nconst albumArtworkColumns = ${JSON.stringify(albumArtworkColumns)}\n\n` + [isAlbumArtworkUrl, baseAlbumTitle, albumArtworkSearchQueries, spotifyAlbumResult, appleAlbumResult, deezerAlbumResult, albumArtworkCandidate, chooseAutomaticAlbumArtwork, albumArtworkRow, ensureAlbumArtworkTable, selectAlbumArtwork, saveAlbumArtwork, spotifySearchToken, searchSpotifyAlbums, searchAppleAlbums, searchDeezerAlbums, searchSpotifyArtwork, lookupAlbumArtwork, handleAlbumArtworkRequest].map((fn) => fn.toString()).join('\n\n')
+export const albumArtworkWorkerSource = `const albumArtworkHosts = ${JSON.stringify(albumArtworkHosts)}\nconst albumArtworkHostSuffixes = ${JSON.stringify(albumArtworkHostSuffixes)}\nconst albumArtworkProviders = ${JSON.stringify(albumArtworkProviders)}\nconst albumArtworkUploadMaxBytes = ${albumArtworkUploadMaxBytes}\nconst albumArtworkColumns = ${JSON.stringify(albumArtworkColumns)}\n\n` + [isAlbumArtworkUrl, baseAlbumTitle, albumArtworkSearchQueries, spotifyAlbumResult, appleAlbumResult, deezerAlbumResult, albumArtworkCandidate, chooseAutomaticAlbumArtwork, decodeAlbumArtworkUpload, albumArtworkRow, ensureAlbumArtworkTable, ensureAlbumArtworkUploadTable, pruneAlbumArtworkUploads, selectAlbumArtwork, saveAlbumArtwork, spotifySearchToken, searchSpotifyAlbums, searchAppleAlbums, searchDeezerAlbums, searchSpotifyArtwork, lookupAlbumArtwork, handleAlbumArtworkRequest].map((fn) => fn.toString()).join('\n\n')

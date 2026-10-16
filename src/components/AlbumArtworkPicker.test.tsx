@@ -9,10 +9,12 @@ const candidate = { id: 'apple:1', provider: 'apple' as const, providerLabel: 'A
 describe('AlbumArtworkPicker', () => {
   const lookup = vi.fn()
   const select = vi.fn()
+  const upload = vi.fn()
   beforeEach(() => {
+    upload.mockReset().mockResolvedValue(undefined)
     lookup.mockReset().mockResolvedValue([candidate])
     select.mockReset().mockResolvedValue(undefined)
-    useAlbumArtwork.setState({ overrides: {}, status: 'ready', providers: ['apple', 'deezer'], lookup, select })
+    useAlbumArtwork.setState({ overrides: {}, status: 'ready', providers: ['apple', 'deezer'], lookup, select, upload })
   })
 
   it('searches for replacement artwork straight away when opened from the album artwork', async () => {
@@ -23,6 +25,20 @@ describe('AlbumArtworkPicker', () => {
     expect(select).toHaveBeenCalledWith('album-1', candidate)
     fireEvent.click(screen.getByRole('button', { name: 'Close album artwork options' }))
     expect(onClose).toHaveBeenCalled()
+  })
+
+  it('uploads an image chosen from the device', async () => {
+    render(<AlbumArtworkPicker album={album}/>)
+    expect(screen.getByRole('button', { name: /Upload from device/ })).toBeInTheDocument()
+    const file = new File(['cover'], 'cover.jpg', { type: 'image/jpeg' })
+    fireEvent.change(screen.getByLabelText('Album artwork image'), { target: { files: [file] } })
+    await vi.waitFor(() => expect(upload).toHaveBeenCalledWith('album-1', file))
+  })
+
+  it('says when the album shows an uploaded image', () => {
+    useAlbumArtwork.setState({ overrides: { 'album-1': { albumId: 'album-1', provider: 'upload', url: '/api/album-artwork/image/x', source: 'manual' } } })
+    render(<AlbumArtworkPicker album={album}/>)
+    expect(screen.getByText('Showing an image uploaded from a device.')).toBeInTheDocument()
   })
 
   it('waits for a click before searching otherwise', () => {

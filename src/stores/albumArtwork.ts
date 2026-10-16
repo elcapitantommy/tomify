@@ -1,12 +1,13 @@
 import { create } from 'zustand'
 import type { Album } from '../types'
 import { useAuth } from './auth'
+import { prepareArtworkUpload } from '../lib/artwork-upload'
 
 export type ArtworkProvider = 'apple' | 'deezer' | 'spotify'
 
 export interface AlbumArtworkOverride {
   albumId: string
-  provider: ArtworkProvider | 'library'
+  provider: ArtworkProvider | 'library' | 'upload'
   providerId?: string | null
   url?: string | null
   width?: number | null
@@ -52,6 +53,7 @@ interface AlbumArtworkState {
   lookup(album: Album): Promise<AlbumArtworkCandidate[]>
   select(albumId: string, candidate: AlbumArtworkCandidate | 'library'): Promise<void>
   reset(albumId: string): Promise<void>
+  upload(albumId: string, file: File): Promise<void>
   auto(album: Album): Promise<AutoArtworkOutcome>
   upgradeMany(albums: Album[], onProgress?: (progress: ArtworkUpgradeProgress) => void, signal?: AbortSignal): Promise<ArtworkUpgradeProgress>
   startUpgrade(loadAlbums: (signal: AbortSignal) => Promise<Album[]>): Promise<void>
@@ -118,6 +120,12 @@ export const useAlbumArtwork = create<AlbumArtworkState>((set, get) => ({
 
   select: async (albumId, candidate) => {
     const { item } = await post<{ item: AlbumArtworkOverride }>('select', candidate === 'library' ? { albumId, provider: 'library' } : { albumId, candidate })
+    set((state) => ({ overrides: { ...state.overrides, [albumId]: item } }))
+  },
+
+  upload: async (albumId, file) => {
+    const prepared = await prepareArtworkUpload(file)
+    const { item } = await post<{ item: AlbumArtworkOverride }>('upload', { albumId, ...prepared })
     set((state) => ({ overrides: { ...state.overrides, [albumId]: item } }))
   },
 

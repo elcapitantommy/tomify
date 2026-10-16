@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { albumArtworkCandidate, albumArtworkSearchQueries, appleAlbumResult, baseAlbumTitle, chooseAutomaticAlbumArtwork, deezerAlbumResult, isAlbumArtworkUrl, spotifyAlbumResult } from './album-artwork-worker.mjs'
+import { albumArtworkCandidate, albumArtworkSearchQueries, appleAlbumResult, baseAlbumTitle, chooseAutomaticAlbumArtwork, decodeAlbumArtworkUpload, deezerAlbumResult, isAlbumArtworkUrl, spotifyAlbumResult } from './album-artwork-worker.mjs'
 import { metadataTextSimilarity } from './recovery-metadata.mjs'
 
 const candidate = (patch = {}) => ({ id: 'spotify:1', provider: 'spotify', url: 'https://i.scdn.co/image/ab67616d0000b273', confidence: 96, square: true, minimumDimension: 640, ...patch })
@@ -66,4 +66,15 @@ test('Apple and Deezer results map to their largest artwork and score like Spoti
   assert.ok(albumArtworkCandidate(wanted, deezer, metadataTextSimilarity, year).confidence >= 85)
   assert.equal(albumArtworkCandidate(wanted, deezerAlbumResult({ ...deezer, id: 3, title: 'Tusk' }), metadataTextSimilarity, year), null)
   assert.equal(albumArtworkCandidate(wanted, appleAlbumResult({ collectionId: 4, collectionName: 'Rumours', artistName: 'Fleetwood Mac' }), metadataTextSimilarity, year), null, 'no artwork, no candidate')
+})
+
+test('uploaded album artwork must be a real JPEG, PNG or WebP under 1 MB', () => {
+  const jpeg = 'data:image/jpeg;base64,' + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]).toString('base64')
+  assert.deepEqual(decodeAlbumArtworkUpload(jpeg), { contentType: 'image/jpeg', base64: jpeg.split(',')[1], size: 7 })
+  const png = 'data:image/png;base64,' + Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]).toString('base64')
+  assert.equal(decodeAlbumArtworkUpload(png).contentType, 'image/png')
+  assert.match(decodeAlbumArtworkUpload('data:image/jpeg;base64,' + Buffer.from('<svg>').toString('base64')).error, /not a JPEG/)
+  assert.match(decodeAlbumArtworkUpload('data:image/png;base64,' + jpeg.split(',')[1]).error, /not a JPEG/)
+  assert.match(decodeAlbumArtworkUpload('data:image/svg+xml;base64,PHN2Zz4=').error, /JPEG, PNG or WebP/)
+  assert.match(decodeAlbumArtworkUpload('data:image/jpeg;base64,' + Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(1_000_000)]).toString('base64')).error, /too large/)
 })
