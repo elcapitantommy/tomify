@@ -47,6 +47,26 @@ describe('Library health', () => {
     expect(await screen.findByRole('button', { name: 'Scanning 25%' })).toBeDisabled()
   })
 
+  it('marks a finding as fine and can report it again', async () => {
+    const entry = { kind: 'recording', label: 'Rammstein — Rammstein', paths: ['/master/Rammstein/3-04.flac', '/master/Rammstein/4-04.flac'] }
+    let dismissed = false
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      if (path.endsWith('/dismiss')) { dismissed = !JSON.parse(String(init?.body)).restore; return Response.json({ ok: true }) }
+      if (path.endsWith('/report')) return Response.json({ report: dismissed ? { ...emptyReport, dismissed: [{ ...entry, category: 'duplicates' }] } : { ...emptyReport, duplicates: [entry] } })
+      return Response.json({ status: idleStatus })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Mark as fine: Rammstein — Rammstein' }))
+    expect(await screen.findByText('Marked as fine')).toBeInTheDocument()
+    expect(screen.getByText('No duplicate recordings or similar directory names found.')).toBeInTheDocument()
+    const call = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/dismiss'))
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ category: 'duplicates', paths: entry.paths, label: entry.label, restore: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Report again: Rammstein — Rammstein' }))
+    expect(await screen.findByRole('button', { name: 'Mark as fine: Rammstein — Rammstein' })).toBeInTheDocument()
+  })
+
   it('explains that an older recovery agent needs redeploying', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'inventory-not-available', message: 'Unavailable' }, { status: 404 })))
     renderPage()
