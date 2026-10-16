@@ -12,6 +12,27 @@ async function publishExclusive(temporaryPath, destination, linkFile) {
   await linkFile(temporaryPath, destination)
 }
 
+// Commits one file with no-replace semantics: copied to a hidden temporary beside the destination, then hard-linked
+// into place. An import passes its own id as `temporaryId`, so a temporary a crash left behind has a known name that
+// the next attempt (or a rollback) removes; a destination that already exists fails with EEXIST and is never touched.
+export function importTemporaryPath(destination, temporaryId) {
+  return hiddenTemporaryPath(destination, () => temporaryId)
+}
+
+export async function commitFile(source, destination, { temporaryId = null, ...dependencies } = {}) {
+  const copy = dependencies.copyFile || copyFile
+  const linkFile = dependencies.link || link
+  const remove = dependencies.unlink || unlink
+  const temporaryPath = temporaryId ? importTemporaryPath(destination, temporaryId) : hiddenTemporaryPath(destination, dependencies.randomUUID || randomUUID)
+  if (temporaryId) await remove(temporaryPath).catch(() => {})
+  try {
+    await copy(source, temporaryPath, fsConstants.COPYFILE_EXCL)
+    await publishExclusive(temporaryPath, destination, linkFile)
+  } finally {
+    await remove(temporaryPath).catch(() => {})
+  }
+}
+
 export async function commitTrackFiles({ originalSource, derivativeSource, originalPath, derivativePath }, dependencies = {}) {
   const copy = dependencies.copyFile || copyFile
   const linkFile = dependencies.link || link

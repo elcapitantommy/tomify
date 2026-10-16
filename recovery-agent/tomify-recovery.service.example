@@ -6,17 +6,17 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=tom
-WorkingDirectory=/opt/tomify/recovery-agent
+WorkingDirectory=/opt/tomify/current/recovery-agent
 EnvironmentFile=/etc/tomify/recovery-agent.env
-ExecStart=/usr/bin/node /opt/tomify/recovery-agent/index.mjs
+Environment=HOME=/var/lib/tomify-recovery
+ExecStart=/usr/bin/node /opt/tomify/current/recovery-agent/index.mjs
 Restart=on-failure
 PrivateTmp=true
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/srv/music-recovery /var/lib/tomify-recovery /var/cache/tomify-recovery -/opt/tomify/secrets/youtube.cookies
-ReadOnlyPaths=/srv/usenet/completed
-ReadOnlyPaths=-/srv/torrents
+ReadWritePaths=/srv/music-recovery /var/lib/tomify-recovery /var/cache/tomify-recovery
+ReadWritePaths=-/srv/usenet/completed -/srv/torrents
 ReadOnlyPaths=/opt/tomify/secrets
 
 [Install]

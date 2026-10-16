@@ -30,6 +30,7 @@ Recovery is only for Navidrome administrators (accounts with `adminRole`). The W
 - Writes only into a dedicated recovery directory. Existing files are not overwritten and the configured FLAC master tree must be separate.
 - Deletes queue-only items directly from D1. For imported items, deletion first removes the recovery derivative, its `.tomify.json` sidecar and the matching preserved original under `.tomify-source`; D1 state is retained if that filesystem cleanup fails.
 - Classifies every import into a quality tier and marks it `recovered` when the tier meets the preferred quality set in Settings, otherwise `needs-upgrade`. See [Quality tiers](#quality-tiers). Either way the files stay recovery copies, never verified masters, and nothing is promoted to an archival master automatically.
+- Waits for Navidrome to scan each import before calling it playable. See [Library scan after import](#library-scan-after-import).
 - Marks Internet Archive imports `internet-archive-recovery-copy`. A lossless file is still a recovery source, not proof of an archival master.
 - Searches torrents through qBittorrent's search plugins, showing only results that have seeds, or accepts a pasted magnet or `.torrent` link per item. Either way it downloads the torrent with qBittorrent-nox over NordVPN, shows live speed, seeds, peers and time left, unpacks archives, imports the audio and then removes the torrent and its data. See [Torrent links and qBittorrent](#torrent-links-and-qbittorrent) and [Torrent search](#torrent-search).
 
@@ -53,6 +54,16 @@ The MP3 line is 240 kbps rather than 245 because LAME V0 is variable bitrate and
 Changing the target does not rewrite existing items. **Re-check quality labels** in the same section recomputes `recovered` and `needs-upgrade` for every imported item from the source quality stored at import (the `.tomify-source` probe in provenance, otherwise the candidate's codec and bitrate). It also re-checks items that were set by hand with **Mark acceptable**, so run it only when you want every label to follow the target.
 
 The agent writes the tier into each file's `TOMIFY_ARCHIVE_STATUS` tag (`lossless`, `transparent-lossy`, `lossy` or `unknown`). Files imported before this change keep their old `lossy-recovery-copy` tag. The provenance sidecar's `archiveStatus` still names the source, for example `usenet-recovery-copy`.
+
+## Library scan after import
+
+An imported file is not playable in Tomify until Navidrome has scanned it, so each imported item also carries a playback state next to its Recovered or Needs-upgrade status (D1 column `recovery_items.playback_json`, `drizzle/0011_recovery_playback.sql`; the Worker adds the column on first use, so deploying needs no extra step):
+
+- **Imported, waiting for library scan** (`scan-pending`). When an import completes, the Worker asks Navidrome for a quick scan (`startScan` without `fullScan`), unless a scan is already running. If one was running, it starts its own scan once that finishes, because the running scan may have passed the folder before the file landed.
+- **Ready to play** (`ready`). While the Recovery page is open it asks the Worker to look again, at most every 15 seconds per item. The Worker searches Navidrome (`search3`) by artist and title and keeps the track whose path matches the imported file when Navidrome reports a path, or whose MusicBrainz recording ID matches. The play button plays that Navidrome song through the normal player. For a release import it plays the wanted track, or the first imported track.
+- **Not found in library after scan** (`scan-failed`). The track is still missing ten minutes after the import. **Retry scan** starts another scan and waits ten more minutes. If it keeps failing, check that the recovery directory is inside one of Navidrome's music folders.
+
+The Worker code is in `scripts/library-scan-worker.mjs`.
 
 ## Canonical metadata review
 
@@ -132,7 +143,7 @@ Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`, plus qBittorrent-no
 1. Copy `recovery-agent/recovery-agent.env.example` to `/etc/tomify/recovery-agent.env` and set a random `TOMIFY_RECOVERY_TOKEN` containing at least 32 characters.
 2. Keep `TOMIFY_RECOVERY_DIR=/srv/music-recovery` separate from `TOMIFY_MASTER_DIR=/srv/music`.
    On the current box, recovered files physically live on the library SSD at `/srv/music/_Recovery` (so Navidrome sees them under the library), and `/srv/music-recovery` is a bind mount of that folder. The agent still only writes through `/srv/music-recovery`, never anywhere else under the master tree. See [Recovery files on the library SSD](#recovery-files-on-the-library-ssd).
-3. Copy the recovery-agent runtime from the primary Windows checkout at `C:\Users\TomDixon\Documents\tomify` to `/opt/tomify/recovery-agent` on Debian, then install the example systemd unit. The current Debian deployment does not contain a Git checkout and does not use `/srv/tomify/app`.
+3. Deploy the recovery-agent runtime from the primary Windows checkout at `C:\Users\TomDixon\Documents\tomify` with `scripts\deploy-agent.ps1`. Releases live under `/opt/tomify/releases`, with `/opt/tomify/current` pointing at the active one. The Debian box does not need a Git checkout and does not use `/srv/tomify/app`.
 4. Put the agent behind an authenticated HTTPS reverse proxy that the hosted Tomify Worker can reach. The current deployment uses a Cloudflare Tunnel, run by the `tomify-recovery-cloudflared` Docker container on the box, which forwards `RECOVERY_AGENT_URL` to `127.0.0.1:8788`. Do not expose the unauthenticated loopback service directly. To run downloads over a VPN without breaking the tunnel or SSH, see [Running recovery downloads over NordVPN](#running-recovery-downloads-over-nordvpn).
 5. Set hosted secrets `RECOVERY_AGENT_URL` and `RECOVERY_AGENT_TOKEN` for the Tomify Site, plus any optional artwork-provider configuration above, then redeploy.
 
@@ -160,29 +171,56 @@ Earlier deployments did it the other way round: the files sat on the NVMe at `/s
 
 ### Updating the recovery agent
 
-The agent is not deployed with the site. Deploying the Worker updates the Recovery page and API only, so every merged change under `recovery-agent/` or `shared/` must also be copied to the media server. The deployment workflow is Windows-to-Debian rather than Git-on-Debian:
+The agent is not deployed with the site. Deploying the Worker updates the Recovery page and API only, so every merged change under `recovery-agent/` or `shared/` must also be deployed to the media server. The server deliberately has no Git checkout.
 
-1. Update and validate branch `feat/phase-1-pwa` in `C:\Users\TomDixon\Documents\tomify` (`git pull`).
-2. Copy the agent files to `/tmp` on the Debian host. The `tom` account cannot write `/opt/tomify/recovery-agent` directly, so a straight `scp` there fails with *Permission denied*.
-3. Install them with `sudo cp` and restart `tomify-recovery`.
-
-From PowerShell in the Windows checkout:
+From an up-to-date, validated Windows checkout, run:
 
 ```powershell
+.\scripts\deploy-agent.ps1
+```
+
+On Linux or macOS, use `./scripts/deploy-agent.sh`. Set `TOMIFY_AGENT_HOST` or pass `-HostName user@host` in PowerShell / `--host user@host` in the shell script when the destination is not `tom@tomify`.
+
+The deploy command refuses uncommitted changes under `recovery-agent/` or `shared/`, packages both directories with `package.json`, copies one archive to `/tmp`, and opens one remote `sudo` prompt. The installer creates the immutable release `/opt/tomify/releases/<short-sha>`, atomically switches `/opt/tomify/current`, updates only `TOMIFY_VERSION` in `/etc/tomify/recovery-agent.env`, installs the systemd unit and waits up to 30 seconds for `/health` to report that SHA. If the new agent does not become healthy it restores the earlier symlink and version automatically. Only the newest five releases are retained.
+
+The Worker embeds its own short SHA at build time and exposes it with contract `2` at `GET /api/version`; authenticated agent status exposes the deployed agent version and the same contract. Settings shows both values and warns only when the contracts differ; a different version alone is expected after a site-only deploy and needs no agent redeploy.
+
+Before search, acquisition, or **Import rest of download**, the Worker checks the agent contract and caches the result for about one minute. An agent with no contract or a contract below `2` is rejected with HTTP 409 `recovery-agent-outdated` and a link back to these update instructions. This prevents a newer site from sending a request an older agent may misinterpret, such as the former *Artist and title are required.* failure. Deploy the agent before the site whenever a release changes both.
+
+To roll back deliberately:
+
+```powershell
+.\scripts\deploy-agent.ps1 -Rollback
+```
+
+The matching shell command is `./scripts/deploy-agent.sh --rollback`. It swaps the current and previous releases, updates `TOMIFY_VERSION`, restarts the service and verifies the older version before accepting the rollback.
+
+#### One-time migration from `/opt/tomify/recovery-agent`
+
+Pull a commit containing these deployment scripts, make sure the existing `/etc/tomify/recovery-agent.env` is intact, then run `.\scripts\deploy-agent.ps1` once. The installer copies the old mutable runtime into `/opt/tomify/releases/legacy` as the first rollback target, creates `/opt/tomify/current`, and replaces the main service unit so it starts `/opt/tomify/current/recovery-agent/index.mjs`. Existing systemd drop-ins and the original `/opt/tomify/recovery-agent` directory remain untouched. Verify on Debian:
+
+```bash
+readlink -f /opt/tomify/current
+curl -s http://127.0.0.1:8788/health; echo
+systemctl status tomify-recovery --no-pager
+```
+
+The health response's `version` must match the final directory name printed by `readlink`. Once a normal deploy and a rollback have both been tested, the unused legacy `/opt/tomify/recovery-agent` and `/opt/tomify/shared` directories may be archived or removed separately; the installer does not delete them.
+
+The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and cache directories are `/var/lib/tomify-recovery` and `/var/cache/tomify-recovery`. The systemd sandbox sets `HOME=/var/lib/tomify-recovery`, keeps home directories hidden, and grants write access only to the state/cache directories, `/srv/music-recovery`, `/srv/usenet/completed`, and `/srv/torrents`; `/opt/tomify/secrets` remains read-only. Polkit-based VPN control and reboot remain available. If any recovery or download root uses a different host path, add that exact path with a `ReadWritePaths=` line in a systemd drop-in, then run `sudo systemctl daemon-reload` and restart the service.
+
+#### Manual fallback
+
+Before the one-time migration, the legacy layout can still be updated by hand. This has no automatic health rollback and does not set `TOMIFY_VERSION`, so prefer the deploy command:
+
+```powershell
+ssh tom@tomify "mkdir -p /tmp/tomify-shared"
 scp recovery-agent\*.mjs tom@tomify:/tmp/
 scp shared\*.mjs tom@tomify:/tmp/tomify-shared/
 ssh -t tom@tomify "sudo cp /tmp/*.mjs /opt/tomify/recovery-agent/ && sudo mkdir -p /opt/tomify/shared && sudo cp /tmp/tomify-shared/*.mjs /opt/tomify/shared/ && sudo systemctl restart tomify-recovery"
 ```
 
-The agent imports `../shared/quality.mjs`, so `shared/` must sit next to `recovery-agent/` as `/opt/tomify/shared`. Create the staging folder once with `ssh tom@tomify mkdir -p /tmp/tomify-shared`. Without `shared/` the agent fails to start with `ERR_MODULE_NOT_FOUND`.
-
-The `*.node-test.mjs` files are copied too; they are harmless and never loaded by the service. To confirm the new code is live, `grep` a string from the change in the deployed file (for example `ssh tom@tomify "grep -c import-remaining /opt/tomify/recovery-agent/index.mjs"` should print a non-zero count), then check `curl -s http://127.0.0.1:8788/health` on the host.
-
-Set `TOMIFY_VERSION` in `/etc/tomify/recovery-agent.env` to the deployed Git commit's short SHA when copying a release. The Worker embeds its own short SHA at build time and exposes it with contract `2` at `GET /api/version`; authenticated agent status exposes the agent version and the same contract. Settings shows both values and warns only when the contracts differ; a different version alone is expected after a site-only deploy and needs no agent redeploy.
-
-Before search, acquisition, or **Import rest of download**, the Worker checks the agent contract and caches the result for about one minute. An agent with no contract or a contract below `2` is rejected with HTTP 409 `recovery-agent-outdated` and a link back to these update instructions. This prevents a newer site from sending a request an older agent may misinterpret, such as the former *Artist and title are required.* failure. Deploy the agent before the site whenever a release changes both.
-
-The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and cache directories are `/var/lib/tomify-recovery` and `/var/cache/tomify-recovery`. The systemd sandbox grants write access only to those locations, `/srv/music-recovery`, and the optional YouTube cookie file; `/opt/tomify/secrets` as a whole remains read-only. A server-side Git checkout is not part of the current deployment.
+The agent imports `../shared/quality.mjs`, so the two legacy directories must remain siblings. After migration, use the release installer or its rollback command rather than modifying a release in place.
 
 The recovery directory may be added to Navidrome as a separate library path after review. It should not be merged over `/srv/music` by an automated job.
 
@@ -553,7 +591,22 @@ The agent runs its own job runner (`recovery-agent/jobs.mjs`). On start-up it lo
 
 `POST /v1/jobs/status` only reads the stored job. The Recovery page's poll goes through the Worker's `GET /api/recovery/:id/job`, which copies the agent's answer onto the Recovery item so the page shows progress, but it no longer drives the job. An item whose job finished while no browser was open shows as imported the next time the Recovery page is opened.
 
-With a Worker that has this change, YouTube and Internet Archive imports are queued the same way: `POST /v1/acquire` answers `202` with a job, and the runner downloads and imports it. An interrupted YouTube or Internet Archive job is run again after a restart; if the earlier attempt had already written its files, the retry fails with "A recovery copy already exists" rather than overwriting them.
+With a Worker that has this change, YouTube and Internet Archive imports are queued the same way: `POST /v1/acquire` answers `202` with a job, and the runner downloads and imports it.
+
+### Crash-safe imports
+
+Every import (Usenet and torrent releases, YouTube and Internet Archive) first prepares all its files in `TOMIFY_RECOVERY_STATE_DIR/import-staging/<job id>/`: the tagged derivatives, the provenance sidecars and any downloaded source and artwork. It then writes a manifest to `TOMIFY_RECOVERY_STATE_DIR/import-manifests/<job id>.json` before committing the first file. The manifest lists every planned destination with its source and expected sha256, and is rewritten (temporary file, then rename) as each file is committed. Staging lives in the state directory rather than `/tmp` because the agent's unit has `PrivateTmp=true`, which empties `/tmp` on every restart. A release therefore needs room for all its derivatives in the state directory at once, about the size of the download again.
+
+If the agent stops part-way (a crash, a restart, a reboot), the runner settles the import on start-up, before it advances any job:
+
+- A job left `importing` with a manifest is resumed. A destination that already holds the expected sha256 counts as committed, and the remaining files are committed from their sources. The job is then `completed` with the result it would have had, and a torrent's unpacked copy and torrent are removed as after a normal import.
+- When a source it still needs is gone or changed (for example the completed download was deleted), every file the manifest says this import committed is removed and the job is marked `failed` with a message saying so. Queue the item again to retry.
+- A destination whose sha256 no longer matches the manifest is never deleted or overwritten. The import is rolled back around it, the job fails with a message naming the file, and the path is kept on the job as `importConflicts`. A `cover.jpg` that appeared meanwhile is simply kept, as before.
+- A job left `importing` with no manifest had not committed anything yet, so it is imported again from the start.
+
+An import that fails while the agent is running is rolled back the same way, straight away. The manifest and staging directory are removed once the job is saved as completed or failed. An interrupted import whose job no longer exists (one started by an older Worker that waited for the answer) is rolled back on start-up.
+
+This needs the agent redeployed with the new `recovery-agent/manifest.mjs` (the copy in [Updating the recovery agent](#updating-the-recovery-agent) includes it). Restarting the agent with an import in progress is then safe: the import finishes after the restart. `TOMIFY_RECOVERY_STATE_DIR` must stay on a disk that survives reboots (`/var/lib/tomify-recovery` in the example unit).
 
 ```text
 TOMIFY_JOB_POLL_SECONDS=10

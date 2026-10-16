@@ -5,10 +5,13 @@ import { recoveryApi } from '../lib/recovery-api'
 import type { RecoveryItem } from '../lib/recovery'
 import { Recovery } from './Recovery'
 import { useAuth } from '../stores/auth'
+import { usePlayer } from '../stores/player'
+import { NavidromeClient } from '../lib/navidrome'
+import type { RecoveryPlayback } from '../lib/recovery'
 
 vi.mock('../lib/recovery-api', () => ({
   recoveryApi: {
-    list: vi.fn(), add: vi.fn(), search: vi.fn(), addTorrentLink: vi.fn(), select: vi.fn(), acquire: vi.fn(), importRemaining: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), cancel: vi.fn(), delete: vi.fn(),
+    list: vi.fn(), add: vi.fn(), search: vi.fn(), addTorrentLink: vi.fn(), select: vi.fn(), acquire: vi.fn(), importRemaining: vi.fn(), updateStatus: vi.fn(), pollJob: vi.fn(), cancel: vi.fn(), delete: vi.fn(), checkPlayback: vi.fn(), retryPlayback: vi.fn(),
   },
 }))
 
@@ -315,5 +318,53 @@ describe('Recovery page actions', () => {
     expect(screen.getByText(/stops the torrent and removes it and everything it has downloaded from qBittorrent/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }))
     expect(recoveryApi.delete).toHaveBeenCalledWith('recovery-1')
+  })
+})
+
+describe('Recovery library scan states', () => {
+  const imported = { id: 'candidate-1', backend: 'usenet' as const, externalId: 'flood', url: 'https://indexer.test/flood', title: 'Flood', channel: 'Indexer', official: false, matchScore: 80, selected: true, importedPath: '/recovery/Flood/01 - Birdhouse in Your Soul.flac' }
+  const importedItem = (playback: RecoveryPlayback) => item({ title: 'Birdhouse in Your Soul', artist: 'They Might Be Giants', status: 'recovered', candidates: [imported], playback })
+  const since = '2026-10-16T12:00:00.000Z'
+  beforeEach(() => { vi.clearAllMocks(); useAuth.setState({ isAdmin: true, session: { serverUrl: 'https://music.test', username: 'tom', token: 't', salt: 's' } }) })
+
+  it('shows a pending import as waiting for the library scan and checks the library on load', async () => {
+    const pending = importedItem({ state: 'scan-pending', since })
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [pending], backends })
+    vi.mocked(recoveryApi.checkPlayback).mockResolvedValue({ item: pending })
+    renderRecovery()
+    expect(await screen.findByText('Imported, waiting for library scan')).toBeInTheDocument()
+    expect(screen.getByText('Recovered', { selector: '.recovery-status' })).toBeInTheDocument()
+    expect(recoveryApi.checkPlayback).toHaveBeenCalledWith('recovery-1')
+  })
+
+  it('switches to ready to play when the check finds the track, and plays the Navidrome song', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [importedItem({ state: 'scan-pending', since })], backends })
+    vi.mocked(recoveryApi.checkPlayback).mockResolvedValue({ item: importedItem({ state: 'ready', since, songId: 'song-9' }) })
+    const song = vi.spyOn(NavidromeClient.prototype, 'song').mockResolvedValue({ id: 'song-9', title: 'Birdhouse in Your Soul', artist: 'They Might Be Giants', album: 'Flood' })
+    renderRecovery()
+    expect(await screen.findByText('Ready to play')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Play Birdhouse in Your Soul' }))
+    await vi.waitFor(() => expect(usePlayer.getState().queue[0]?.id).toBe('song-9'))
+    expect(song).toHaveBeenCalledWith('song-9')
+    song.mockRestore()
+  })
+
+  it('shows a failed scan as not found with a retry that waits for the scan again', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [importedItem({ state: 'scan-failed', since })], backends })
+    vi.mocked(recoveryApi.retryPlayback).mockResolvedValue({ item: importedItem({ state: 'scan-pending', since: '2026-10-16T12:10:00.000Z' }) })
+    vi.mocked(recoveryApi.checkPlayback).mockResolvedValue({ item: importedItem({ state: 'scan-pending', since: '2026-10-16T12:10:00.000Z' }) })
+    renderRecovery()
+    expect(await screen.findByText('Not found in library after scan')).toBeInTheDocument()
+    expect(recoveryApi.checkPlayback).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry scan' }))
+    expect(recoveryApi.retryPlayback).toHaveBeenCalledWith('recovery-1')
+    expect(await screen.findByText('Imported, waiting for library scan')).toBeInTheDocument()
+  })
+
+  it('shows no scan state for an item that was never imported', async () => {
+    vi.mocked(recoveryApi.list).mockResolvedValue({ items: [item()], backends })
+    renderRecovery()
+    await screen.findByText('lush life')
+    expect(screen.queryByText(/library scan|Ready to play|Not found in library/)).toBeNull()
   })
 })

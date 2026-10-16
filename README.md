@@ -215,7 +215,7 @@ See [docs/RECOVERY.md](docs/RECOVERY.md) for the agent setup, backend contract a
 
 Downloads and imports finish on the media server even with no browser open: the agent advances its own queued jobs every `TOMIFY_JOB_POLL_SECONDS` (10 by default), and the Recovery page only shows their progress (see [Background jobs](docs/RECOVERY.md#background-jobs)).
 
-The recovery agent is deployed separately from the site. After any change under `recovery-agent/` or `shared/` (the agent imports `shared/quality.mjs`) is merged, copy it to the media server and restart it (see [Updating the recovery agent](docs/RECOVERY.md#updating-the-recovery-agent)); an out-of-date agent makes newer Recovery features fail.
+The recovery agent is deployed separately from the site. After any change under `recovery-agent/` or `shared/` is merged, deploy it from Windows with `.\scripts\deploy-agent.ps1` (or `./scripts/deploy-agent.sh` on Linux/macOS). Releases switch atomically, are health-checked, and roll back automatically if startup fails; see [Updating the recovery agent](docs/RECOVERY.md#updating-the-recovery-agent). An out-of-date agent makes newer Recovery features fail.
 
 `scripts/backup.sh` backs up the D1 database and the agent's state nightly on the media server, and an external uptime check should watch the site and the agent's `/health`; see [Backups and uptime checks](docs/RECOVERY.md#backups-and-uptime-checks).
 

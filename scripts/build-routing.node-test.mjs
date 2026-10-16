@@ -1,4 +1,4 @@
-import test from 'node:test'
+import test, { mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { build } from 'vite'
@@ -674,7 +674,7 @@ test('an importing recovery item cannot be deleted', async () => {
 // A recovery item and its one candidate, kept up to date by the UPDATE statements the Worker runs.
 function recoveryJobDatabase({ status, candidate }) {
   const item = { id: 'recovery-1', artist: 'They Might Be Giants', title: 'Birdhouse in Your Soul', album: 'Flood', status, error: null, metadataResolutionJson: JSON.stringify({ candidateId: candidate.id, status: 'matched', confidence: 90, strong: false }), artworkResolutionJson: JSON.stringify({ candidateId: candidate.id, candidates: [] }) }
-  const columns = { imported_path: 'importedPath', provenance_json: 'provenanceJson', selected_candidate_id: 'selectedCandidateId' }
+  const columns = { imported_path: 'importedPath', provenance_json: 'provenanceJson', selected_candidate_id: 'selectedCandidateId', playback_json: 'playbackJson' }
   const apply = (sql, args) => {
     const match = sql.match(/^UPDATE (recovery_items|recovery_candidates) SET (.+?) WHERE/)
     if (!match) return
@@ -1224,4 +1224,93 @@ test('re-checking quality labels recomputes recovered and needs-upgrade items fr
     assert.deepEqual(await response.json(), { target: 'transparent-lossy', checked: 4, changed: 3, recovered: 2, needsUpgrade: 1 })
   })
   assert.deepEqual(Object.fromEntries(items.map((item) => [item.id, item.status])), { 'mp3-v0': 'recovered', 'aac-128': 'needs-upgrade', flac: 'recovered', 'opus-source': 'recovered', 'still-missing': 'missing' })
+})
+
+// A stub Navidrome for the library scan after an import: getScanStatus, startScan and search3, plus the agent's job status.
+async function withLibraryScanStubs({ scanning = () => false, songs = () => [], job }, callback) {
+  const calls = { startScan: 0, search3: [], getScanStatus: 0 }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    const ok = (body) => Response.json({ 'subsonic-response': { status: 'ok', ...body } })
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return ok({ user: { adminRole: true } })
+    if (url.pathname === '/rest/getScanStatus.view') { calls.getScanStatus += 1; return ok({ scanStatus: { scanning: scanning() } }) }
+    if (url.pathname === '/rest/startScan.view') { calls.startScan += 1; calls.fullScan = url.searchParams.get('fullScan'); return ok({ scanStatus: { scanning: true } }) }
+    if (url.pathname === '/rest/search3.view') { calls.search3.push(url.searchParams.get('query')); return ok({ searchResult3: { song: songs(calls.search3.length) } }) }
+    if (url.pathname === '/v1/jobs/status') return Response.json({ job })
+    return new Response('{}', { status: 404 })
+  }
+  mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-16T12:00:00Z') })
+  try { await callback(calls) } finally { mock.timers.reset(); globalThis.fetch = originalFetch }
+}
+
+const importedFlac = '/recovery/They Might Be Giants/Flood/01 - Birdhouse in Your Soul.flac'
+const completedJob = { id: 'job-1', status: 'completed', progress: 100, result: { path: importedFlac, quality: { codec: 'flac' } } }
+const queuedUsenetItem = () => recoveryJobDatabase({ status: 'queued', candidate: { id: 'candidate-1', backend: 'usenet', selected: 1, importedPath: null, url: 'https://indexer.test/details/1', title: 'Flood', channel: 'Indexer', provenanceJson: JSON.stringify({ source: 'usenet', job: { id: 'job-1', status: 'queued', progress: 0 } }) } })
+const recoveryPost = (db, path) => worker.fetch(new Request('https://app.tomify.test/api/recovery/recovery-1' + path, { method: path === '/job' ? 'GET' : 'POST', headers: recoveryHeaders }), { TOMIFY_DB: db, RECOVERY_AGENT_URL: 'https://agent.tomify.test' })
+
+test('a completed import waits for the library scan and becomes ready to play once Navidrome returns the track', async () => {
+  const db = queuedUsenetItem()
+  const birdhouse = (id, path) => ({ id, title: 'Birdhouse in Your Soul', artist: 'They Might Be Giants', path })
+  // Navidrome finds nothing for the first two checks; then the scanned copy appears beside an older same-named track.
+  const songs = (searches) => searches <= 4 ? [] : [birdhouse('song-old', 'Masters/They Might Be Giants/Flood/02 Birdhouse in Your Soul.mp3'), birdhouse('song-new', 'They Might Be Giants/Flood/01 - Birdhouse in Your Soul.flac')]
+  await withLibraryScanStubs({ songs, job: completedJob }, async (calls) => {
+    const completed = await (await recoveryPost(db, '/job')).json()
+    assert.equal(db.item.status, 'recovered', 'the Recovered status is kept')
+    assert.equal(completed.item.playback.state, 'scan-pending')
+    assert.equal(calls.startScan, 1)
+    assert.equal(calls.fullScan, null, 'a quick scan, not a full one')
+
+    const first = await (await recoveryPost(db, '/playback')).json()
+    assert.equal(first.item.playback.state, 'scan-pending')
+    assert.deepEqual(calls.search3, ['They Might Be Giants Birdhouse in Your Soul', 'Birdhouse in Your Soul'])
+
+    // A second check within 15 s does not ask Navidrome again.
+    await recoveryPost(db, '/playback')
+    assert.equal(calls.search3.length, 2)
+
+    mock.timers.tick(15_000)
+    assert.equal((await (await recoveryPost(db, '/playback')).json()).item.playback.state, 'scan-pending')
+    mock.timers.tick(15_000)
+    const ready = await (await recoveryPost(db, '/playback')).json()
+    assert.equal(ready.item.playback.state, 'ready')
+    assert.equal(ready.item.playback.songId, 'song-new')
+    assert.equal(ready.item.status, 'recovered')
+    assert.equal(calls.startScan, 1, 'the scan started at import was enough')
+
+    // Polling the finished job again keeps the ready state.
+    await recoveryPost(db, '/job')
+    assert.equal(JSON.parse(db.item.playbackJson).state, 'ready')
+  })
+})
+
+test('a track still missing ten minutes after the import is marked not found, and retry starts another scan', async () => {
+  const db = queuedUsenetItem()
+  let scanning = true
+  await withLibraryScanStubs({ scanning: () => scanning, job: completedJob }, async (calls) => {
+    await recoveryPost(db, '/job')
+    assert.equal(calls.startScan, 0, 'a running scan is not interrupted by a new one')
+    scanning = false
+    await recoveryPost(db, '/playback')
+    assert.equal(calls.startScan, 1, 'a scan that was already running may have missed the file, so one is started afterwards')
+    mock.timers.tick(9 * 60_000)
+    assert.equal((await (await recoveryPost(db, '/playback')).json()).item.playback.state, 'scan-pending')
+    mock.timers.tick(60_000)
+    const failed = await (await recoveryPost(db, '/playback')).json()
+    assert.equal(failed.item.playback.state, 'scan-failed')
+    assert.equal(failed.item.status, 'recovered')
+
+    const retried = await (await recoveryPost(db, '/playback/retry')).json()
+    assert.equal(retried.item.playback.state, 'scan-pending')
+    assert.equal(retried.item.playback.since, '2026-10-16T12:10:00.000Z')
+    assert.equal(calls.startScan, 2)
+  })
+})
+
+test('the library check route refuses items that were never imported', async () => {
+  const db = recoveryJobDatabase({ status: 'candidate-found', candidate: { id: 'candidate-1', backend: 'youtube', selected: 1, importedPath: null, url: 'https://www.youtube.com/watch?v=abc', title: 'Birdhouse', channel: 'TMBG', provenanceJson: '{}' } })
+  await withLibraryScanStubs({ job: completedJob }, async () => {
+    assert.equal((await recoveryPost(db, '/playback/retry')).status, 409)
+    assert.equal((await (await recoveryPost(db, '/playback')).json()).item.playback, null)
+  })
 })

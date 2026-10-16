@@ -10,6 +10,7 @@ import { albumArtworkWorkerSource } from './album-artwork-worker.mjs'
 import { playlistShareWorkerSource } from './playlist-share-worker.mjs'
 import { livePlaybackWorkerSource } from './live-playback-worker.mjs'
 import { qualityWorkerSource } from './quality-worker.mjs'
+import { libraryScanWorkerSource } from './library-scan-worker.mjs'
 
 const outputDirectory = new URL('../dist/', import.meta.url)
 const workerPath = new URL('../dist/server/index.js', import.meta.url)
@@ -74,6 +75,8 @@ ${playlistShareWorkerSource}
 ${livePlaybackWorkerSource}
 
 ${qualityWorkerSource}
+
+${libraryScanWorkerSource}
 
 function decode(value) {
   const binary = atob(value)
@@ -159,6 +162,7 @@ async function ensureRecoveryTables(db) {
   try { await db.prepare('ALTER TABLE recovery_items ADD COLUMN metadata_resolution_json TEXT').run() } catch { /* column already exists */ }
   try { await db.prepare('ALTER TABLE recovery_items ADD COLUMN artwork_resolution_json TEXT').run() } catch { /* column already exists */ }
   try { await db.prepare('ALTER TABLE recovery_items ADD COLUMN source_json TEXT').run() } catch { /* column already exists */ }
+  try { await db.prepare('ALTER TABLE recovery_items ADD COLUMN playback_json TEXT').run() } catch { /* column already exists */ }
 }
 
 function recoveryCandidateRow(row) {
@@ -174,7 +178,7 @@ function recoveryCandidateRow(row) {
 }
 
 async function recoveryItem(db, username, id) {
-  const row = await db.prepare('SELECT id, artist, title, album, duration, track_number AS trackNumber, disc_number AS discNumber, musicbrainz_id AS musicBrainzId, metadata_resolution_json AS metadataResolutionJson, artwork_resolution_json AS artworkResolutionJson, source_json AS sourceJson, status, notes, error, created_at AS createdAt, updated_at AS updatedAt FROM recovery_items WHERE username = ? AND id = ?').bind(username, id).first()
+  const row = await db.prepare('SELECT id, artist, title, album, duration, track_number AS trackNumber, disc_number AS discNumber, musicbrainz_id AS musicBrainzId, metadata_resolution_json AS metadataResolutionJson, artwork_resolution_json AS artworkResolutionJson, source_json AS sourceJson, playback_json AS playbackJson, status, notes, error, created_at AS createdAt, updated_at AS updatedAt FROM recovery_items WHERE username = ? AND id = ?').bind(username, id).first()
   if (!row) return null
   const candidates = await db.prepare('SELECT id, backend, external_id AS externalId, url, title, channel, channel_id AS channelId, duration, official, match_score AS matchScore, thumbnail, codec, container, bitrate, sample_rate AS sampleRate, channels, imported_path AS importedPath, provenance_json AS provenanceJson, selected FROM recovery_candidates WHERE recovery_id = ? ORDER BY selected DESC, match_score DESC, created_at DESC').bind(id).all()
   let metadataResolution = null
@@ -183,8 +187,8 @@ async function recoveryItem(db, username, id) {
   try { metadataResolution = row.metadataResolutionJson ? JSON.parse(row.metadataResolutionJson) : null } catch { metadataResolution = null }
   try { artworkResolution = row.artworkResolutionJson ? JSON.parse(row.artworkResolutionJson) : null } catch { artworkResolution = null }
   try { catalogueSource = row.sourceJson ? JSON.parse(row.sourceJson) : null } catch { catalogueSource = null }
-  const { metadataResolutionJson, artworkResolutionJson, sourceJson, ...item } = row
-  return { ...item, metadataResolution, artworkResolution, catalogueSource, duration: row.duration == null ? null : Number(row.duration), trackNumber: row.trackNumber == null ? null : Number(row.trackNumber), discNumber: row.discNumber == null ? null : Number(row.discNumber), candidates: (candidates.results || []).map(recoveryCandidateRow) }
+  const { metadataResolutionJson, artworkResolutionJson, sourceJson, playbackJson, ...item } = row
+  return { ...item, metadataResolution, artworkResolution, catalogueSource, playback: parseRecoveryPlayback(playbackJson), duration: row.duration == null ? null : Number(row.duration), trackNumber: row.trackNumber == null ? null : Number(row.trackNumber), discNumber: row.discNumber == null ? null : Number(row.discNumber), candidates: (candidates.results || []).map(recoveryCandidateRow) }
 }
 
 function recoveryTokens(value) {
@@ -510,6 +514,8 @@ export default {
     if (livePlaybackResponse) return livePlaybackResponse
     const qualityResponse = await handleQualityRequest(request, env, url)
     if (qualityResponse) return qualityResponse
+    const libraryScanResponse = await handleLibraryScanRequest(request, env, url)
+    if (libraryScanResponse) return libraryScanResponse
 
     if (pathname === '/api/version' && request.method === 'GET') return json({ version: TOMIFY_VERSION, contract: TOMIFY_AGENT_CONTRACT })
 
@@ -772,6 +778,7 @@ export default {
             env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, provenance_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(quality.codec || null, quality.container || null, Number.isFinite(quality.bitrate) ? quality.bitrate : null, Number.isFinite(quality.sampleRate) ? quality.sampleRate : null, Number.isFinite(quality.channels) ? quality.channels : null, Number.isFinite(quality.duration) ? quality.duration : null, String(job.result.path || '').slice(0, 1000), JSON.stringify(finalProvenance), candidate.id),
             env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(recoveryImportStatus(quality), item.id, username),
           ])
+          await markRecoveryScanPending(request, env.TOMIFY_DB, username, item.id)
         } else if (job.status === 'failed') {
           await env.TOMIFY_DB.batch([
             env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET provenance_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(JSON.stringify(provenance), candidate.id),
@@ -856,6 +863,7 @@ export default {
           env.TOMIFY_DB.prepare('UPDATE recovery_candidates SET selected = 1, codec = ?, container = ?, bitrate = ?, sample_rate = ?, channels = ?, duration = COALESCE(?, duration), imported_path = ?, provenance_json = ?, rights_basis = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(quality.codec || null, quality.container || null, Number.isFinite(quality.bitrate) ? quality.bitrate : null, Number.isFinite(quality.sampleRate) ? quality.sampleRate : null, Number.isFinite(quality.channels) ? quality.channels : null, Number.isFinite(quality.duration) ? quality.duration : null, String(result.path || '').slice(0, 1000), JSON.stringify(provenance), body.rightsBasis, candidate.id),
           env.TOMIFY_DB.prepare("UPDATE recovery_items SET selected_candidate_id = ?, status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(candidate.id, recoveryImportStatus(quality), item.id, username),
         ])
+        await markRecoveryScanPending(request, env.TOMIFY_DB, username, item.id)
         return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Import failed.'

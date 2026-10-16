@@ -25,6 +25,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check deployment shell scripts
+        run: |
+          bash -n scripts/deploy-agent.sh scripts/install-agent-release.sh
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck scripts/deploy-agent.sh scripts/install-agent-release.sh
+          fi
+
       - name: Lint
         run: pnpm lint
 

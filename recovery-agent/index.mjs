@@ -2,9 +2,8 @@ import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
 import { createWriteStream } from 'node:fs'
-import { access, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { access, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
-import { tmpdir } from 'node:os'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -25,7 +24,7 @@ import { rebootConfig, scheduleReboot } from './system.mjs'
 import { createVpnController, nordvpnEnvironment, nordvpnFailureMessage, vpnConfig } from './vpn.mjs'
 import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobState, torrentCandidate, torrentCapability, torrentConfig, torrentSearchCandidates } from './torrent.mjs'
 import { agentStatusResponse, healthResponse, recoveryAgentPackageVersion } from './health.mjs'
-import { commitCoverFile, commitTrackFiles } from './commit.mjs'
+import { createImportRecovery, importStatePaths, prepareImportStaging, removeImportStaging, runManifestImport } from './manifest.mjs'
 
 let authConfiguration
 try { authConfiguration = validateRecoveryAuthConfig() }
@@ -298,11 +297,31 @@ async function inspectAndDownload(sourceUrl, temporaryRoot) {
   })
 }
 
-async function acquireYouTube(body) {
+async function pathExists(path) {
+  try { await access(path); return true } catch (error) { if (error?.code === 'ENOENT') return false; throw error }
+}
+
+// Commits a YouTube or Internet Archive import through a manifest (manifest.mjs): the sidecar is staged beside the
+// derivative, every file is listed with its sha256, and a restart part-way through finishes or rolls back the import.
+// The release cover, when Tomify adds one, is committed first; a cover that appears meanwhile is kept.
+async function commitDirectImport({ importId, jobId, kind, provenance, coverSource, releaseCoverPath, sourcePath, stagedDerivative, originalPath, finalPath, result }) {
+  const stagedSidecar = join(importStatePaths(usenetStateRoot, importId).stagingRoot, 'sidecar.tomify.json')
+  await writeFile(stagedSidecar, JSON.stringify(provenance, null, 2), { encoding: 'utf8', flag: 'wx' })
+  const entries = [
+    ...(coverSource ? [{ role: 'cover', source: coverSource, destination: releaseCoverPath, optional: true }] : []),
+    { role: 'original', source: sourcePath, destination: originalPath },
+    { role: 'derivative', source: stagedDerivative, destination: finalPath },
+    { role: 'sidecar', source: stagedSidecar, destination: `${finalPath}.tomify.json` },
+  ]
+  return runManifestImport({ stateRoot: usenetStateRoot, id: importId, jobId, kind, root: await realpath(recoveryRoot), entries, result })
+}
+
+async function acquireYouTube(body, { jobId = null } = {}) {
   if (body?.authorisation?.confirmed !== true || !body.authorisation.basis) throw new Error('Explicit source authorisation is required.')
   const sourceUrl = youtubeUrl(body?.candidate?.url)
   const track = body?.track || {}
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'tomify-recovery-'))
+  const importId = jobId || crypto.randomUUID()
+  const temporaryRoot = await prepareImportStaging(usenetStateRoot, importId)
   try {
     const acquisition = await inspectAndDownload(sourceUrl, temporaryRoot)
     const { sourcePath, metadata, formats, selected } = acquisition.value
@@ -316,55 +335,37 @@ async function acquireYouTube(body) {
     }
 
     const artwork = await prepareArtwork(body.artwork, temporaryRoot)
-    const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${derivativeExtension}`)
+    const stagedDerivative = join(temporaryRoot, `derivative${derivativeExtension}`)
     const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
     if (!inside(releaseCoverPath, recoveryRoot)) throw new Error('Unsafe recovery artwork destination.')
     const comment = `Tomify lossy recovery copy; source=${sourceUrl}; authorisation=${body.authorisation.basis}`
     const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment, sourceQuality)
-    const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
-    let trackCommitted = false
-    let coverCreated = false
-    try {
-      await run(ffmpeg, derivativePlan.args, 5 * 60_000)
-      const derivativeQuality = await probe(taggedPath)
-      await commitTrackFiles({ originalSource: sourcePath, derivativeSource: taggedPath, originalPath, derivativePath: finalPath })
-      trackCommitted = true
-      const coverCommit = artwork ? await commitCoverFile(artwork.coverPath, releaseCoverPath) : null
-      coverCreated = Boolean(coverCommit?.created)
-      const importedAt = new Date().toISOString()
-      const baseArtworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
-      const artworkProvenance = baseArtworkProvenance ? { ...baseArtworkProvenance, coverFileCreated: coverCreated, existingCoverKept: Boolean(coverCommit?.existingCoverKept) } : null
-      const provenance = {
-        source: 'youtube', sourceUrl, videoId: String(metadata.id || body.candidate.externalId || ''), sourceTitle: String(metadata.title || body.candidate.title || ''),
-        sourceChannel: String(metadata.channel || metadata.uploader || body.candidate.channel || ''), acquisitionMode: acquisition.authenticatedAccessUsed ? 'authenticated-youtube-session' : 'anonymous-youtube',
-        authenticatedAccessUsed: acquisition.authenticatedAccessUsed, authenticationFallback: acquisition.authenticationFallback, selectedFormatId: String(selected.format_id),
-        availableAudioFormats: formats.map(audioFormatSummary), acquiredAt: importedAt, rightsBasis: body.authorisation.basis,
-        confirmedBy: body.authorisation.confirmedBy || null, confirmedAt: body.authorisation.confirmedAt || null, archiveStatus: 'lossy-recovery-copy',
-        wantedMetadata: body.wantedMetadata || null, resolvedMetadata: track, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null,
-        artwork: artworkProvenance,
-        sourceAudio: { path: originalPath, extension: sourceExtension, quality: sourceQuality, preservedOriginal: true },
-        derivative: { path: finalPath, extension: derivativeExtension, containerRemuxed: sourceExtension !== derivativeExtension, createdByTomify: true, operation: recoveryDerivativeOperation(sourceExtension, derivativeExtension, derivativePlan.embedded), audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
-      }
-      await writeFile(`${finalPath}.tomify.json`, JSON.stringify(provenance, null, 2), { encoding: 'utf8', flag: 'wx' })
-      return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
-    } catch (error) {
-      await unlink(`${finalPath}.tomify.json`).catch(() => {})
-      if (coverCreated) await unlink(releaseCoverPath).catch(() => {})
-      if (trackCommitted) {
-        await unlink(finalPath).catch(() => {})
-        await unlink(originalPath).catch(() => {})
-      }
-      throw error
-    } finally {
-      await unlink(taggedPath).catch(() => {})
+    const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: stagedDerivative, coverPath: artwork?.coverPath || null, tags })
+    await run(ffmpeg, derivativePlan.args, 5 * 60_000)
+    const derivativeQuality = await probe(stagedDerivative)
+    const coverCreated = Boolean(artwork) && !(await pathExists(releaseCoverPath))
+    const importedAt = new Date().toISOString()
+    const baseArtworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+    const artworkProvenance = baseArtworkProvenance ? { ...baseArtworkProvenance, coverFileCreated: coverCreated, existingCoverKept: !coverCreated } : null
+    const provenance = {
+      source: 'youtube', sourceUrl, videoId: String(metadata.id || body.candidate.externalId || ''), sourceTitle: String(metadata.title || body.candidate.title || ''),
+      sourceChannel: String(metadata.channel || metadata.uploader || body.candidate.channel || ''), acquisitionMode: acquisition.authenticatedAccessUsed ? 'authenticated-youtube-session' : 'anonymous-youtube',
+      authenticatedAccessUsed: acquisition.authenticatedAccessUsed, authenticationFallback: acquisition.authenticationFallback, selectedFormatId: String(selected.format_id),
+      availableAudioFormats: formats.map(audioFormatSummary), acquiredAt: importedAt, rightsBasis: body.authorisation.basis,
+      confirmedBy: body.authorisation.confirmedBy || null, confirmedAt: body.authorisation.confirmedAt || null, archiveStatus: 'lossy-recovery-copy',
+      wantedMetadata: body.wantedMetadata || null, resolvedMetadata: track, catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null,
+      artwork: artworkProvenance,
+      sourceAudio: { path: originalPath, extension: sourceExtension, quality: sourceQuality, preservedOriginal: true },
+      derivative: { path: finalPath, extension: derivativeExtension, containerRemuxed: sourceExtension !== derivativeExtension, createdByTomify: true, operation: recoveryDerivativeOperation(sourceExtension, derivativeExtension, derivativePlan.embedded), audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
     }
+    const result = { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
+    return await commitDirectImport({ importId, jobId, kind: 'youtube', provenance, coverSource: coverCreated ? artwork.coverPath : null, releaseCoverPath, sourcePath, stagedDerivative, originalPath, finalPath, result })
   } finally {
-    const resolvedTemporaryRoot = resolve(temporaryRoot)
-    if (inside(resolvedTemporaryRoot, resolve(tmpdir())) && basename(resolvedTemporaryRoot).startsWith('tomify-recovery-')) await rm(resolvedTemporaryRoot, { recursive: true, force: true })
+    await removeImportStaging(usenetStateRoot, importId)
   }
 }
 
-async function acquireInternetArchive(body) {
+async function acquireInternetArchive(body, { jobId = null } = {}) {
   if (body?.authorisation?.confirmed !== true || !body.authorisation.basis) throw new Error('Explicit source authorisation is required.')
   const reference = body?.candidate?.provenance
   const identifier = String(reference?.identifier || '')
@@ -374,7 +375,8 @@ async function acquireInternetArchive(body) {
   if (!file || !selectArchiveAudioFiles({ files: [file] }, 1).length) throw new Error('The selected Internet Archive audio file is no longer available.')
   const expectedUrl = archiveDownloadUrl(identifier, filename)
   const track = body?.track || {}
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'tomify-recovery-'))
+  const importId = jobId || crypto.randomUUID()
+  const temporaryRoot = await prepareImportStaging(usenetStateRoot, importId)
   try {
     const sourceExtension = extname(filename).toLowerCase() || '.mka'
     const sourcePath = resolve(temporaryRoot, `archive-source${sourceExtension}`)
@@ -388,52 +390,34 @@ async function acquireInternetArchive(body) {
       try { await access(path); throw new Error('A recovery copy already exists; Tomify will not overwrite it.') } catch (error) { if (error?.code !== 'ENOENT') throw error }
     }
     const artwork = await prepareArtwork(body.artwork, temporaryRoot)
-    const taggedPath = join(finalDirectory, `.${crypto.randomUUID()}${derivativeExtension}`)
+    const stagedDerivative = join(temporaryRoot, `derivative${derivativeExtension}`)
     const releaseCoverPath = resolve(finalDirectory, 'cover.jpg')
     if (!inside(releaseCoverPath, recoveryRoot)) throw new Error('Unsafe recovery artwork destination.')
     const sourceUrl = `https://archive.org/details/${encodeURIComponent(identifier)}`
     const comment = `Tomify Internet Archive recovery copy; source=${sourceUrl}; authorisation=${body.authorisation.basis}`
     const tags = ffmpegMetadataArguments({ ...track, sourceUrl }, comment, sourceQuality)
-    const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: taggedPath, coverPath: artwork?.coverPath || null, tags })
-    let trackCommitted = false
-    let coverCreated = false
-    try {
-      await run(ffmpeg, derivativePlan.args, 5 * 60_000)
-      const derivativeQuality = await probe(taggedPath)
-      await commitTrackFiles({ originalSource: sourcePath, derivativeSource: taggedPath, originalPath, derivativePath: finalPath })
-      trackCommitted = true
-      const coverCommit = artwork ? await commitCoverFile(artwork.coverPath, releaseCoverPath) : null
-      coverCreated = Boolean(coverCommit?.created)
-      const acquiredAt = new Date().toISOString()
-      const baseArtworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
-      const artworkProvenance = baseArtworkProvenance ? { ...baseArtworkProvenance, coverFileCreated: coverCreated, existingCoverKept: Boolean(coverCommit?.existingCoverKept) } : null
-      const provenance = {
-        source: 'internet-archive', sourceUrl, archiveIdentifier: identifier, archiveFilename: filename,
-        archiveDownloadUrl: download.finalUrl, archiveItemTitle: metadata.metadata?.title || null, archiveCreator: metadata.metadata?.creator || null,
-        licenseUrl: metadata.metadata?.licenseurl || null, rights: metadata.metadata?.rights || null, collection: metadata.metadata?.collection || null,
-        fileFormat: file.format || null, fileSource: file.source || null, sourceSize: download.bytes, md5: file.md5 || null, sha1: file.sha1 || null,
-        acquiredAt, rightsBasis: body.authorisation.basis, confirmedBy: body.authorisation.confirmedBy || null, confirmedAt: body.authorisation.confirmedAt || null,
-        archiveStatus: 'internet-archive-recovery-copy', wantedMetadata: body.wantedMetadata || null, resolvedMetadata: track,
-        catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: artworkProvenance,
-        sourceAudio: { path: originalPath, extension: sourceExtension, quality: sourceQuality, preservedOriginal: true },
-        derivative: { path: finalPath, extension: derivativeExtension, containerRemuxed: sourceExtension !== derivativeExtension, createdByTomify: true, operation: recoveryDerivativeOperation(sourceExtension, derivativeExtension, derivativePlan.embedded), audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
-      }
-      await writeFile(`${finalPath}.tomify.json`, JSON.stringify(provenance, null, 2), { encoding: 'utf8', flag: 'wx' })
-      return { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
-    } catch (error) {
-      await unlink(`${finalPath}.tomify.json`).catch(() => {})
-      if (coverCreated) await unlink(releaseCoverPath).catch(() => {})
-      if (trackCommitted) {
-        await unlink(finalPath).catch(() => {})
-        await unlink(originalPath).catch(() => {})
-      }
-      throw error
-    } finally {
-      await unlink(taggedPath).catch(() => {})
+    const derivativePlan = buildDerivativeArguments({ sourcePath, outputPath: stagedDerivative, coverPath: artwork?.coverPath || null, tags })
+    await run(ffmpeg, derivativePlan.args, 5 * 60_000)
+    const derivativeQuality = await probe(stagedDerivative)
+    const coverCreated = Boolean(artwork) && !(await pathExists(releaseCoverPath))
+    const acquiredAt = new Date().toISOString()
+    const baseArtworkProvenance = buildArtworkProvenance(artwork, derivativePlan, releaseCoverPath)
+    const artworkProvenance = baseArtworkProvenance ? { ...baseArtworkProvenance, coverFileCreated: coverCreated, existingCoverKept: !coverCreated } : null
+    const provenance = {
+      source: 'internet-archive', sourceUrl, archiveIdentifier: identifier, archiveFilename: filename,
+      archiveDownloadUrl: download.finalUrl, archiveItemTitle: metadata.metadata?.title || null, archiveCreator: metadata.metadata?.creator || null,
+      licenseUrl: metadata.metadata?.licenseurl || null, rights: metadata.metadata?.rights || null, collection: metadata.metadata?.collection || null,
+      fileFormat: file.format || null, fileSource: file.source || null, sourceSize: download.bytes, md5: file.md5 || null, sha1: file.sha1 || null,
+      acquiredAt, rightsBasis: body.authorisation.basis, confirmedBy: body.authorisation.confirmedBy || null, confirmedAt: body.authorisation.confirmedAt || null,
+      archiveStatus: 'internet-archive-recovery-copy', wantedMetadata: body.wantedMetadata || null, resolvedMetadata: track,
+      catalogueSource: body.catalogueSource || null, metadataResolution: body.metadataResolution || null, artwork: artworkProvenance,
+      sourceAudio: { path: originalPath, extension: sourceExtension, quality: sourceQuality, preservedOriginal: true },
+      derivative: { path: finalPath, extension: derivativeExtension, containerRemuxed: sourceExtension !== derivativeExtension, createdByTomify: true, operation: recoveryDerivativeOperation(sourceExtension, derivativeExtension, derivativePlan.embedded), audioStreamCopied: true, transcoded: false, quality: derivativeQuality },
     }
+    const result = { path: finalPath, originalPath, quality: sourceQuality, derivative: provenance.derivative, artwork: artworkProvenance, provenance }
+    return await commitDirectImport({ importId, jobId, kind: 'internet-archive', provenance, coverSource: coverCreated ? artwork.coverPath : null, releaseCoverPath, sourcePath, stagedDerivative, originalPath, finalPath, result })
   } finally {
-    const resolvedTemporaryRoot = resolve(temporaryRoot)
-    if (inside(resolvedTemporaryRoot, resolve(tmpdir())) && basename(resolvedTemporaryRoot).startsWith('tomify-recovery-')) await rm(resolvedTemporaryRoot, { recursive: true, force: true })
+    await removeImportStaging(usenetStateRoot, importId)
   }
 }
 
@@ -527,7 +511,7 @@ async function queueTorrent(body) {
   return { job: { id, status: 'queued', progress: 0, provider: job.indexer.name, downloader: submitted.downloader } }
 }
 
-const directAcquisitions = { youtube: { name: 'YouTube', acquire: (request) => acquireYouTube(request) }, 'internet-archive': { name: 'Internet Archive', acquire: (request) => acquireInternetArchive(request) } }
+const directAcquisitions = { youtube: { name: 'YouTube', acquire: (request, context) => acquireYouTube(request, context) }, 'internet-archive': { name: 'Internet Archive', acquire: (request, context) => acquireInternetArchive(request, context) } }
 
 // A YouTube or Internet Archive acquisition queued as a job for the runner, for a Worker that asks for one with
 // `background: true`. Older Workers do not, and still get the synchronous result.
@@ -650,8 +634,9 @@ const pollUsenetJob = createUsenetJobPoller({
     return job?.downloader === 'qbittorrent' ? torrentStatus(job) : downloaderStatus(usenetDownloader, remoteId, fetch, job)
   },
   completeJob: async (job, state) => {
-    if (directAcquisitions[job.downloader]) return directAcquisitions[job.downloader].acquire(job.request)
-    const options = { recoveryRoot, masterRoot, probe, prepareArtwork, run, ffmpeg }
+    // The job id names the import's manifest, so the runner can finish or roll back the import after a restart.
+    if (directAcquisitions[job.downloader]) return directAcquisitions[job.downloader].acquire(job.request, { jobId: job.id })
+    const options = { recoveryRoot, masterRoot, probe, prepareArtwork, run, ffmpeg, stateRoot: usenetStateRoot, importId: job.id }
     if (job.downloader === 'qbittorrent') return completeTorrentJob(job, state, (files) => importUsenetCompletion(job, files, options))
     const completedPath = await validateCompletedPath(state.completedPath, usenetDownloadRoot, usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null)
     const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
@@ -661,10 +646,24 @@ const pollUsenetJob = createUsenetJobPoller({
   sanitizeError: (error) => sanitizeToolError(error instanceof Error ? error.message : 'Usenet recovery failed.', [youtubeCookies]),
 })
 
-// Advances every queued job in the background, so downloads and imports finish with no browser open.
+// A torrent import finished or rolled back after a restart still has its unpacked copy to remove and, once imported,
+// its torrent to take out of qBittorrent, as completeTorrentJob does after a normal import.
+async function finishRecoveredImport(job, outcome) {
+  if (job.downloader !== 'qbittorrent') return
+  await rm(torrentExtractionPath(job), { recursive: true, force: true })
+  if (outcome.status !== 'completed' || !qbittorrent) return
+  try { await removeTorrent(job); job.torrentRemovedAt = new Date().toISOString() }
+  catch (error) { job.torrentRemovalError = sanitizeToolError(error instanceof Error ? error.message : 'Could not remove the torrent from qBittorrent.', []) }
+}
+
+// Advances every queued job in the background, so downloads and imports finish with no browser open. On start-up it
+// first finishes or rolls back any import a crash or restart interrupted, from the import's manifest.
 const jobRunner = createJobRunner({
   listJobs: savedUsenetJobs,
   advance: pollUsenetJob,
+  saveJob: saveUsenetJob,
+  imports: createImportRecovery({ stateRoot: usenetStateRoot, recoveryRoot }),
+  onRecovered: finishRecoveredImport,
   intervalMs: jobPollIntervalMs(),
   log: (message) => process.stderr.write(`${message}\n`),
 })
@@ -689,7 +688,7 @@ async function importRemainingUsenet(body) {
     const downloaderRoot = !job.completedPath && usenetDownloader?.type === 'sabnzbd' ? usenetDownloader.downloadRoot : null
     const completedPath = await validateCompletedPath(reportedPath, usenetDownloadRoot, downloaderRoot)
     const discovered = await findCompletedAudio(completedPath, { maxBytes: usenetMaxBytes })
-    const result = await importRemainingUsenetFiles(job, discovered.files, { recoveryRoot, masterRoot, probe, prepareArtwork, run, ffmpeg })
+    const result = await importRemainingUsenetFiles(job, discovered.files, { recoveryRoot, masterRoot, probe, prepareArtwork, run, ffmpeg, stateRoot: usenetStateRoot })
     job.completedPath = completedPath
     job.additionalImports = [...(job.additionalImports || []), { importedAt: new Date().toISOString(), importedCount: result.importedCount, sourceFiles: result.sourceFiles }]
     job.updatedAt = new Date().toISOString()
