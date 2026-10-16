@@ -132,7 +132,7 @@ Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`, plus qBittorrent-no
 1. Copy `recovery-agent/recovery-agent.env.example` to `/etc/tomify/recovery-agent.env` and set a random `TOMIFY_RECOVERY_TOKEN` containing at least 32 characters.
 2. Keep `TOMIFY_RECOVERY_DIR=/srv/music-recovery` separate from `TOMIFY_MASTER_DIR=/srv/music`.
    On the current box, recovered files physically live on the library SSD at `/srv/music/_Recovery` (so Navidrome sees them under the library), and `/srv/music-recovery` is a bind mount of that folder. The agent still only writes through `/srv/music-recovery`, never anywhere else under the master tree. See [Recovery files on the library SSD](#recovery-files-on-the-library-ssd).
-3. Copy the recovery-agent runtime from the primary Windows checkout at `C:\Users\TomDixon\Documents\tomify` to `/opt/tomify/recovery-agent` on Debian, then install the example systemd unit. The current Debian deployment does not contain a Git checkout and does not use `/srv/tomify/app`.
+3. Deploy the recovery-agent runtime from the primary Windows checkout at `C:\Users\TomDixon\Documents\tomify` with `scripts\deploy-agent.ps1`. Releases live under `/opt/tomify/releases`, with `/opt/tomify/current` pointing at the active one. The Debian box does not need a Git checkout and does not use `/srv/tomify/app`.
 4. Put the agent behind an authenticated HTTPS reverse proxy that the hosted Tomify Worker can reach. The current deployment uses a Cloudflare Tunnel, run by the `tomify-recovery-cloudflared` Docker container on the box, which forwards `RECOVERY_AGENT_URL` to `127.0.0.1:8788`. Do not expose the unauthenticated loopback service directly. To run downloads over a VPN without breaking the tunnel or SSH, see [Running recovery downloads over NordVPN](#running-recovery-downloads-over-nordvpn).
 5. Set hosted secrets `RECOVERY_AGENT_URL` and `RECOVERY_AGENT_TOKEN` for the Tomify Site, plus any optional artwork-provider configuration above, then redeploy.
 
@@ -160,29 +160,56 @@ Earlier deployments did it the other way round: the files sat on the NVMe at `/s
 
 ### Updating the recovery agent
 
-The agent is not deployed with the site. Deploying the Worker updates the Recovery page and API only, so every merged change under `recovery-agent/` or `shared/` must also be copied to the media server. The deployment workflow is Windows-to-Debian rather than Git-on-Debian:
+The agent is not deployed with the site. Deploying the Worker updates the Recovery page and API only, so every merged change under `recovery-agent/` or `shared/` must also be deployed to the media server. The server deliberately has no Git checkout.
 
-1. Update and validate branch `feat/phase-1-pwa` in `C:\Users\TomDixon\Documents\tomify` (`git pull`).
-2. Copy the agent files to `/tmp` on the Debian host. The `tom` account cannot write `/opt/tomify/recovery-agent` directly, so a straight `scp` there fails with *Permission denied*.
-3. Install them with `sudo cp` and restart `tomify-recovery`.
-
-From PowerShell in the Windows checkout:
+From an up-to-date, validated Windows checkout, run:
 
 ```powershell
+.\scripts\deploy-agent.ps1
+```
+
+On Linux or macOS, use `./scripts/deploy-agent.sh`. Set `TOMIFY_AGENT_HOST` or pass `-HostName user@host` in PowerShell / `--host user@host` in the shell script when the destination is not `tom@tomify`.
+
+The deploy command refuses uncommitted changes under `recovery-agent/` or `shared/`, packages both directories with `package.json`, copies one archive to `/tmp`, and opens one remote `sudo` prompt. The installer creates the immutable release `/opt/tomify/releases/<short-sha>`, atomically switches `/opt/tomify/current`, updates only `TOMIFY_VERSION` in `/etc/tomify/recovery-agent.env`, installs the systemd unit and waits up to 30 seconds for `/health` to report that SHA. If the new agent does not become healthy it restores the earlier symlink and version automatically. Only the newest five releases are retained.
+
+The Worker embeds its own short SHA at build time and exposes it with contract `2` at `GET /api/version`; authenticated agent status exposes the deployed agent version and the same contract. Settings shows both values and warns only when the contracts differ; a different version alone is expected after a site-only deploy and needs no agent redeploy.
+
+Before search, acquisition, or **Import rest of download**, the Worker checks the agent contract and caches the result for about one minute. An agent with no contract or a contract below `2` is rejected with HTTP 409 `recovery-agent-outdated` and a link back to these update instructions. This prevents a newer site from sending a request an older agent may misinterpret, such as the former *Artist and title are required.* failure. Deploy the agent before the site whenever a release changes both.
+
+To roll back deliberately:
+
+```powershell
+.\scripts\deploy-agent.ps1 -Rollback
+```
+
+The matching shell command is `./scripts/deploy-agent.sh --rollback`. It swaps the current and previous releases, updates `TOMIFY_VERSION`, restarts the service and verifies the older version before accepting the rollback.
+
+#### One-time migration from `/opt/tomify/recovery-agent`
+
+Pull a commit containing these deployment scripts, make sure the existing `/etc/tomify/recovery-agent.env` is intact, then run `.\scripts\deploy-agent.ps1` once. The installer copies the old mutable runtime into `/opt/tomify/releases/legacy` as the first rollback target, creates `/opt/tomify/current`, and replaces the main service unit so it starts `/opt/tomify/current/recovery-agent/index.mjs`. Existing systemd drop-ins and the original `/opt/tomify/recovery-agent` directory remain untouched. Verify on Debian:
+
+```bash
+readlink -f /opt/tomify/current
+curl -s http://127.0.0.1:8788/health; echo
+systemctl status tomify-recovery --no-pager
+```
+
+The health response's `version` must match the final directory name printed by `readlink`. Once a normal deploy and a rollback have both been tested, the unused legacy `/opt/tomify/recovery-agent` and `/opt/tomify/shared` directories may be archived or removed separately; the installer does not delete them.
+
+The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and cache directories are `/var/lib/tomify-recovery` and `/var/cache/tomify-recovery`. The systemd sandbox sets `HOME=/var/lib/tomify-recovery`, keeps home directories hidden, and grants write access only to the state/cache directories, `/srv/music-recovery`, `/srv/usenet/completed`, and `/srv/torrents`; `/opt/tomify/secrets` remains read-only. Polkit-based VPN control and reboot remain available. If any recovery or download root uses a different host path, add that exact path with a `ReadWritePaths=` line in a systemd drop-in, then run `sudo systemctl daemon-reload` and restart the service.
+
+#### Manual fallback
+
+Before the one-time migration, the legacy layout can still be updated by hand. This has no automatic health rollback and does not set `TOMIFY_VERSION`, so prefer the deploy command:
+
+```powershell
+ssh tom@tomify "mkdir -p /tmp/tomify-shared"
 scp recovery-agent\*.mjs tom@tomify:/tmp/
 scp shared\*.mjs tom@tomify:/tmp/tomify-shared/
 ssh -t tom@tomify "sudo cp /tmp/*.mjs /opt/tomify/recovery-agent/ && sudo mkdir -p /opt/tomify/shared && sudo cp /tmp/tomify-shared/*.mjs /opt/tomify/shared/ && sudo systemctl restart tomify-recovery"
 ```
 
-The agent imports `../shared/quality.mjs`, so `shared/` must sit next to `recovery-agent/` as `/opt/tomify/shared`. Create the staging folder once with `ssh tom@tomify mkdir -p /tmp/tomify-shared`. Without `shared/` the agent fails to start with `ERR_MODULE_NOT_FOUND`.
-
-The `*.node-test.mjs` files are copied too; they are harmless and never loaded by the service. To confirm the new code is live, `grep` a string from the change in the deployed file (for example `ssh tom@tomify "grep -c import-remaining /opt/tomify/recovery-agent/index.mjs"` should print a non-zero count), then check `curl -s http://127.0.0.1:8788/health` on the host.
-
-Set `TOMIFY_VERSION` in `/etc/tomify/recovery-agent.env` to the deployed Git commit's short SHA when copying a release. The Worker embeds its own short SHA at build time and exposes it with contract `2` at `GET /api/version`; authenticated agent status exposes the agent version and the same contract. Settings shows both values and warns only when the contracts differ; a different version alone is expected after a site-only deploy and needs no agent redeploy.
-
-Before search, acquisition, or **Import rest of download**, the Worker checks the agent contract and caches the result for about one minute. An agent with no contract or a contract below `2` is rejected with HTTP 409 `recovery-agent-outdated` and a link back to these update instructions. This prevents a newer site from sending a request an older agent may misinterpret, such as the former *Artist and title are required.* failure. Deploy the agent before the site whenever a release changes both.
-
-The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and cache directories are `/var/lib/tomify-recovery` and `/var/cache/tomify-recovery`. The systemd sandbox grants write access only to those locations, `/srv/music-recovery`, and the optional YouTube cookie file; `/opt/tomify/secrets` as a whole remains read-only. A server-side Git checkout is not part of the current deployment.
+The agent imports `../shared/quality.mjs`, so the two legacy directories must remain siblings. After migration, use the release installer or its rollback command rather than modifying a release in place.
 
 The recovery directory may be added to Navidrome as a separate library path after review. It should not be merged over `/srv/music` by an automated job.
 
