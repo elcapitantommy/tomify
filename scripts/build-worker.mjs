@@ -1,5 +1,6 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises'
 import { extname, join, relative, sep } from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { recoveryMetadataWorkerSource } from './recovery-metadata.mjs'
 import { recoveryArtworkWorkerSource } from './recovery-artwork.mjs'
 import { catalogueImportWorkerSource } from './catalogue-import.mjs'
@@ -12,6 +13,14 @@ import { qualityWorkerSource } from './quality-worker.mjs'
 
 const outputDirectory = new URL('../dist/', import.meta.url)
 const workerPath = new URL('../dist/server/index.js', import.meta.url)
+const TOMIFY_AGENT_CONTRACT = 2
+
+function buildVersion() {
+  try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim() }
+  catch { return String(process.env.CF_PAGES_COMMIT_SHA || process.env.WORKERS_CI_COMMIT_SHA || 'unknown').trim() || 'unknown' }
+}
+
+const TOMIFY_VERSION = buildVersion()
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -45,6 +54,8 @@ const assets = Object.fromEntries(
 )
 
 const worker = `const assets = ${JSON.stringify(assets)}
+const TOMIFY_VERSION = ${JSON.stringify(TOMIFY_VERSION)}
+const TOMIFY_AGENT_CONTRACT = ${TOMIFY_AGENT_CONTRACT}
 
 ${recoveryMetadataWorkerSource}
 
@@ -208,9 +219,33 @@ async function callRecoveryAgent(env, path, body) {
   const response = await fetch((baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl) + path, { method: 'POST', headers, body: JSON.stringify(body) })
   const result = await response.json().catch(() => ({}))
   // An agent older than this Worker answers new endpoints with a bare 404.
-  if (response.status === 404 && result.error === 'not-found') throw new Error('The recovery agent is out of date and does not support this action. Copy the latest recovery-agent files to the server and restart tomify-recovery.')
+  if (response.status === 404 && result.error === 'not-found') throw new RecoveryAgentOutdated()
   if (!response.ok) throw new Error(result.message || result.error || 'Recovery agent request failed.')
   return result
+}
+
+const recoveryAgentStatusCache = new Map()
+
+async function recoveryAgentStatus(env) {
+  const cacheKey = String(env.RECOVERY_AGENT_URL || '') + ':' + String(env.RECOVERY_AGENT_TOKEN || '')
+  const cached = recoveryAgentStatusCache.get(cacheKey)
+  if (cached && Date.now() - cached.checkedAt < 60000) return cached.status
+  const status = await callRecoveryAgent(env, '/v1/status', {})
+  recoveryAgentStatusCache.set(cacheKey, { checkedAt: Date.now(), status })
+  return status
+}
+
+class RecoveryAgentOutdated extends Error {
+  constructor() {
+    super('The recovery agent is out of date. Redeploy it using docs/RECOVERY.md, “Updating the recovery agent”: https://github.com/elcapitantommy/tomify/blob/main/docs/RECOVERY.md#updating-the-recovery-agent')
+    this.name = 'RecoveryAgentOutdated'
+  }
+}
+
+async function requireRecoveryAgentContract(env) {
+  const status = await recoveryAgentStatus(env)
+  if (!Number.isInteger(status?.contract) || status.contract < TOMIFY_AGENT_CONTRACT) throw new RecoveryAgentOutdated()
+  return status
 }
 
 function rowToItem(row) {
@@ -476,6 +511,20 @@ export default {
     const qualityResponse = await handleQualityRequest(request, env, url)
     if (qualityResponse) return qualityResponse
 
+    if (pathname === '/api/version' && request.method === 'GET') return json({ version: TOMIFY_VERSION, contract: TOMIFY_AGENT_CONTRACT })
+
+    if (pathname === '/api/recovery-agent/status' && request.method === 'GET') {
+      const username = await authenticate(request)
+      if (!username) return json({ error: 'unauthorized' }, 401)
+      if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can inspect the recovery agent.' }, 403)
+      try {
+        const status = await recoveryAgentStatus(env)
+        return json({ version: status?.version ?? null, contract: Number.isInteger(status?.contract) ? status.contract : null })
+      } catch (error) {
+        return json({ error: 'recovery-agent-status-failed', message: error instanceof Error ? error.message : 'The recovery agent status is unavailable.' }, 502)
+      }
+    }
+
     if (pathname === '/api/system/reboot' && request.method === 'POST') {
       const username = await authenticate(request)
       if (!username) return json({ error: 'unauthorized' }, 401)
@@ -529,7 +578,7 @@ export default {
       ]
       if (env.RECOVERY_AGENT_URL) {
         try {
-          const status = await callRecoveryAgent(env, '/v1/status', {})
+          const status = await recoveryAgentStatus(env)
           for (const backend of backendState) {
             const remote = Array.isArray(status.backends) ? status.backends.find((value) => value?.id === backend.id) : null
             backend.available = Boolean(remote && remote.available !== false)
@@ -630,6 +679,7 @@ export default {
       // The legacy searchMode rides along so a recovery agent older than searchFields still runs its closest single-field search.
       const searchMode = searchFields ? (searchFields.includes('track') ? 'track' : searchFields.includes('album') ? 'release' : 'artist') : ['artist', 'track', 'release'].includes(body?.searchMode) ? body.searchMode : 'track'
       try {
+        await requireRecoveryAgentContract(env)
         const result = await callRecoveryAgent(env, '/v1/search', { backend, searchMode, ...(searchFields ? { searchFields } : {}), ...(backend === 'torrent' && link ? { link } : {}), track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
         const candidates = Array.isArray(result.candidates) ? result.candidates.slice(0, 12) : []
         await env.TOMIFY_DB.prepare('DELETE FROM recovery_candidates WHERE recovery_id = ? AND backend = ? AND imported_path IS NULL').bind(item.id, backend).run()
@@ -646,6 +696,7 @@ export default {
         return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Candidate search failed.'
+        if (error instanceof RecoveryAgentOutdated) return json({ error: 'recovery-agent-outdated', message }, 409)
         await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(message.slice(0, 500), item.id, username).run()
         return json({ error: 'candidate-search-failed', message }, 502)
       }
@@ -723,6 +774,7 @@ export default {
       const candidate = item?.candidates.find((value) => value.selected && value.backend === 'usenet' && value.importedPath && value.provenance?.job?.id)
       if (!item || !candidate) return json({ error: 'recovery-download-not-found', message: 'Only a completed Usenet import can have the rest of its download imported.' }, 404)
       try {
+        await requireRecoveryAgentContract(env)
         const { result } = await callRecoveryAgent(env, '/v1/jobs/import-remaining', { jobId: candidate.provenance.job.id })
         const added = Array.isArray(result?.importedTracks) ? result.importedTracks.map((track) => ({ path: track?.path || null, originalPath: track?.originalPath || null, artist: track?.artist || null, albumArtist: track?.albumArtist || null, album: track?.album || null, title: track?.title || null, trackNumber: track?.trackNumber || null, discNumber: track?.discNumber || null, quality: track?.quality || null, derivative: track?.derivative || null })) : []
         // Keep the added tracks on the candidate so deleting the item also removes them.
@@ -732,6 +784,7 @@ export default {
         return json({ item: await recoveryItem(env.TOMIFY_DB, username, item.id) })
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Could not import the rest of the download.'
+        if (error instanceof RecoveryAgentOutdated) return json({ error: 'recovery-agent-outdated', message }, 409)
         return json({ error: 'recovery-import-remaining-failed', message }, 502)
       }
     }
@@ -754,6 +807,11 @@ export default {
       const resolvedMetadata = applyRecoveryMetadataChoices(wantedMetadata, item.metadataResolution, metadataChoices)
       const artwork = body.artworkCandidateId == null ? null : item.artworkResolution.candidates.find((value) => value.id === body.artworkCandidateId && value.selectable === true)
       if (body.artworkCandidateId != null && !artwork) return json({ error: 'invalid-recovery-artwork', message: 'The selected artwork is unavailable or is not approved for acquisition.' }, 400)
+      try { await requireRecoveryAgentContract(env) }
+      catch (error) {
+        if (error instanceof RecoveryAgentOutdated) return json({ error: 'recovery-agent-outdated', message: error.message }, 409)
+        return json({ error: 'recovery-agent-status-failed', message: error instanceof Error ? error.message : 'The recovery agent status is unavailable.' }, 502)
+      }
       await env.TOMIFY_DB.prepare("UPDATE recovery_items SET status = 'importing', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?").bind(item.id, username).run()
       try {
         // background asks the agent to queue YouTube and Internet Archive acquisitions as jobs (202) like Usenet and

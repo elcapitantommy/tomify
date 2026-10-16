@@ -178,7 +178,9 @@ The agent imports `../shared/quality.mjs`, so `shared/` must sit next to `recove
 
 The `*.node-test.mjs` files are copied too; they are harmless and never loaded by the service. To confirm the new code is live, `grep` a string from the change in the deployed file (for example `ssh tom@tomify "grep -c import-remaining /opt/tomify/recovery-agent/index.mjs"` should print a non-zero count), then check `curl -s http://127.0.0.1:8788/health` on the host.
 
-A Worker that is newer than the agent is the usual cause of Recovery errors right after a deploy. The page reports that the recovery agent is out of date when the agent has no endpoint for a request (previously this showed as `not-found`); other symptoms include *Artist and title are required.* when adding artist-only or album-only wanted music, a Usenet search falling back to a single field, *Unsupported recovery backend.* when adding a torrent link, or **Search torrents** staying greyed out (its tooltip says to update the agent). The Worker still sends the legacy `searchMode` alongside `searchFields`, so an older agent keeps its closest single-field search rather than failing outright.
+Set `TOMIFY_VERSION` in `/etc/tomify/recovery-agent.env` to the deployed Git commit's short SHA when copying a release. The Worker embeds its own short SHA at build time and exposes it with contract `2` at `GET /api/version`; authenticated agent status exposes the agent version and the same contract. Settings shows both values and warns only when the contracts differ; a different version alone is expected after a site-only deploy and needs no agent redeploy.
+
+Before search, acquisition, or **Import rest of download**, the Worker checks the agent contract and caches the result for about one minute. An agent with no contract or a contract below `2` is rejected with HTTP 409 `recovery-agent-outdated` and a link back to these update instructions. This prevents a newer site from sending a request an older agent may misinterpret, such as the former *Artist and title are required.* failure. Deploy the agent before the site whenever a release changes both.
 
 The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and cache directories are `/var/lib/tomify-recovery` and `/var/cache/tomify-recovery`. The systemd sandbox grants write access only to those locations, `/srv/music-recovery`, and the optional YouTube cookie file; `/opt/tomify/secrets` as a whole remains read-only. A server-side Git checkout is not part of the current deployment.
 
@@ -533,7 +535,7 @@ For NZBGet, use `TOMIFY_NZBGET_URL`, `TOMIFY_NZBGET_USERNAME`, and `TOMIFY_NZBGE
 
 If a job disappears from both the downloader queue and history, Tomify records the first missing time in that job's state file. It keeps waiting during `TOMIFY_DOWNLOADER_LOST_MINUTES` (15 by default), including across agent restarts, then fails the job with `downloader-lost` instead of leaving it queued forever. If the downloader reports the job again before the timeout, the missing timer is cleared.
 
-Restart the service after editing the environment, then confirm that the agent is healthy. The unauthenticated endpoint intentionally returns only `{"ok":true,"version":null}` unless `TOMIFY_VERSION` or a package version is available; backend details remain on authenticated `/v1/status` and in Recovery:
+Restart the service after editing the environment, then confirm that the agent is healthy. The unauthenticated endpoint intentionally returns only `{"ok":true,"version":null}` unless `TOMIFY_VERSION` or a package version is available; backend details plus `version` and contract `2` remain on authenticated `/v1/status` and in Settings:
 
 ```bash
 sudo systemctl restart tomify-recovery
