@@ -21,6 +21,8 @@ export function createUsenetJobPoller({ loadJob, saveJob, downloaderStatus, comp
       // Keep the downloader's own reason (e.g. missing articles, repair failed) as the job error.
       if (state.status === 'failed') job.error = sanitizeError(new Error(state.message || 'The downloader reported the download as failed.'))
       if (state.status === 'completed') {
+        job.status = 'importing'
+        await saveJob(job)
         job.importResult = await completeJob(job, state)
         job.status = 'completed'
         job.progress = 100
