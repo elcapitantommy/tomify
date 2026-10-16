@@ -8,7 +8,7 @@ import { useReleaseMetadata } from '../stores/releaseMetadata'
 import { AlbumDetail } from './AlbumDetail'
 
 const album: Album & { song: Track[] } = { id: 'album-1', name: 'Flood', artist: 'They Might Be Giants', year: 1990, song: [{ id: 'track-1', title: 'Birdhouse in Your Soul', artist: 'They Might Be Giants', album: 'Flood', duration: 200 }] }
-const api = { session: { username: 'guest' }, album: vi.fn(async () => album), albums: vi.fn(async () => [album]), artist: vi.fn(), coverArtUrl: () => 'https://music.example/cover.jpg' }
+const api = { session: { username: 'guest' }, album: vi.fn(async () => album), albums: vi.fn(async () => [album]), allAlbums: vi.fn(async () => [album]), artist: vi.fn(), coverArtUrl: () => 'https://music.example/cover.jpg' }
 
 vi.mock('../lib/api-context', () => ({ useApi: () => api }))
 vi.mock('../components/AlbumCompleteness', () => ({ AlbumCompleteness: () => <p>completeness check</p> }))

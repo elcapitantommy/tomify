@@ -48,7 +48,7 @@ export function AlbumDetail() {
     const metadataSnapshot = useReleaseMetadata.getState().overrides
     const summaries = album.artistId
       ? (await api.artist(album.artistId, signal)).artist.album ?? []
-      : await api.albums('alphabeticalByName', 500, signal)
+      : await api.allAlbums(signal)
     const group = collapseReleaseVariants(summaries, metadataSnapshot).find((item) => item.variants.some((variant) => variant.id === album.id))
     const otherVariants = (group?.variants ?? []).filter((variant) => variant.id !== album.id)
     if (!otherVariants.length) return [album]
