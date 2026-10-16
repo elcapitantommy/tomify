@@ -45,7 +45,9 @@ async function withStaticAssetsWorker(callback) {
   const args = windows
     ? ['/d', '/s', '/c', `npx --yes wrangler@4 dev --local --ip 127.0.0.1 --port ${port}`]
     : ['--yes', 'wrangler@4', 'dev', '--local', '--ip', '127.0.0.1', '--port', String(port)]
-  const child = spawn(command, args, { cwd: new URL('..', import.meta.url), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  // detached puts npx, wrangler and workerd in their own process group, so the whole group can be stopped: killing
+  // only npx leaves workerd holding the output pipes and the test process never exits.
+  const child = spawn(command, args, { cwd: new URL('..', import.meta.url), windowsHide: true, detached: !windows, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: 'true' } })
   let output = ''
   child.stdout.on('data', (chunk) => { output += chunk })
   child.stderr.on('data', (chunk) => { output += chunk })
@@ -60,7 +62,9 @@ async function withStaticAssetsWorker(callback) {
     await callback(`http://127.0.0.1:${port}`)
   } finally {
     if (windows) spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' })
-    else child.kill('SIGTERM')
+    else { try { process.kill(-child.pid, 'SIGKILL') } catch { /* already gone */ } }
+    child.stdout.destroy()
+    child.stderr.destroy()
   }
 }
 
