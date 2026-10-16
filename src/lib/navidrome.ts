@@ -43,7 +43,7 @@ export class NavidromeClient {
   private async get<T>(endpoint: string, params?: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<T> {
     let response: Response
     try {
-      response = await this.fetcher(this.url(endpoint, params), { signal, credentials: 'omit' })
+      response = await this.fetcher(this.url(endpoint, params), { signal, credentials: 'omit', cache: 'no-store' })
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') throw error
       console.error('Navidrome request failed', {
@@ -65,7 +65,7 @@ export class NavidromeClient {
   async isAdmin() { const r = await this.get<{ user?: { adminRole?: boolean } }>('getUser', { username: this.session.username }); return r.user?.adminRole === true }
   // Navidrome only lets administrators start a scan; fullScan rescans every file instead of only changed folders.
   async startScan(fullScan = true): Promise<ScanStatus> { const r = await this.get<{ scanStatus?: ScanStatus }>('startScan', { fullScan: fullScan ? 'true' : undefined }); return r.scanStatus ?? { scanning: true } }
-  async scanStatus(): Promise<ScanStatus> { const r = await this.get<{ scanStatus?: ScanStatus }>('getScanStatus'); return r.scanStatus ?? { scanning: false } }
+  async scanStatus(signal?: AbortSignal): Promise<ScanStatus> { const r = await this.get<{ scanStatus?: ScanStatus }>('getScanStatus', undefined, signal); return r.scanStatus ?? { scanning: false } }
   async artists(signal?: AbortSignal): Promise<Artist[]> { const r = await this.get<{ artists?: { index?: { artist?: Artist[] }[] } }>('getArtists', {}, signal); return r.artists?.index?.flatMap((i) => i.artist ?? []) ?? [] }
   async artist(id: string, signal?: AbortSignal): Promise<{ artist: Artist & { album?: Album[] } }> { return this.get('getArtist', { id }, signal) }
   async albums(type: 'alphabeticalByName' | 'newest' | 'recent' | 'starred' = 'alphabeticalByName', size = 100, signal?: AbortSignal): Promise<Album[]> { const r = await this.get<{ albumList2?: { album?: Album[] } }>('getAlbumList2', { type, size }, signal); return r.albumList2?.album ?? [] }

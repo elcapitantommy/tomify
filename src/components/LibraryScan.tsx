@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Activity, FolderSync, LoaderCircle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useApi } from '../lib/api-context'
+import { usePoll } from '../lib/usePoll'
 import type { ScanStatus } from '../lib/navidrome'
 
 export const SCAN_POLL_MS = 2000
@@ -15,11 +16,10 @@ export function LibraryScan() {
   useEffect(() => { api.scanStatus().then(setStatus).catch(() => setStatus(null)) }, [api])
 
   // Navidrome answers startScan straight away; follow it until the scan finishes.
-  useEffect(() => {
-    if (!status?.scanning) return
-    const timer = setTimeout(() => { api.scanStatus().then(setStatus).catch((reason) => setError(reason instanceof Error ? reason.message : 'Scan status is unavailable.')) }, SCAN_POLL_MS)
-    return () => clearTimeout(timer)
-  }, [api, status])
+  usePoll(Boolean(status?.scanning), async (signal) => {
+    try { setStatus(await api.scanStatus(signal)); setError(null) }
+    catch (reason) { if (!signal.aborted) setError(reason instanceof Error ? reason.message : 'Scan status is unavailable.') }
+  }, SCAN_POLL_MS)
 
   async function scan() {
     setStarting(true)

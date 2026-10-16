@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, Check, ExternalLink, FolderSearch, LoaderCircle, LockKeyhole, RefreshCw, Undo2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { InventoryUnavailableError, loadInventoryReport, loadInventoryStatus, setInventoryDismissal, startInventoryScan, type DismissedInventoryEntry, type InventoryCategory, type InventoryEntry, type InventoryReport, type InventoryStatus } from '../lib/inventory-api'
+import { usePoll } from '../lib/usePoll'
 import { useAuth } from '../stores/auth'
 
 const categories: Array<{ key: InventoryCategory; title: string; empty: string }> = [
@@ -49,14 +50,15 @@ export function LibraryHealth() {
     catch (cause) { if (cause instanceof InventoryUnavailableError) setOutdated(true); else setError(cause instanceof Error ? cause.message : 'Library health is unavailable.') }
   }, [])
   useEffect(() => { if (isAdmin === true) void load() }, [isAdmin, load])
-  useEffect(() => {
-    if (status?.state !== 'running') return
-    const timer = window.setTimeout(async () => {
-      try { const next = await loadInventoryStatus(); setStatus(next); if (next.state === 'completed') await load() }
-      catch (cause) { setError(cause instanceof Error ? cause.message : 'Scan progress is unavailable.') }
-    }, 1000)
-    return () => window.clearTimeout(timer)
-  }, [status, load])
+  usePoll(status?.state === 'running', async (signal) => {
+    try {
+      const next = await loadInventoryStatus(signal)
+      setStatus(next)
+      setError(null)
+      // The report is slow to rebuild, so load it in the background rather than inside the status check.
+      if (next.state === 'completed') void load()
+    } catch (cause) { if (!signal.aborted) setError(cause instanceof Error ? cause.message : 'Scan progress is unavailable.') }
+  }, 1000)
   const [busy, setBusy] = useState<string | null>(null)
   const mark = async (category: InventoryCategory, entry: InventoryEntry, restore: boolean) => {
     setBusy(entryKey(entry))

@@ -40,7 +40,7 @@ export const recoveryApi = {
 export type VpnStatus = { control: 'enabled' | 'disabled'; state: 'connected' | 'disconnected' | 'connecting' | 'unknown' | 'unavailable'; country?: string | null; city?: string | null; server?: string | null; ip?: string | null; target?: string; killSwitch?: boolean | null; firewall?: boolean | null; autoConnect?: boolean | null; message?: string; busy?: boolean }
 
 export const systemApi = {
-  vpnStatus: () => request<VpnStatus>('/api/system/vpn'),
+  vpnStatus: (signal?: AbortSignal) => request<VpnStatus>('/api/system/vpn', { signal }),
   changeVpn: (action: 'connect' | 'disconnect') => request<VpnStatus>('/api/system/vpn', { method: 'POST', body: JSON.stringify({ action }) }),
   restartServer: () => request<{ rebooting: true; scheduledAt: string }>('/api/system/reboot', { method: 'POST', body: JSON.stringify({ confirm: 'reboot' }) }),
 }

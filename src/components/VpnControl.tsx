@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { LoaderCircle, ShieldCheck, ShieldOff } from 'lucide-react'
 import { systemApi, type VpnStatus } from '../lib/recovery-api'
+import { usePoll } from '../lib/usePoll'
+
+export const VPN_POLL_MS = 2000
 
 type Phase = 'loading' | 'ready' | 'connecting' | 'disconnecting' | 'confirming-disconnect'
 
@@ -26,6 +29,12 @@ export function VpnControl() {
   }, [])
 
   useEffect(() => { void refresh() }, [refresh])
+
+  // NordVPN can still be connecting when the change returns; follow it until it settles.
+  usePoll(phase === 'ready' && status?.state === 'connecting', async (signal) => {
+    try { setStatus(await systemApi.vpnStatus(signal)); setError(null) }
+    catch (reason) { if (!signal.aborted) setError(reason instanceof Error ? reason.message : 'VPN status is unavailable.') }
+  }, VPN_POLL_MS)
 
   async function change(action: 'connect' | 'disconnect') {
     setPhase(action === 'connect' ? 'connecting' : 'disconnecting')
