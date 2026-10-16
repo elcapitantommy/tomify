@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run && node --test recovery-agent/*.node-test.mjs scripts/*.node-test.mjs",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "deploy": "npx --yes wrangler@4 d1 migrations apply tomify-metadata --remote && npx --yes wrangler@4 deploy"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

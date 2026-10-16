@@ -1,6 +1,6 @@
 import test, { mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { build } from 'vite'
 import { catalogueWorkerSource } from './catalogue-worker.mjs'
 
@@ -811,13 +811,7 @@ test('a YouTube import is queued as an agent job, and an older agent that import
 
 test('release acquisition sends the cached MusicBrainz tracklist, then links imported tracks and requeues catalogue matches', async () => {
   const db = await sqliteDatabase()
-  db.sqlite.exec(`
-    CREATE TABLE recovery_items (id TEXT PRIMARY KEY, username TEXT NOT NULL, artist TEXT NOT NULL, title TEXT NOT NULL, album TEXT, duration REAL, track_number INTEGER, disc_number INTEGER, musicbrainz_id TEXT, metadata_resolution_json TEXT, artwork_resolution_json TEXT, source_json TEXT, playback_json TEXT, status TEXT NOT NULL DEFAULT 'missing', notes TEXT, error TEXT, selected_candidate_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE recovery_candidates (id TEXT PRIMARY KEY, recovery_id TEXT NOT NULL, backend TEXT NOT NULL, external_id TEXT NOT NULL, url TEXT NOT NULL, title TEXT NOT NULL, channel TEXT NOT NULL, channel_id TEXT, duration REAL, official INTEGER NOT NULL DEFAULT 0, match_score INTEGER NOT NULL DEFAULT 0, thumbnail TEXT, codec TEXT, container TEXT, bitrate INTEGER, sample_rate INTEGER, channels INTEGER, imported_path TEXT, provenance_json TEXT, rights_basis TEXT, selected INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE release_tracklists (album_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, release_group_id TEXT, source TEXT NOT NULL, tracklist_json TEXT NOT NULL, editions_json TEXT, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by TEXT);
-    CREATE TABLE catalogue_playlists (id TEXT PRIMARY KEY, username TEXT NOT NULL, name TEXT NOT NULL, provider TEXT NOT NULL, provider_playlist_id TEXT NOT NULL, source_url TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE catalogue_playlist_items (id TEXT PRIMARY KEY, playlist_id TEXT NOT NULL, position INTEGER NOT NULL, provider_track_id TEXT, metadata_json TEXT NOT NULL, status TEXT NOT NULL, local_track_id TEXT, local_track_json TEXT, recovery_id TEXT, match_confidence INTEGER NOT NULL DEFAULT 0, user_confirmed INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-  `)
+  // sqliteDatabase() applies drizzle/, which creates every table this test uses.
   const releaseId = '11111111-1111-1111-1111-111111111111'
   const releaseGroupId = '22222222-2222-2222-2222-222222222222'
   const tracklist = {
@@ -999,9 +993,12 @@ test('only administrators can add album or playlist tracks to Recovery', async (
   })
 })
 
+// An in-memory D1 stand-in with every drizzle/ migration applied, as `wrangler d1 migrations apply` would.
 async function sqliteDatabase() {
   const { DatabaseSync } = await import('node:sqlite')
   const sqlite = new DatabaseSync(':memory:')
+  const migrations = new URL('../drizzle/', import.meta.url)
+  for (const name of (await readdir(migrations)).filter((file) => file.endsWith('.sql')).sort()) sqlite.exec(await readFile(new URL(name, migrations), 'utf8'))
   const statement = (sql, args = []) => ({
     bind: (...values) => statement(sql, values),
     async first() { return sqlite.prepare(sql).get(...args) ?? null },
@@ -1379,6 +1376,37 @@ test('the library check route refuses items that were never imported', async () 
     assert.equal((await recoveryPost(db, '/playback/retry')).status, 409)
     assert.equal((await (await recoveryPost(db, '/playback')).json()).item.playback, null)
   })
+})
+
+test('a database without a migrated table gets schema-out-of-date instead of the Worker creating it', async () => {
+  const statements = []
+  const missingTable = {
+    prepare(sql) {
+      statements.push(sql)
+      const fail = async () => { throw new Error('D1_ERROR: no such table: release_metadata: SQLITE_ERROR') }
+      return { bind() { return this }, first: fail, all: fail, run: fail }
+    },
+    async batch() { throw new Error('unexpected batch') },
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+  try {
+    const headers = { 'x-tomify-user': 'tom', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' }
+    const response = await worker.fetch(new Request('https://app.tomify.test/api/release-meta', { headers }), { TOMIFY_DB: missingTable })
+    assert.equal(response.status, 503)
+    const body = await response.json()
+    assert.equal(body.error, 'schema-out-of-date')
+    assert.deepEqual(body.missing, { kind: 'table', name: 'release_metadata' })
+    assert.match(body.message, /Apply the D1 migrations/)
+    assert.deepEqual(statements.filter((sql) => /^\s*(CREATE|ALTER|DROP)\b/i.test(sql)), [])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('the built Worker runs no DDL on the request path', async () => {
+  const source = await readFile(new URL('../dist/server/index.js', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /\b(CREATE (UNIQUE )?(TABLE|INDEX)|ALTER TABLE)\b/)
 })
 
 async function withPreflightStubs({ agent, albums = [], songs = [] }, callback) {

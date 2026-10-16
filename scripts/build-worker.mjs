@@ -144,28 +144,13 @@ async function isNavidromeAdmin(request, username) {
   }
 }
 
-async function ensureReleaseTable(db) {
-  await db.prepare("CREATE TABLE IF NOT EXISTS release_metadata (album_id TEXT PRIMARY KEY, release_type TEXT NOT NULL, release_date TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by TEXT, source TEXT NOT NULL DEFAULT 'manual', musicbrainz_id TEXT, match_score INTEGER)").run()
-  for (const statement of [
-    "ALTER TABLE release_metadata ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
-    'ALTER TABLE release_metadata ADD COLUMN musicbrainz_id TEXT',
-    'ALTER TABLE release_metadata ADD COLUMN match_score INTEGER',
-  ]) {
-    try { await db.prepare(statement).run() } catch { /* column already exists */ }
-  }
-}
-
-async function ensureRecoveryTables(db) {
-  await db.batch([
-    db.prepare("CREATE TABLE IF NOT EXISTS recovery_items (id TEXT PRIMARY KEY, username TEXT NOT NULL, artist TEXT NOT NULL, title TEXT NOT NULL, album TEXT, duration REAL, track_number INTEGER, disc_number INTEGER, musicbrainz_id TEXT, metadata_resolution_json TEXT, artwork_resolution_json TEXT, source_json TEXT, status TEXT NOT NULL DEFAULT 'missing', notes TEXT, error TEXT, selected_candidate_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
-    db.prepare("CREATE TABLE IF NOT EXISTS recovery_candidates (id TEXT PRIMARY KEY, recovery_id TEXT NOT NULL, backend TEXT NOT NULL, external_id TEXT NOT NULL, url TEXT NOT NULL, title TEXT NOT NULL, channel TEXT NOT NULL, channel_id TEXT, duration REAL, official INTEGER NOT NULL DEFAULT 0, match_score INTEGER NOT NULL DEFAULT 0, thumbnail TEXT, codec TEXT, container TEXT, bitrate INTEGER, sample_rate INTEGER, channels INTEGER, imported_path TEXT, provenance_json TEXT, rights_basis TEXT, selected INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_recovery_items_username_status ON recovery_items(username, status)'),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_recovery_candidates_recovery ON recovery_candidates(recovery_id, match_score DESC)'),
-  ])
-  try { await db.prepare('ALTER TABLE recovery_items ADD COLUMN metadata_resolution_json TEXT').run() } catch { /* column already exists */ }
-  try { await db.prepare('ALTER TABLE recovery_items ADD COLUMN artwork_resolution_json TEXT').run() } catch { /* column already exists */ }
-  try { await db.prepare('ALTER TABLE recovery_items ADD COLUMN source_json TEXT').run() } catch { /* column already exists */ }
-  try { await db.prepare('ALTER TABLE recovery_items ADD COLUMN playback_json TEXT').run() } catch { /* column already exists */ }
+// The D1 schema comes only from the migrations in drizzle/, applied by "pnpm run deploy" before the
+// Worker is deployed. A query that names a table or column no migration has created yet means the
+// database is behind this Worker, so the request gets a clear 503 instead of a 500 or a silent repair.
+function schemaOutOfDateResponse(error) {
+  const match = /no such (table|column): ([A-Za-z0-9_.]+)/.exec(error instanceof Error ? error.message : String(error))
+  if (!match) return null
+  return json({ error: 'schema-out-of-date', message: 'The Tomify database is missing the ' + match[1] + ' ' + match[2] + '. Apply the D1 migrations (pnpm run deploy) and try again.', missing: { kind: match[1], name: match[2] } }, 503)
 }
 
 function recoveryCandidateRow(row) {
@@ -579,7 +564,7 @@ async function selectRelease(db, albumId) {
   return rowToItem(row)
 }
 
-export default {
+const tomifyRoutes = {
   async fetch(request, env) {
     const url = new URL(request.url)
     let pathname = decodeURIComponent(url.pathname)
@@ -654,7 +639,6 @@ export default {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request)
       if (!username) return json({ error: 'unauthorized' }, 401)
-      await ensureRecoveryTables(env.TOMIFY_DB)
       const rows = await env.TOMIFY_DB.prepare('SELECT id FROM recovery_items WHERE username = ? ORDER BY updated_at DESC, created_at DESC').bind(username).all()
       const items = []
       for (const row of rows.results || []) items.push(await recoveryItem(env.TOMIFY_DB, username, row.id))
@@ -689,7 +673,6 @@ export default {
       // Wanted music can be any mix of artist, album and track; artist and title stay NOT NULL, so blanks are stored as ''.
       const wanted = { artist: wantedText(body?.artist), title: wantedText(body?.title), album: wantedText(body?.album) }
       if (!body || (!wanted.artist && !wanted.title && !wanted.album)) return json({ error: 'invalid-wanted-music', message: 'Enter at least one of artist, album or track.' }, 400)
-      await ensureRecoveryTables(env.TOMIFY_DB)
       const id = crypto.randomUUID()
       await env.TOMIFY_DB.prepare("INSERT INTO recovery_items (id, username, artist, title, album, duration, track_number, disc_number, musicbrainz_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'missing')")
         .bind(id, username, wanted.artist, wanted.title, wanted.album || null, Number.isFinite(body.duration) && body.duration > 0 ? body.duration : null, Number.isInteger(body.trackNumber) && body.trackNumber > 0 ? body.trackNumber : null, Number.isInteger(body.discNumber) && body.discNumber > 0 ? body.discNumber : null, typeof body.musicBrainzId === 'string' ? body.musicBrainzId.slice(0, 64) : null).run()
@@ -701,7 +684,6 @@ export default {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request)
       if (!username) return json({ error: 'unauthorized' }, 401)
-      await ensureRecoveryTables(env.TOMIFY_DB)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       if (!item) return json({ error: 'recovery-item-not-found' }, 404)
       const candidate = item.candidates.find((value) => value.selected && value.provenance?.job?.id)
@@ -727,7 +709,6 @@ export default {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request)
       if (!username) return json({ error: 'unauthorized' }, 401)
-      await ensureRecoveryTables(env.TOMIFY_DB)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       if (!item) return json({ error: 'recovery-item-not-found' }, 404)
       // Torrent jobs can be deleted at any point: the agent stops the torrent and removes it and its data from qBittorrent.
@@ -767,7 +748,6 @@ export default {
       const body = await request.json()
       const allowed = ['missing', 'candidate-found', 'recovered', 'needs-upgrade', 'failed']
       if (!body || !allowed.includes(body.status)) return json({ error: 'invalid-recovery-status' }, 400)
-      await ensureRecoveryTables(env.TOMIFY_DB)
       await env.TOMIFY_DB.prepare('UPDATE recovery_items SET status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?').bind(body.status, recoveryMatch[1], username).run()
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       return item ? json({ item }) : json({ error: 'recovery-item-not-found' }, 404)
@@ -777,7 +757,6 @@ export default {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request)
       if (!username) return json({ error: 'unauthorized' }, 401)
-      await ensureRecoveryTables(env.TOMIFY_DB)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       if (!item) return json({ error: 'recovery-item-not-found' }, 404)
       if (item.status === 'queued' || item.status === 'downloading') return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before searching again.' }, 409)
@@ -822,7 +801,6 @@ export default {
       const username = await authenticate(request)
       if (!username) return json({ error: 'unauthorized' }, 401)
       const body = await request.json()
-      await ensureRecoveryTables(env.TOMIFY_DB)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       if (item?.status === 'queued' || item?.status === 'downloading') return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before changing candidates.' }, 409)
       const candidate = body && typeof body.candidateId === 'string' ? item?.candidates.find((value) => value.id === body.candidateId) : null
@@ -843,7 +821,6 @@ export default {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request)
       if (!username) return json({ error: 'unauthorized' }, 401)
-      await ensureRecoveryTables(env.TOMIFY_DB)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       const candidate = item?.candidates.find((value) => value.selected && value.provenance?.job?.id)
       if (!item || !candidate) return json({ error: 'recovery-job-not-found' }, 404)
@@ -886,7 +863,6 @@ export default {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request)
       if (!username) return json({ error: 'unauthorized' }, 401)
-      await ensureRecoveryTables(env.TOMIFY_DB)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       const candidate = item?.candidates.find((value) => value.selected && value.backend === 'usenet' && value.importedPath && value.provenance?.job?.id)
       if (!item || !candidate) return json({ error: 'recovery-download-not-found', message: 'Only a completed Usenet import can have the rest of its download imported.' }, 404)
@@ -913,7 +889,6 @@ export default {
       const body = await request.json()
       const rights = ['uploader-authorised', 'creative-commons', 'public-domain', 'other-authorisation']
       if (!body || body.confirmedAuthorised !== true || !rights.includes(body.rightsBasis) || typeof body.candidateId !== 'string') return json({ error: 'source-authorisation-required' }, 400)
-      await ensureRecoveryTables(env.TOMIFY_DB)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       const candidate = item?.candidates.find((value) => value.id === body.candidateId)
       if (!item || !candidate) return json({ error: 'recovery-candidate-not-found' }, 404)
@@ -964,7 +939,6 @@ export default {
       if (!env || !env.TOMIFY_DB) return json({ error: 'metadata-store-unavailable' }, 503)
       const username = await authenticate(request)
       if (!username) return json({ error: 'unauthorized' }, 401)
-      await ensureReleaseTable(env.TOMIFY_DB)
       const result = await env.TOMIFY_DB.prepare('SELECT album_id AS albumId, release_type AS releaseType, release_date AS releaseDate, updated_at AS updatedAt, source, musicbrainz_id AS musicBrainzId, match_score AS matchScore FROM release_metadata ORDER BY album_id').all()
       return json({ items: (result.results || []).map(rowToItem) })
     }
@@ -976,7 +950,6 @@ export default {
       const album = await request.json()
       if (!album || typeof album.albumId !== 'string' || typeof album.name !== 'string' || typeof album.artist !== 'string') return json({ error: 'invalid-album' }, 400)
 
-      await ensureReleaseTable(env.TOMIFY_DB)
       const existing = await selectRelease(env.TOMIFY_DB, album.albumId)
       const force = album.force === true
       const replaceManual = album.replaceManual === true
@@ -1008,7 +981,6 @@ export default {
       const allowed = ['album', 'single', 'ep', 'compilation', 'other']
       if (!body || !allowed.includes(body.releaseType)) return json({ error: 'invalid-release-type' }, 400)
       const releaseDate = typeof body.releaseDate === 'string' && /^\\d{4}-\\d{2}-\\d{2}$/.test(body.releaseDate) ? body.releaseDate : null
-      await ensureReleaseTable(env.TOMIFY_DB)
       await env.TOMIFY_DB.prepare("INSERT INTO release_metadata (album_id, release_type, release_date, updated_at, updated_by, source) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, 'manual') ON CONFLICT(album_id) DO UPDATE SET release_type = excluded.release_type, release_date = excluded.release_date, updated_at = CURRENT_TIMESTAMP, updated_by = excluded.updated_by, source = 'manual'")
         .bind(releaseMetaMatch[1], body.releaseType, releaseDate, username).run()
       const item = await selectRelease(env.TOMIFY_DB, releaseMetaMatch[1])
@@ -1040,6 +1012,18 @@ export default {
     const headers = new Headers({ 'content-type': asset.type })
     headers.set('cache-control', pathname === '/index.html' || pathname === '/sw.js' ? 'no-cache' : 'public, max-age=31536000, immutable')
     return new Response(request.method === 'HEAD' ? null : decode(asset.body), { headers })
+  },
+}
+
+export default {
+  async fetch(request, env) {
+    try {
+      return await tomifyRoutes.fetch(request, env)
+    } catch (error) {
+      const schemaResponse = schemaOutOfDateResponse(error)
+      if (schemaResponse) return schemaResponse
+      throw error
+    }
   },
 }
 `

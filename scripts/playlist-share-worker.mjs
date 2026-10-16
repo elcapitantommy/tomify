@@ -20,13 +20,6 @@ function normaliseShareRecipients(users, owner, knownAccounts) {
   return recipients
 }
 
-async function ensurePlaylistShareTables(db) {
-  await db.batch([
-    db.prepare('CREATE TABLE IF NOT EXISTS playlist_shares (kind TEXT NOT NULL, playlist_id TEXT NOT NULL, owner TEXT NOT NULL, shared_with TEXT NOT NULL, playlist_name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (kind, playlist_id, shared_with))'),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_playlist_shares_recipient ON playlist_shares(shared_with)'),
-    db.prepare('CREATE TABLE IF NOT EXISTS tomify_accounts (username TEXT PRIMARY KEY, last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)'),
-  ])
-}
 
 async function rememberTomifyAccount(db, username) {
   await db.prepare('INSERT INTO tomify_accounts (username) VALUES (?) ON CONFLICT(username) DO UPDATE SET last_seen_at = CURRENT_TIMESTAMP').bind(normaliseAccountName(username)).run()
@@ -61,7 +54,6 @@ async function handlePlaylistShareRequest(request, env, url) {
   const username = await authenticate(request)
   if (!username) return json({ error: 'unauthorized' }, 401)
   const db = env.TOMIFY_DB
-  await ensurePlaylistShareTables(db)
   await rememberTomifyAccount(db, username)
   const me = normaliseAccountName(username)
 
@@ -87,7 +79,6 @@ async function handlePlaylistShareRequest(request, env, url) {
     if (!PLAYLIST_SHARE_KINDS.includes(kind)) return json({ error: 'not-found' }, 404)
     let playlist = null
     if (kind === 'imported') {
-      await ensureCatalogueTables(db)
       const row = await db.prepare('SELECT username, name FROM catalogue_playlists WHERE id = ?').bind(playlistId).first()
       playlist = row ? { owner: String(row.username), name: String(row.name) } : null
     } else {
@@ -107,5 +98,5 @@ async function handlePlaylistShareRequest(request, env, url) {
   return json({ error: 'not-found' }, 404)
 }
 
-export { PLAYLIST_SHARE_KINDS, normaliseAccountName, normaliseShareRecipients, ensurePlaylistShareTables, rememberTomifyAccount, playlistShareFor, handlePlaylistShareRequest }
-export const playlistShareWorkerSource = ['const PLAYLIST_SHARE_KINDS = ' + JSON.stringify(PLAYLIST_SHARE_KINDS), ...[normaliseAccountName, normaliseShareRecipients, ensurePlaylistShareTables, rememberTomifyAccount, playlistShareFor, navidromePlaylistOwner, handlePlaylistShareRequest].map((fn) => fn.toString())].join('\n\n')
+export { PLAYLIST_SHARE_KINDS, normaliseAccountName, normaliseShareRecipients, rememberTomifyAccount, playlistShareFor, handlePlaylistShareRequest }
+export const playlistShareWorkerSource = ['const PLAYLIST_SHARE_KINDS = ' + JSON.stringify(PLAYLIST_SHARE_KINDS), ...[normaliseAccountName, normaliseShareRecipients, rememberTomifyAccount, playlistShareFor, navidromePlaylistOwner, handlePlaylistShareRequest].map((fn) => fn.toString())].join('\n\n')

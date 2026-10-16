@@ -32,18 +32,6 @@ async function decryptCatalogueToken(env, value) {
   return JSON.parse(new TextDecoder().decode(decrypted))
 }
 
-async function ensureCatalogueTables(db) {
-  await db.batch([
-    db.prepare("CREATE TABLE IF NOT EXISTS catalogue_playlists (id TEXT PRIMARY KEY, username TEXT NOT NULL, name TEXT NOT NULL, provider TEXT NOT NULL, provider_playlist_id TEXT NOT NULL, source_url TEXT NOT NULL, snapshot_id TEXT, artwork_url TEXT, provenance_json TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
-    db.prepare("CREATE TABLE IF NOT EXISTS catalogue_playlist_items (id TEXT PRIMARY KEY, playlist_id TEXT NOT NULL, position INTEGER NOT NULL, provider_track_id TEXT, metadata_json TEXT NOT NULL, status TEXT NOT NULL, local_track_id TEXT, local_track_json TEXT, recovery_id TEXT, match_confidence INTEGER NOT NULL DEFAULT 0, user_confirmed INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
-    db.prepare("CREATE TABLE IF NOT EXISTS catalogue_oauth_states (state TEXT PRIMARY KEY, username TEXT NOT NULL, expires_at INTEGER NOT NULL)"),
-    db.prepare("CREATE TABLE IF NOT EXISTS catalogue_provider_tokens (username TEXT NOT NULL, provider TEXT NOT NULL, encrypted_token TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (username, provider))"),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_catalogue_playlists_user ON catalogue_playlists(username, updated_at DESC)'),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_catalogue_playlists_source ON catalogue_playlists(username, provider, provider_playlist_id)'),
-    db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_catalogue_playlist_position ON catalogue_playlist_items(playlist_id, position)'),
-  ])
-  try { await db.prepare('ALTER TABLE recovery_items ADD COLUMN source_json TEXT').run() } catch { /* column already exists */ }
-}
 
 async function spotifyTokenRequest(env, parameters) {
   const response = await fetch('https://accounts.spotify.com/api/token', { method: 'POST', headers: { authorization: 'Basic ' + btoa(String(env.SPOTIFY_CLIENT_ID) + ':' + String(env.SPOTIFY_CLIENT_SECRET)), 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: new URLSearchParams(parameters) })
@@ -160,8 +148,6 @@ function recoveryForbidden() { return json({ error: 'forbidden', message: 'Only 
 async function handleCatalogueRequest(request, env, url) {
   if (!url.pathname.startsWith('/api/catalogue-')) return null
   if (!env?.TOMIFY_DB) return json({ error: 'catalogue-store-unavailable' }, 503)
-  await ensureRecoveryTables(env.TOMIFY_DB)
-  await ensureCatalogueTables(env.TOMIFY_DB)
 
   if (url.pathname === '/api/catalogue-auth/spotify/callback' && request.method === 'GET') {
     const state = url.searchParams.get('state')
@@ -221,7 +207,6 @@ async function handleCatalogueRequest(request, env, url) {
     const own = await cataloguePlaylistDetail(env.TOMIFY_DB, username, match[1])
     if (own) return json({ playlist: { ...own, owner: username, sharedWithMe: false } })
     // Another account's playlist is readable only when its owner shared it with this account.
-    await ensurePlaylistShareTables(env.TOMIFY_DB)
     const share = await playlistShareFor(env.TOMIFY_DB, 'imported', match[1], username)
     const ownerRow = share ? await env.TOMIFY_DB.prepare('SELECT username FROM catalogue_playlists WHERE id = ?').bind(match[1]).first() : null
     const shared = ownerRow ? await cataloguePlaylistDetail(env.TOMIFY_DB, ownerRow.username, match[1]) : null
@@ -243,4 +228,4 @@ async function handleCatalogueRequest(request, env, url) {
   return json({ error: 'not-found' }, 404)
 }
 
-export const catalogueWorkerSource = [spotifyRedirectUri, bytesToBase64, base64ToBytes, catalogueTokenKey, encryptCatalogueToken, decryptCatalogueToken, ensureCatalogueTables, spotifyTokenRequest, spotifyUserToken, spotifyApiJson, fetchSpotifyPlaylist, cataloguePlaylistRow, cataloguePlaylistDetail, saveCataloguePlaylist, recoveryForbidden, handleCatalogueRequest].map((fn) => fn.toString()).join('\n\n')
+export const catalogueWorkerSource = [spotifyRedirectUri, bytesToBase64, base64ToBytes, catalogueTokenKey, encryptCatalogueToken, decryptCatalogueToken, spotifyTokenRequest, spotifyUserToken, spotifyApiJson, fetchSpotifyPlaylist, cataloguePlaylistRow, cataloguePlaylistDetail, saveCataloguePlaylist, recoveryForbidden, handleCatalogueRequest].map((fn) => fn.toString()).join('\n\n')

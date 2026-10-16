@@ -109,7 +109,7 @@ An automatic or tagged edition must fit the local album: with four or more local
 
 If the compared edition still leaves more local tracks unmatched than matched, the panel shows **Edition does not match** instead of **Complete** and suggests choosing another edition or refreshing.
 
-The tracklist and the list of editions are cached in the D1 table `release_tracklists` (migration `0005_release_tracklists.sql`; the Worker also creates it on demand). Each album therefore costs two or three MusicBrainz requests once, through the same 1.1 second request spacing as enrichment. The refresh button fetches it again.
+The tracklist and the list of editions are cached in the D1 table `release_tracklists` (migration `0005_release_tracklists.sql`). Each album therefore costs two or three MusicBrainz requests once, through the same 1.1 second request spacing as enrichment. The refresh button fetches it again.
 
 ### Matching local tracks
 
