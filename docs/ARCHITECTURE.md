@@ -90,7 +90,7 @@ Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configura
 
 ### Configuration
 
-`wrangler.toml` owns the D1 and assets bindings and the non-secret `NAVIDROME_ORIGIN` production default. The other Worker variables and all Worker secrets are set in the Cloudflare dashboard; secret values must never be committed or copied into documentation. Build-time constants are generated rather than configured as Worker bindings.
+`wrangler.toml` owns the D1, Workers AI and assets bindings and the non-secret `NAVIDROME_ORIGIN` production default. The other Worker variables and all Worker secrets are set in the Cloudflare dashboard; secret values must never be committed or copied into documentation. Build-time constants are generated rather than configured as Worker bindings.
 
 <!-- worker-configuration:start -->
 | Name | Kind | Required or optional | Default | What reads it | What happens when it is missing |
@@ -109,7 +109,9 @@ Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configura
 | `APPLE_CATALOGUE_COUNTRY` | Dashboard var | Optional | `GB` | Apple catalogue artwork searches | Searches use the UK catalogue. |
 | `APPLE_ARTWORK_EMBEDDING_ENABLED` | Dashboard var | Optional | `false` | Album-artwork and Recovery artwork selection | Apple results may be shown but cannot be selected for acquisition. |
 | `ANTHROPIC_API_KEY` | Dashboard secret | Optional | None | `worker/features/mix-curator.ts` (Claude picks and names the Home "Made for you" mixes) | Tomify builds simpler mixes itself from the same listening data. |
-| `TOMIFY_MIXES_MODEL` | Dashboard var | Optional | `claude-sonnet-5-5` | `worker/features/mix-curator.ts` | Mixes use Claude Sonnet 5.5. |
+| `TOMIFY_MIXES_MODEL` | Dashboard var | Optional | `claude-sonnet-5-5` | `worker/features/mix-curator.ts` (mixes and the DJ) | Mixes and the DJ use Claude Sonnet 5.5. |
+| `AI` | Workers AI binding (`wrangler.toml`) | Optional | Workers AI | `worker/features/dj.ts` (the DJ's voice, Deepgram Aura-2) | The DJ still plays its sets but doesn't speak; `/api/dj/voice` returns `503`. |
+| `TOMIFY_DJ_VOICE` | Dashboard var | Optional | `draco` | `worker/features/dj.ts` | The DJ uses Aura-2's British male voice. |
 | `TOMIFY_VERSION` | Build-time constant | Required, generated | Current Git short SHA; then `CF_PAGES_COMMIT_SHA`; then `WORKERS_CI_COMMIT_SHA`; then `unknown` | `/api/version` | Reports `unknown` only when Git and both CI fallbacks are unavailable. |
 | `TOMIFY_AGENT_CONTRACT` | Build-time constant | Required, generated | `2` | `/api/version` and the recovery-agent compatibility gate | Build generation supplies it; a missing generated module fails the build. |
 | `WORKERS_CI_COMMIT_SHA` | Build-time constant input | Optional | None | `scripts/build-worker-info.mjs` final SHA fallback | `unknown` is used when Git and `CF_PAGES_COMMIT_SHA` are also unavailable. |

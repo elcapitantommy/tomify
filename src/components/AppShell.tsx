@@ -4,6 +4,7 @@ import { Activity, Album, ArrowLeft, CircleUserRound, Download, Heart, Home, Lif
 import { PlayerBar } from './Player'
 import { PlayerRuntime } from './PlayerRuntime'
 import { LivePlaybackSync } from './LivePlaybackSync'
+import { DjRuntime } from './DjPanel'
 import { usePlayer } from '../stores/player'
 import { useRemoteSession } from '../stores/livePlayback'
 import { useAuth } from '../stores/auth'
@@ -66,7 +67,7 @@ export function AppShell() {
     {accountOpen && <AccountSheet isAdmin={isAdmin} onClose={() => setAccountOpen(false)} onLogout={logout}/>}
     <main className="content" key={location.pathname}><Outlet/></main>
     <nav className="mobile-nav">{mobile.map((item) => <NavItem {...item} key={item.to}/>)}</nav>
-    <LivePlaybackSync/><PlayerRuntime/><PlayerBar/>
+    <LivePlaybackSync/><PlayerRuntime/><DjRuntime/><PlayerBar/>
   </div>
 }
 function AccountSheet({ isAdmin, onClose, onLogout }: { isAdmin: boolean; onClose(): void; onLogout(): void }) {

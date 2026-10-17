@@ -96,3 +96,5 @@ button.settings-link{border:0;background:none;width:100%;font:inherit;font-weigh
 .playlist-edit-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 20px}
 .playlist-edit-bar p{color:var(--muted);font-size:.8rem;margin:0;flex:1 1 220px}
 .icon-button:disabled{opacity:.35;cursor:default}
+.home-page .page-header.hero .hero-actions{margin-top:0}.dj-panel{border:1px solid #3a482d;background:linear-gradient(135deg,#20281a,#151815);border-radius:14px;padding:18px 20px;margin:-14px 0 10px;display:grid;gap:12px}.dj-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.dj-script{margin:0;font:600 1.05rem/1.45 Manrope;color:var(--text)}.dj-error{margin:0;color:#ffc0bd}.dj-request{display:flex;gap:8px}.dj-request input{flex:1;min-width:0;height:44px;border:1px solid #3a3f3a;background:#111311;border-radius:999px;padding:0 16px;color:#fff;outline:0}.dj-request input:focus{border-color:var(--accent)}
+@media(max-width:800px){.home-page .page-header.hero .hero-actions{justify-content:flex-start;margin-top:20px}.home-page .page-header.hero .hero-actions .button{margin-top:0}.dj-panel{margin-top:0}}

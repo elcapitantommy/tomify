@@ -275,6 +275,17 @@ Home's **Made for you** shelf holds five or six mixes built from your own librar
 
 The Worker code is `worker/features/mixes.ts` (gathering, simple mixes, storage), `worker/features/mix-curator.ts` (the Claude call) and `worker/features/listening.ts`; the tables are created by `drizzle/0014_listening_and_mixes.sql`.
 
+### Tomify DJ
+
+Press **DJ** on Home and Tomify plays your library like a radio show: sets of three to five songs, each introduced by a short spoken link ("Morning Tom. Here's one you haven't played since March…"). While the DJ talks the music waits, then the set plays. The next set is chosen while the current one plays, and never repeats a song from the session. Type into **Tell the DJ** ("something calmer", "more 80s") and the songs after the current one change to match. Playing anything else, or **Stop DJ**, ends it.
+
+- Claude (the same key and model as the mixes) picks each set from your library and listening history and writes the link. Without the key the DJ still picks a set, one song per artist, and reads a plain intro.
+- The voice is Workers AI's Deepgram Aura-2 (`AI` binding in `wrangler.toml`), British male `draco` by default; set `TOMIFY_DJ_VOICE` to another Aura-2 voice (for example `pandora`) to change it. Workers AI's free daily allowance covers light use; beyond it a link costs a fraction of a penny.
+- A set with Claude costs about 1p, so roughly 4–6p per hour of listening including the voice.
+- On iPhone the DJ keeps going only while Tomify is open; the browser may not let the voice start from the background.
+
+The Worker code is `worker/features/dj.ts` (`POST /api/dj/segment` and `POST /api/dj/voice`); the player side is `src/stores/dj.ts` and `src/components/DjPanel.tsx`.
+
 ### Known limitations
 
 - Offline audio downloads and drag-to-reorder (playlists reorder with up/down buttons) are not included yet.
