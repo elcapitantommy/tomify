@@ -9,6 +9,7 @@ import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { audioFormatSummary, sanitizeToolError, selectBestAudioFormat } from './youtube.mjs'
 import { findReusableTorrent } from './torrent.mjs'
+import { expandCueImages } from './cue.mjs'
 import { archiveCandidate, archiveDownloadUrl, archiveMetadataUrl, archiveSearchUrl, selectArchiveAudioFiles, validateArchiveDownloadUrl } from './internet-archive.mjs'
 import { deleteRecoveryArtifacts } from './deletion.mjs'
 import { recoveryDerivativeExtension, recoveryDerivativeOperation } from './derivative.mjs'
@@ -571,7 +572,9 @@ async function torrentAudio(job, completedPath) {
     job.extractedPath = extractionPath
   }
   if (!files.length) throw new Error(archives.length ? 'The torrent and its archives contain no supported audio files.' : 'The completed torrent contains no supported audio files.')
-  return { files, extractionPath }
+  // Whole-disc images with a cue sheet are split into tracks under the same throwaway directory.
+  const splitFiles = await expandCueImages(files, { destination: join(extractionPath, 'cue-split'), run, ffmpeg, log: (message) => process.stderr.write(`${message}\n`) })
+  return { files: splitFiles, extractionPath }
 }
 
 // A path from qBittorrent is in its own view of the filesystem; a saved completedPath is already the host path.
