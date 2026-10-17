@@ -141,8 +141,8 @@ export function bindDj(now: () => number = Date.now): () => void {
     const track = player.queue[player.currentIndex]
     // Playing something else (an album, a playlist) ends the DJ. Until the first set is playing, whatever
     // was already in the player is still current, so that doesn't count.
-    if (handingOver || !dj.trackIds.length) return
-    if (track && !dj.trackIds.includes(track.id)) { dj.stop(); return }
+    if (!dj.trackIds.length) return
+    if (track && !handingOver && !dj.trackIds.includes(track.id)) { dj.stop(); return }
 
     if (track && dj.pending && dj.pending.firstTrackId === track.id && !dj.speaking && player.playing) {
       const link = dj.pending
