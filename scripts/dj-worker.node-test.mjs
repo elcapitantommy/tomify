@@ -77,7 +77,7 @@ test('the voice endpoint reads the link with Aura-2 and explains when Workers AI
   const spoken = await call({ AI }, 'Morning Tom.')
   assert.equal(spoken.headers.get('content-type'), 'audio/mpeg')
   assert.equal(await spoken.text(), 'mp3-bytes')
-  assert.equal(DEFAULT_DJ_VOICE, 'ophelia', 'a bubbly female voice, as Tom asked')
+  assert.equal(DEFAULT_DJ_VOICE, 'pandora', 'the British female voice Tom chose')
   assert.deepEqual(ran, { model: DJ_TTS_MODEL, inputs: { text: 'Morning Tom.', speaker: DEFAULT_DJ_VOICE, encoding: 'mp3' }, options: { returnRawResponse: true } })
   await call({ AI, TOMIFY_DJ_VOICE: 'pandora' }, 'Hi.')
   assert.equal(ran.inputs.speaker, 'pandora')

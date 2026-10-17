@@ -20,7 +20,7 @@ export interface Env {
   TOMIFY_MIXES_MODEL?: string
   // Workers AI, used for the DJ's voice.
   AI?: Ai
-  // Optional: the DJ's Deepgram Aura-2 voice (default ophelia, a cheerful, enthusiastic female voice).
+  // Optional: the DJ's Deepgram Aura-2 voice (default pandora, a British female voice).
   TOMIFY_DJ_VOICE?: string
 }
 

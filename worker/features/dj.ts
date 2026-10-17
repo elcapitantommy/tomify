@@ -11,7 +11,7 @@ import { callClaudeJson } from './mix-curator.ts'
 const DJ_POOL_SIZE = 150
 const MAX_SCRIPT_CHARS = 600
 const MAX_REQUEST_CHARS = 200
-export const DEFAULT_DJ_VOICE = 'ophelia'
+export const DEFAULT_DJ_VOICE = 'pandora'
 export const DJ_TTS_MODEL = '@cf/deepgram/aura-2-en'
 
 export interface DjSegment { tracks: MixTrack[], script: string, curatedBy: 'claude' | 'tomify', voice: boolean }
