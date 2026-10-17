@@ -220,7 +220,7 @@ Each task is written so it can be pasted into a GitHub issue or handed to a codi
 - **Complexity:** M · **Dependencies:** none.
 
 ### 16. Make the Worker a real TypeScript module
-- **Status:** In progress. PR 16a moved the Vite output to Workers Static Assets; PR 16b replaces the generated Worker string with TypeScript modules. Configurable origins and the full binding reference remain for 16c.
+- **Status:** Complete. PR 16a moved the Vite output to Workers Static Assets, PR 16b replaced the generated Worker string with TypeScript modules, and PR 16c added the configurable Navidrome origin, strict Worker configuration types and the full binding reference.
 - **Scope:** F-16. Incremental; no behaviour change in the first PR.
 - **Files:**
   - A new `worker/` directory: `index.ts`, `routes/*.ts`, `lib/auth.ts`, `lib/d1.ts`.

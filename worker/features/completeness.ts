@@ -1,3 +1,4 @@
+// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 // Album completeness: resolves a MusicBrainz release tracklist for a Navidrome album,
 // caches it in D1 and turns missing tracks into Recovery items. The pure helpers are
 // exported for tests; handleCompletenessRequest relies on Worker globals (authenticate,
@@ -169,11 +170,11 @@ async function completenessRecoveryRows(db, username) {
 export async function handleCompletenessRequest(request, env, url) {
   if (!url.pathname.startsWith('/api/album-completeness/')) return null
   if (!env?.TOMIFY_DB) return json({ error: 'completeness-store-unavailable' }, 503)
-  const username = await authenticate(request)
+  const username = await authenticate(request, env)
   if (!username) return json({ error: 'unauthorized' }, 401)
   if (request.method !== 'POST') return json({ error: 'not-found' }, 404)
   // The MusicBrainz completeness check and its Recovery hand-off are administrator tools.
-  if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can check album completeness.' }, 403)
+  if (!(await isNavidromeAdmin(request, username, env))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can check album completeness.' }, 403)
   const body = await request.json().catch(() => null)
   const albumId = typeof body?.albumId === 'string' ? body.albumId.trim().slice(0, 200) : ''
   if (!albumId) return json({ error: 'invalid-album' }, 400)

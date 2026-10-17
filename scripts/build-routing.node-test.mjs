@@ -23,9 +23,9 @@ function mockDatabase() {
 
 await build({ configFile: new URL('../vite.config.ts', import.meta.url).pathname.replace(/^\/(.:\/)/, '$1'), logLevel: 'silent' })
 const windows = process.platform === 'win32'
-const bundle = spawnSync(windows ? process.env.ComSpec : 'npx', windows
-  ? ['/d', '/s', '/c', 'npx --yes wrangler@4 deploy --dry-run --outdir dist/server --no-minify']
-  : ['--yes', 'wrangler@4', 'deploy', '--dry-run', '--outdir', 'dist/server', '--no-minify'], {
+const bundle = spawnSync(windows ? process.env.ComSpec : 'pnpm', windows
+  ? ['/d', '/s', '/c', 'pnpm exec wrangler deploy --dry-run --outdir dist/server --no-minify']
+  : ['exec', 'wrangler', 'deploy', '--dry-run', '--outdir', 'dist/server', '--no-minify'], {
   cwd: new URL('..', import.meta.url), encoding: 'utf8', windowsHide: true,
 })
 if (bundle.status !== 0) throw new Error(`Could not bundle the Worker for route tests.\n${bundle.stdout}\n${bundle.stderr}`)
@@ -33,9 +33,10 @@ if (bundle.status !== 0) throw new Error(`Could not bundle the Worker for route 
 const serviceWorker = await readFile(new URL('../dist/client/sw.js', import.meta.url), 'utf8')
 const { default: builtWorker } = await import(`../dist/server/index.js?test=${Date.now()}`)
 const clientIndex = await readFile(new URL('../dist/client/index.html', import.meta.url), 'utf8')
+const TEST_NAVIDROME_ORIGIN = 'https://navidrome.test'
 // Direct module imports do not get Cloudflare's ASSETS binding. Supply the SPA response here so the
 // route suite exercises the same hand-off as the deployed Worker without changing route assertions.
-const worker = { fetch(request, env = {}) { return builtWorker.fetch(request, { ASSETS: { fetch: async () => new Response(clientIndex, { headers: { 'content-type': 'text/html; charset=utf-8' } }) }, ...env }) } }
+const worker = { fetch(request, env = {}) { return builtWorker.fetch(request, { ASSETS: { fetch: async () => new Response(clientIndex, { headers: { 'content-type': 'text/html; charset=utf-8' } }) }, NAVIDROME_ORIGIN: TEST_NAVIDROME_ORIGIN, ...env }) } }
 
 async function availablePort() {
   const server = createServer()
@@ -48,12 +49,12 @@ async function availablePort() {
 async function withStaticAssetsWorker(callback) {
   const port = await availablePort()
   const windows = process.platform === 'win32'
-  const command = windows ? process.env.ComSpec : 'npx'
+  const command = windows ? process.env.ComSpec : 'pnpm'
   const args = windows
-    ? ['/d', '/s', '/c', `npx --yes wrangler@4 dev --local --ip 127.0.0.1 --port ${port}`]
-    : ['--yes', 'wrangler@4', 'dev', '--local', '--ip', '127.0.0.1', '--port', String(port)]
-  // detached puts npx, wrangler and workerd in their own process group, so the whole group can be stopped: killing
-  // only npx leaves workerd holding the output pipes and the test process never exits.
+    ? ['/d', '/s', '/c', `pnpm exec wrangler dev --local --compatibility-date 2026-05-03 --ip 127.0.0.1 --port ${port}`]
+    : ['exec', 'wrangler', 'dev', '--local', '--compatibility-date', '2026-05-03', '--ip', '127.0.0.1', '--port', String(port)]
+  // detached puts pnpm, wrangler and workerd in their own process group, so the whole group can be stopped: killing
+  // only pnpm leaves workerd holding the output pipes and the test process never exits.
   const child = spawn(command, args, { cwd: new URL('..', import.meta.url), windowsHide: true, detached: !windows, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: 'true' } })
   let output = ''
   child.stdout.on('data', (chunk) => { output += chunk })
@@ -101,6 +102,35 @@ test('Worker exposes its build version and recovery contract', async () => {
   const body = await response.json()
   assert.match(body.version, /^[0-9a-f]+$|^unknown$/)
   assert.equal(body.contract, 2)
+})
+
+test('the Navidrome proxy uses NAVIDROME_ORIGIN without changing the path, query, method or body', async () => {
+  const originalFetch = globalThis.fetch
+  let outbound = null
+  globalThis.fetch = async (input, init) => { outbound = { url: String(input), init }; return new Response('proxied', { status: 200 }) }
+  try {
+    const response = await worker.fetch(new Request('https://app.tomify.test/navidrome/rest/ping.view?u=Tom&x=1', { method: 'POST', headers: { origin: 'https://app.tomify.test', 'content-type': 'text/plain' }, body: 'request-body' }))
+    assert.equal(response.status, 200)
+    assert.equal(outbound.url, TEST_NAVIDROME_ORIGIN + '/rest/ping.view?u=Tom&x=1')
+    assert.equal(outbound.init.method, 'POST')
+    assert.equal(await new Response(outbound.init.body).text(), 'request-body')
+    assert.equal(outbound.init.headers.has('origin'), false)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('a missing or invalid NAVIDROME_ORIGIN fails closed without contacting a fallback host', async () => {
+  const originalFetch = globalThis.fetch
+  const outbound = []
+  globalThis.fetch = async (input) => { outbound.push(String(input)); return Response.json({}) }
+  const request = () => new Request('https://app.tomify.test/api/recovery-agent/status', { headers: { 'x-tomify-user': 'configuration-test', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' } })
+  try {
+    for (const NAVIDROME_ORIGIN of [undefined, 'http://navidrome.test', 'not a URL']) {
+      const response = await builtWorker.fetch(request(), { RECOVERY_AGENT_URL: 'https://agent.tomify.test', ...(NAVIDROME_ORIGIN ? { NAVIDROME_ORIGIN } : {}) })
+      assert.equal(response.status, 503)
+      assert.deepEqual(await response.json(), { error: 'navidrome-unavailable', message: 'NAVIDROME_ORIGIN must be configured as a valid https:// origin.' })
+    }
+    assert.deepEqual(outbound, [])
+  } finally { globalThis.fetch = originalFetch }
 })
 
 test('Worker exposes authenticated recovery-agent version details to Settings', async () => {
@@ -922,17 +952,29 @@ test('release acquisition sends the cached MusicBrainz tracklist, then links imp
 async function withRebootFetch({ admin, agent }, callback) {
   const originalFetch = globalThis.fetch
   const agentRequests = []
+  const navidromeRequests = []
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
+    if (url.pathname.startsWith('/rest/')) navidromeRequests.push(url)
     if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
     if (url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { username: url.searchParams.get('username'), adminRole: admin } } })
     agentRequests.push({ url: url.href, authorization: init?.headers?.authorization, body: JSON.parse(init?.body || '{}') })
     return agent()
   }
-  try { await callback(agentRequests) } finally { globalThis.fetch = originalFetch }
+  try { await callback(agentRequests, navidromeRequests) } finally { globalThis.fetch = originalFetch }
 }
 
 const rebootEnv = { RECOVERY_AGENT_URL: 'https://agent.tomify.test', RECOVERY_AGENT_TOKEN: 'agent-token' }
+test('session and administrator checks use NAVIDROME_ORIGIN with their existing API parameters', async () => {
+  await withRebootFetch({ admin: true, agent: () => Response.json({ contract: 2 }) }, async (_agentRequests, navidromeRequests) => {
+    const headers = { 'x-tomify-user': 'origin-check', 'x-tomify-token': 'token', 'x-tomify-salt': 'salt' }
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/recovery-agent/status', { headers }), rebootEnv)).status, 200)
+    assert.deepEqual(navidromeRequests.map((url) => url.origin + url.pathname), [TEST_NAVIDROME_ORIGIN + '/rest/ping.view', TEST_NAVIDROME_ORIGIN + '/rest/getUser.view'])
+    assert.equal(navidromeRequests[0].search, '?u=origin-check&t=token&s=salt&v=1.16.1&c=Tomify&f=json')
+    assert.equal(navidromeRequests[1].search, '?u=origin-check&t=token&s=salt&v=1.16.1&c=Tomify&f=json&username=origin-check')
+  })
+})
+
 test('library inventory routes require an administrator and pass all three actions to the agent', async () => {
   await withRebootFetch({ admin: false, agent: () => Response.json({}) }, async (agentRequests) => {
     const response = await worker.fetch(new Request('https://app.tomify.test/api/inventory/status', { method: 'POST', headers: recoveryHeaders, body: '{}' }), rebootEnv)
@@ -969,6 +1011,9 @@ test('Workers Static Assets serves SPA deep links with the intended cache rules 
   const index = await readFile(new URL('../dist/client/index.html', import.meta.url), 'utf8')
   const hashedAsset = index.match(/(?:src|href)="(\/assets\/[^"]+)"/)?.[1]
   assert.ok(hashedAsset)
+  // Wrangler 4.86 is the newest Node 20-compatible release. Its older workerd crashes on Windows
+  // under Node 24; Linux CI still runs this live integration check under the repository's Node 22.
+  if (process.platform === 'win32' && Number(process.versions.node.split('.')[0]) >= 24) return
   await withStaticAssetsWorker(async (origin) => {
     const deepLink = await fetch(`${origin}/albums/123`, { headers: { accept: 'text/html' } })
     assert.equal(deepLink.status, 200)
@@ -1198,13 +1243,18 @@ async function sqliteDatabase() {
 
 async function withNavidromePlaylists(playlists, callback) {
   const originalFetch = globalThis.fetch
+  const requests = []
   globalThis.fetch = async (input) => {
     const url = new URL(String(input))
+    if (url.pathname.startsWith('/rest/')) {
+      assert.equal(url.origin, TEST_NAVIDROME_ORIGIN)
+      requests.push(url)
+    }
     if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
     if (url.pathname === '/rest/getPlaylist.view') { const playlist = playlists[url.searchParams.get('id')]; return Response.json({ 'subsonic-response': playlist ? { status: 'ok', playlist } : { status: 'failed', error: { code: 70, message: 'playlist not found' } } }) }
     return Response.json({ error: 'unexpected' }, { status: 500 })
   }
-  try { await callback() } finally { globalThis.fetch = originalFetch }
+  try { await callback(requests) } finally { globalThis.fetch = originalFetch }
 }
 
 const shareCall = (env, user, path, init = {}) => worker.fetch(new Request('https://app.tomify.test' + path, { ...init, headers: { 'x-tomify-user': user, 'x-tomify-token': 'token-' + user, 'x-tomify-salt': 'salt', 'content-type': 'application/json' } }), env)
@@ -1212,7 +1262,7 @@ const shareCall = (env, user, path, init = {}) => worker.fetch(new Request('http
 test('playlists stay with their owner until shared, and recipients get read-only access', async () => {
   const db = await sqliteDatabase()
   const env = { TOMIFY_DB: db }
-  await withNavidromePlaylists({ 'nav-1': { id: 'nav-1', name: 'Road trip', owner: 'Tom' } }, async () => {
+  await withNavidromePlaylists({ 'nav-1': { id: 'nav-1', name: 'Road trip', owner: 'Tom' } }, async (requests) => {
     for (const user of ['Tom', 'anna', 'sam']) assert.equal((await shareCall(env, user, '/api/playlist-shares')).status, 200)
     assert.equal((await shareCall(env, 'Tom', '/api/catalogue-playlists')).status, 200)
     db.sqlite.prepare("INSERT INTO catalogue_playlists (id, username, name, provider, provider_playlist_id, source_url) VALUES ('imp-1', 'Tom', 'Spotify mix', 'spotify', 'sp1', 'https://open.spotify.com/playlist/sp1')").run()
@@ -1225,6 +1275,8 @@ test('playlists stay with their owner until shared, and recipients get read-only
     assert.deepEqual(await imported.json(), { kind: 'imported', playlistId: 'imp-1', sharedWith: ['anna'] })
     const navidrome = await shareCall(env, 'Tom', '/api/playlist-shares/navidrome/nav-1', { method: 'PUT', body: JSON.stringify({ users: ['anna', 'sam'] }) })
     assert.deepEqual((await navidrome.json()).sharedWith, ['anna', 'sam'])
+    const ownerLookup = requests.find((url) => url.pathname === '/rest/getPlaylist.view' && url.searchParams.get('u') === 'Tom')
+    assert.equal(ownerLookup.href, TEST_NAVIDROME_ORIGIN + '/rest/getPlaylist.view?u=Tom&t=token-Tom&s=salt&v=1.16.1&c=Tomify&f=json&id=nav-1')
 
     const tom = await (await shareCall(env, 'Tom', '/api/playlist-shares')).json()
     assert.deepEqual(tom.accounts, ['anna', 'sam'])
@@ -1483,6 +1535,7 @@ async function withLibraryScanStubs({ scanning = () => false, songs = () => [], 
   globalThis.fetch = async (input) => {
     const url = new URL(String(input))
     const ok = (body) => Response.json({ 'subsonic-response': { status: 'ok', ...body } })
+    if (url.pathname.startsWith('/rest/')) assert.equal(url.origin, TEST_NAVIDROME_ORIGIN)
     if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return ok({ user: { adminRole: true } })
     if (url.pathname === '/rest/getScanStatus.view') { calls.getScanStatus += 1; return ok({ scanStatus: { scanning: scanning() } }) }
     if (url.pathname === '/rest/startScan.view') { calls.startScan += 1; calls.fullScan = url.searchParams.get('fullScan'); return ok({ scanStatus: { scanning: true } }) }

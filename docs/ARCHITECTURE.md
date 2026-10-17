@@ -85,11 +85,36 @@ Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configura
 
 ### The Navidrome proxy
 
-`/navidrome/*` is forwarded to `https://tomify.tomdixon.uk` with the same method, query string and body, minus the `host` and `origin` headers. The upstream origin is currently hard-coded in the Worker.
+`/navidrome/*` is forwarded to `NAVIDROME_ORIGIN` with the same method, query string and body, minus the `host` and `origin` headers. The same validated origin is used for the Worker's session, administrator, library-scan and playlist lookups. It must be HTTPS; missing or invalid configuration fails closed with `503 navidrome-unavailable`.
 
 ### Configuration
 
-Set as Worker variables or secrets: `RECOVERY_AGENT_URL`, `RECOVERY_AGENT_TOKEN`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`, `SPOTIFY_TOKEN_ENCRYPTION_KEY`, `SPOTIFY_MARKET`, `APPLE_CATALOGUE_COUNTRY`, `APPLE_ARTWORK_EMBEDDING_ENABLED` and `SPOTIFY_ARTWORK_EMBEDDING_ENABLED`. The D1 database is bound as `TOMIFY_DB`; Workers Static Assets is bound as `ASSETS`.
+`wrangler.toml` owns the D1 and assets bindings and the non-secret `NAVIDROME_ORIGIN` production default. The other Worker variables and all Worker secrets are set in the Cloudflare dashboard; secret values must never be committed or copied into documentation. Build-time constants are generated rather than configured as Worker bindings.
+
+<!-- worker-configuration:start -->
+| Name | Kind | Required or optional | Default | What reads it | What happens when it is missing |
+| --- | --- | --- | --- | --- | --- |
+| `TOMIFY_DB` | D1 binding (`wrangler.toml`) | Required | `tomify-metadata` | All routes that persist Tomify data | The affected route returns its existing store-unavailable `503`. |
+| `ASSETS` | Assets binding (`wrangler.toml`) | Required in production | `./dist/client` | `worker/index.ts` for non-API requests | API routes still run, but unmatched frontend requests return `404`. |
+| `NAVIDROME_ORIGIN` | Var (`wrangler.toml`) | Required | `https://tomify.tomdixon.uk` | Authentication, admin checks, library scans, playlist ownership and `/navidrome/*` proxying | The route returns `503 navidrome-unavailable`; no fallback host is contacted. |
+| `RECOVERY_AGENT_URL` | Dashboard var | Optional | None | `worker/lib/agent.ts` and Recovery availability | Agent-backed operations report not configured or unavailable. |
+| `RECOVERY_AGENT_TOKEN` | Dashboard secret | Optional only when the agent is absent | None | `worker/lib/agent.ts` bearer authentication | Agent requests omit `Authorization`; a protected agent rejects them. |
+| `SPOTIFY_CLIENT_ID` | Dashboard var | Optional | None | Spotify OAuth, catalogue import and artwork search | Spotify connection/import is not configured; Spotify artwork lookup is skipped. |
+| `SPOTIFY_CLIENT_SECRET` | Dashboard secret | Optional | None | Spotify token exchange and app-level artwork search | Same as a missing client id. |
+| `SPOTIFY_REDIRECT_URI` | Dashboard var | Optional | Same-origin `/api/catalogue-auth/spotify/callback` | Spotify OAuth | The request origin supplies the callback URL. |
+| `SPOTIFY_TOKEN_ENCRYPTION_KEY` | Dashboard secret | Optional | None | Encrypting stored Spotify user tokens | Spotify OAuth/import is reported as not configured. |
+| `SPOTIFY_MARKET` | Dashboard var | Optional | `GB` | Spotify catalogue and artwork searches | Searches use the UK market. |
+| `SPOTIFY_ARTWORK_EMBEDDING_ENABLED` | Dashboard var | Optional | `false` | Album-artwork and Recovery artwork selection | Spotify results may be shown but cannot be selected for acquisition. |
+| `APPLE_CATALOGUE_COUNTRY` | Dashboard var | Optional | `GB` | Apple catalogue artwork searches | Searches use the UK catalogue. |
+| `APPLE_ARTWORK_EMBEDDING_ENABLED` | Dashboard var | Optional | `false` | Album-artwork and Recovery artwork selection | Apple results may be shown but cannot be selected for acquisition. |
+| `TOMIFY_VERSION` | Build-time constant | Required, generated | Current Git short SHA; then `CF_PAGES_COMMIT_SHA`; then `WORKERS_CI_COMMIT_SHA`; then `unknown` | `/api/version` | Reports `unknown` only when Git and both CI fallbacks are unavailable. |
+| `TOMIFY_AGENT_CONTRACT` | Build-time constant | Required, generated | `2` | `/api/version` and the recovery-agent compatibility gate | Build generation supplies it; a missing generated module fails the build. |
+| `WORKERS_CI_COMMIT_SHA` | Build-time constant input | Optional | None | `scripts/build-worker-info.mjs` final SHA fallback | `unknown` is used when Git and `CF_PAGES_COMMIT_SHA` are also unavailable. |
+| `CF_PAGES_COMMIT_SHA` | Build-time constant input | Optional | None | `scripts/build-worker-info.mjs` first SHA fallback | `WORKERS_CI_COMMIT_SHA`, then `unknown`, is used when Git is unavailable. |
+| `VITE_NAVIDROME_URL` | Frontend build-time var | Optional | `https://tomify.tomdixon.uk` | Login's initial server value | Login uses the existing frontend default. |
+<!-- worker-configuration:end -->
+
+`VITE_NAVIDROME_URL` and `src/lib/navidrome.ts`'s `DEFAULT_NAVIDROME_SERVER` deliberately remain separate from `NAVIDROME_ORIGIN`. Existing signed-in sessions store their chosen frontend server, and `requestServerUrl` maps that production server to the same-origin `/navidrome` proxy. Changing either frontend value as part of this server configuration would sign users out or bypass that mapping.
 
 ## 4. D1 database (`tomify-metadata`)
 

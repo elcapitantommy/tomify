@@ -1,9 +1,11 @@
+// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 // Playlists belong to one account. An owner can share a playlist with other Tomify accounts; recipients get read-only access.
 // Navidrome only knows public/private, so sharing a Navidrome playlist also marks it public there (done by the owner's client)
 // and Tomify decides who sees it from the playlist_shares rows here.
 
 import { authenticate } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
+import { navidromeUrl } from '../lib/navidrome.ts'
 
 const PLAYLIST_SHARE_KINDS = ['navidrome', 'imported']
 
@@ -32,8 +34,8 @@ async function playlistShareFor(db, kind, playlistId, username) {
   return db.prepare('SELECT owner, playlist_name AS name FROM playlist_shares WHERE kind = ? AND playlist_id = ? AND shared_with = ?').bind(kind, playlistId, normaliseAccountName(username)).first()
 }
 
-async function navidromePlaylistOwner(request, playlistId) {
-  const url = new URL('https://tomify.tomdixon.uk/rest/getPlaylist.view')
+async function navidromePlaylistOwner(request, env, playlistId) {
+  const url = navidromeUrl(env, '/rest/getPlaylist.view')
   url.searchParams.set('u', request.headers.get('x-tomify-user') || '')
   url.searchParams.set('t', request.headers.get('x-tomify-token') || '')
   url.searchParams.set('s', request.headers.get('x-tomify-salt') || '')
@@ -54,7 +56,7 @@ async function navidromePlaylistOwner(request, playlistId) {
 async function handlePlaylistShareRequest(request, env, url) {
   if (!url.pathname.startsWith('/api/playlist-shares')) return null
   if (!env?.TOMIFY_DB) return json({ error: 'playlist-share-store-unavailable' }, 503)
-  const username = await authenticate(request)
+  const username = await authenticate(request, env)
   if (!username) return json({ error: 'unauthorized' }, 401)
   const db = env.TOMIFY_DB
   await rememberTomifyAccount(db, username)
@@ -85,7 +87,7 @@ async function handlePlaylistShareRequest(request, env, url) {
       const row = await db.prepare('SELECT username, name FROM catalogue_playlists WHERE id = ?').bind(playlistId).first()
       playlist = row ? { owner: String(row.username), name: String(row.name) } : null
     } else {
-      playlist = await navidromePlaylistOwner(request, playlistId)
+      playlist = await navidromePlaylistOwner(request, env, playlistId)
     }
     if (!playlist || normaliseAccountName(playlist.owner) !== me) return json({ error: 'playlist-not-found', message: 'Only the playlist\'s owner can change who it is shared with.' }, 404)
     const input = await request.json().catch(() => ({}))

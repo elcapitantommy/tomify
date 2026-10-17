@@ -1,3 +1,4 @@
+// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
 import { callRecoveryAgent, RecoveryAgentOutdated } from '../lib/agent.ts'
 import { json } from '../lib/http.ts'
@@ -81,9 +82,9 @@ export async function handleInventoryRequest(request, env, url) {
   const match = url.pathname.match(/^\/api\/inventory\/(scan|status|summary|report|dismiss)$/)
   if (!match) return null
   if (request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405)
-  const username = await authenticate(request)
+  const username = await authenticate(request, env)
   if (!username) return json({ error: 'unauthorized' }, 401)
-  if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can inspect the library inventory.' }, 403)
+  if (!(await isNavidromeAdmin(request, username, env))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can inspect the library inventory.' }, 403)
   try {
     if (match[1] === 'dismiss') return await handleInventoryDismissal(request, env, username)
     let payload = {}

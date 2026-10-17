@@ -177,6 +177,8 @@ pnpm dev
 
 `VITE_NAVIDROME_URL` sets the default server shown on the login screen. It is not a secret. The selected server remains editable at sign-in, so local and production servers need not share a hostname. Navidrome must allow requests from the development or deployed frontend origin.
 
+The Worker's separate `NAVIDROME_ORIGIN` controls server-side session checks, admin checks, library scans, playlist lookups and the `/navidrome` proxy. Its production value is committed as a non-secret `[vars]` entry in `wrangler.toml`; missing or non-HTTPS values fail closed. Keep the frontend default aligned with it for new sign-ins, but do not replace the frontend setting with the Worker var: saved sessions and `requestServerUrl` rely on the existing frontend value. Every Worker binding, variable, secret and build constant is listed in [the architecture configuration table](docs/ARCHITECTURE.md#configuration).
+
 ```bash
 pnpm lint
 pnpm typecheck
@@ -186,7 +188,7 @@ pnpm build
 
 GitHub Actions runs the frozen-lockfile install, lint, typecheck, production build, and complete test suite on every push and pull request. Build deliberately runs before tests because the Worker routing tests inspect the generated service worker and Worker bundle.
 
-`pnpm build` writes the Vite application to `dist/client/` and asks Wrangler to bundle the TypeScript Worker from `worker/index.ts` into an unminified `dist/server/index.js` for route and SQL tests. Use `npx wrangler dev` when testing the complete local deployment, including Worker routes and Cloudflare's Static Assets routing; its custom build step refreshes the git SHA exposed by `/api/version`. `pnpm dev` runs the frontend development server only.
+`pnpm build` writes the Vite application to `dist/client/` and asks the exactly pinned Wrangler dev dependency to bundle the TypeScript Worker from `worker/index.ts` into an unminified `dist/server/index.js` for route and SQL tests. Use `pnpm exec wrangler dev` when testing the complete local deployment, including Worker routes and Cloudflare's Static Assets routing; its custom build step refreshes the git SHA exposed by `/api/version`. `pnpm dev` runs the frontend development server only.
 
 ### Implemented
 

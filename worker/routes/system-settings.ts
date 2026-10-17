@@ -15,9 +15,9 @@ export const systemSettingsRoute: RouteHandler = async (request, env, url) => {
   if (preflight) return preflight
 
   if (url.pathname === '/api/recovery-agent/status' && request.method === 'GET') {
-    const username = await authenticate(request)
+    const username = await authenticate(request, env)
     if (!username) return json({ error: 'unauthorized' }, 401)
-    if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can inspect the recovery agent.' }, 403)
+    if (!(await isNavidromeAdmin(request, username, env))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can inspect the recovery agent.' }, 403)
     try {
       const status = await recoveryAgentStatus(env)
       return json({ version: status?.version ?? null, contract: Number.isInteger(status?.contract) ? status.contract : null })
@@ -27,9 +27,9 @@ export const systemSettingsRoute: RouteHandler = async (request, env, url) => {
   }
 
   if (url.pathname === '/api/system/reboot' && request.method === 'POST') {
-    const username = await authenticate(request)
+    const username = await authenticate(request, env)
     if (!username) return json({ error: 'unauthorized' }, 401)
-    if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can restart the media server.' }, 403)
+    if (!(await isNavidromeAdmin(request, username, env))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can restart the media server.' }, 403)
     const body = await request.json().catch(() => ({})) as { confirm?: string }
     if (!body || body.confirm !== 'reboot') return json({ error: 'confirmation-required', message: 'Confirm the restart first.' }, 400)
     try {
@@ -40,9 +40,9 @@ export const systemSettingsRoute: RouteHandler = async (request, env, url) => {
   }
 
   if (url.pathname === '/api/system/vpn' && (request.method === 'GET' || request.method === 'POST')) {
-    const username = await authenticate(request)
+    const username = await authenticate(request, env)
     if (!username) return json({ error: 'unauthorized' }, 401)
-    if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can manage the VPN.' }, 403)
+    if (!(await isNavidromeAdmin(request, username, env))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can manage the VPN.' }, 403)
     try {
       if (request.method === 'GET') return json(await callRecoveryAgent(env, '/v1/system/vpn/status', {}))
       const body = await request.json().catch(() => ({})) as { action?: string }
