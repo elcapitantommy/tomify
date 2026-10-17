@@ -24,8 +24,8 @@ function mockDatabase() {
 await build({ configFile: new URL('../vite.config.ts', import.meta.url).pathname.replace(/^\/(.:\/)/, '$1'), logLevel: 'silent' })
 const windows = process.platform === 'win32'
 const bundle = spawnSync(windows ? process.env.ComSpec : 'npx', windows
-  ? ['/d', '/s', '/c', 'npx wrangler deploy --dry-run --outdir dist/server --no-minify']
-  : ['wrangler', 'deploy', '--dry-run', '--outdir', 'dist/server', '--no-minify'], {
+  ? ['/d', '/s', '/c', 'npx --yes wrangler@4 deploy --dry-run --outdir dist/server --no-minify']
+  : ['--yes', 'wrangler@4', 'deploy', '--dry-run', '--outdir', 'dist/server', '--no-minify'], {
   cwd: new URL('..', import.meta.url), encoding: 'utf8', windowsHide: true,
 })
 if (bundle.status !== 0) throw new Error(`Could not bundle the Worker for route tests.\n${bundle.stdout}\n${bundle.stderr}`)
