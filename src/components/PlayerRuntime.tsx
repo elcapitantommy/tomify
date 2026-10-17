@@ -3,6 +3,7 @@ import { useApi } from '../lib/api-context'
 import { StreamFirstSourceResolver } from '../lib/sourceResolver'
 import { bindPlayerRuntime, usePlayer } from '../stores/player'
 import { setMediaMetadata } from '../lib/mediaSession'
+import { albumArtworkUrl, useAlbumArtwork } from '../stores/albumArtwork'
 import { RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import type { Track } from '../types'
 
@@ -43,6 +44,9 @@ export function PlayerRuntime() {
   const shuffle = usePlayer((s) => s.shuffle)
   const repeat = usePlayer((s) => s.repeat)
   const track = queue[currentIndex]
+  // Tomify's replacement covers load after the player restores, and can change while a
+  // track plays, so the lock screen and car display must be refreshed when they do.
+  const artworkOverride = useAlbumArtwork((s) => track?.albumId ? albumArtworkUrl(s.overrides[track.albumId]) : undefined)
 
   if (initialRestore.current === null) {
     const state = usePlayer.getState()
@@ -274,7 +278,6 @@ export function PlayerRuntime() {
 
   useEffect(() => {
     if (!track || !('mediaSession' in navigator)) return
-    setMediaMetadata(track, api)
     const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
       ['play', () => usePlayer.getState().setPlaying(true)],
       ['pause', () => usePlayer.getState().setPlaying(false)],
@@ -287,6 +290,10 @@ export function PlayerRuntime() {
     handlers.forEach(([action, handler]) => { try { navigator.mediaSession.setActionHandler(action, handler) } catch { /* unsupported action on this browser */ } })
     return () => handlers.forEach(([action]) => { try { navigator.mediaSession.setActionHandler(action, null) } catch { /* unsupported action */ } })
   }, [api, track])
+
+  useEffect(() => {
+    if (track && 'mediaSession' in navigator) setMediaMetadata(track, api)
+  }, [api, track, artworkOverride])
 
   useEffect(() => {
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
