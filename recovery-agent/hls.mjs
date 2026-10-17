@@ -130,7 +130,18 @@ export function credentialsFromHeaders(headers) {
   const token = String(headers['x-tomify-navidrome-token'] || '')
   const salt = String(headers['x-tomify-navidrome-salt'] || '')
   if (!user || !/^[a-f0-9]{32}$/i.test(token) || !/^[A-Za-z0-9]{1,64}$/.test(salt)) return null
-  return { user, token, salt }
+  return { user, token, salt, origin: publicNavidromeOrigin(headers['x-tomify-navidrome-origin']) }
+}
+
+// The Worker also says where it reaches Navidrome (the public tunnel). The agent uses that only
+// when Navidrome can't be reached on the box itself, for example when it runs in Docker without
+// a published port.
+export function publicNavidromeOrigin(value) {
+  try {
+    const url = new URL(String(value || ''))
+    if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) return null
+    return url.origin
+  } catch { return null }
 }
 
 const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
@@ -152,9 +163,24 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
 
   function trackDir(trackId) { return join(config.cacheDir, trackId) }
 
+  // Navidrome on the box first; the public origin only when the box's address refuses the connection.
+  let reachableBase = null
+  async function navidromeFetch(trackId, credentials, endpoint) {
+    const bases = [...new Set([reachableBase, config.navidromeUrl, credentials.origin].filter(Boolean))]
+    let failure
+    for (const base of bases) {
+      try {
+        const response = await fetcher(navidromeSourceUrl(base, trackId, credentials, endpoint))
+        reachableBase = base
+        return response
+      } catch (error) { failure = error }
+    }
+    throw new HlsError(502, 'navidrome-unreachable', `Navidrome could not be reached (${failure instanceof Error ? failure.message : 'no address'}). Set TOMIFY_NAVIDROME_URL.`)
+  }
+
   async function songSize(trackId, credentials) {
     try {
-      const response = await fetcher(navidromeSourceUrl(config.navidromeUrl, trackId, credentials, 'getSong'))
+      const response = await navidromeFetch(trackId, credentials, 'getSong')
       const body = await response.json()
       const song = body?.['subsonic-response']?.song
       return song ? { size: Number(song.size) || null, suffix: String(song.suffix || '') } : null
@@ -162,7 +188,7 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
   }
 
   async function download(trackId, credentials, target) {
-    const response = await fetcher(navidromeSourceUrl(config.navidromeUrl, trackId, credentials))
+    const response = await navidromeFetch(trackId, credentials, 'stream')
     const type = String(response.headers.get('content-type') || '').toLowerCase()
     // Navidrome reports a bad id or login as a Subsonic error document, not an HTTP error.
     if (!response.ok || !response.body || /json|xml|text\//.test(type)) {

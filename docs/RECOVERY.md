@@ -283,7 +283,7 @@ Settings in `/etc/tomify/recovery-agent.env` (all optional):
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `TOMIFY_HLS_ENABLED` | `true` | `false` turns adaptive streaming off; players then stream originals. |
-| `TOMIFY_NAVIDROME_URL` | `http://127.0.0.1:4533` | Navidrome as the box itself reaches it (not the public tunnel). |
+| `TOMIFY_NAVIDROME_URL` | `http://127.0.0.1:4533` | Navidrome as the box itself reaches it. If nothing answers there (for example Navidrome in Docker without a published port), the agent fetches through the public Navidrome origin the Worker passes along instead, which works but sends each track out and back through the tunnel once. |
 | `TOMIFY_HLS_CACHE_DIR` | `$TOMIFY_RECOVERY_STATE_DIR/hls-cache` | Must be writable by the service; `/var/cache/tomify-recovery/hls` is already allowed by the unit. |
 | `TOMIFY_HLS_CACHE_MAX_BYTES` | `2147483648` (2 GB) | Cache size before old tracks are removed. |
 
