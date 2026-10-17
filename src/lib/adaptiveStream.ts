@@ -62,11 +62,14 @@ function startingEstimate() {
   return downlink && downlink > 0 ? Math.min(5_000_000, Math.max(64_000, downlink * 1_000_000 * 0.7)) : 300_000
 }
 
-// A 4xx/5xx on a playlist means the box can't do this (or isn't set up for it): fall back to
-// the original file. No response at all means the signal dropped, which the player retries.
-export function isUnavailableError(data: Pick<ErrorData, 'fatal' | 'details' | 'response'>) {
+// Only a chunk that failed to download for lack of signal is worth retrying as HLS. Anything
+// else (a playlist the box refused or never sent, a decoder that can't take the audio) means
+// adaptive streaming isn't working here, so the player switches to the original file.
+export function isUnavailableError(data: Pick<ErrorData, 'fatal' | 'type' | 'details' | 'response'>) {
+  if (!data.fatal) return false
   const status = data.response?.code ?? 0
-  return data.fatal && status >= 400 && /manifest|level/i.test(String(data.details))
+  const chunkSignalDrop = String(data.type) === 'networkError' && /^frag/i.test(String(data.details)) && status < 400
+  return !chunkSignalDrop
 }
 
 type Attached = { source: StreamSource; hls?: Hls }
@@ -112,6 +115,7 @@ export class AdaptiveSources {
         hls.recoverMediaError()
         return
       }
+      console.warn('Tomify adaptive stream failed', data.type, data.details, data.response?.code ?? '')
       options.onFatal(isUnavailableError(data))
     })
     hls.loadSource(source.url)

@@ -1,6 +1,7 @@
 import type { RouteHandler } from '../env.ts'
 import { authenticateCredentials } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
+import { navidromeOrigin } from '../lib/navidrome.ts'
 
 // Adaptive streaming: GET /api/hls/<trackId>/<file>?u=&t=&s= is passed to the recovery agent, which
 // cuts the track into chunks at several bitrates. Audio elements and Safari's own HLS player can't
@@ -33,6 +34,7 @@ export const hlsRoute: RouteHandler = async (request, env, url) => {
     'x-tomify-navidrome-user': user!,
     'x-tomify-navidrome-token': token!,
     'x-tomify-navidrome-salt': salt!,
+    'x-tomify-navidrome-origin': navidromeOrigin(env),
   }
   if (env.RECOVERY_AGENT_TOKEN) headers.authorization = 'Bearer ' + env.RECOVERY_AGENT_TOKEN
   let upstream: Response

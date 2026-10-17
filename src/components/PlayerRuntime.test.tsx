@@ -4,7 +4,7 @@ import { ApiProvider } from '../lib/api-context'
 import { useAuth } from '../stores/auth'
 import { usePlayer } from '../stores/player'
 import { useAlbumArtwork } from '../stores/albumArtwork'
-import { RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
+import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import { PlayerRuntime } from './PlayerRuntime'
 import { loadHlsLibrary, resetAdaptiveAvailability } from '../lib/adaptiveStream'
 import { DEFAULT_NAVIDROME_SERVER } from '../lib/navidrome'
@@ -268,6 +268,34 @@ describe('PlayerRuntime', () => {
       expect(playerFor(current)).toBeUndefined()
       expect(streamed(current)).toBe('a')
       expect(usePlayer.getState().playing).toBe(true)
+    })
+
+    it('switches to the original file when an adaptive stream errors or hangs', async () => {
+      vi.useFakeTimers()
+      const [current] = await startPlaying()
+      expect(playerFor(current)).toBeDefined()
+      await act(async () => { current.dispatchEvent(new Event('waiting')) })
+      await act(async () => { vi.advanceTimersByTime(STALL_TIMEOUT_MS + RETRY_DELAYS_MS[0]) })
+      expect(playerFor(current)).toBeUndefined()
+      expect(streamed(current)).toBe('a')
+      expect(usePlayer.getState().playing).toBe(true)
+    })
+
+    it('switches to the original file when an adaptive stream never starts (Safari can stay silent)', async () => {
+      vi.useFakeTimers()
+      const [current] = await startPlaying()
+      expect(playerFor(current)).toBeDefined()
+      await act(async () => { vi.advanceTimersByTime(ADAPTIVE_START_TIMEOUT_MS + RETRY_DELAYS_MS[0]) })
+      expect(playerFor(current)).toBeUndefined()
+      expect(streamed(current)).toBe('a')
+    })
+
+    it('keeps the adaptive stream once it has started playing', async () => {
+      vi.useFakeTimers()
+      const [current] = await startPlaying()
+      await act(async () => { current.dispatchEvent(new Event('playing')) })
+      await act(async () => { vi.advanceTimersByTime(ADAPTIVE_START_TIMEOUT_MS + RETRY_DELAYS_MS[0]) })
+      expect(playerFor(current)).toBeDefined()
     })
 
     it('streams originals when the device is set to always original', async () => {

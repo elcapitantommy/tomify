@@ -104,10 +104,15 @@ describe('adaptive streaming', () => {
     expect(instances[1].config.abrEwmaDefaultEstimate).toBe(900_000)
   })
 
-  it('treats a server error on a playlist as "not available" and a lost connection as a signal drop', () => {
-    expect(isUnavailableError({ fatal: true, details: 'manifestLoadError', response: { code: 503, text: '' } } as never)).toBe(true)
-    expect(isUnavailableError({ fatal: true, details: 'levelLoadError', response: { code: 404, text: '' } } as never)).toBe(true)
-    expect(isUnavailableError({ fatal: true, details: 'manifestLoadError', response: { code: 0, text: '' } } as never)).toBe(false)
-    expect(isUnavailableError({ fatal: true, details: 'fragLoadError', response: { code: 404, text: '' } } as never)).toBe(false)
+  it('keeps HLS only for a chunk lost to a signal drop, and falls back to the original file for anything else', () => {
+    const fatal = (type: string, details: string, code?: number) => isUnavailableError({ fatal: true, type, details, response: code === undefined ? undefined : { code, text: '' } } as never)
+    expect(fatal('networkError', 'manifestLoadError', 503)).toBe(true)
+    expect(fatal('networkError', 'levelLoadError', 404)).toBe(true)
+    expect(fatal('networkError', 'manifestLoadTimeOut')).toBe(true)
+    expect(fatal('networkError', 'manifestLoadError', 0)).toBe(true)
+    expect(fatal('mediaError', 'manifestIncompatibleCodecsError')).toBe(true)
+    expect(fatal('networkError', 'fragLoadError', 404)).toBe(true)
+    expect(fatal('networkError', 'fragLoadError', 0)).toBe(false)
+    expect(fatal('networkError', 'fragLoadTimeOut')).toBe(false)
   })
 })

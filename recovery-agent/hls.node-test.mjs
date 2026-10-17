@@ -194,3 +194,22 @@ test('real ffmpeg produces exactly the chunks the playlist lists', { skip: !hasF
   await rm(work, { recursive: true, force: true })
   await rm(cacheDir, { recursive: true, force: true })
 })
+
+test('Navidrome is fetched through the public origin when the box address refuses the connection', async () => {
+  const seen = []
+  const navidrome = fakeNavidrome()
+  const fetch = async (url) => {
+    seen.push(url.origin)
+    if (url.origin === 'http://navidrome') throw new TypeError('fetch failed: connect ECONNREFUSED')
+    return navidrome.fetch(url)
+  }
+  const { hls, cacheDir } = await packager({ navidrome: { fetch } })
+  const viaTunnel = { ...credentials, origin: 'https://music.example' }
+  await hls.handle(parseHlsPath('/v1/hls/t1/master.m3u8'), viaTunnel)
+  assert.deepEqual(seen, ['http://navidrome', 'https://music.example', 'https://music.example'])
+  await assert.rejects(packager({ navidrome: { fetch } }).then(({ hls: other }) => other.handle(parseHlsPath('/v1/hls/t2/master.m3u8'), credentials)), { code: 'navidrome-unreachable' })
+  assert.equal(credentialsFromHeaders({ 'x-tomify-navidrome-user': 'tom', 'x-tomify-navidrome-token': credentials.token, 'x-tomify-navidrome-salt': 'abc123', 'x-tomify-navidrome-origin': 'http://evil.test' }).origin, null)
+  assert.equal(credentialsFromHeaders({ 'x-tomify-navidrome-user': 'tom', 'x-tomify-navidrome-token': credentials.token, 'x-tomify-navidrome-salt': 'abc123', 'x-tomify-navidrome-origin': 'https://music.example' }).origin, 'https://music.example')
+  while (hls.jobs.size) await new Promise((resolve) => setTimeout(resolve, 5))
+  await rm(cacheDir, { recursive: true, force: true })
+})

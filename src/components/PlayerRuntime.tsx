@@ -6,7 +6,7 @@ import { setMediaMetadata } from '../lib/mediaSession'
 import { ListeningTracker, sendListeningEvent } from '../lib/listening-log'
 import { localPlaybackDeviceName } from '../stores/livePlayback'
 import { albumArtworkUrl, useAlbumArtwork } from '../stores/albumArtwork'
-import { RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
+import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import { AdaptiveSources, chooseSource, loadHlsLibrary, markAdaptiveUnavailable, wantsAdaptive, type StreamSource } from '../lib/adaptiveStream'
 import { useStreamQuality } from '../stores/streamQuality'
 import type { Track } from '../types'
@@ -159,6 +159,9 @@ export function PlayerRuntime() {
     const element = getAudio(slot)
     if (!element || !wanted || !state.playing || retryTimer.current !== undefined) return
     clearStall()
+    // A broken or stuck adaptive stream retries as the original file. hls.js already rides out
+    // a weak signal on its own, so reaching this point means HLS itself isn't working here.
+    if (sources.current.kind(element) === 'hls') markAdaptiveUnavailable()
     if (retries.current >= RETRY_DELAYS_MS.length) {
       retries.current = 0
       state.setPlaying(false)
@@ -182,6 +185,9 @@ export function PlayerRuntime() {
   // source and goes through recovery.
   function playElement(element: HTMLAudioElement, slot: AudioSlot) {
     sources.current.startLoading(element)
+    // Safari's own HLS player can sit silent without reporting an error; give an adaptive
+    // stream a few seconds to start before switching to the original file.
+    if (sources.current.kind(element) === 'hls') watchForStall(slot, ADAPTIVE_START_TIMEOUT_MS)
     const attempt = element.play()
     if (!attempt) return
     void attempt.catch((error: unknown) => {
@@ -209,12 +215,12 @@ export function PlayerRuntime() {
     watchForStall(slot)
   }
 
-  function watchForStall(slot: AudioSlot) {
+  function watchForStall(slot: AudioSlot, timeout = STALL_TIMEOUT_MS) {
     if (activeSlot.current !== slot || !usePlayer.getState().playing || stallTimer.current !== undefined) return
     stallTimer.current = window.setTimeout(() => {
       stallTimer.current = undefined
       if (activeSlot.current === slot && usePlayer.getState().playing) recover(slot)
-    }, STALL_TIMEOUT_MS)
+    }, timeout)
   }
 
   useEffect(() => bindPlayerRuntime({

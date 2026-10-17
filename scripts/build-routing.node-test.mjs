@@ -1753,6 +1753,7 @@ test('adaptive streaming checks the Navidrome login in the query and signs every
     assert.equal(agentCalls[0].url.href, 'https://agent-hls.tomify.test/v1/hls/tr1/master.m3u8')
     assert.equal(agentCalls[0].headers.authorization, 'Bearer agent-secret')
     assert.equal(agentCalls[0].headers['x-tomify-navidrome-user'], 'hls-listener')
+    assert.equal(agentCalls[0].headers['x-tomify-navidrome-origin'], TEST_NAVIDROME_ORIGIN)
 
     const playlist = await worker.fetch(new Request(`https://app.tomify.test/api/hls/tr1/v0/index.m3u8?${query}`), env)
     assert.match(await playlist.text(), new RegExp(`\\nseg00000\\.ts\\?${query.replace(/[?]/g, '\\?')}\\n`))
