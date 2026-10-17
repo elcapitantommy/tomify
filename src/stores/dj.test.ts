@@ -56,6 +56,20 @@ describe('Tomify DJ', () => {
     expect(useDj.getState().active).toBe(false)
   })
 
+  it('starts while something else is already in the player', async () => {
+    usePlayer.setState({ queue: [track('x')], currentIndex: 0, playing: true })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/voice')
+      ? new Response(new Blob(['mp3']), { status: 200 })
+      : json({ tracks: [track('a'), track('b'), track('c')], script: 'Evening Tom.', curatedBy: 'claude', voice: true })))
+    const starting = useDj.getState().start()
+    usePlayer.getState().setProgress(12, 200)
+    await starting
+
+    expect(usePlayer.getState().queue.map((item) => item.id)).toEqual(['a', 'b', 'c'])
+    expect(useDj.getState()).toEqual(expect.objectContaining({ active: true, speaking: true, script: 'Evening Tom.' }))
+    expect(usePlayer.getState().playing).toBe(false)
+  })
+
   it('reports a failed start without leaving the DJ on', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ message: 'The DJ couldn\'t pick the next songs: Navidrome is down.' }, 502)))
     await useDj.getState().start()

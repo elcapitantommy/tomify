@@ -65,6 +65,11 @@ function unlockVoice() {
   void element.play()?.catch(() => undefined)
 }
 
+// True while start() swaps the queue over to the DJ's first set.
+let handingOver = false
+// Re-runs the bound player check once the hand-over is done (set by bindDj).
+let bindDjCheck: (() => void) | null = null
+
 const recentIds = (extra: string[] = []) => [...new Set([...usePlayer.getState().queue.map((track) => track.id), ...extra])].slice(-200)
 
 async function loadSet(first: boolean, request: string | null) {
@@ -84,8 +89,15 @@ export const useDj = create<DjState>((set, get) => ({
       const { segment, link } = await loadSet(true, null)
       if (!get().active) return
       set({ pending: link, trackIds: segment.tracks.map((track) => track.id), loading: false })
-      usePlayer.setState({ shuffle: false, repeat: 'off' })
-      usePlayer.getState().playTracks(segment.tracks)
+      // While the player switches over, the old track is still current for a moment; that must not stop the DJ.
+      handingOver = true
+      try {
+        usePlayer.setState({ shuffle: false, repeat: 'off' })
+        usePlayer.getState().playTracks(segment.tracks)
+      } finally {
+        handingOver = false
+      }
+      bindDjCheck?.()
     } catch (reason) {
       set({ active: false, loading: false, error: reason instanceof Error ? reason.message : 'The DJ could not start.' })
     }
@@ -127,7 +139,9 @@ export function bindDj(now: () => number = Date.now): () => void {
     if (!dj.active) return
     const player = usePlayer.getState()
     const track = player.queue[player.currentIndex]
-    // Playing something else (an album, a playlist) ends the DJ.
+    // Playing something else (an album, a playlist) ends the DJ. Until the first set is playing, whatever
+    // was already in the player is still current, so that doesn't count.
+    if (handingOver || !dj.trackIds.length) return
     if (track && !dj.trackIds.includes(track.id)) { dj.stop(); return }
 
     if (track && dj.pending && dj.pending.firstTrackId === track.id && !dj.speaking && player.playing) {
@@ -169,6 +183,7 @@ export function bindDj(now: () => number = Date.now): () => void {
   }
   const unsubscribePlayer = usePlayer.subscribe(onPlayer)
   const unsubscribeDj = useDj.subscribe((state, previous) => { if (state.active && !previous.active) onPlayer() })
-  return () => { unsubscribePlayer(); unsubscribeDj() }
+  bindDjCheck = onPlayer
+  return () => { unsubscribePlayer(); unsubscribeDj(); if (bindDjCheck === onPlayer) bindDjCheck = null }
 }
 
