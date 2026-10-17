@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
-import { createWriteStream } from 'node:fs'
+import { createReadStream, createWriteStream } from 'node:fs'
 import { access, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { createHash, timingSafeEqual } from 'node:crypto'
@@ -26,6 +26,7 @@ import { rebootConfig, scheduleReboot } from './system.mjs'
 import { createVpnController, nordvpnEnvironment, nordvpnFailureMessage, vpnConfig } from './vpn.mjs'
 import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobState, torrentCandidate, torrentCapability, torrentConfig, torrentSearchCandidates } from './torrent.mjs'
 import { agentStatusResponse, healthResponse, recoveryAgentPackageVersion } from './health.mjs'
+import { createHlsPackager, credentialsFromHeaders, hlsConfig, HlsError, parseHlsPath } from './hls.mjs'
 import { createImportRecovery, importStatePaths, prepareImportStaging, removeImportStaging, runManifestImport } from './manifest.mjs'
 
 let authConfiguration
@@ -733,12 +734,39 @@ const inventory = createInventoryController({ masterRoot, recoveryRoot, stateRoo
 await mkdir(recoveryRoot, { recursive: true })
 await mkdir(usenetStateRoot, { recursive: true })
 
+const hlsSettings = hlsConfig(process.env, usenetStateRoot)
+await mkdir(hlsSettings.cacheDir, { recursive: true })
+const hls = createHlsPackager({ config: hlsSettings, ffmpeg, probeDuration: async (path) => (await probe(path)).duration, log: (message) => process.stderr.write(`${message}\n`) })
+
+// GET /v1/hls/<trackId>/<file>: playlists and chunks for adaptive streaming. The Worker checks the
+// listener's Navidrome login first and passes it on, so the agent can fetch the track from Navidrome.
+async function serveHls(request, response, target) {
+  const credentials = credentialsFromHeaders(request.headers)
+  if (!credentials) return send(response, 401, { error: 'unauthorized' })
+  try {
+    const result = await hls.handle(target, credentials)
+    if (result.body !== undefined) {
+      response.writeHead(200, { 'content-type': result.contentType, 'cache-control': 'no-store' })
+      return response.end(result.body)
+    }
+    const details = await stat(result.filePath)
+    response.writeHead(200, { 'content-type': result.contentType, 'content-length': String(details.size), 'cache-control': 'private, max-age=86400' })
+    await pipeline(createReadStream(result.filePath), response)
+  } catch (error) {
+    if (response.headersSent) return response.destroy()
+    if (error instanceof HlsError) return send(response, error.status, { error: error.code, message: error.message })
+    throw error
+  }
+}
+
 createServer(async (request, response) => {
   try {
     if (request.method === 'GET' && request.url === '/health') {
       return send(response, 200, health)
     }
     if (!authorised(request)) return send(response, 401, { error: 'unauthorized' })
+    const hlsTarget = request.method === 'GET' ? parseHlsPath(new URL(request.url, 'http://agent').pathname) : null
+    if (hlsTarget) return await serveHls(request, response, hlsTarget)
     if (request.method !== 'POST') return send(response, 404, { error: 'not-found' })
     const body = await parseBody(request)
     if (request.url === '/v1/status') {
