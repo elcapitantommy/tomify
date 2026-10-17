@@ -9,7 +9,10 @@ export function setMediaMetadata(track: Track, api: NavidromeClient) {
   const library = [96, 128, 192, 256, 384, 512].map((size) => ({ src: api.coverArtUrl(track.coverArt ?? track.albumId, size), sizes: `${size}x${size}`, type: 'image/jpeg' })).filter((art) => art.src)
   navigator.mediaSession.metadata = new MediaMetadata({
     title: track.title, artist: track.artist, album: track.album,
-    // Uploaded covers are served from Tomify itself, so make their path absolute for the lock screen.
-    artwork: replacement ? [{ src: new URL(replacement, window.location.origin).href, sizes: `${override?.width || 640}x${override?.height || 640}`, type: 'image/jpeg' }, ...library] : library,
+    // Offer only the replacement when there is one: Android picks whichever listed image
+    // is closest to the size it wants, so listing Navidrome's covers too lets the car or
+    // lock screen show the old art. Uploaded covers are served from Tomify itself, so
+    // make their path absolute.
+    artwork: replacement ? [{ src: new URL(replacement, window.location.origin).href, sizes: `${override?.width || 640}x${override?.height || 640}`, type: 'image/jpeg' }] : library,
   })
 }
