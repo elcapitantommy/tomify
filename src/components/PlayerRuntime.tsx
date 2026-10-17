@@ -3,6 +3,7 @@ import { useApi } from '../lib/api-context'
 import { StreamFirstSourceResolver } from '../lib/sourceResolver'
 import { bindPlayerRuntime, usePlayer } from '../stores/player'
 import { setMediaMetadata } from '../lib/mediaSession'
+import { RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import type { Track } from '../types'
 
 type AudioSlot = 0 | 1
@@ -21,6 +22,10 @@ export function PlayerRuntime() {
   const nowPlayingTrackId = useRef<string | undefined>(undefined)
   const restoredPositionTrackId = useRef<string | undefined>(undefined)
   const initialRestore = useRef<{ trackId?: string; position: number } | null>(null)
+  const resumeAt = useRef<{ slot: AudioSlot; trackId: string; position: number } | null>(null)
+  const retries = useRef(0)
+  const retryTimer = useRef<number | undefined>(undefined)
+  const stallTimer = useRef<number | undefined>(undefined)
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
@@ -41,7 +46,12 @@ export function PlayerRuntime() {
 
   useEffect(() => {
     submittedTrackId.current = undefined
+    retries.current = 0
+    clearRetry()
+    clearStall()
   }, [track?.id])
+
+  useEffect(() => () => { clearRetry(); clearStall() }, [])
 
   // Tell Navidrome "now playing" only once the track actually plays, not when a page load restores a paused queue.
   useEffect(() => {
@@ -52,6 +62,73 @@ export function PlayerRuntime() {
 
   const getAudio = (slot: AudioSlot) => slot === 0 ? audioA.current : audioB.current
   const currentAudio = () => getAudio(activeSlot.current)
+
+  function clearRetry() {
+    if (retryTimer.current !== undefined) window.clearTimeout(retryTimer.current)
+    retryTimer.current = undefined
+  }
+
+  function clearStall() {
+    if (stallTimer.current !== undefined) window.clearTimeout(stallTimer.current)
+    stallTimer.current = undefined
+  }
+
+  // Reload a broken stream and carry on from the same spot. A failed standby
+  // element is only forgotten, so the next hand-off loads its track fresh
+  // instead of switching to a stream that already died.
+  function recover(slot: AudioSlot) {
+    if (activeSlot.current !== slot) {
+      loadedTrackIds.current[slot] = undefined
+      return
+    }
+    const state = usePlayer.getState()
+    const wanted = state.queue[state.currentIndex]
+    const element = getAudio(slot)
+    if (!element || !wanted || !state.playing || retryTimer.current !== undefined) return
+    clearStall()
+    if (retries.current >= RETRY_DELAYS_MS.length) {
+      retries.current = 0
+      state.setPlaying(false)
+      return
+    }
+    const position = Number.isFinite(element.currentTime) && element.currentTime > 0 ? element.currentTime : state.currentTime
+    const delay = RETRY_DELAYS_MS[retries.current]
+    retries.current += 1
+    retryTimer.current = window.setTimeout(() => {
+      retryTimer.current = undefined
+      const now = usePlayer.getState()
+      if (!now.playing || activeSlot.current !== slot || now.queue[now.currentIndex]?.id !== wanted.id) return
+      resumeAt.current = position > 0 ? { slot, trackId: wanted.id, position } : null
+      element.src = api.streamUrl(wanted.id)
+      element.preload = 'auto'
+      element.load()
+      loadedTrackIds.current[slot] = wanted.id
+      playElement(element, slot)
+    }, delay)
+  }
+
+  // play() is rejected with AbortError whenever a newer load() interrupts it;
+  // that is not a failure. A blocked autoplay pauses; anything else is a broken
+  // source and goes through recovery.
+  function playElement(element: HTMLAudioElement, slot: AudioSlot) {
+    const attempt = element.play()
+    if (!attempt) return
+    void attempt.catch((error: unknown) => {
+      const name = error instanceof Error || (typeof error === 'object' && error !== null) ? (error as { name?: string }).name : undefined
+      if (name === 'AbortError') return
+      if (activeSlot.current !== slot) return
+      if (name === 'NotAllowedError') usePlayer.getState().setPlaying(false)
+      else recover(slot)
+    })
+  }
+
+  function watchForStall(slot: AudioSlot) {
+    if (activeSlot.current !== slot || !usePlayer.getState().playing || stallTimer.current !== undefined) return
+    stallTimer.current = window.setTimeout(() => {
+      stallTimer.current = undefined
+      if (activeSlot.current === slot && usePlayer.getState().playing) recover(slot)
+    }, STALL_TIMEOUT_MS)
+  }
 
   useEffect(() => bindPlayerRuntime({
     seek: (value) => {
@@ -72,7 +149,7 @@ export function PlayerRuntime() {
       const standby = (current === 0 ? 1 : 0) as AudioSlot
       let target = current
 
-      if (loadedTrackIds.current[current] !== nextTrack.id && loadedTrackIds.current[standby] === nextTrack.id) {
+      if (loadedTrackIds.current[current] !== nextTrack.id && loadedTrackIds.current[standby] === nextTrack.id && !getAudio(standby)?.error) {
         activeSlot.current = standby
         target = standby
         const oldElement = getAudio(current)
@@ -84,7 +161,7 @@ export function PlayerRuntime() {
 
       const url = api.streamUrl(nextTrack.id)
       const trackChanged = loadedTrackIds.current[target] !== nextTrack.id
-      if (trackChanged || element.src !== url) {
+      if (trackChanged || element.src !== url || element.error) {
         element.src = url
         element.load()
         loadedTrackIds.current[target] = nextTrack.id
@@ -93,8 +170,7 @@ export function PlayerRuntime() {
 
       if (element.ended) element.currentTime = 0
 
-      const attempt = element.play()
-      if (attempt) void attempt.catch(() => usePlayer.getState().setPlaying(false))
+      playElement(element, target)
     },
   }), [api]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -121,9 +197,7 @@ export function PlayerRuntime() {
         element.preload = preloadFor(usePlayer.getState().playing)
         element.load()
       }
-      if (usePlayer.getState().playing && element.paused) {
-        void element.play().catch(() => usePlayer.getState().setPlaying(false))
-      }
+      if (usePlayer.getState().playing && element.paused) playElement(element, slot)
     })
 
     return () => {
@@ -164,11 +238,13 @@ export function PlayerRuntime() {
     if (!element || !track) return
     if (playing) {
       element.preload = 'auto'
-      if (element.paused) void element.play().catch(() => usePlayer.getState().setPlaying(false))
+      if (element.paused) playElement(element, activeSlot.current)
     } else {
+      clearRetry()
+      clearStall()
       element.pause()
     }
-  }, [playing, track])
+  }, [playing, track]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     for (const slot of [0, 1] as const) {
@@ -200,6 +276,20 @@ export function PlayerRuntime() {
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
   }, [playing])
 
+  // When the connection comes back, retry straight away instead of waiting out the back-off.
+  useEffect(() => {
+    const online = () => {
+      const element = currentAudio()
+      if (!element || !usePlayer.getState().playing) return
+      if (!element.error && element.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return
+      clearRetry()
+      retries.current = 0
+      recover(activeSlot.current)
+    }
+    window.addEventListener('online', online)
+    return () => window.removeEventListener('online', online)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const events = (slot: AudioSlot) => ({
     onTimeUpdate: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       if (activeSlot.current !== slot) return
@@ -207,6 +297,7 @@ export function PlayerRuntime() {
       const duration = Number.isFinite(element.duration) ? element.duration : track?.duration ?? 0
       const pending = initialRestore.current
       if (track && pending?.trackId === track.id && pending.position > 0 && restoredPositionTrackId.current !== track.id) return
+      if (resumeAt.current?.slot === slot) return
       usePlayer.getState().setProgress(element.currentTime, duration)
       if (track && duration > 0 && element.currentTime >= Math.min(duration / 2, 240) && submittedTrackId.current !== track.id) {
         submittedTrackId.current = track.id
@@ -219,6 +310,15 @@ export function PlayerRuntime() {
     onLoadedMetadata: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       if (activeSlot.current !== slot) return
       const element = event.currentTarget
+      const resume = resumeAt.current
+      if (resume?.slot === slot) {
+        resumeAt.current = null
+        if (track?.id === resume.trackId && Number.isFinite(element.duration)) {
+          element.currentTime = Math.min(resume.position, Math.max(0, element.duration - 0.05))
+        }
+        usePlayer.getState().setProgress(element.currentTime, element.duration)
+        return
+      }
       const player = usePlayer.getState()
       const pending = initialRestore.current
       const wantedPosition = track && pending?.trackId === track.id ? pending.position : player.currentTime
@@ -229,6 +329,13 @@ export function PlayerRuntime() {
       }
       usePlayer.getState().setProgress(element.currentTime, element.duration)
     },
+    onPlaying: () => {
+      if (activeSlot.current !== slot) return
+      retries.current = 0
+      clearStall()
+    },
+    onWaiting: () => watchForStall(slot),
+    onStalled: () => watchForStall(slot),
     onPlay: () => {
       if (activeSlot.current === slot && !usePlayer.getState().playing) usePlayer.setState({ playing: true })
     },
@@ -250,9 +357,7 @@ export function PlayerRuntime() {
         usePlayer.getState().next()
       }
     },
-    onError: () => {
-      if (activeSlot.current === slot) usePlayer.getState().setPlaying(false)
-    },
+    onError: () => recover(slot),
   })
 
   return <>
