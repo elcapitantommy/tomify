@@ -51,5 +51,6 @@ All 20 are done. Each row names the PR that finished it.
 | 3.4 | Smart playlists, listening statistics, "Anna is playing…" | Not started | Live playback syncs one user's own devices, not other people's. |
 | 3.5 | LAN-direct streaming; short-lived Worker sessions | Not started | |
 | 3.6 | Scheduled Spotify playlist refresh | Not started | Imported playlists refresh only by hand. |
+| 3.7 | Adaptive streaming (HLS) | Done | The agent packages tracks as 64/128/256 kbps HLS; the player follows the signal and falls back to original files. Per-device Streaming quality setting (issue #83). |
 
 Phase 2 items 2.1 to 2.8 match tasks 17, 18, 13, 14, 12, 15, 19 and 19, so they are not repeated here.

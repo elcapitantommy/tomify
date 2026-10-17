@@ -5,6 +5,8 @@ import { bindPlayerRuntime, usePlayer } from '../stores/player'
 import { setMediaMetadata } from '../lib/mediaSession'
 import { albumArtworkUrl, useAlbumArtwork } from '../stores/albumArtwork'
 import { RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
+import { AdaptiveSources, chooseSource, loadHlsLibrary, markAdaptiveUnavailable, wantsAdaptive, type StreamSource } from '../lib/adaptiveStream'
+import { useStreamQuality } from '../stores/streamQuality'
 import type { Track } from '../types'
 
 type AudioSlot = 0 | 1
@@ -35,6 +37,7 @@ export function PlayerRuntime() {
   const stallTimer = useRef<number | undefined>(undefined)
   const instanceId = useRef(newInstanceId())
   const channel = useRef<BroadcastChannel | null>(null)
+  const sources = useRef(new AdaptiveSources())
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
@@ -62,7 +65,14 @@ export function PlayerRuntime() {
     clearStall()
   }, [track?.id])
 
-  useEffect(() => () => { clearRetry(); clearStall() }, [])
+  useEffect(() => () => {
+    clearRetry()
+    clearStall()
+    for (const slot of [0, 1] as const) { const element = getAudio(slot); if (element) sources.current.detach(element) }
+  }, [])
+
+  // Fetch the HLS player before the first track needs it, unless this device always streams originals.
+  useEffect(() => { if (api.hlsUrl('warm-up') && wantsAdaptive(useStreamQuality.getState().quality)) void loadHlsLibrary() }, [api])
 
   // Tell Navidrome "now playing" only once the track actually plays, not when a page load restores a paused queue.
   useEffect(() => {
@@ -73,6 +83,34 @@ export function PlayerRuntime() {
 
   const getAudio = (slot: AudioSlot) => slot === 0 ? audioA.current : audioB.current
   const currentAudio = () => getAudio(activeSlot.current)
+
+  function sourceFor(element: HTMLAudioElement, wanted: Track): StreamSource {
+    return chooseSource(element, { direct: api.streamUrl(wanted.id), hls: api.hlsUrl(wanted.id) }, useStreamQuality.getState().quality)
+  }
+
+  // Every track load goes through here, so a slot is either a plain stream or an HLS
+  // player, never a stale mix of both.
+  function loadInto(slot: AudioSlot, wanted: Track, preload: 'auto' | 'metadata', source?: StreamSource) {
+    const element = getAudio(slot)
+    if (!element) return
+    sources.current.attach(element, source ?? sourceFor(element, wanted), { preload, onFatal: (unavailable) => adaptiveFailed(slot, wanted.id, unavailable) })
+    loadedTrackIds.current[slot] = wanted.id
+  }
+
+  // hls.js gave up. If the box can't stream adaptively, switch to originals; if the signal
+  // dropped, go through the normal reload-and-resume recovery.
+  function adaptiveFailed(slot: AudioSlot, trackId: string, unavailable: boolean) {
+    if (loadedTrackIds.current[slot] !== trackId) return
+    if (unavailable) markAdaptiveUnavailable()
+    const element = getAudio(slot)
+    if (activeSlot.current === slot && usePlayer.getState().playing) {
+      if (unavailable) { clearRetry(); retries.current = 0 }
+      recover(slot)
+      return
+    }
+    if (element) sources.current.detach(element)
+    loadedTrackIds.current[slot] = undefined
+  }
 
   function pauseAll() {
     for (const slot of [0, 1] as const) {
@@ -117,10 +155,7 @@ export function PlayerRuntime() {
       const now = usePlayer.getState()
       if (!now.playing || activeSlot.current !== slot || now.queue[now.currentIndex]?.id !== wanted.id) return
       resumeAt.current = position > 0 ? { slot, trackId: wanted.id, position } : null
-      element.src = api.streamUrl(wanted.id)
-      element.preload = 'auto'
-      element.load()
-      loadedTrackIds.current[slot] = wanted.id
+      loadInto(slot, wanted, 'auto')
       playElement(element, slot)
     }, delay)
   }
@@ -129,6 +164,7 @@ export function PlayerRuntime() {
   // that is not a failure. A blocked autoplay pauses; anything else is a broken
   // source and goes through recovery.
   function playElement(element: HTMLAudioElement, slot: AudioSlot) {
+    sources.current.startLoading(element)
     const attempt = element.play()
     if (!attempt) return
     void attempt.catch((error: unknown) => {
@@ -178,13 +214,9 @@ export function PlayerRuntime() {
       const element = getAudio(target)
       if (!element) return
 
-      const url = api.streamUrl(nextTrack.id)
+      const source = sourceFor(element, nextTrack)
       const trackChanged = loadedTrackIds.current[target] !== nextTrack.id
-      if (trackChanged || element.src !== url || element.error) {
-        element.src = url
-        element.load()
-        loadedTrackIds.current[target] = nextTrack.id
-      }
+      if (trackChanged || !sources.current.matches(element, source) || element.error) loadInto(target, nextTrack, 'auto', source)
       element.preload = 'auto'
 
       if (element.ended) element.currentTime = 0
@@ -198,12 +230,7 @@ export function PlayerRuntime() {
     const slot = activeSlot.current
     const element = getAudio(slot)
     if (!element) return
-    if (loadedTrackIds.current[slot] !== track.id) {
-      element.src = api.streamUrl(track.id)
-      element.preload = preloadFor(usePlayer.getState().playing)
-      element.load()
-      loadedTrackIds.current[slot] = track.id
-    }
+    if (loadedTrackIds.current[slot] !== track.id) loadInto(slot, track, preloadFor(usePlayer.getState().playing))
     let cancelled = false
     let release: (() => void) | undefined
 
@@ -211,11 +238,8 @@ export function PlayerRuntime() {
       if (cancelled) { source.revoke?.(); return }
       release = source.revoke
       if (activeSlot.current !== slot || loadedTrackIds.current[slot] !== track.id) return
-      if (element.src !== source.url) {
-        element.src = source.url
-        element.preload = preloadFor(usePlayer.getState().playing)
-        element.load()
-      }
+      const wanted: StreamSource = source.kind === 'local' ? { kind: 'direct', url: source.url } : sourceFor(element, track)
+      if (!sources.current.matches(element, wanted)) loadInto(slot, track, preloadFor(usePlayer.getState().playing), wanted)
       if (usePlayer.getState().playing && element.paused) playElement(element, slot)
     })
 
@@ -244,12 +268,9 @@ export function PlayerRuntime() {
     if (!element || loadedTrackIds.current[slot] === nextTrack.id) return
 
     if (!element.paused) element.pause()
-    element.src = api.streamUrl(nextTrack.id)
-    element.preload = 'auto'
-    element.load()
+    loadInto(slot, nextTrack, 'auto')
     element.volume = volume
     element.muted = muted
-    loadedTrackIds.current[slot] = nextTrack.id
   }, [api, currentIndex, muted, playing, queue, repeat, track?.id, volume]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {

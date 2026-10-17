@@ -4,9 +4,11 @@ import { navidromeUrl } from './navidrome.ts'
 const authCache = new Map<string, number>()
 
 export async function authenticate(request: Request, env: Env): Promise<string | null> {
-  const username = request.headers.get('x-tomify-user')
-  const token = request.headers.get('x-tomify-token')
-  const salt = request.headers.get('x-tomify-salt')
+  return authenticateCredentials(env, request.headers.get('x-tomify-user'), request.headers.get('x-tomify-token'), request.headers.get('x-tomify-salt'))
+}
+
+// Media elements can't send headers, so streaming URLs carry the Subsonic login in the query instead.
+export async function authenticateCredentials(env: Env, username: string | null, token: string | null, salt: string | null): Promise<string | null> {
   if (!username || !token || !salt) return null
   const ping = navidromeUrl(env, '/rest/ping.view')
   const cacheKey = ping.origin + ':' + username + ':' + token + ':' + salt

@@ -268,6 +268,27 @@ The agent imports `../shared/quality.mjs`, so the two legacy directories must re
 
 The recovery directory may be added to Navidrome as a separate library path after review. It should not be merged over `/srv/music` by an automated job.
 
+## Adaptive streaming (HLS)
+
+The agent also serves adaptive streams for the player (see the README, "Adaptive streaming"). The Worker route `GET /api/hls/<trackId>/<file>?u=&t=&s=` checks the listener's Navidrome login, then asks the agent for `GET /v1/hls/<trackId>/<file>` with the agent token and the listener's login. On the first request for a track the agent:
+
+1. fetches the original file from Navidrome on the box (`stream.view?format=raw`, using the listener's login) into the cache folder,
+2. starts one ffmpeg per bitrate (AAC 64k, 128k and 256k, 48 kHz stereo) writing 6-second MPEG-TS chunks, and
+3. answers playlists straight away from the track's length, serving each chunk as soon as ffmpeg finishes it, so playback starts within a second or so while encoding carries on at many times real time.
+
+Once all three bitrates are written the original copy is deleted and the chunks stay cached. A cached track is packaged again if Navidrome reports a different file size (the file was replaced). Only two tracks are packaged at once (the one playing and the pre-loaded next one); skipping through tracks stops the encoders of the ones skipped. The least recently played tracks are deleted once the cache passes its limit. A 4-minute song takes about 13 MB of cache.
+
+Settings in `/etc/tomify/recovery-agent.env` (all optional):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TOMIFY_HLS_ENABLED` | `true` | `false` turns adaptive streaming off; players then stream originals. |
+| `TOMIFY_NAVIDROME_URL` | `http://127.0.0.1:4533` | Navidrome as the box itself reaches it (not the public tunnel). |
+| `TOMIFY_HLS_CACHE_DIR` | `$TOMIFY_RECOVERY_STATE_DIR/hls-cache` | Must be writable by the service; `/var/cache/tomify-recovery/hls` is already allowed by the unit. |
+| `TOMIFY_HLS_CACHE_MAX_BYTES` | `2147483648` (2 GB) | Cache size before old tracks are removed. |
+
+No contract bump is needed: a site with this change talks to an older agent by falling back to original streams. After deploying the agent, check from the box with `curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" -H 'x-tomify-navidrome-user: <user>' -H 'x-tomify-navidrome-token: <token>' -H 'x-tomify-navidrome-salt: <salt>' http://127.0.0.1:8788/v1/hls/<trackId>/master.m3u8` (expect `200`), or just play a track in Tomify and watch for `/api/hls/` requests in the browser's network panel. If Navidrome listens on another port, set `TOMIFY_NAVIDROME_URL` and restart the agent.
+
 ## D1 migrations
 
 The D1 schema comes only from the numbered files in `drizzle/` (`migrations_dir` in `wrangler.toml`). The Worker no longer runs `CREATE TABLE` or `ALTER TABLE` on requests; when a query names a table or column that no migration has created, it answers 503 with `{"error": "schema-out-of-date"}` and the missing name.

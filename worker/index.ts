@@ -6,6 +6,7 @@ import { json } from './lib/http.ts'
 import { isNavidromeConfigurationError } from './lib/navidrome.ts'
 import { albumArtworkRoute } from './routes/album-artwork.ts'
 import { catalogueRoute } from './routes/catalogue.ts'
+import { hlsRoute } from './routes/hls.ts'
 import { inventoryRoute } from './routes/inventory.ts'
 import { livePlaybackRoute } from './routes/live-playback.ts'
 import { navidromeRoute } from './routes/navidrome.ts'
@@ -24,6 +25,7 @@ const routes: RouteHandler[] = [
   systemSettingsRoute,
   inventoryRoute,
   versionRoute,
+  hlsRoute,
   handleRecoveryRequest,
   navidromeRoute,
 ]

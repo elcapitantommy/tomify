@@ -1727,3 +1727,61 @@ test('acquire passes skipExisting on to the agent', async () => {
     assert.equal(requests.find(([path]) => path === '/v1/acquire')[1].skipExisting, true)
   })
 })
+
+test('adaptive streaming checks the Navidrome login in the query and signs every playlist line it passes on', async () => {
+  const originalFetch = globalThis.fetch
+  const agentCalls = []
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: url.searchParams.get('u') === 'hls-listener' ? 'ok' : 'failed' } })
+    agentCalls.push({ url, headers: init.headers })
+    if (url.pathname.endsWith('/master.m3u8')) return new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=70400\nv0/index.m3u8\n', { headers: { 'content-type': 'application/vnd.apple.mpegurl' } })
+    if (url.pathname.endsWith('/index.m3u8')) return new Response('#EXTM3U\n#EXTINF:6.000,\nseg00000.ts\n#EXT-X-ENDLIST\n')
+    return new Response('chunk', { headers: { 'content-type': 'video/mp2t', 'content-length': '5' } })
+  }
+  const env = { RECOVERY_AGENT_URL: 'https://agent-hls.tomify.test/', RECOVERY_AGENT_TOKEN: 'agent-secret' }
+  const query = 'u=hls-listener&t=0123456789abcdef0123456789abcdef&s=salt1'
+  try {
+    const refused = await worker.fetch(new Request('https://app.tomify.test/api/hls/tr1/master.m3u8?u=someone&t=0123456789abcdef0123456789abcdef&s=salt1'), env)
+    assert.equal(refused.status, 401)
+    assert.equal(agentCalls.length, 0)
+
+    const master = await worker.fetch(new Request(`https://app.tomify.test/api/hls/tr1/master.m3u8?${query}`), env)
+    assert.equal(master.status, 200)
+    assert.equal(master.headers.get('content-type'), 'application/vnd.apple.mpegurl')
+    assert.equal(await master.text(), `#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=70400\nv0/index.m3u8?${query}\n`)
+    assert.equal(agentCalls[0].url.href, 'https://agent-hls.tomify.test/v1/hls/tr1/master.m3u8')
+    assert.equal(agentCalls[0].headers.authorization, 'Bearer agent-secret')
+    assert.equal(agentCalls[0].headers['x-tomify-navidrome-user'], 'hls-listener')
+
+    const playlist = await worker.fetch(new Request(`https://app.tomify.test/api/hls/tr1/v0/index.m3u8?${query}`), env)
+    assert.match(await playlist.text(), new RegExp(`\\nseg00000\\.ts\\?${query.replace(/[?]/g, '\\?')}\\n`))
+
+    const chunk = await worker.fetch(new Request(`https://app.tomify.test/api/hls/tr1/v0/seg00000.ts?${query}`), env)
+    assert.equal(chunk.headers.get('content-type'), 'video/mp2t')
+    assert.equal(await chunk.text(), 'chunk')
+
+    for (const path of ['/api/hls/tr1/source', '/api/hls/..%2Fx/master.m3u8', '/api/hls/tr1/v0/../../v1/status']) {
+      const response = await worker.fetch(new Request(`https://app.tomify.test${path}?${query}`), env)
+      assert.equal(response.status, 404, path)
+    }
+    assert.equal(agentCalls.length, 3)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('adaptive streaming reports "unavailable" for an agent without it, so the player streams originals', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    return Response.json({ error: 'not-found' }, { status: 404 })
+  }
+  const query = 'u=hls-old-agent&t=0123456789abcdef0123456789abcdef&s=salt2'
+  try {
+    const old = await worker.fetch(new Request(`https://app.tomify.test/api/hls/tr1/master.m3u8?${query}`), { RECOVERY_AGENT_URL: 'https://agent-old.tomify.test' })
+    assert.equal(old.status, 503)
+    assert.equal((await old.json()).error, 'hls-unavailable')
+    const unconfigured = await worker.fetch(new Request(`https://app.tomify.test/api/hls/tr1/master.m3u8?${query}`), {})
+    assert.equal(unconfigured.status, 503)
+  } finally { globalThis.fetch = originalFetch }
+})

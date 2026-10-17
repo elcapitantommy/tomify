@@ -6,6 +6,32 @@ import { usePlayer } from '../stores/player'
 import { useAlbumArtwork } from '../stores/albumArtwork'
 import { RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import { PlayerRuntime } from './PlayerRuntime'
+import { loadHlsLibrary, resetAdaptiveAvailability } from '../lib/adaptiveStream'
+import { DEFAULT_NAVIDROME_SERVER } from '../lib/navidrome'
+import { useStreamQuality } from '../stores/streamQuality'
+
+const hlsPlayers: { source?: string; media?: HTMLMediaElement; destroyed: boolean; emit(event: string, data: unknown): void }[] = []
+vi.mock('hls.js/light', () => {
+  class FakeHls {
+    static Events = { ERROR: 'error', FRAG_LOADED: 'fragLoaded' }
+    static ErrorTypes = { MEDIA_ERROR: 'mediaError', NETWORK_ERROR: 'networkError' }
+    static isSupported = () => true
+    handlers: Record<string, (event: string, data: unknown) => void> = {}
+    source?: string
+    media?: HTMLMediaElement
+    destroyed = false
+    bandwidthEstimate = 0
+    constructor(readonly config: { autoStartLoad: boolean }) { hlsPlayers.push(this) }
+    on(event: string, handler: (event: string, data: unknown) => void) { this.handlers[event] = handler }
+    loadSource(url: string) { this.source = url }
+    attachMedia(media: HTMLMediaElement) { this.media = media }
+    startLoad() { this.config.autoStartLoad = true }
+    recoverMediaError() {}
+    destroy() { this.destroyed = true }
+    emit(event: string, data: unknown) { this.handlers[event]?.(event, data) }
+  }
+  return { default: FakeHls }
+})
 
 const session = { serverUrl: 'https://music.example', username: 'tom', salt: 's', token: 't' }
 const tracks = [
@@ -212,5 +238,44 @@ describe('PlayerRuntime', () => {
     other.close()
     expect(usePlayer.getState().playing).toBe(false)
     expect(pausedElements()).toContain(current)
+  })
+
+  describe('adaptive streaming', () => {
+    beforeEach(async () => {
+      hlsPlayers.length = 0
+      resetAdaptiveAvailability()
+      vi.stubGlobal('MediaSource', class {})
+      useAuth.setState({ session: { ...session, serverUrl: DEFAULT_NAVIDROME_SERVER } })
+      useStreamQuality.setState({ quality: 'adaptive' })
+      await loadHlsLibrary()
+    })
+    afterEach(() => { useStreamQuality.setState({ quality: 'adaptive' }) })
+
+    const playerFor = (element: HTMLAudioElement) => hlsPlayers.filter((player) => player.media === element && !player.destroyed).at(-1)
+
+    it('plays the current and pre-loaded next track as adaptive streams through the Worker', async () => {
+      const [current, standby] = await startPlaying()
+      expect(new URL(playerFor(current)!.source!).pathname).toBe('/api/hls/a/master.m3u8')
+      expect(new URL(playerFor(standby)!.source!).pathname).toBe('/api/hls/b/master.m3u8')
+      expect(new URL(playerFor(current)!.source!).searchParams.get('u')).toBe('tom')
+    })
+
+    it('switches to the original file when the box cannot stream adaptively', async () => {
+      vi.useFakeTimers()
+      const [current] = await startPlaying()
+      await act(async () => { playerFor(current)!.emit('error', { fatal: true, type: 'networkError', details: 'manifestLoadError', response: { code: 503 } }) })
+      await act(async () => { vi.advanceTimersByTime(RETRY_DELAYS_MS[0]) })
+      expect(playerFor(current)).toBeUndefined()
+      expect(streamed(current)).toBe('a')
+      expect(usePlayer.getState().playing).toBe(true)
+    })
+
+    it('streams originals when the device is set to always original', async () => {
+      useStreamQuality.setState({ quality: 'original' })
+      const [current, standby] = await startPlaying()
+      expect(hlsPlayers).toHaveLength(0)
+      expect(streamed(current)).toBe('a')
+      expect(streamed(standby)).toBe('b')
+    })
   })
 })

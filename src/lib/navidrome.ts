@@ -105,4 +105,13 @@ export class NavidromeClient {
   async scrobble(id: string, submission = true) { await this.get('scrobble', { id, submission: submission ? 'true' : 'false' }); return true }
   coverArtUrl(id?: string, size = 600) { return id ? this.url('getCoverArt', { id, size }).toString() : '' }
   streamUrl(id: string) { return this.url('stream', { id, estimateContentLength: 'true' }).toString() }
+  // Adaptive streaming goes through the Tomify Worker, so it only exists for the Tomify music server.
+  hlsUrl(id: string) {
+    if (typeof window === 'undefined' || normaliseServerUrl(this.session.serverUrl) !== DEFAULT_NAVIDROME_SERVER) return null
+    const url = new URL(`/api/hls/${encodeURIComponent(id)}/master.m3u8`, window.location.origin)
+    url.searchParams.set('u', this.session.username)
+    url.searchParams.set('t', this.session.token)
+    url.searchParams.set('s', this.session.salt)
+    return url.toString()
+  }
 }
