@@ -172,6 +172,45 @@ describe('PlayerRuntime', () => {
     expect(loads).not.toHaveBeenCalled()
   })
 
+  it('leaves a stream alone that keeps playing after a buffering event', async () => {
+    vi.useFakeTimers()
+    const [current] = await startPlaying()
+    Object.defineProperty(current, 'paused', { configurable: true, get: () => false })
+    const loads = vi.mocked(HTMLMediaElement.prototype.load)
+    loads.mockClear()
+    setTime(current, 10)
+    await act(async () => { current.dispatchEvent(new Event('waiting')) })
+    setTime(current, 24)
+    await act(async () => { vi.advanceTimersByTime(STALL_TIMEOUT_MS + RETRY_DELAYS_MS[0]) })
+    expect(loads).not.toHaveBeenCalled()
+  })
+
+  it('ignores a stalled download while there is still audio buffered (Safari reports these mid-song)', async () => {
+    vi.useFakeTimers()
+    const [current] = await startPlaying()
+    Object.defineProperty(current, 'readyState', { configurable: true, get: () => HTMLMediaElement.HAVE_ENOUGH_DATA })
+    const loads = vi.mocked(HTMLMediaElement.prototype.load)
+    loads.mockClear()
+    await act(async () => { current.dispatchEvent(new Event('stalled')) })
+    await act(async () => { vi.advanceTimersByTime(STALL_TIMEOUT_MS + RETRY_DELAYS_MS[0]) })
+    expect(loads).not.toHaveBeenCalled()
+  })
+
+  it('seeks back to the same spot again if the phone drops the seek made while reloading', async () => {
+    vi.useFakeTimers()
+    const [current] = await startPlaying()
+    setTime(current, 42)
+    await act(async () => { fail(current) })
+    await act(async () => { vi.advanceTimersByTime(RETRY_DELAYS_MS[0]) })
+    heal(current)
+    Object.defineProperty(current, 'duration', { configurable: true, value: 200 })
+    setTime(current, 0)
+    await act(async () => { current.dispatchEvent(new Event('loadedmetadata')) })
+    setTime(current, 0)
+    await act(async () => { current.dispatchEvent(new Event('canplay')) })
+    expect(current.currentTime).toBe(42)
+  })
+
   it('keeps playing when play() is interrupted by a newer load', async () => {
     vi.mocked(HTMLMediaElement.prototype.play).mockImplementation(() => Promise.reject(new DOMException('interrupted', 'AbortError')))
     await startPlaying()
