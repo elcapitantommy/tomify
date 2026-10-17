@@ -736,7 +736,7 @@ await mkdir(usenetStateRoot, { recursive: true })
 
 const hlsSettings = hlsConfig(process.env, usenetStateRoot)
 await mkdir(hlsSettings.cacheDir, { recursive: true })
-const hls = createHlsPackager({ config: hlsSettings, ffmpeg, probeDuration: async (path) => (await probe(path)).duration, log: (message) => process.stderr.write(`${message}\n`) })
+const hls = createHlsPackager({ config: hlsSettings, ffmpeg, probeDuration: async (source) => Number((await run(ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', source], 15_000)).stdout), log: (message) => process.stderr.write(`${message}\n`) })
 
 // GET /v1/hls/<trackId>/<file>: playlists and chunks for adaptive streaming. The Worker checks the
 // listener's Navidrome login first and passes it on, so the agent can fetch the track from Navidrome.
