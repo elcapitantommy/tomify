@@ -241,7 +241,9 @@ The recovery agent is deployed separately from the site. After any change under 
 
 ### PWA and iOS notes
 
-The service worker precaches the application shell and uses a bounded cache for artwork; audio is deliberately not cached yet. On compatible iOS Safari/Home Screen PWA versions, the active track sets title, artist, album and HTTPS artwork immediately, and registers play, pause, previous, next and seek handlers. Playback uses one long-lived audio element, so navigation does not interrupt it.
+The service worker precaches the application shell and uses a bounded cache for artwork; audio is deliberately not cached yet. On compatible iOS Safari/Home Screen PWA versions, the active track sets title, artist, album and HTTPS artwork immediately, and registers play, pause, previous, next and seek handlers. Playback uses two long-lived audio elements (the playing track and the next one, pre-loaded while playing), so navigation does not interrupt it.
+
+On a patchy connection (for example mobile data in a car) a stream that drops or hangs is reloaded from where it stopped: Tomify retries after 1, 3, 6 and 10 seconds, retries straight away when the phone comes back online, and treats 15 seconds of buffering while playing as a dropped stream. A next track whose pre-load failed is loaded fresh rather than handed over. Only after every retry fails does the player show as paused.
 
 Apple controls which Media Session actions appear, and may omit seeking on some iOS releases. Background playback and lock-screen behaviour require verification on the actual target iPhones over HTTPS; automated desktop tests cannot prove OS-level Control Center presentation. Cross-origin artwork and audio must remain reachable while the phone is locked.
 
