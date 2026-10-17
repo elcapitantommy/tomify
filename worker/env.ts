@@ -1,4 +1,4 @@
-import type { D1Database, Fetcher } from '@cloudflare/workers-types'
+import type { Ai, D1Database, Fetcher } from '@cloudflare/workers-types'
 
 export interface Env {
   TOMIFY_DB: D1Database
@@ -16,8 +16,12 @@ export interface Env {
   SPOTIFY_ARTWORK_EMBEDDING_ENABLED?: string
   // Optional: lets Claude pick and name the "Made for you" mixes. Without it Tomify builds simpler mixes itself.
   ANTHROPIC_API_KEY?: string
-  // Optional: the Claude model for mixes (default claude-sonnet-5-5).
+  // Optional: the Claude model for mixes and the DJ (default claude-sonnet-5-5).
   TOMIFY_MIXES_MODEL?: string
+  // Workers AI, used for the DJ's voice.
+  AI?: Ai
+  // Optional: the DJ's Deepgram Aura-2 voice (default draco, a British male voice).
+  TOMIFY_DJ_VOICE?: string
 }
 
 export type RouteHandler = (request: Request, env: Env, url: URL) => Promise<Response | null>

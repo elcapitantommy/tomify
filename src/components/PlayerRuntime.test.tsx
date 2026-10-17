@@ -278,4 +278,37 @@ describe('PlayerRuntime', () => {
       expect(streamed(standby)).toBe('b')
     })
   })
+
+  it('tells the car and lock screen playback has stopped while the stream is buffering', async () => {
+    const positions: MediaPositionState[] = []
+    Object.defineProperty(navigator, 'mediaSession', { configurable: true, value: { metadata: null, playbackState: 'none', setActionHandler: () => {}, setPositionState: (state: MediaPositionState) => positions.push(state) } })
+    try {
+      const [current] = await startPlaying()
+      expect(navigator.mediaSession.playbackState).toBe('playing')
+      Object.defineProperty(current, 'duration', { configurable: true, value: 200 })
+      setTime(current, 61)
+      await act(async () => { current.dispatchEvent(new Event('waiting')) })
+      expect(navigator.mediaSession.playbackState).toBe('paused')
+      expect(positions.at(-1)).toMatchObject({ position: 61, duration: 200 })
+      expect(usePlayer.getState().playing).toBe(true)
+      await act(async () => { current.dispatchEvent(new Event('playing')) })
+      expect(navigator.mediaSession.playbackState).toBe('playing')
+    } finally {
+      delete (navigator as { mediaSession?: unknown }).mediaSession
+    }
+  })
+
+  it('leaves the lock screen alone when a paused player buffers', async () => {
+    Object.defineProperty(navigator, 'mediaSession', { configurable: true, value: { metadata: null, playbackState: 'none', setActionHandler: () => {}, setPositionState: () => {} } })
+    try {
+      await act(async () => { render(<ApiProvider><PlayerRuntime/></ApiProvider>) })
+      const [current] = audio()
+      await act(async () => { current.dispatchEvent(new Event('stalled')) })
+      expect(navigator.mediaSession.playbackState).toBe('paused')
+      await act(async () => { current.dispatchEvent(new Event('playing')) })
+      expect(navigator.mediaSession.playbackState).toBe('paused')
+    } finally {
+      delete (navigator as { mediaSession?: unknown }).mediaSession
+    }
+  })
 })

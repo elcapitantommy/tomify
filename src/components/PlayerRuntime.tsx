@@ -193,6 +193,22 @@ export function PlayerRuntime() {
     })
   }
 
+  // The car and lock screen move their own progress bar on from the last
+  // position while they think audio is playing. When the stream runs dry, tell
+  // them it has stopped, so they don't show progress over silence.
+  function reportToLockScreen(element: HTMLAudioElement, audible: boolean) {
+    if (!('mediaSession' in navigator)) return
+    navigator.mediaSession.playbackState = audible ? 'playing' : 'paused'
+    if (!Number.isFinite(element.duration) || element.duration <= 0) return
+    try { navigator.mediaSession.setPositionState({ duration: element.duration, playbackRate: element.playbackRate || 1, position: Math.min(element.currentTime, element.duration) }) } catch { /* browser rejected position update */ }
+  }
+
+  function buffering(element: HTMLAudioElement, slot: AudioSlot) {
+    if (activeSlot.current !== slot || !usePlayer.getState().playing) return
+    reportToLockScreen(element, false)
+    watchForStall(slot)
+  }
+
   function watchForStall(slot: AudioSlot) {
     if (activeSlot.current !== slot || !usePlayer.getState().playing || stallTimer.current !== undefined) return
     stallTimer.current = window.setTimeout(() => {
@@ -238,6 +254,8 @@ export function PlayerRuntime() {
 
       if (element.ended) element.currentTime = 0
 
+      // Something can hold the new track before it starts (the DJ talking first); the playing effect starts it later.
+      if (!usePlayer.getState().playing) return
       playElement(element, target)
     },
   }), [api]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -407,13 +425,14 @@ export function PlayerRuntime() {
       }
       usePlayer.getState().setProgress(element.currentTime, element.duration)
     },
-    onPlaying: () => {
+    onPlaying: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       if (activeSlot.current !== slot) return
       retries.current = 0
       clearStall()
+      reportToLockScreen(event.currentTarget, usePlayer.getState().playing)
     },
-    onWaiting: () => watchForStall(slot),
-    onStalled: () => watchForStall(slot),
+    onWaiting: (event: React.SyntheticEvent<HTMLAudioElement>) => buffering(event.currentTarget, slot),
+    onStalled: (event: React.SyntheticEvent<HTMLAudioElement>) => buffering(event.currentTarget, slot),
     onPlay: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       // The pre-loaded next track must stay silent until it is handed over. If
       // anything (the OS resuming audio, a stale play request) starts it, stop it.

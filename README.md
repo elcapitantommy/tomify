@@ -244,7 +244,7 @@ The recovery agent is deployed separately from the site. After any change under 
 
 The service worker precaches the application shell and uses a bounded cache for artwork; audio is deliberately not cached yet. On compatible iOS Safari/Home Screen PWA versions, the active track sets title, artist, album and HTTPS artwork immediately, and registers play, pause, previous, next and seek handlers. Playback uses two long-lived audio elements (the playing track and the next one, pre-loaded while playing), so navigation does not interrupt it.
 
-On a patchy connection (for example mobile data in a car) a stream that drops or hangs is reloaded from where it stopped: Tomify retries after 1, 3, 6 and 10 seconds, retries straight away when the phone comes back online, and treats 15 seconds of buffering while playing as a dropped stream. A next track whose pre-load failed is loaded fresh rather than handed over. Only after every retry fails does the player show as paused.
+On a patchy connection (for example mobile data in a car) a stream that drops or hangs is reloaded from where it stopped: Tomify retries after 1, 3, 6 and 10 seconds, retries straight away when the phone comes back online, and treats 15 seconds of buffering while playing as a dropped stream. A next track whose pre-load failed is loaded fresh rather than handed over. Only after every retry fails does the player show as paused. While a stream is buffering, Tomify tells the lock screen and car that playback is paused at the current position, so their progress bar doesn't keep moving over silence; it switches back to playing as soon as sound resumes.
 
 **Adaptive streaming.** On the Tomify music server, tracks stream as HLS: the recovery agent on the box cuts each track into 6-second AAC chunks at 64, 128 and 256 kbps, and the player (hls.js on Android and desktop, Safari's own HLS on iPhone) picks the bitrate chunk by chunk from how fast the chunks arrive. A weak signal drops to a smaller stream mid-track instead of stalling, and quality climbs back when the signal improves. About a minute of audio is kept buffered ahead. The choice is per device under **Streaming quality** (the account sheet on mobile, or Settings): **Adaptive** (default), **Original on Wi-Fi** (lossless on Wi-Fi, adaptive on mobile data; only Chrome-based browsers report the connection type, so others count as mobile data) or **Always original** (the untouched file, as before). If the agent is out of date, switched off or can't read a track, the player quietly streams the original file instead and tries adaptive again after 10 minutes. Setup and cache settings are in [docs/RECOVERY.md](docs/RECOVERY.md#adaptive-streaming-hls).
 
@@ -276,6 +276,17 @@ Home's **Made for you** shelf holds five or six mixes built from your own librar
 - To turn Claude on: create a key at console.anthropic.com, then `npx wrangler secret put ANTHROPIC_API_KEY` (or add it in the Cloudflare dashboard under the tomify Worker's Settings → Variables and Secrets as a secret). Press **Refresh** on Home to rebuild straight away.
 
 The Worker code is `worker/features/mixes.ts` (gathering, simple mixes, storage), `worker/features/mix-curator.ts` (the Claude call) and `worker/features/listening.ts`; the tables are created by `drizzle/0014_listening_and_mixes.sql`.
+
+### Tomify DJ
+
+Press **DJ** on Home and Tomify plays your library like a radio show: sets of three to five songs, each introduced by a short spoken link ("Morning Tom. Here's one you haven't played since March…"). While the DJ talks the music waits, then the set plays. The next set is chosen while the current one plays, and never repeats a song from the session. Type into **Tell the DJ** ("something calmer", "more 80s") and the songs after the current one change to match. Playing anything else, or **Stop DJ**, ends it.
+
+- Claude (the same key and model as the mixes) picks each set from your library and listening history and writes the link. Without the key the DJ still picks a set, one song per artist, and reads a plain intro.
+- The voice is Workers AI's Deepgram Aura-2 (`AI` binding in `wrangler.toml`), British male `draco` by default; set `TOMIFY_DJ_VOICE` to another Aura-2 voice (for example `pandora`) to change it. Workers AI's free daily allowance covers light use; beyond it a link costs a fraction of a penny.
+- A set with Claude costs about 1p, so roughly 4–6p per hour of listening including the voice.
+- On iPhone the DJ keeps going only while Tomify is open; the browser may not let the voice start from the background.
+
+The Worker code is `worker/features/dj.ts` (`POST /api/dj/segment` and `POST /api/dj/voice`); the player side is `src/stores/dj.ts` and `src/components/DjPanel.tsx`.
 
 ### Known limitations
 

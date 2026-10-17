@@ -7,6 +7,7 @@ import { isNavidromeConfigurationError } from './lib/navidrome.ts'
 import { albumArtworkRoute } from './routes/album-artwork.ts'
 import { catalogueRoute } from './routes/catalogue.ts'
 import { hlsRoute } from './routes/hls.ts'
+import { djRoute } from './routes/dj.ts'
 import { inventoryRoute } from './routes/inventory.ts'
 import { listeningRoute } from './routes/listening.ts'
 import { livePlaybackRoute } from './routes/live-playback.ts'
@@ -26,6 +27,7 @@ const routes: RouteHandler[] = [
   livePlaybackRoute,
   listeningRoute,
   mixesRoute,
+  djRoute,
   systemSettingsRoute,
   inventoryRoute,
   versionRoute,

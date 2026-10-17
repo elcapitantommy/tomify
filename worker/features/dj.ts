@@ -1,0 +1,144 @@
+// Tomify DJ: plays a few songs at a time from your library with a short spoken link before each set,
+// like a radio DJ who knows what you listen to. Claude picks the songs and writes the link; Workers AI
+// (Deepgram Aura-2) reads it out. Without an Anthropic key the DJ still picks songs and reads a plain intro.
+import type { Env, RouteHandler } from '../env.ts'
+import { authenticate } from '../lib/auth.ts'
+import { json } from '../lib/http.ts'
+import { subsonicForRequest } from '../lib/subsonic.ts'
+import { buildCandidates, gatherLibrary, listeningStats, seededRandom, toMixTrack, type Candidate, type LibrarySnapshot, type MixTrack, type SubsonicSong } from './mixes.ts'
+import { callClaudeJson } from './mix-curator.ts'
+
+const DJ_POOL_SIZE = 150
+const MAX_SCRIPT_CHARS = 600
+const MAX_REQUEST_CHARS = 200
+export const DEFAULT_DJ_VOICE = 'draco'
+export const DJ_TTS_MODEL = '@cf/deepgram/aura-2-en'
+
+export interface DjSegment { tracks: MixTrack[], script: string, curatedBy: 'claude' | 'tomify', voice: boolean }
+export interface DjSegmentInput { recentTrackIds: string[], request: string | null, first: boolean, username: string, now: number }
+
+export const DJ_SYSTEM = `You are the DJ inside Tomify, a personal music player for one household's own music library. You talk to one listener between songs, like a warm, relaxed British radio presenter who knows their taste.
+
+Each time, pick the next 3 to 5 songs from the candidate pool and write the short spoken link that plays before them.
+- Only use refs from the pool. Never pick a recently played song. Order them so they flow.
+- Mix familiar favourites with things they haven't played in a while or have never played, guided by the listening history.
+- If the listener asked for something, honour it.
+- The link is 2 to 4 sentences and at most 70 words, spoken aloud by a text-to-speech voice: plain words only, no emojis, lists, stage directions or sound effects. Introduce what's coming (you can name the first song and artist) and give a personal reason when there is one, such as an old favourite, a new arrival or a request.
+- On the first link of a session, greet the listener by name and mention the time of day.`
+
+const DJ_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['script', 'trackRefs'],
+  properties: {
+    script: { type: 'string' },
+    trackRefs: { type: 'array', items: { type: 'string' } },
+  },
+} as const
+
+export function cleanSegmentRequest(body: unknown): { recentTrackIds: string[], request: string | null, first: boolean } {
+  const input = body && typeof body === 'object' ? body as Record<string, unknown> : {}
+  const recentTrackIds = Array.isArray(input.recentTrackIds) ? input.recentTrackIds.filter((id): id is string => typeof id === 'string').slice(-200) : []
+  const request = typeof input.request === 'string' && input.request.trim() ? input.request.trim().slice(0, MAX_REQUEST_CHARS) : null
+  return { recentTrackIds, request, first: input.first === true }
+}
+
+export function partOfDay(now: number) {
+  const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: 'Europe/London' }).format(new Date(now)))
+  return hour < 5 ? 'late night' : hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening'
+}
+
+// A varied pool for one set: anything not played this session, songs with a reason to be there first.
+export function djPool(candidates: Candidate[], recentTrackIds: string[], seed: string, size = DJ_POOL_SIZE): Candidate[] {
+  const recent = new Set(recentTrackIds)
+  const random = seededRandom(seed)
+  const fresh = candidates.filter((candidate) => !recent.has(candidate.song.id)).map((candidate) => ({ candidate, order: random() - (candidate.sources.some((source) => source !== 'library') ? 0.5 : 0) }))
+  return fresh.sort((a, b) => a.order - b.order).slice(0, size).map(({ candidate }) => candidate)
+}
+
+const shortDate = (time: number | null) => time ? new Date(time).toISOString().slice(0, 7) : 'never'
+
+export function djPrompt(pool: Candidate[], snapshot: LibrarySnapshot, input: DjSegmentInput): { prompt: string, refs: Map<string, SubsonicSong> } {
+  const refs = new Map<string, SubsonicSong>()
+  const lines = pool.map((candidate, index) => {
+    const ref = `t${index + 1}`
+    refs.set(ref, candidate.song)
+    const song = candidate.song
+    return `${ref} | ${song.artist} - ${song.title} | ${song.album}${song.year ? ` (${song.year})` : ''} | plays ${candidate.playCount}, last ${shortDate(candidate.lastPlayed)}${candidate.starred ? ', favourite' : ''} | ${candidate.sources.join(', ')}`
+  })
+  const prompt = [
+    `Listener: ${input.username}. It is ${partOfDay(input.now)} in the UK.`,
+    input.first ? 'This is the first link of the session.' : 'The session is already under way.',
+    `Artists they play most lately: ${snapshot.topArtists.join(', ') || 'not enough history yet'}.`,
+    input.request ? `The listener asked: "${input.request}"` : '',
+    '',
+    'Candidate songs:',
+    ...lines,
+  ].filter((line, index) => line !== '' || index > 0).join('\n')
+  return { prompt, refs }
+}
+
+// Without Claude: a few songs from the pool, one per artist, and a simple spoken intro.
+export function plainSegment(pool: Candidate[], input: DjSegmentInput): { tracks: MixTrack[], script: string } {
+  const artists = new Set<string>()
+  const picked = pool.filter((candidate) => !artists.has(candidate.song.artist) && artists.add(candidate.song.artist)).slice(0, 4).map((candidate) => toMixTrack(candidate.song))
+  const first = picked[0]
+  const greeting = input.first ? `Good ${partOfDay(input.now) === 'late night' ? 'evening' : partOfDay(input.now)}, ${input.username}. ` : ''
+  const script = first ? `${greeting}Coming up, ${first.title} by ${first.artist}${picked.length > 1 ? `, then ${picked.length - 1} more from your library` : ''}.` : ''
+  return { tracks: picked, script }
+}
+
+export interface DjDependencies { claude?: (env: Env, system: string, prompt: string, schema: object) => Promise<unknown> }
+
+export async function buildSegment(env: Env, candidates: Candidate[], snapshot: LibrarySnapshot, input: DjSegmentInput, deps: DjDependencies = {}): Promise<Omit<DjSegment, 'voice'>> {
+  const pool = djPool(candidates, input.recentTrackIds, `${input.username}:${input.now}`)
+  if (!pool.length) throw new Error('There is nothing left in the library the DJ hasn\'t just played.')
+  if (env.ANTHROPIC_API_KEY) {
+    try {
+      const { prompt, refs } = djPrompt(pool, snapshot, input)
+      const result = await (deps.claude ?? callClaudeJson)(env, DJ_SYSTEM, prompt, DJ_SCHEMA) as { script?: unknown, trackRefs?: unknown }
+      const seen = new Set<string>()
+      const tracks = (Array.isArray(result.trackRefs) ? result.trackRefs : [])
+        .map((ref) => typeof ref === 'string' ? refs.get(ref.trim()) : undefined)
+        .filter((song): song is SubsonicSong => Boolean(song) && !seen.has(song!.id) && Boolean(seen.add(song!.id)))
+        .slice(0, 6).map(toMixTrack)
+      const script = typeof result.script === 'string' ? result.script.trim().slice(0, MAX_SCRIPT_CHARS) : ''
+      if (tracks.length && script) return { tracks, script, curatedBy: 'claude' }
+    } catch { /* fall through to the plain DJ */ }
+  }
+  return { ...plainSegment(pool, input), curatedBy: 'tomify' }
+}
+
+export function createDjHandler(deps: DjDependencies & { fetcher?: typeof fetch } = {}): RouteHandler {
+  return async (request, env, url) => {
+    if (url.pathname !== '/api/dj/segment' && url.pathname !== '/api/dj/voice') return null
+    if (request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405)
+    const signedIn = await authenticate(request, env)
+    if (!signedIn) return json({ error: 'unauthorized' }, 401)
+    const body = await request.json().catch(() => ({}))
+
+    if (url.pathname === '/api/dj/voice') {
+      if (!env.AI) return json({ error: 'dj-voice-unavailable', message: 'The DJ voice needs the Workers AI binding (AI).' }, 503)
+      const text = typeof (body as { text?: unknown }).text === 'string' ? (body as { text: string }).text.trim().slice(0, MAX_SCRIPT_CHARS) : ''
+      if (!text) return json({ error: 'invalid-dj-text' }, 400)
+      const audio = await env.AI.run(DJ_TTS_MODEL, { text, speaker: env.TOMIFY_DJ_VOICE || DEFAULT_DJ_VOICE, encoding: 'mp3' } as never, { returnRawResponse: true }) as unknown as Response
+      if (!audio.ok) return json({ error: 'dj-voice-failed', message: `The DJ voice failed (${audio.status}).` }, 502)
+      return new Response(audio.body, { headers: { 'content-type': 'audio/mpeg', 'cache-control': 'no-store' } })
+    }
+
+    if (!env.TOMIFY_DB) return json({ error: 'dj-store-unavailable' }, 503)
+    const username = signedIn.toLowerCase()
+    const now = Date.now()
+    const input = { ...cleanSegmentRequest(body), username: signedIn, now }
+    try {
+      const stats = await listeningStats(env, username, now)
+      const snapshot = await gatherLibrary(subsonicForRequest(request, signedIn, env, deps.fetcher), stats)
+      const segment = await buildSegment(env, buildCandidates(snapshot, now), snapshot, input, deps)
+      return json({ ...segment, voice: Boolean(env.AI) } satisfies DjSegment)
+    } catch (error) {
+      return json({ error: 'dj-segment-failed', message: `The DJ couldn't pick the next songs: ${error instanceof Error ? error.message : String(error)}` }, 502)
+    }
+  }
+}
+
+export const handleDjRequest = createDjHandler()
