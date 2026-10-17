@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useApi } from '../lib/api-context'
 import { useLoad } from '../hooks/useLoad'
+import { useSearchParamState } from '../hooks/useSearchParamState'
 import { AlbumCard } from '../components/MediaCards'
 import { EmptyState, ErrorState, SkeletonGrid } from '../components/States'
 import { usePlayer } from '../stores/player'
@@ -13,14 +14,16 @@ const filters: Array<{ value: ReleaseFilter; label: string }> = [
   { value: 'compilation', label: 'Compilations' },
   { value: 'all', label: 'All' },
 ]
+const releaseFilterValues = filters.map((item) => item.value)
+const releaseSortValues: ReleaseSort[] = ['newest', 'oldest', 'title']
 
 export function Albums() {
   const api = useApi()
   const overrides = useReleaseMetadata((state) => state.overrides)
   const enrichMany = useReleaseMetadata((state) => state.enrichMany)
   const cloudStatus = useReleaseMetadata((state) => state.cloudStatus)
-  const [filter, setFilter] = useState<ReleaseFilter>('album')
-  const [sort, setSort] = useState<ReleaseSort>('newest')
+  const [filter, setFilter] = useSearchParamState<ReleaseFilter>('type', 'album', releaseFilterValues)
+  const [sort, setSort] = useSearchParamState<ReleaseSort>('sort', 'newest', releaseSortValues)
   const { data, error, loading, retry } = useLoad(
     (signal) => api.allAlbums(signal),
     [api],

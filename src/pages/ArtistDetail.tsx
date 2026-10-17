@@ -1,10 +1,11 @@
 import { Play, Shuffle } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { Artwork } from '../components/Artwork'
 import { AlbumCard } from '../components/MediaCards'
 import { ErrorState, SkeletonGrid } from '../components/States'
 import { useLoad } from '../hooks/useLoad'
+import { useSearchParamState } from '../hooks/useSearchParamState'
 import { useApi } from '../lib/api-context'
 import { collapseReleaseVariants, releaseBucket, releaseFamilyTitle, releaseYearLabel, resolvedReleaseType, sortReleases, type ReleaseFilter } from '../lib/release-metadata'
 import { usePlayer } from '../stores/player'
@@ -16,6 +17,7 @@ const artistFilters: Array<{ value: ReleaseFilter; label: string }> = [
   { value: 'compilation', label: 'Compilations' },
   { value: 'all', label: 'All' },
 ]
+const releaseFilterValues = artistFilters.map((item) => item.value)
 
 export function ArtistDetail() {
   const { id = '' } = useParams()
@@ -23,8 +25,8 @@ export function ArtistDetail() {
   const overrides = useReleaseMetadata((state) => state.overrides)
   const enrichMany = useReleaseMetadata((state) => state.enrichMany)
   const cloudStatus = useReleaseMetadata((state) => state.cloudStatus)
-  const [filter, setFilter] = useState<ReleaseFilter>('album')
-  const { data, loading, error, retry } = useLoad((signal) => api.artist(id, signal), [api, id])
+  const [filter, setFilter] = useSearchParamState<ReleaseFilter>('type', 'album', releaseFilterValues)
+  const { data, loading, error, retry } = useLoad((signal) => api.artist(id, signal), [api, id], `artist:${api.session.username}:${id}`)
   const albums = useMemo(() => data?.artist.album ?? [], [data])
 
   useEffect(() => {
