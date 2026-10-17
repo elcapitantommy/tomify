@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Install or roll back an immutable Tomify recovery-agent release.
+# Runs as the user who owns /opt/tomify (tom), not root. The only root step,
+# recording the version and restarting the service, goes through the fixed
+# helper /usr/local/sbin/tomify-agent-activate (scripts/tomify-agent-activate.sh).
 set -euo pipefail
 
 usage() {
@@ -12,7 +15,8 @@ Options:
   --archive FILE  Release tarball produced by deploy-agent.ps1/.sh.
   --sha SHA       Git short SHA used as the release name and TOMIFY_VERSION.
   --rollback      Swap back to the previously deployed release.
-  --dry-run       Test mode: permits --root and uses commands from PATH.
+  --dry-run       Test mode: permits --root and uses commands (including
+                  tomify-agent-activate) from PATH.
   --root DIR      Test-only filesystem root instead of /. Requires --dry-run.
 
 Environment used by tests:
@@ -42,7 +46,6 @@ while (($#)); do
   esac
 done
 
-[[ $EUID -eq 0 || $dry_run -eq 1 ]] || fail 'run this installer with sudo'
 [[ $root == / || $dry_run -eq 1 ]] || fail '--root is available only with --dry-run'
 [[ $root == /* ]] || fail '--root must be an absolute path'
 root=${root%/}
@@ -55,8 +58,7 @@ opt_root=$(path_under_root /opt/tomify)
 release_root="$opt_root/releases"
 current_link="$opt_root/current"
 previous_link="$opt_root/previous"
-env_file=$(path_under_root /etc/tomify/recovery-agent.env)
-service_file=$(path_under_root /etc/systemd/system/tomify-recovery.service)
+activate_helper=/usr/local/sbin/tomify-agent-activate
 health_timeout=${TOMIFY_INSTALL_HEALTH_TIMEOUT:-30}
 [[ $health_timeout =~ ^[0-9]+$ ]] || fail 'TOMIFY_INSTALL_HEALTH_TIMEOUT must be a non-negative whole number'
 
@@ -77,44 +79,24 @@ version_from_release() {
   basename -- "$1"
 }
 
-set_version() {
-  local version=$1 temp found=0 line
-  mkdir -p -- "$(dirname -- "$env_file")"
-  temp="${env_file}.new.$$"
-  : > "$temp"
-  if [[ -f $env_file ]]; then
-    while IFS= read -r line || [[ -n $line ]]; do
-      if [[ $line == TOMIFY_VERSION=* ]]; then
-        if ((found == 0)); then printf 'TOMIFY_VERSION=%s\n' "$version" >> "$temp"; found=1; fi
-      else
-        printf '%s\n' "$line" >> "$temp"
-      fi
-    done < "$env_file"
-    chmod --reference="$env_file" "$temp"
-    chown --reference="$env_file" "$temp"
+# Records the version (or clears it, given '') and restarts the service, through the root helper.
+activate() {
+  local version=$1 args
+  if [[ -n $version ]]; then args=(--version "$version"); else args=(--clear-version); fi
+  if ((dry_run)); then
+    tomify-agent-activate "${args[@]}"
   else
-    chmod 600 "$temp"
+    [[ -x $activate_helper ]] || fail "$activate_helper is not installed; run deploy-agent with -Setup (--setup) once"
+    if [[ $EUID -eq 0 ]]; then "$activate_helper" "${args[@]}"; else sudo "$activate_helper" "${args[@]}"; fi
   fi
-  ((found == 1)) || printf 'TOMIFY_VERSION=%s\n' "$version" >> "$temp"
-  mv -f -- "$temp" "$env_file"
 }
 
-clear_version() {
-  local temp line
-  [[ -f $env_file ]] || return 0
-  temp="${env_file}.new.$$"
-  : > "$temp"
-  while IFS= read -r line || [[ -n $line ]]; do
-    [[ $line == TOMIFY_VERSION=* ]] || printf '%s\n' "$line" >> "$temp"
-  done < "$env_file"
-  chmod --reference="$env_file" "$temp"
-  chown --reference="$env_file" "$temp"
-  mv -f -- "$temp" "$env_file"
-}
-
-restart_service() {
-  systemctl daemon-reload
-  systemctl restart tomify-recovery
+# The version a release directory deploys as: its name (a Git SHA, or legacy), otherwise none.
+release_version() {
+  local name
+  [[ -n ${1:-} ]] || return 0
+  name=$(basename -- "$1")
+  if [[ $name =~ ^([0-9a-fA-F]{7,40}|legacy)$ ]]; then printf '%s\n' "$name"; fi
 }
 
 healthy() {
@@ -132,12 +114,16 @@ healthy() {
 }
 
 restore_links_and_version() {
-  local old_current=${1:-} old_previous=${2:-} old_version=${3:-}
+  local old_current=${1:-} old_previous=${2:-}
   if [[ -n $old_current ]]; then atomic_link "$old_current" "$current_link"; else rm -f -- "$current_link"; fi
   if [[ -n $old_previous ]]; then atomic_link "$old_previous" "$previous_link"; else rm -f -- "$previous_link"; fi
-  if [[ -n $old_version ]]; then set_version "$old_version"; else clear_version; fi
+  activate "$(release_version "$old_current")" || true
 }
 
+if ((dry_run == 0)); then
+  [[ -x $activate_helper ]] || fail "$activate_helper is not installed; run deploy-agent once with -Setup (PowerShell) or --setup (shell)"
+  [[ -w $opt_root && ( ! -e $release_root || -w $release_root ) ]] || fail "$opt_root must be owned by the deploying user; run deploy-agent once with -Setup (PowerShell) or --setup (shell)"
+fi
 mkdir -p -- "$opt_root" "$release_root"
 
 if ((rollback)); then
@@ -145,16 +131,13 @@ if ((rollback)); then
   previous_target=$(link_target "$previous_link" || true)
   [[ -n $current_target ]] || fail "'$current_link' does not point to a deployed release"
   [[ -n $previous_target && -d $previous_target ]] || fail 'no previous release is available to roll back to'
-  old_version=$(version_from_release "$current_target")
   rollback_version=$(version_from_release "$previous_target")
 
   atomic_link "$previous_target" "$current_link"
   atomic_link "$current_target" "$previous_link"
-  set_version "$rollback_version"
-  restart_service
+  activate "$(release_version "$previous_target")"
   if ! healthy "$rollback_version"; then
-    restore_links_and_version "$current_target" "$previous_target" "$old_version"
-    restart_service || true
+    restore_links_and_version "$current_target" "$previous_target"
     fail "rolled back rollback attempt because release '$rollback_version' did not become healthy"
   fi
   echo "Rolled back Tomify recovery agent to $rollback_version"
@@ -210,21 +193,13 @@ fi
 
 old_current=$(link_target "$current_link" || true)
 old_previous=$(link_target "$previous_link" || true)
-old_version=''
-if [[ -f $env_file ]]; then
-  old_version=$(sed -n 's/^TOMIFY_VERSION=//p' "$env_file" | head -n 1)
-fi
 
 if [[ -n $old_current && $old_current != "$release_dir" ]]; then atomic_link "$old_current" "$previous_link"; fi
 atomic_link "$release_dir" "$current_link"
-set_version "$sha"
-mkdir -p -- "$(dirname -- "$service_file")"
-install -m 0644 "$release_dir/recovery-agent/tomify-recovery.service.example" "$service_file"
-restart_service
+activate "$sha"
 
 if ! healthy "$sha"; then
-  restore_links_and_version "$old_current" "$old_previous" "$old_version"
-  restart_service || true
+  restore_links_and_version "$old_current" "$old_previous"
   fail "release '$sha' did not become healthy within ${health_timeout}s; restored the previous release"
 fi
 

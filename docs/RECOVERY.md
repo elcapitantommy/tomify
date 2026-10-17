@@ -207,11 +207,29 @@ From an up-to-date, validated Windows checkout, run:
 
 On Linux or macOS, use `./scripts/deploy-agent.sh`. Set `TOMIFY_AGENT_HOST` or pass `-HostName user@host` in PowerShell / `--host user@host` in the shell script when the destination is not `tom@tomify`.
 
-The deploy command refuses uncommitted changes under `recovery-agent/` or `shared/`, packages both directories with `package.json`, copies one archive to `/tmp`, and opens one remote `sudo` prompt. The installer creates the immutable release `/opt/tomify/releases/<short-sha>`, atomically switches `/opt/tomify/current`, updates only `TOMIFY_VERSION` in `/etc/tomify/recovery-agent.env`, installs the systemd unit and waits up to 30 seconds for `/health` to report that SHA. If the new agent does not become healthy it restores the earlier symlink and version automatically. Only the newest five releases are retained.
+Before the first deploy with this version of the scripts, run the one-time setup below. The deploy command refuses uncommitted changes under `recovery-agent/` or `shared/`, packages both directories with `package.json` and copies one archive to `/tmp`. The installer runs as `tom`, not root: it creates the immutable release `/opt/tomify/releases/<short-sha>` and atomically switches `/opt/tomify/current`. It then calls the root helper `/usr/local/sbin/tomify-agent-activate`, which updates only `TOMIFY_VERSION` in `/etc/tomify/recovery-agent.env`, writes the systemd unit from its own built-in template and restarts the service. The installer waits up to 30 seconds for `/health` to report that SHA. If the new agent does not become healthy it restores the earlier symlink and version automatically. Only the newest five releases are retained.
 
 The Worker embeds its own short SHA at build time and exposes it with contract `2` at `GET /api/version`; authenticated agent status exposes the deployed agent version and the same contract. Settings shows both values and warns only when the contracts differ; a different version alone is expected after a site-only deploy and needs no agent redeploy.
 
 Before search, acquisition, or **Import rest of download**, the Worker checks the agent contract and caches the result for about one minute. An agent with no contract or a contract below `2` is rejected with HTTP 409 `recovery-agent-outdated` and a link back to these update instructions. This prevents a newer site from sending a request an older agent may misinterpret, such as the former *Artist and title are required.* failure. Deploy the agent before the site whenever a release changes both.
+
+#### One-time setup for password-free deploys
+
+Run this once from the Windows checkout. It asks for the sudo password one last time:
+
+```powershell
+.\scripts\deploy-agent.ps1 -Setup
+```
+
+The shell equivalent is `./scripts/deploy-agent.sh --setup`. Setup does four things:
+- It installs `scripts/tomify-agent-activate.sh` as `/usr/local/sbin/tomify-agent-activate` (root-owned, 0755).
+- It adds `/etc/sudoers.d/tomify-deploy` so `tom` can run that one helper without a password.
+- It makes `/etc/tomify` and `/etc/systemd/system` root-only.
+- It hands `/opt/tomify` and its releases to `tom`.
+
+The helper takes only `--version <git sha>` or `--clear-version`. It never runs anything from a release archive and always writes a unit that runs the agent as `tom` with the usual sandbox, so the rule grants no other root access. The agent already runs as `tom`, so owning the release files adds nothing.
+
+Re-run `-Setup` after a change to `scripts/tomify-agent-activate.sh` or `recovery-agent/tomify-recovery.service.example`; a test keeps those two units identical. To undo it, run `sudo rm /etc/sudoers.d/tomify-deploy /usr/local/sbin/tomify-agent-activate`.
 
 To roll back deliberately:
 
@@ -219,7 +237,7 @@ To roll back deliberately:
 .\scripts\deploy-agent.ps1 -Rollback
 ```
 
-The matching shell command is `./scripts/deploy-agent.sh --rollback`. It swaps the current and previous releases, updates `TOMIFY_VERSION`, restarts the service and verifies the older version before accepting the rollback.
+The matching shell command is `./scripts/deploy-agent.sh --rollback`. It uses the installer from your checkout (an older release's copy may predate the root helper), swaps the current and previous releases, updates `TOMIFY_VERSION`, restarts the service and verifies the older version before accepting the rollback.
 
 #### One-time migration from `/opt/tomify/recovery-agent`
 

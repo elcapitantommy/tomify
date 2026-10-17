@@ -20,6 +20,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const script = fileURLToPath(new URL('./install-agent-release.sh', import.meta.url))
+const activate = fileURLToPath(new URL('./tomify-agent-activate.sh', import.meta.url))
 const serviceExample = fileURLToPath(new URL('../recovery-agent/tomify-recovery.service.example', import.meta.url))
 const skip = process.platform === 'win32' && 'the release installer runs on Debian and needs POSIX symlinks'
 
@@ -28,13 +29,14 @@ function writeExecutable(path, contents) {
   chmodSync(path, 0o755)
 }
 
-function createArchive(root, sha) {
+function createArchive(root, sha, { unit = null } = {}) {
   const payload = join(root, `payload-${sha}`)
   mkdirSync(join(payload, 'recovery-agent'), { recursive: true })
   mkdirSync(join(payload, 'shared'), { recursive: true })
   mkdirSync(join(payload, 'scripts'), { recursive: true })
   writeFileSync(join(payload, 'recovery-agent', 'index.mjs'), '// test agent\n')
-  cpSync(serviceExample, join(payload, 'recovery-agent', 'tomify-recovery.service.example'))
+  if (unit) writeFileSync(join(payload, 'recovery-agent', 'tomify-recovery.service.example'), unit)
+  else cpSync(serviceExample, join(payload, 'recovery-agent', 'tomify-recovery.service.example'))
   writeFileSync(join(payload, 'shared', 'quality.mjs'), '// shared quality\n')
   cpSync(script, join(payload, 'scripts', 'install-agent-release.sh'))
   writeFileSync(join(payload, 'package.json'), '{"name":"tomify"}\n')
@@ -56,6 +58,8 @@ function setup({ legacyLayout = false } = {}) {
   mkdirSync(dirname(envFile), { recursive: true })
   writeFileSync(log, '')
   writeExecutable(join(bin, 'systemctl'), '#!/usr/bin/env bash\necho "systemctl $*" >> "$STUB_LOG"\n')
+  writeExecutable(join(bin, 'tomify-agent-activate'), `#!/usr/bin/env bash\nexec bash ${JSON.stringify(activate)} --dry-run --root ${JSON.stringify(root)} "$@"\n`)
+  mkdirSync(join(root, 'etc', 'systemd', 'system'), { recursive: true })
   writeExecutable(join(bin, 'curl'), '#!/usr/bin/env bash\nprintf \'{"ok":true,"version":"%s"}\\n\' "$STUB_HEALTH_VERSION"\n')
 
   const oldShas = ['1111111', '2222222', '3333333', '4444444', '5555555', '6666666']
@@ -88,7 +92,8 @@ function setup({ legacyLayout = false } = {}) {
     env: { ...baseEnv, STUB_HEALTH_VERSION: healthVersion },
     encoding: 'utf8',
   })
-  return { temp, root, releases, envFile, log, run }
+  const serviceFile = join(root, 'etc', 'systemd', 'system', 'tomify-recovery.service')
+  return { temp, root, releases, envFile, serviceFile, log, run, baseEnv }
 }
 
 test('dry-run installs a release, updates version, swaps the symlink, and retains five releases', { skip }, () => {
@@ -145,4 +150,37 @@ test('explicit rollback swaps current and previous releases', { skip }, () => {
   assert.equal(realpathSync(join(fixture.root, 'opt', 'tomify', 'current')), join(fixture.releases, '5555555'))
   assert.equal(realpathSync(join(fixture.root, 'opt', 'tomify', 'previous')), join(fixture.releases, '6666666'))
   assert.match(readFileSync(fixture.envFile, 'utf8'), /^TOMIFY_VERSION=5555555$/m)
+})
+
+test('the service unit comes from the root helper, never from the release archive', { skip }, () => {
+  const fixture = setup()
+  const sha = 'abcdef1'
+  const archive = createArchive(fixture.temp, sha, { unit: '[Service]\nUser=root\nExecStart=/bin/sh -c id\n' })
+  const result = fixture.run(['--archive', archive, '--sha', sha], sha)
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(readFileSync(fixture.serviceFile, 'utf8'), readFileSync(serviceExample, 'utf8'))
+})
+
+test('the root helper only accepts a Git SHA or legacy as the version', { skip }, () => {
+  const fixture = setup()
+  for (const version of ['abc', 'abcdef1; id', '../../etc', '']) {
+    const result = spawnSync('bash', [activate, '--dry-run', '--root', fixture.root, '--version', version], { env: fixture.baseEnv, encoding: 'utf8' })
+    assert.equal(result.status, 1, version)
+    assert.match(result.stderr, /--version must be/)
+  }
+  assert.equal(readFileSync(fixture.log, 'utf8'), '')
+})
+
+test('the root helper refuses test options under sudo', { skip }, () => {
+  const fixture = setup()
+  const result = spawnSync('bash', [activate, '--dry-run', '--root', fixture.root, '--version', 'abcdef1'], { env: { ...fixture.baseEnv, SUDO_USER: 'tom' }, encoding: 'utf8' })
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /refused under sudo/)
+})
+
+test('the root helper clears the version and keeps every other setting', { skip }, () => {
+  const fixture = setup()
+  const result = spawnSync('bash', [activate, '--dry-run', '--root', fixture.root, '--clear-version'], { env: fixture.baseEnv, encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(readFileSync(fixture.envFile, 'utf8'), 'TOMIFY_RECOVERY_TOKEN=keep-this-value\nTOMIFY_RECOVERY_DIR=/srv/music-recovery\n')
 })
