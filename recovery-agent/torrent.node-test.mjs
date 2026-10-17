@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtemp, mkdir, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { checkArchiveListing, createQbittorrentClient, extractArchives, findArchives, isExtractableArchive, parseTorrentLink, qbittorrentJobState, torrentCandidate, torrentConfig, torrentSearchCandidates, torrentTransferDetails } from './torrent.mjs'
+import { DEFAULT_TORRENT_MAX_ACTIVE, checkArchiveListing, createQbittorrentClient, extractArchives, findArchives, isExtractableArchive, parseTorrentLink, qbittorrentJobState, qbittorrentQueuePreferences, torrentCandidate, torrentConfig, torrentSearchCandidates, torrentTransferDetails } from './torrent.mjs'
 
 const hash = '0123456789abcdef0123456789abcdef01234567'
 
@@ -60,6 +60,15 @@ test('qBittorrent configuration requires loopback HTTP or HTTPS and defaults its
   assert.throws(() => torrentConfig({ TOMIFY_QBITTORRENT_URL: 'http://192.168.1.5:8081' }), /HTTPS \(or loopback HTTP\)/)
 })
 
+test('torrents download five at a time by default, adjustable with TOMIFY_TORRENT_MAX_ACTIVE', () => {
+  const url = 'http://127.0.0.1:8081'
+  assert.equal(DEFAULT_TORRENT_MAX_ACTIVE, 5)
+  assert.equal(torrentConfig({ TOMIFY_QBITTORRENT_URL: url }).maxActiveDownloads, 5)
+  assert.equal(torrentConfig({ TOMIFY_QBITTORRENT_URL: url, TOMIFY_TORRENT_MAX_ACTIVE: '8' }).maxActiveDownloads, 8)
+  for (const bad of ['0', '-1', '2.5', 'lots', '500']) assert.equal(torrentConfig({ TOMIFY_QBITTORRENT_URL: url, TOMIFY_TORRENT_MAX_ACTIVE: bad }).maxActiveDownloads, 5)
+  assert.deepEqual(qbittorrentQueuePreferences(5), { queueing_enabled: true, max_active_downloads: 5, max_active_uploads: 5, max_active_torrents: 10 })
+})
+
 test('qBittorrent states map to queued, downloading, completed and failed jobs', () => {
   const now = Date.parse('2026-10-15T12:00:00Z')
   assert.equal(qbittorrentJobState(null, { createdAt: '2026-10-15T11:59:30Z', now }).status, 'queued')
@@ -86,7 +95,7 @@ test('transfer details report speed, seeds, peers and a known ETA only', () => {
   assert.equal(qbittorrentJobState({ state: 'downloading', progress: 0.2, dlspeed: 100 }).details.downloadSpeed, 100)
 })
 
-function fakeQbittorrent() {
+function fakeQbittorrent({ preferencesStatus = 200 } = {}) {
   const calls = []
   const fetchImpl = async (input, init = {}) => {
     const url = new URL(String(input))
@@ -97,6 +106,7 @@ function fakeQbittorrent() {
     if (url.pathname === '/api/v2/torrents/add') return new Response('Ok.')
     if (url.pathname === '/api/v2/torrents/info') return Response.json([{ hash: 'other', tags: 'tomify-other' }, { hash, tags: 'music, tomify-job-1', state: 'downloading', progress: 0.5 }])
     if (url.pathname === '/api/v2/torrents/delete') return new Response('')
+    if (url.pathname === '/api/v2/app/setPreferences') return new Response('', { status: preferencesStatus })
     return new Response('', { status: 404 })
   }
   return { calls, fetchImpl }
@@ -115,6 +125,35 @@ test('the qBittorrent client logs in, adds by tag into its category and finds th
   assert.deepEqual(qbt.calls.at(-1).body, { hashes: hash, deleteFiles: 'true' })
   const wrong = createQbittorrentClient({ url: 'http://127.0.0.1:8081', username: 'tomify', password: 'nope', category: 'tomify' }, qbt.fetchImpl)
   await assert.rejects(wrong.info('x'), /rejected the configured username or password/)
+})
+
+test('the qBittorrent client sets the download queue limits on the first add only', async () => {
+  const qbt = fakeQbittorrent()
+  const client = createQbittorrentClient({ url: 'http://127.0.0.1:8081', username: 'tomify', password: 'secret', category: 'tomify', maxActiveDownloads: 5 }, qbt.fetchImpl)
+  await client.add(`magnet:?xt=urn:btih:${hash}`, { tag: 'tomify-job-1', savePath: '/srv/torrents' })
+  await client.add(`magnet:?xt=urn:btih:${hash}`, { tag: 'tomify-job-2', savePath: '/srv/torrents' })
+  const preferences = qbt.calls.filter((call) => call.path === '/api/v2/app/setPreferences')
+  assert.equal(preferences.length, 1)
+  assert.deepEqual(JSON.parse(preferences[0].body.json), { queueing_enabled: true, max_active_downloads: 5, max_active_uploads: 5, max_active_torrents: 10 })
+  assert.equal(preferences[0].cookie, 'SID=abc123')
+  assert.ok(qbt.calls.findIndex((call) => call.path === '/api/v2/app/setPreferences') < qbt.calls.findIndex((call) => call.path === '/api/v2/torrents/add'))
+})
+
+test('a failed queue-limit update does not stop the torrent being added and is retried next time', async () => {
+  const qbt = fakeQbittorrent({ preferencesStatus: 500 })
+  const client = createQbittorrentClient({ url: 'http://127.0.0.1:8081', username: 'tomify', password: 'secret', category: 'tomify' }, qbt.fetchImpl)
+  assert.equal((await client.add(`magnet:?xt=urn:btih:${hash}`, { tag: 'tomify-job-1', savePath: '/srv/torrents' })).remoteId, 'tomify-job-1')
+  await client.add(`magnet:?xt=urn:btih:${hash}`, { tag: 'tomify-job-2', savePath: '/srv/torrents' })
+  assert.equal(qbt.calls.filter((call) => call.path === '/api/v2/app/setPreferences').length, 2)
+  assert.equal(qbt.calls.filter((call) => call.path === '/api/v2/torrents/add').length, 2)
+})
+
+test('polling a torrent also applies the queue limits, so torrents queued before an update get them', async () => {
+  const qbt = fakeQbittorrent()
+  const client = createQbittorrentClient({ url: 'http://127.0.0.1:8081', username: 'tomify', password: 'secret', category: 'tomify', maxActiveDownloads: 5 }, qbt.fetchImpl)
+  await client.info('tomify-job-1')
+  await client.info('tomify-job-1')
+  assert.equal(qbt.calls.filter((call) => call.path === '/api/v2/app/setPreferences').length, 1)
 })
 
 test('only first archive volumes are extracted', () => {
