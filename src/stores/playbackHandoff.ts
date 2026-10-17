@@ -59,6 +59,7 @@ export function adoptSnapshot(snapshot: LivePlaybackSnapshot) {
     shuffle: snapshot.shuffle,
     repeat: snapshot.repeat,
     playing: false,
+    unshuffledQueue: null,
   })
 }
 
@@ -66,7 +67,7 @@ export function adoptSnapshot(snapshot: LivePlaybackSnapshot) {
 export function playHere(snapshot: LivePlaybackSnapshot) {
   const position = livePosition(snapshot, serverNow())
   usePlayer.setState({ shuffle: snapshot.shuffle, repeat: snapshot.repeat })
-  usePlayer.getState().playTracks(snapshot.queue, snapshot.currentIndex)
+  usePlayer.getState().playTracks(snapshot.queue, snapshot.currentIndex, { keepOrder: true })
   if (position > 1) usePlayer.getState().seekTo(position)
 }
 

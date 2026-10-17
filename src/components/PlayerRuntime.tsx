@@ -41,7 +41,6 @@ export function PlayerRuntime() {
   const playing = usePlayer((s) => s.playing)
   const volume = usePlayer((s) => s.volume)
   const muted = usePlayer((s) => s.muted)
-  const shuffle = usePlayer((s) => s.shuffle)
   const repeat = usePlayer((s) => s.repeat)
   const track = queue[currentIndex]
   // Tomify's replacement covers load after the player restores, and can change while a
@@ -229,7 +228,7 @@ export function PlayerRuntime() {
   // Keep one complete track primed ahead. The current element can then hand off
   // to an already-buffering decoder instead of loading the next URL after ended.
   useEffect(() => {
-    if (!track || !playing || shuffle || repeat === 'one' || queue.length < 2) return
+    if (!track || !playing || repeat === 'one' || queue.length < 2) return
 
     let nextIndex = currentIndex + 1
     if (nextIndex >= queue.length) {
@@ -251,7 +250,7 @@ export function PlayerRuntime() {
     element.volume = volume
     element.muted = muted
     loadedTrackIds.current[slot] = nextTrack.id
-  }, [api, currentIndex, muted, playing, queue, repeat, shuffle, track?.id, volume]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [api, currentIndex, muted, playing, queue, repeat, track?.id, volume]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const element = currentAudio()
