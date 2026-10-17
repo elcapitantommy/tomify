@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react'
-import { ArrowRight, Clock3, Play, Sparkles } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ArrowRight, Clock3, Play, RefreshCw, Sparkles } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { AlbumCard } from '../components/MediaCards'
+import { MixCard } from '../components/MixCard'
 import { EmptyState, ErrorState, SkeletonGrid } from '../components/States'
 import { useApi } from '../lib/api-context'
 import { useLoad } from '../hooks/useLoad'
 import { usePlayer } from '../stores/player'
 import { useAuth } from '../stores/auth'
+import { cachedMixes, mixesApi, type MixesResponse } from '../lib/mixes-api'
 
 const homeMessages = [
   "You look nice today.",
@@ -79,7 +81,40 @@ export function Home() {
     return () => window.clearInterval(interval)
   }, [])
 
-  return <div className="page home-page"><header className="page-header hero"><div><span className="eyebrow"><Sparkles size={14}/> Your library</span><h1>{greeting.replace('.', '')}{username ? `, ${username}` : ''}.</h1><p>{homeMessage}</p></div>{data?.recent[0] && <button className="button primary" onClick={() => void playAlbum(data.recent[0].id)}><Play fill="currentColor"/>Play something</button>}</header>{loading && <><SectionTitle title="Recently played"/><SkeletonGrid/><SectionTitle title="Fresh from the shelves"/><SkeletonGrid rows={4}/></>}{error && <ErrorState message={error} retry={retry}/>} {data && !loading && <>{data.recent.length ? <LibrarySection title="Recently played" icon={<Clock3/>} albums={data.recent} onPlay={playAlbum}/> : <EmptyState title="Nothing played yet" message="Your listening history will appear here."/>}<LibrarySection title="Fresh from the shelves" subtitle="Recently added" albums={data.newest} onPlay={playAlbum}/>{data.starred.length > 0 && <LibrarySection title="Made for you" subtitle="Your favourite albums" albums={data.starred} onPlay={playAlbum}/>}</>}</div>
+  return <div className="page home-page"><header className="page-header hero"><div><span className="eyebrow"><Sparkles size={14}/> Your library</span><h1>{greeting.replace('.', '')}{username ? `, ${username}` : ''}.</h1><p>{homeMessage}</p></div>{data?.recent[0] && <button className="button primary" onClick={() => void playAlbum(data.recent[0].id)}><Play fill="currentColor"/>Play something</button>}</header>{loading && <><SectionTitle title="Recently played"/><SkeletonGrid/><SectionTitle title="Fresh from the shelves"/><SkeletonGrid rows={4}/></>}{error && <ErrorState message={error} retry={retry}/>} {data && !loading && <>{data.recent.length ? <LibrarySection title="Recently played" icon={<Clock3/>} albums={data.recent} onPlay={playAlbum}/> : <EmptyState title="Nothing played yet" message="Your listening history will appear here."/>}<LibrarySection title="Fresh from the shelves" subtitle="Recently added" albums={data.newest} onPlay={playAlbum}/><MadeForYou/>{data.starred.length > 0 && <LibrarySection title="Favourite albums" subtitle="Starred" albums={data.starred} onPlay={playAlbum}/>}</>}</div>
 }
 function SectionTitle({ title, subtitle, icon }: { title: string; subtitle?: string; icon?: React.ReactNode }) { return <div className="section-title"><div>{subtitle && <span className="eyebrow">{subtitle}</span>}<h2>{icon}{title}</h2></div><Link to="/albums">See all <ArrowRight/></Link></div> }
 function LibrarySection({ title, subtitle, icon, albums, onPlay }: { title: string; subtitle?: string; icon?: React.ReactNode; albums: Parameters<typeof AlbumCard>[0]['album'][]; onPlay: (id: string) => Promise<void> }) { return <section><SectionTitle title={title} subtitle={subtitle} icon={icon}/><div className="card-grid">{albums.map((album) => <AlbumCard album={album} key={album.id} onPlay={() => void onPlay(album.id)}/>)}</div></section> }
+
+// Home loads the stored mixes straight away and, if they are a day old, asks the Worker to build new ones.
+export function MadeForYou() {
+  const [state, setState] = useState<MixesResponse | null>(() => cachedMixes())
+  const [building, setBuilding] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const refreshMixes = useRef(() => {})
+
+  useEffect(() => {
+    let cancelled = false
+    let timer: number | undefined
+    const update = (value: MixesResponse) => { if (!cancelled) setState(value) }
+    const build = async (force: boolean) => {
+      setBuilding(true); setError(null)
+      try { update(await mixesApi.refresh(force)) } catch (reason) { if (!cancelled) setError(reason instanceof Error ? reason.message : 'Tomify could not build your mixes.') } finally { if (!cancelled) setBuilding(false) }
+    }
+    // Another tab or device is already building them: check back until it finishes.
+    const waitForOther = (attempt = 0) => { timer = window.setTimeout(async () => { try { const value = await mixesApi.load(); update(value); if (value.refreshing && attempt < 18) waitForOther(attempt + 1) } catch { /* try again on the next visit */ } }, 10_000) }
+    mixesApi.load().then((value) => {
+      update(value)
+      if (value.refreshing) waitForOther()
+      else if (value.stale) void build(false)
+    }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : 'Tomify could not load your mixes.') })
+    refreshMixes.current = () => void build(true)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [])
+
+  const mixes = state?.mixes ?? []
+  const play = (index: number) => usePlayer.getState().playTracks(mixes[index].tracks)
+  const status = building ? (mixes.length ? 'Refreshing your mixes…' : 'Building your mixes from what you listen to. This can take a minute.') : error ?? (state?.lastError && !mixes.length ? state.lastError : null)
+  if (!mixes.length && !building && !error && !state?.refreshing) return null
+  return <section aria-label="Made for you"><div className="section-title"><div><span className="eyebrow">{state?.curatedBy === 'claude' ? 'Picked by Claude' : 'From your listening'}</span><h2><Sparkles/>Made for you</h2></div>{mixes.length > 0 && <button className="link-button" onClick={() => refreshMixes.current()} disabled={building}><RefreshCw className={building ? 'spin' : ''}/>Refresh</button>}</div>{status && <p className="mixes-status" role="status">{status}</p>}{mixes.length ? <div className="card-grid">{mixes.map((mix, index) => <MixCard key={mix.id} mix={mix} onPlay={() => play(index)}/>)}</div> : (building || state?.refreshing) && <SkeletonGrid rows={6}/>}</section>
+}

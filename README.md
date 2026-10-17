@@ -266,6 +266,17 @@ Tomify works like Spotify Connect between the tabs and apps signed in to the sam
 
 The state lives in the D1 tables `live_playback` and `live_playback_devices` (`drizzle/0009_live_playback.sql`). The Worker code is in `worker/features/live-playback.ts`, routed by `worker/routes/live-playback.ts`.
 
+### Made for you mixes
+
+Home's **Made for you** shelf holds five or six mixes built from your own library and listening, such as what you have on repeat, a mix around an artist you love with similar music, old favourites you haven't played in a while, unplayed songs from new albums, and deep cuts. Open a mix to play or shuffle it, or **Save as playlist** to keep it in Navidrome. Your favourite albums are still on Home under **Favourite albums**.
+
+- **Listening history.** Navidrome only keeps a play count and the last time each song played, so the player also records each play in D1 (`listening_events`): how long you listened and whether you finished it or skipped it. Plays that can't be sent wait in the browser and go with the next one. A track counts as skipped when you move on before half of it or 30 seconds, whichever is less. Songs you keep skipping are left out of mixes, and history older than 400 days is pruned.
+- **Building.** The first visit to Home each day (mixes older than 20 hours) asks the Worker to rebuild them, signed in as you. It gathers candidates from Navidrome (most played, recently played and recently added albums, favourites, a random sample, and top and similar songs for the artists you play most, from Navidrome's Deezer, ListenBrainz or Last.fm agents) and from the listening history. **Refresh** rebuilds on demand, at most once every 10 minutes. Two tabs never build at once.
+- **Claude.** With the Worker secret `ANTHROPIC_API_KEY` set, Claude (Sonnet 5.5 by default, or `TOMIFY_MIXES_MODEL`) picks, orders and names the mixes from that candidate pool. It only sees the pool, so every song is one you own. A daily build costs roughly 5–10p. Without the key, or if Claude fails, Tomify builds the mixes itself with simple rules, and the shelf says which made them.
+- To turn Claude on: create a key at console.anthropic.com, then `npx wrangler secret put ANTHROPIC_API_KEY` (or add it in the Cloudflare dashboard under the tomify Worker's Settings → Variables and Secrets as a secret). Press **Refresh** on Home to rebuild straight away.
+
+The Worker code is `worker/features/mixes.ts` (gathering, simple mixes, storage), `worker/features/mix-curator.ts` (the Claude call) and `worker/features/listening.ts`; the tables are created by `drizzle/0014_listening_and_mixes.sql`.
+
 ### Known limitations
 
 - Offline audio downloads and drag-to-reorder (playlists reorder with up/down buttons) are not included yet.
