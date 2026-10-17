@@ -195,6 +195,7 @@ GitHub Actions runs the frozen-lockfile install, lint, typecheck, production bui
 - Navidrome token authentication, persisted without storing the password, with logout and useful failure states.
 - Home, artists, artist detail, albums, multi-disc album detail, debounced search, playlists, favourites, downloads placeholder and settings.
 - A heart on every track row and album card stars or unstars it in Navidrome. The heart changes at once and flips back if the server refuses, and the Favourites page updates without a reload.
+- Navidrome playlists can be created and edited in Tomify: **New playlist** on the Playlists page, the **+** button on any track row or **Add to playlist** on an album to add music, and **Edit** on your own playlist to rename it, move tracks up or down, remove tracks or delete it (deleting also removes its Tomify shares). Edits save straight away through the Subsonic `createPlaylist`, `updatePlaylist` and `deletePlaylist` calls; reordering rewrites the whole track list with `createPlaylist` and sends long song lists as a POST form (OpenSubsonic `formPost`). Only the owner sees the editing controls.
 - Playlists are private to the account that made them, with a **Share** button for sharing one with other Tomify accounts (read-only; recipients see it under **Shared with you**). Navidrome itself would hand admins every user's playlists and everyone other users' public ones, so Tomify lists only your own plus those shared with you. Navidrome has no per-user sharing, so sharing a Navidrome playlist also marks it public in Navidrome (other Subsonic clients can then see it) and unsharing it from everyone makes it private again. An account appears in the Share list once it has signed in to Tomify. Shares live in the D1 `playlist_shares` table (`drizzle/0007_playlist_shares.sql`).
 - Persistent HTML5 player with queue, seek, volume, mute, shuffle, repeat, previous/next and full-screen mobile now playing.
 - Media Session metadata (absolute artwork in six sizes), transport controls and position updates.
@@ -261,7 +262,7 @@ The state lives in the D1 tables `live_playback` and `live_playback_devices` (`d
 
 ### Known limitations
 
-- Offline audio downloads, playlist editing and drag-to-reorder are not included yet.
+- Offline audio downloads and drag-to-reorder (playlists reorder with up/down buttons) are not included yet.
 - Authentication tokens live in browser local storage. This is appropriate for trusted household devices; a shared device should be signed out after use.
 - A cross-origin deployment requires correct Navidrome CORS configuration. A same-origin proxy avoids that operational edge.
 

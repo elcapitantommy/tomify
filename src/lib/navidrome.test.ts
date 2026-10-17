@@ -24,4 +24,40 @@ describe('NavidromeClient', () => {
   it('stars and unstars songs, albums and artists with the matching Subsonic parameter', async () => { const fetcher = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ 'subsonic-response': { status: 'ok' } }), { status: 200 })); const client = new NavidromeClient(session, fetcher); await client.star('s1'); await client.unstar('s1'); await client.star('a1', 'album'); await client.unstar('r1', 'artist'); const calls = fetcher.mock.calls.map(([input]) => input as URL); expect(calls.map((url) => url.pathname)).toEqual(['/rest/star.view', '/rest/unstar.view', '/rest/star.view', '/rest/unstar.view']); expect(calls[0].searchParams.get('id')).toBe('s1'); expect(calls[1].searchParams.get('id')).toBe('s1'); expect(calls[2].searchParams.get('albumId')).toBe('a1'); expect(calls[2].searchParams.get('id')).toBeNull(); expect(calls[3].searchParams.get('artistId')).toBe('r1') })
   it('rejects a star the server refuses', async () => { const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ 'subsonic-response': { status: 'failed', error: { code: 70, message: 'Not found' } } }), { status: 200 })); await expect(new NavidromeClient(session, fetcher).star('missing')).rejects.toEqual(expect.objectContaining({ code: 70 })) })
   it('marks a playlist public or private through updatePlaylist', async () => { const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ 'subsonic-response': { status: 'ok' } }), { status: 200 })); await new NavidromeClient(session, fetcher).setPlaylistPublic('7', true); const url = fetcher.mock.calls[0][0] as URL; expect(url.pathname).toBe('/rest/updatePlaylist.view'); expect(url.searchParams.get('playlistId')).toBe('7'); expect(url.searchParams.get('public')).toBe('true') })
+
+  describe('playlist editing', () => {
+    const ok = (extra: Record<string, unknown> = {}) => vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => { void input; void init; return new Response(JSON.stringify({ 'subsonic-response': { status: 'ok', ...extra } }), { status: 200 }) })
+    it('creates a playlist with its songs in a POST body', async () => {
+      const fetcher = ok({ playlist: { id: 'p9', name: 'Road trip' } })
+      const playlist = await new NavidromeClient(session, fetcher).createPlaylist('Road trip', ['a', 'b'])
+      expect(playlist.id).toBe('p9')
+      const [url, init] = fetcher.mock.calls[0] as [URL, RequestInit]
+      expect(url.pathname).toBe('/rest/createPlaylist.view'); expect(url.searchParams.get('name')).toBe('Road trip')
+      expect(init.method).toBe('POST'); expect((init.body as URLSearchParams).getAll('songId')).toEqual(['a', 'b'])
+    })
+    it('creates an empty playlist with a plain GET', async () => {
+      const fetcher = ok({ playlist: { id: 'p9', name: 'Empty' } })
+      await new NavidromeClient(session, fetcher).createPlaylist('Empty')
+      expect((fetcher.mock.calls[0][1] as RequestInit).method).toBeUndefined()
+    })
+    it('adds, removes, renames, reorders and deletes', async () => {
+      const fetcher = ok(); const client = new NavidromeClient(session, fetcher)
+      await client.addToPlaylist('p1', ['x', 'y'])
+      await client.removeFromPlaylist('p1', [2])
+      await client.renamePlaylist('p1', 'New name')
+      await client.replacePlaylistTracks('p1', ['y', 'x'])
+      await client.deletePlaylist('p1')
+      const calls = fetcher.mock.calls as [URL, RequestInit][]
+      expect(calls[0][0].pathname).toBe('/rest/updatePlaylist.view'); expect((calls[0][1].body as URLSearchParams).getAll('songIdToAdd')).toEqual(['x', 'y'])
+      expect(calls[1][0].searchParams.getAll('songIndexToRemove')).toEqual(['2'])
+      expect(calls[2][0].searchParams.get('name')).toBe('New name')
+      expect(calls[3][0].pathname).toBe('/rest/createPlaylist.view'); expect(calls[3][0].searchParams.get('playlistId')).toBe('p1'); expect((calls[3][1].body as URLSearchParams).getAll('songId')).toEqual(['y', 'x'])
+      expect(calls[4][0].pathname).toBe('/rest/deletePlaylist.view'); expect(calls[4][0].searchParams.get('id')).toBe('p1')
+    })
+    it('skips empty adds and removes', async () => {
+      const fetcher = ok(); const client = new NavidromeClient(session, fetcher)
+      await client.addToPlaylist('p1', []); await client.removeFromPlaylist('p1', [])
+      expect(fetcher).not.toHaveBeenCalled()
+    })
+  })
 })

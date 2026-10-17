@@ -8,6 +8,13 @@ interface SubsonicEnvelope { 'subsonic-response': Record<string, unknown> & { st
 export type StarKind = 'song' | 'album' | 'artist'
 const STAR_PARAM: Record<StarKind, string> = { song: 'id', album: 'albumId', artist: 'artistId' }
 
+type SubsonicParams = Record<string, string | number | string[] | number[] | undefined>
+function appendParam(target: URLSearchParams, key: string, value: SubsonicParams[string]) {
+  if (value === undefined) return
+  if (Array.isArray(value)) { target.delete(key); value.forEach((item) => target.append(key, String(item))) }
+  else target.set(key, String(value))
+}
+
 export class NavidromeError extends Error { constructor(message: string, readonly code?: number) { super(message); this.name = 'NavidromeError' } }
 
 export const DEFAULT_NAVIDROME_SERVER = 'https://tomify.tomdixon.uk'
@@ -33,17 +40,20 @@ export function sameAccount(left: string | undefined, right: string | undefined)
 export class NavidromeClient {
   constructor(readonly session: AuthSession, private readonly fetcher: typeof fetch = window.fetch.bind(window)) {}
 
-  url(endpoint: string, params: Record<string, string | number | undefined> = {}) {
+  url(endpoint: string, params: SubsonicParams = {}) {
     const url = new URL(`${requestServerUrl(this.session.serverUrl)}/rest/${endpoint}.view`)
     const base = { u: this.session.username, t: this.session.token, s: this.session.salt, v: '1.16.1', c: 'Tomify', f: 'json' }
-    Object.entries({ ...base, ...params }).forEach(([key, value]) => value !== undefined && url.searchParams.set(key, String(value)))
+    Object.entries({ ...base, ...params }).forEach(([key, value]) => appendParam(url.searchParams, key, value))
     return url
   }
 
-  private async get<T>(endpoint: string, params?: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<T> {
+  // `form` goes in a POST body (OpenSubsonic formPost) so long song lists don't overflow the URL.
+  private async get<T>(endpoint: string, params?: SubsonicParams, signal?: AbortSignal, form?: SubsonicParams): Promise<T> {
     let response: Response
     try {
-      response = await this.fetcher(this.url(endpoint, params), { signal, credentials: 'omit', cache: 'no-store' })
+      const body = form ? new URLSearchParams() : undefined
+      if (body && form) Object.entries(form).forEach(([key, value]) => appendParam(body, key, value))
+      response = await this.fetcher(this.url(endpoint, params), body ? { method: 'POST', body, signal, credentials: 'omit', cache: 'no-store' } : { signal, credentials: 'omit', cache: 'no-store' })
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') throw error
       console.error('Navidrome request failed', {
@@ -79,6 +89,14 @@ export class NavidromeClient {
   async playlist(id: string, signal?: AbortSignal, sharedBy?: string): Promise<Playlist> { const r = await this.get<{ playlist: Playlist }>('getPlaylist', { id }, signal); if (!this.ownsPlaylist(r.playlist) && !(sharedBy && sameAccount(r.playlist.owner, sharedBy))) throw new NavidromeError('Playlist not found.', 70); return r.playlist }
   // Sharing needs the playlist public in Navidrome so recipients' own credentials can read it.
   async setPlaylistPublic(id: string, isPublic: boolean) { await this.get('updatePlaylist', { playlistId: id, public: String(isPublic) }) }
+  // Editing: Subsonic only lets the owner change a playlist, so callers check ownsPlaylist first.
+  async createPlaylist(name: string, songIds: string[] = []): Promise<Playlist> { const r = await this.get<{ playlist?: Playlist }>('createPlaylist', { name }, undefined, songIds.length ? { songId: songIds } : undefined); if (!r.playlist?.id) throw new NavidromeError('The music server did not return the new playlist.'); return r.playlist }
+  async renamePlaylist(id: string, name: string) { await this.get('updatePlaylist', { playlistId: id, name }) }
+  async addToPlaylist(id: string, songIds: string[]) { if (songIds.length) await this.get('updatePlaylist', { playlistId: id }, undefined, { songIdToAdd: songIds }) }
+  async removeFromPlaylist(id: string, indexes: number[]) { if (indexes.length) await this.get('updatePlaylist', { playlistId: id, songIndexToRemove: indexes }) }
+  // createPlaylist with an existing playlistId replaces its whole track list, which is how Subsonic reorders.
+  async replacePlaylistTracks(id: string, songIds: string[]) { await this.get('createPlaylist', { playlistId: id }, undefined, { songId: songIds }) }
+  async deletePlaylist(id: string) { await this.get('deletePlaylist', { id }) }
   ownsPlaylist(playlist: Pick<Playlist, 'owner'>) { return sameAccount(playlist.owner, this.session.username) }
   async starred(signal?: AbortSignal): Promise<SearchResults> { const r = await this.get<{ starred2?: { artist?: Artist[]; album?: Album[]; song?: Track[] } }>('getStarred2', {}, signal); const s = r.starred2; return { artists: s?.artist ?? [], albums: s?.album ?? [], tracks: s?.song ?? [] } }
   // Subsonic stars songs by `id`, albums by `albumId` and artists by `artistId`.
