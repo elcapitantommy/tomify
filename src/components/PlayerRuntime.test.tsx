@@ -270,6 +270,17 @@ describe('PlayerRuntime', () => {
       expect(usePlayer.getState().playing).toBe(true)
     })
 
+    it('switches to the original file when an adaptive stream errors or hangs', async () => {
+      vi.useFakeTimers()
+      const [current] = await startPlaying()
+      expect(playerFor(current)).toBeDefined()
+      await act(async () => { current.dispatchEvent(new Event('waiting')) })
+      await act(async () => { vi.advanceTimersByTime(STALL_TIMEOUT_MS + RETRY_DELAYS_MS[0]) })
+      expect(playerFor(current)).toBeUndefined()
+      expect(streamed(current)).toBe('a')
+      expect(usePlayer.getState().playing).toBe(true)
+    })
+
     it('streams originals when the device is set to always original', async () => {
       useStreamQuality.setState({ quality: 'original' })
       const [current, standby] = await startPlaying()

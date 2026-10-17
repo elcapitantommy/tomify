@@ -159,6 +159,9 @@ export function PlayerRuntime() {
     const element = getAudio(slot)
     if (!element || !wanted || !state.playing || retryTimer.current !== undefined) return
     clearStall()
+    // A broken or stuck adaptive stream retries as the original file. hls.js already rides out
+    // a weak signal on its own, so reaching this point means HLS itself isn't working here.
+    if (sources.current.kind(element) === 'hls') markAdaptiveUnavailable()
     if (retries.current >= RETRY_DELAYS_MS.length) {
       retries.current = 0
       state.setPlaying(false)
