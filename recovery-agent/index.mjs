@@ -560,12 +560,12 @@ function torrentExtractionPath(job) {
 async function torrentAudio(job, completedPath) {
   const extractionPath = torrentExtractionPath(job)
   await rm(extractionPath, { recursive: true, force: true })
-  const archives = await findArchives(completedPath)
-  const files = [...(await findCompletedAudio(completedPath, { maxBytes: torrentDownloader.maxBytes, allowEmpty: true, label: 'torrent' })).files]
+  const archives = await findArchives(completedPath, torrentDownloader.maxFiles)
+  const files = [...(await findCompletedAudio(completedPath, { maxBytes: torrentDownloader.maxBytes, maxFiles: torrentDownloader.maxFiles, allowEmpty: true, label: 'torrent' })).files]
   if (archives.length) {
     await mkdir(extractionPath, { recursive: true })
     for (const directory of await extractArchives(archives, extractionPath, { run, sevenZip, maxBytes: torrentDownloader.maxBytes })) {
-      files.push(...(await findCompletedAudio(directory, { maxBytes: torrentDownloader.maxBytes, allowEmpty: true, label: 'torrent archive' })).files)
+      files.push(...(await findCompletedAudio(directory, { maxBytes: torrentDownloader.maxBytes, maxFiles: torrentDownloader.maxFiles, allowEmpty: true, label: 'torrent archive' })).files)
     }
     job.extractedPath = extractionPath
   }
