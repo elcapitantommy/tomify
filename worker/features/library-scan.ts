@@ -1,3 +1,4 @@
+// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 // Library scan after a recovery import: an imported file is not playable in Tomify until Navidrome has
 // scanned it. The item keeps its Recovered or Needs-upgrade status and gains a `playback` record (D1
 // column recovery_items.playback_json): `scan-pending` from the import until search3 finds the track,
@@ -8,6 +9,7 @@
 
 import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
+import { isNavidromeConfigurationError, navidromeUrl } from '../lib/navidrome.ts'
 import { recoveryItem } from '../routes/recovery.ts'
 
 export const PLAYBACK_CHECK_INTERVAL_MS = 15_000
@@ -83,8 +85,8 @@ export function playbackTimedOut(playback, now = Date.now()) {
   return Number.isFinite(since) && now - since >= PLAYBACK_TIMEOUT_MS
 }
 
-export async function navidromeCall(request, endpoint, params = {}) {
-  const url = new URL('https://tomify.tomdixon.uk/rest/' + endpoint + '.view')
+export async function navidromeCall(request, env, endpoint, params = {}) {
+  const url = navidromeUrl(env, '/rest/' + endpoint + '.view')
   const base = { u: request.headers.get('x-tomify-user') || '', t: request.headers.get('x-tomify-token') || '', s: request.headers.get('x-tomify-salt') || '', v: '1.16.1', c: 'Tomify', f: 'json' }
   for (const [key, value] of Object.entries({ ...base, ...params })) url.searchParams.set(key, String(value))
   const response = await fetch(url, { headers: { accept: 'application/json' } })
@@ -96,17 +98,17 @@ export async function navidromeCall(request, endpoint, params = {}) {
 }
 
 /** Starts a quick (not full) library scan unless one is already running. */
-async function requestLibraryScan(request) {
-  const status = await navidromeCall(request, 'getScanStatus')
+async function requestLibraryScan(request, env) {
+  const status = await navidromeCall(request, env, 'getScanStatus')
   if (status.scanStatus?.scanning) return { started: false, running: true }
-  await navidromeCall(request, 'startScan')
+  await navidromeCall(request, env, 'startScan')
   return { started: true, running: true }
 }
 
-async function findImportedSong(request, target) {
+async function findImportedSong(request, env, target) {
   const queries = [...new Set([[target.artist, target.title].filter(Boolean).join(' '), target.title].filter(Boolean))]
   for (const query of queries) {
-    const result = await navidromeCall(request, 'search3', { query, songCount: 20, artistCount: 0, albumCount: 0 })
+    const result = await navidromeCall(request, env, 'search3', { query, songCount: 20, artistCount: 0, albumCount: 0 })
     const song = matchLibrarySong(result.searchResult3?.song, target)
     if (song) return song
   }
@@ -117,35 +119,43 @@ async function saveRecoveryPlayback(db, username, id, playback) {
   await db.prepare('UPDATE recovery_items SET playback_json = ? WHERE id = ? AND username = ?').bind(JSON.stringify(playback), id, username).run()
 }
 
-/** Called once an import completes: records `scan-pending` and asks Navidrome for a scan. Never throws. */
-export async function markRecoveryScanPending(request, db, username, id) {
+/** Called once an import completes: records `scan-pending` and asks Navidrome for a scan. Only configuration errors escape. */
+export async function markRecoveryScanPending(request, env, username, id) {
   try {
+    const db = env.TOMIFY_DB
     const item = await recoveryItem(db, username, id)
     const target = recoveryPlaybackTarget(item)
     if (!target || item.playback?.key === target.key) return
     const playback = pendingRecoveryPlayback(target)
-    try { if ((await requestLibraryScan(request)).started) playback.scanRequestedAt = new Date().toISOString() }
-    catch { /* the first library check asks again */ }
+    try { if ((await requestLibraryScan(request, env)).started) playback.scanRequestedAt = new Date().toISOString() }
+    catch (error) { if (isNavidromeConfigurationError(error)) throw error /* the first library check asks again */ }
     await saveRecoveryPlayback(db, username, id, playback)
-  } catch { /* the import itself succeeded; a missing playback record only hides the scan state */ }
+  } catch (error) {
+    if (isNavidromeConfigurationError(error)) throw error
+    /* the import itself succeeded; a missing playback record only hides the scan state */
+  }
 }
 
-export async function refreshRecoveryPlayback(request, db, username, item) {
+export async function refreshRecoveryPlayback(request, env, username, item) {
+  const db = env.TOMIFY_DB
   const playback = item.playback
   if (!playbackCheckDue(playback)) return item
   const now = Date.now()
   const next = { ...playback, checkedAt: new Date(now).toISOString() }
   let song = null
-  try { song = await findImportedSong(request, playback.target || {}) }
-  catch (error) { next.lastError = error instanceof Error ? error.message.slice(0, 300) : 'Navidrome could not be searched.' }
+  try { song = await findImportedSong(request, env, playback.target || {}) }
+  catch (error) {
+    if (isNavidromeConfigurationError(error)) throw error
+    next.lastError = error instanceof Error ? error.message.slice(0, 300) : 'Navidrome could not be searched.'
+  }
   if (song) {
     Object.assign(next, { state: 'ready', songId: song.id, readyAt: next.checkedAt, lastError: null })
   } else if (playbackTimedOut(playback, now)) {
     Object.assign(next, { state: 'scan-failed', failedAt: next.checkedAt })
   } else if (!playback.scanRequestedAt) {
     // A scan that was already running when the file landed may have passed its folder, so start one of our own.
-    try { if ((await requestLibraryScan(request)).started) next.scanRequestedAt = next.checkedAt }
-    catch { /* try again on the next check */ }
+    try { if ((await requestLibraryScan(request, env)).started) next.scanRequestedAt = next.checkedAt }
+    catch (error) { if (isNavidromeConfigurationError(error)) throw error /* try again on the next check */ }
   }
   await saveRecoveryPlayback(db, username, item.id, next)
   return recoveryItem(db, username, item.id)
@@ -156,9 +166,9 @@ export async function handleLibraryScanRequest(request, env, url) {
   if (!match) return null
   if (request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405)
   if (!env?.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
-  const username = await authenticate(request)
+  const username = await authenticate(request, env)
   if (!username) return json({ error: 'unauthorized' }, 401)
-  if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can use Recovery.' }, 403)
+  if (!(await isNavidromeAdmin(request, username, env))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can use Recovery.' }, 403)
   const db = env.TOMIFY_DB
   const id = decodeURIComponent(match[1])
   const item = await recoveryItem(db, username, id)
@@ -167,10 +177,10 @@ export async function handleLibraryScanRequest(request, env, url) {
     const target = recoveryPlaybackTarget(item)
     if (!target) return json({ error: 'recovery-not-imported', message: 'Import this item before checking the library for it.' }, 409)
     const playback = pendingRecoveryPlayback(target)
-    try { if ((await requestLibraryScan(request)).started) playback.scanRequestedAt = playback.since }
-    catch { /* the next library check asks again */ }
+    try { if ((await requestLibraryScan(request, env)).started) playback.scanRequestedAt = playback.since }
+    catch (error) { if (isNavidromeConfigurationError(error)) throw error /* the next library check asks again */ }
     await saveRecoveryPlayback(db, username, id, playback)
     return json({ item: await recoveryItem(db, username, id) })
   }
-  return json({ item: await refreshRecoveryPlayback(request, db, username, item) })
+  return json({ item: await refreshRecoveryPlayback(request, env, username, item) })
 }

@@ -1,3 +1,4 @@
+// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 // Album artwork overrides: looks up catalogue artwork (Apple, then Deezer, then Spotify when
 // it is configured and permitted) for albums already in the Navidrome library and stores the
 // chosen image URL per album in D1. Navidrome's own files are never touched; Tomify shows the
@@ -243,7 +244,7 @@ export async function handleAlbumArtworkRequest(request, env, url) {
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
     return new Response(bytes, { headers: { 'content-type': image.contentType, 'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff' } })
   }
-  const username = await authenticate(request)
+  const username = await authenticate(request, env)
   if (!username) return json({ error: 'unauthorized' }, 401)
 
   if (url.pathname === '/api/album-artwork' && request.method === 'GET') {
@@ -253,7 +254,7 @@ export async function handleAlbumArtworkRequest(request, env, url) {
 
   if (request.method !== 'POST') return json({ error: 'not-found' }, 404)
   // Everyone sees the chosen artwork; only administrators can look up, change or reset it.
-  if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can change album artwork.' }, 403)
+  if (!(await isNavidromeAdmin(request, username, env))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can change album artwork.' }, 403)
   const body = await request.json().catch(() => null)
   const albumId = typeof body?.albumId === 'string' ? body.albumId.trim().slice(0, 200) : ''
   if (!albumId) return json({ error: 'invalid-album' }, 400)

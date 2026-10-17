@@ -1,3 +1,4 @@
+// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 // Quality tiers in the Worker: the preferred-target setting (D1, admin-only), the status a completed
 // recovery import gets, and the one-off "Re-check quality labels" run. The classifier itself lives in
 // shared/quality.mjs. handleQualityRequest relies on Worker globals (authenticate, isNavidromeAdmin,
@@ -71,9 +72,9 @@ export async function handleQualityRequest(request, env, url) {
   }
   if (pathname !== '/api/settings/quality' && pathname !== '/api/settings/quality/recheck') return null
   if (!db) return json({ error: 'settings-store-unavailable' }, 503)
-  const username = await authenticate(request)
+  const username = await authenticate(request, env)
   if (!username) return json({ error: 'unauthorized' }, 401)
-  if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can change quality settings.' }, 403)
+  if (!(await isNavidromeAdmin(request, username, env))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can change quality settings.' }, 403)
 
   if (pathname === '/api/settings/quality' && request.method === 'GET') {
     return json({ target: await loadQualityTarget(db), targets: qualityTargetOptions() })

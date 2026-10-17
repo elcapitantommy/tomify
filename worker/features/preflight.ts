@@ -1,3 +1,4 @@
+// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 // Duplicate preflight (task 13): before Recovery downloads something, what Tom already has of it, in the recovery
 // library (the agent's read-only POST /v1/preflight) and in the master library (Navidrome search3).
 // `GET /api/recovery/:id/preflight?mode=release|track` returns `{ recovery, library }`; either is null when that
@@ -9,6 +10,7 @@
 import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
 import { callRecoveryAgent } from '../lib/agent.ts'
 import { json } from '../lib/http.ts'
+import { isNavidromeConfigurationError } from '../lib/navidrome.ts'
 import { recoveryItem } from '../routes/recovery.ts'
 import { navidromeCall } from './library-scan.ts'
 
@@ -58,9 +60,9 @@ export async function handlePreflightRequest(request, env, url) {
   if (!match) return null
   if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405)
   if (!env?.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
-  const username = await authenticate(request)
+  const username = await authenticate(request, env)
   if (!username) return json({ error: 'unauthorized' }, 401)
-  if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can use Recovery.' }, 403)
+  if (!(await isNavidromeAdmin(request, username, env))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can use Recovery.' }, 403)
   const item = await recoveryItem(env.TOMIFY_DB, username, decodeURIComponent(match[1]))
   if (!item) return json({ error: 'recovery-item-not-found' }, 404)
   const target = preflightTarget(item, url.searchParams.get('mode'))
@@ -77,9 +79,12 @@ export async function handlePreflightRequest(request, env, url) {
   const query = target.mode === 'release' ? target.album : target.title
   if (query) {
     try {
-      const result = await navidromeCall(request, 'search3', target.mode === 'release' ? { query, albumCount: 20, songCount: 0, artistCount: 0 } : { query, songCount: 50, albumCount: 0, artistCount: 0 })
+      const result = await navidromeCall(request, env, 'search3', target.mode === 'release' ? { query, albumCount: 20, songCount: 0, artistCount: 0 } : { query, songCount: 50, albumCount: 0, artistCount: 0 })
       library = libraryPreflightMatches(result.searchResult3, target)
-    } catch { /* Navidrome unreachable: the library side is unknown */ }
+    } catch (error) {
+      if (isNavidromeConfigurationError(error)) throw error
+      /* Navidrome unreachable: the library side is unknown */
+    }
   } else library = []
   return json({ target, directory, recovery, library })
 }

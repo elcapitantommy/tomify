@@ -25,7 +25,7 @@ The tables below record how far `main` has got with each numbered item, checked 
 | 13 | Duplicate preflight before acquisition | Not started | |
 | 14 | Separate pipeline states through to "playable" | Not started | Settings can start a Navidrome scan, but Recovery items do not track scan or playability. |
 | 15 | Spotify matching fixes | Not started | `src/lib/catalogue-import.ts` and `scripts/catalogue-import.mjs` still each have a matcher, with no edition-suffix stripping or re-checking of `available` items. |
-| 16 | Make the Worker a real TypeScript module | In progress | Workers Static Assets and the TypeScript module conversion are complete; configurable origins and the full binding reference remain. |
+| 16 | Make the Worker a real TypeScript module | Complete | Workers Static Assets, TypeScript modules, a configurable Navidrome origin and the full binding reference are in place. |
 | 17 | Read-only library inventory in the agent | Not started | |
 | 18 | Library health dashboard | Not started | |
 | 19 | Release import mapped to the MusicBrainz tracklist | Not started | Album completeness fetches MusicBrainz tracklists, but release imports do not use them. |

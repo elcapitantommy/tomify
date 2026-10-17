@@ -1,6 +1,9 @@
+import type { ExportedHandler } from '@cloudflare/workers-types'
 import type { RouteHandler } from './env.ts'
+import type { Env } from './env.ts'
 import { schemaOutOfDateResponse } from './lib/d1.ts'
 import { json } from './lib/http.ts'
+import { isNavidromeConfigurationError } from './lib/navidrome.ts'
 import { albumArtworkRoute } from './routes/album-artwork.ts'
 import { catalogueRoute } from './routes/catalogue.ts'
 import { inventoryRoute } from './routes/inventory.ts'
@@ -25,7 +28,7 @@ const routes: RouteHandler[] = [
   navidromeRoute,
 ]
 
-const worker = {
+const worker: ExportedHandler<Env> = {
   async fetch(request, env) {
     try {
       const url = new URL(request.url)
@@ -37,6 +40,7 @@ const worker = {
       if (env?.ASSETS) return env.ASSETS.fetch(request)
       return new Response(null, { status: 404 })
     } catch (error) {
+      if (isNavidromeConfigurationError(error)) return json({ error: 'navidrome-unavailable', message: error.message }, 503)
       const schemaResponse = schemaOutOfDateResponse(error)
       if (schemaResponse) return schemaResponse
       throw error

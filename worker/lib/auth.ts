@@ -1,15 +1,18 @@
+import type { Env } from '../env.ts'
+import { navidromeUrl } from './navidrome.ts'
+
 const authCache = new Map<string, number>()
 
-export async function authenticate(request: Request): Promise<string | null> {
+export async function authenticate(request: Request, env: Env): Promise<string | null> {
   const username = request.headers.get('x-tomify-user')
   const token = request.headers.get('x-tomify-token')
   const salt = request.headers.get('x-tomify-salt')
   if (!username || !token || !salt) return null
-  const cacheKey = username + ':' + token + ':' + salt
+  const ping = navidromeUrl(env, '/rest/ping.view')
+  const cacheKey = ping.origin + ':' + username + ':' + token + ':' + salt
   const cachedAt = authCache.get(cacheKey)
   if (cachedAt && Date.now() - cachedAt < 30000) return username
   try {
-    const ping = new URL('https://tomify.tomdixon.uk/rest/ping.view')
     ping.searchParams.set('u', username)
     ping.searchParams.set('t', token)
     ping.searchParams.set('s', salt)
@@ -29,9 +32,9 @@ export async function authenticate(request: Request): Promise<string | null> {
   }
 }
 
-export async function isNavidromeAdmin(request: Request, username: string): Promise<boolean> {
+export async function isNavidromeAdmin(request: Request, username: string, env: Env): Promise<boolean> {
+  const lookup = navidromeUrl(env, '/rest/getUser.view')
   try {
-    const lookup = new URL('https://tomify.tomdixon.uk/rest/getUser.view')
     lookup.searchParams.set('u', username)
     lookup.searchParams.set('t', request.headers.get('x-tomify-token') || '')
     lookup.searchParams.set('s', request.headers.get('x-tomify-salt') || '')

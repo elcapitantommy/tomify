@@ -6,12 +6,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/build-worker-info.mjs && tsc -b && vite build && npx --yes wrangler@4 deploy --dry-run --outdir dist/server --no-minify",
+    "build": "node scripts/build-worker-info.mjs && tsc -b && vite build && pnpm exec wrangler deploy --dry-run --outdir dist/server --no-minify",
     "lint": "eslint .",
     "typecheck": "node scripts/build-worker-info.mjs && tsc -b --pretty false",
     "test": "vitest run && node --test recovery-agent/*.node-test.mjs scripts/*.node-test.mjs",
     "test:watch": "vitest",
-    "deploy": "npx --yes wrangler@4 d1 migrations apply tomify-metadata --remote && npx --yes wrangler@4 deploy"
+    "deploy": "pnpm exec wrangler d1 migrations apply tomify-metadata --remote && pnpm exec wrangler deploy"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
@@ -23,7 +23,7 @@
     "zustand": "^5.0.2"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261015.1",
+    "@cloudflare/workers-types": "5.20261015.1",
     "@eslint/js": "^9.17.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
@@ -43,6 +43,7 @@
     "typescript-eslint": "^8.18.2",
     "vite": "^6.0.5",
     "vite-plugin-pwa": "^0.21.1",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "wrangler": "4.86.0"
   }
 }

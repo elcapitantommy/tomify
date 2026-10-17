@@ -7,6 +7,9 @@ workers_dev = true
 [build]
 command = "node scripts/build-worker-info.mjs"
 
+[vars]
+NAVIDROME_ORIGIN = "https://tomify.tomdixon.uk"
+
 [[d1_databases]]
 binding = "TOMIFY_DB"
 database_name = "tomify-metadata"

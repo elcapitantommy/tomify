@@ -3,6 +3,7 @@ import type { D1Database, Fetcher } from '@cloudflare/workers-types'
 export interface Env {
   TOMIFY_DB: D1Database
   ASSETS: Fetcher
+  NAVIDROME_ORIGIN?: string
   RECOVERY_AGENT_URL?: string
   RECOVERY_AGENT_TOKEN?: string
   SPOTIFY_CLIENT_ID?: string
