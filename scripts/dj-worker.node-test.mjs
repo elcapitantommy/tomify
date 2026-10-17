@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment } from '../worker/features/dj.ts'
+import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment, ukDate } from '../worker/features/dj.ts'
 import { buildCandidates } from '../worker/features/mixes.ts'
 
 const NOW = Date.parse('2026-10-17T08:30:00Z')
@@ -26,6 +26,8 @@ test('segment requests are cleaned and the time of day is UK time', () => {
   assert.deepEqual(cleanSegmentRequest(null), { recentTrackIds: [], request: null, first: false })
   assert.equal(partOfDay(NOW), 'morning')
   assert.equal(partOfDay(Date.parse('2026-10-17T17:30:00Z')), 'evening', '18:30 BST')
+  assert.equal(ukDate(Date.parse('2026-10-17T17:30:00Z')), 'Saturday 17 October')
+  assert.equal(ukDate(Date.parse('2026-10-17T23:30:00Z')), 'Sunday 18 October', '00:30 BST is already Sunday')
 })
 
 test('the DJ never picks a song from this session again', () => {
@@ -37,7 +39,7 @@ test('the DJ never picks a song from this session again', () => {
 
 test('the DJ prompt names the listener, the time and any request', () => {
   const { prompt, refs } = djPrompt(pool.slice(0, 3), snapshot, input({ request: 'more 80s' }))
-  assert.match(prompt, /^Listener: Tom\. It is morning in the UK\.$/m)
+  assert.match(prompt, /^Listener: Tom\. It is Saturday 17 October, morning in the UK\. Only mention the day or date as given here\.$/m)
   assert.match(prompt, /first link of the session/)
   assert.match(prompt, /The listener asked: "more 80s"/)
   assert.match(prompt, /^t1 \| Artist 0 - Song s0 \|/m)

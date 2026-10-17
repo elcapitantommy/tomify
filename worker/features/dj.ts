@@ -48,6 +48,11 @@ export function partOfDay(now: number) {
   return hour < 5 ? 'late night' : hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening'
 }
 
+// "Saturday 17 October", so the DJ never has to guess the day.
+export function ukDate(now: number) {
+  return new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Europe/London' }).format(new Date(now)).replace(',', '')
+}
+
 // A varied pool for one set: anything not played this session, songs with a reason to be there first.
 export function djPool(candidates: Candidate[], recentTrackIds: string[], seed: string, size = DJ_POOL_SIZE): Candidate[] {
   const recent = new Set(recentTrackIds)
@@ -67,7 +72,7 @@ export function djPrompt(pool: Candidate[], snapshot: LibrarySnapshot, input: Dj
     return `${ref} | ${song.artist} - ${song.title} | ${song.album}${song.year ? ` (${song.year})` : ''} | plays ${candidate.playCount}, last ${shortDate(candidate.lastPlayed)}${candidate.starred ? ', favourite' : ''} | ${candidate.sources.join(', ')}`
   })
   const prompt = [
-    `Listener: ${input.username}. It is ${partOfDay(input.now)} in the UK.`,
+    `Listener: ${input.username}. It is ${ukDate(input.now)}, ${partOfDay(input.now)} in the UK. Only mention the day or date as given here.`,
     input.first ? 'This is the first link of the session.' : 'The session is already under way.',
     `Artists they play most lately: ${snapshot.topArtists.join(', ') || 'not enough history yet'}.`,
     input.request ? `The listener asked: "${input.request}"` : '',
