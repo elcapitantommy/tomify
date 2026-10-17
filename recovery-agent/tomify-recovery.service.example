@@ -6,10 +6,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=tom
-WorkingDirectory=/opt/tomify/current/recovery-agent
+WorkingDirectory=/usr/local/lib/tomify-agent/current/recovery-agent
 EnvironmentFile=/etc/tomify/recovery-agent.env
 Environment=HOME=/var/lib/tomify-recovery
-ExecStart=/usr/bin/node /opt/tomify/current/recovery-agent/index.mjs
+ExecStart=/usr/bin/node /usr/local/lib/tomify-agent/current/recovery-agent/index.mjs
 Restart=on-failure
 PrivateTmp=true
 NoNewPrivileges=true
