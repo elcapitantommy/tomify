@@ -56,7 +56,8 @@ interface MessagesResponse { stop_reason?: string, content?: { type: string, tex
 // Models that accept the server-side refusal fallback ("default" form); others (such as Haiku) don't.
 const FALLBACK_MODELS = /^claude-(sonnet-5-5|opus-5|opus-5-5|fable-5-1)$/
 
-export async function curateMixesWithClaude(env: Env, request: CuratorRequest, fetcher: typeof fetch = fetch): Promise<CuratedMix[]> {
+// One Claude call that must answer with JSON matching `schema`. Used by the mixes and the DJ.
+export async function callClaudeJson(env: Env, system: string, prompt: string, schema: object, fetcher: typeof fetch = fetch): Promise<unknown> {
   const model = env.TOMIFY_MIXES_MODEL || DEFAULT_MIXES_MODEL
   const fallback = FALLBACK_MODELS.test(model)
   const response = await fetcher(MESSAGES_URL, {
@@ -72,14 +73,19 @@ export async function curateMixesWithClaude(env: Env, request: CuratorRequest, f
       model,
       max_tokens: 16000,
       ...(fallback ? { fallbacks: 'default' } : {}),
-      output_config: { effort: 'low', format: { type: 'json_schema', schema: MIX_SCHEMA } },
-      system: CURATOR_SYSTEM,
-      messages: [{ role: 'user', content: `Listener profile:\n${request.profile}\n\nCandidate songs:\n${request.candidates}` }],
+      output_config: { effort: 'low', format: { type: 'json_schema', schema } },
+      system,
+      messages: [{ role: 'user', content: prompt }],
     }),
   })
   const body = await response.json().catch(() => ({})) as MessagesResponse
   if (!response.ok) throw new Error(`Claude API ${response.status}${body.error?.message ? `: ${body.error.message}` : ''}`)
-  if (body.stop_reason === 'refusal') throw new Error('Claude declined to build mixes.')
-  if (body.stop_reason === 'max_tokens') throw new Error('Claude ran out of room before finishing the mixes.')
-  return parseCuratedMixes((body.content ?? []).map((block) => block.type === 'text' ? block.text ?? '' : '').join(''))
+  if (body.stop_reason === 'refusal') throw new Error('Claude declined the request.')
+  if (body.stop_reason === 'max_tokens') throw new Error('Claude ran out of room before finishing.')
+  return JSON.parse((body.content ?? []).map((block) => block.type === 'text' ? block.text ?? '' : '').join(''))
+}
+
+export async function curateMixesWithClaude(env: Env, request: CuratorRequest, fetcher: typeof fetch = fetch): Promise<CuratedMix[]> {
+  const result = await callClaudeJson(env, CURATOR_SYSTEM, `Listener profile:\n${request.profile}\n\nCandidate songs:\n${request.candidates}`, MIX_SCHEMA, fetcher)
+  return parseCuratedMixes(JSON.stringify(result))
 }

@@ -205,6 +205,8 @@ export function PlayerRuntime() {
 
       if (element.ended) element.currentTime = 0
 
+      // Something can hold the new track before it starts (the DJ talking first); the playing effect starts it later.
+      if (!usePlayer.getState().playing) return
       playElement(element, target)
     },
   }), [api]) // eslint-disable-line react-hooks/exhaustive-deps
