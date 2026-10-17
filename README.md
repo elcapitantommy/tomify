@@ -235,7 +235,7 @@ Downloads and imports finish on the media server even with no browser open: the 
 
 The agent also runs the library inventory in the background, one scan at a time. It never writes to either music library and only re-probes files whose size or modification time changed; see [Read-only library inventory](docs/RECOVERY.md#read-only-library-inventory).
 
-The recovery agent is deployed separately from the site. After any change under `recovery-agent/` or `shared/` is merged, deploy it from Windows with `.\scripts\deploy-agent.ps1` (or `./scripts/deploy-agent.sh` on Linux/macOS). Releases switch atomically, are health-checked, and roll back automatically if startup fails; see [Updating the recovery agent](docs/RECOVERY.md#updating-the-recovery-agent). An out-of-date agent makes newer Recovery features fail.
+The recovery agent is deployed separately from the site. After any change under `recovery-agent/` or `shared/` is merged, deploy it from Windows with `.\scripts\deploy-agent.ps1` (or `./scripts/deploy-agent.sh` on Linux/macOS). Run `.\scripts\deploy-agent.ps1 -Setup` once first so deploys need no password. Releases switch atomically, are health-checked, and roll back automatically if startup fails; see [Updating the recovery agent](docs/RECOVERY.md#updating-the-recovery-agent). An out-of-date agent makes newer Recovery features fail.
 
 `scripts/backup.sh` backs up the D1 database and the agent's state nightly on the media server, and an external uptime check should watch the site and the agent's `/health`; see [Backups and uptime checks](docs/RECOVERY.md#backups-and-uptime-checks).
 

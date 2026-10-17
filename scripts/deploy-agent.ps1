@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$HostName = $(if ($env:TOMIFY_AGENT_HOST) { $env:TOMIFY_AGENT_HOST } else { 'tom@tomify' }),
-    [switch]$Rollback
+    [switch]$Rollback,
+    [switch]$Setup
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,8 +10,20 @@ $repo = (& git rev-parse --show-toplevel 2>$null)
 if ($LASTEXITCODE -ne 0 -or -not $repo) { throw 'Run this script inside the Tomify checkout.' }
 Push-Location $repo
 try {
+    if ($Setup) {
+        # One-time: installs the root helper and a sudoers rule so later deploys need no password.
+        & scp scripts/tomify-agent-activate.sh scripts/setup-agent-deploy.sh "${HostName}:/tmp/"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not copy the setup scripts.' }
+        & ssh -t $HostName 'sudo bash /tmp/setup-agent-deploy.sh /tmp/tomify-agent-activate.sh "$(id -un)"; status=$?; rm -f /tmp/setup-agent-deploy.sh /tmp/tomify-agent-activate.sh; exit $status'
+        if ($LASTEXITCODE -ne 0) { throw 'Remote setup failed.' }
+        return
+    }
+
     if ($Rollback) {
-        & ssh -t $HostName 'sudo /opt/tomify/current/scripts/install-agent-release.sh --rollback'
+        # Uses this checkout's installer: an older release's copy may predate the root helper.
+        & scp scripts/install-agent-release.sh "${HostName}:/tmp/tomify-install-agent-release.sh"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not copy the installer.' }
+        & ssh -t $HostName 'bash /tmp/tomify-install-agent-release.sh --rollback; status=$?; rm -f /tmp/tomify-install-agent-release.sh; exit $status'
         if ($LASTEXITCODE -ne 0) { throw 'Remote rollback failed.' }
         return
     }
@@ -28,7 +41,7 @@ try {
         & scp $archive "${HostName}:$remoteArchive"
         if ($LASTEXITCODE -ne 0) { throw 'Could not copy the agent release archive.' }
 
-        $remote = "sudo bash -o pipefail -c 'tar -xOf $remoteArchive scripts/install-agent-release.sh | bash -s -- --archive $remoteArchive --sha $sha; status=`$?; rm -f $remoteArchive; exit `$status'"
+        $remote = "bash -o pipefail -c 'tar -xOf $remoteArchive scripts/install-agent-release.sh | bash -s -- --archive $remoteArchive --sha $sha; status=`$?; rm -f $remoteArchive; exit `$status'"
         & ssh -t $HostName $remote
         if ($LASTEXITCODE -ne 0) { throw 'Remote agent installation failed.' }
     }
