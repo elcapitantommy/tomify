@@ -246,6 +246,8 @@ The service worker precaches the application shell and uses a bounded cache for 
 
 On a patchy connection (for example mobile data in a car) a stream that drops or hangs is reloaded from where it stopped: Tomify retries after 1, 3, 6 and 10 seconds, retries straight away when the phone comes back online, and treats 15 seconds of buffering while playing as a dropped stream. A next track whose pre-load failed is loaded fresh rather than handed over. Only after every retry fails does the player show as paused.
 
+Only one track is ever heard. The pre-loaded next track is stopped if anything starts it early, pausing stops both audio elements, and if Tomify is open more than once on the same phone (an installed app plus a browser tab, or a second window Android opened), the copy that starts playing tells the others to stop.
+
 Apple controls which Media Session actions appear, and may omit seeking on some iOS releases. Background playback and lock-screen behaviour require verification on the actual target iPhones over HTTPS; automated desktop tests cannot prove OS-level Control Center presentation. Cross-origin artwork and audio must remain reachable while the phone is locked.
 
 ### Playing across devices

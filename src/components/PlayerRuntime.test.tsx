@@ -142,4 +142,60 @@ describe('PlayerRuntime', () => {
     await startPlaying()
     expect(usePlayer.getState().playing).toBe(false)
   })
+
+  const setPaused = (element: HTMLAudioElement, paused: boolean) => { Object.defineProperty(element, 'paused', { configurable: true, get: () => paused }) }
+  const pausedElements = () => vi.mocked(HTMLMediaElement.prototype.pause).mock.contexts
+
+  it('keeps the pre-loaded next track silent if something starts it', async () => {
+    const [current, standby] = await startPlaying()
+    vi.mocked(HTMLMediaElement.prototype.pause).mockClear()
+    await act(async () => { standby.dispatchEvent(new Event('play')) })
+    expect(pausedElements()).toContain(standby)
+    expect(pausedElements()).not.toContain(current)
+    expect(usePlayer.getState().playing).toBe(true)
+  })
+
+  it('pauses both audio elements when playback is paused', async () => {
+    const [current, standby] = await startPlaying()
+    setPaused(current, false)
+    setPaused(standby, false)
+    vi.mocked(HTMLMediaElement.prototype.pause).mockClear()
+    await act(async () => { usePlayer.getState().setPlaying(false) })
+    expect(pausedElements()).toContain(current)
+    expect(pausedElements()).toContain(standby)
+  })
+
+  it('stops the other element when a track is started', async () => {
+    const [current, standby] = await startPlaying()
+    setPaused(standby, false)
+    vi.mocked(HTMLMediaElement.prototype.pause).mockClear()
+    await act(async () => { usePlayer.getState().playTracks(tracks, 2) })
+    expect(streamed(current)).toBe('c')
+    expect(pausedElements()).toContain(standby)
+  })
+
+  it('tells other open copies of Tomify when it starts playing', async () => {
+    const heard: unknown[] = []
+    const other = new BroadcastChannel('tomify-player')
+    other.onmessage = (event) => heard.push(event.data)
+    const [current] = await startPlaying()
+    await act(async () => { current.dispatchEvent(new Event('play')) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+    other.close()
+    expect(heard).toContainEqual(expect.objectContaining({ type: 'playing' }))
+  })
+
+  it('stops when another open copy of Tomify starts playing', async () => {
+    const [current] = await startPlaying()
+    setPaused(current, false)
+    vi.mocked(HTMLMediaElement.prototype.pause).mockClear()
+    const other = new BroadcastChannel('tomify-player')
+    await act(async () => {
+      other.postMessage({ type: 'playing', id: 'another-copy' })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    other.close()
+    expect(usePlayer.getState().playing).toBe(false)
+    expect(pausedElements()).toContain(current)
+  })
 })
