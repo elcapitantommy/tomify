@@ -108,6 +108,8 @@ Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configura
 | `SPOTIFY_ARTWORK_EMBEDDING_ENABLED` | Dashboard var | Optional | `false` | Album-artwork and Recovery artwork selection | Spotify results may be shown but cannot be selected for acquisition. |
 | `APPLE_CATALOGUE_COUNTRY` | Dashboard var | Optional | `GB` | Apple catalogue artwork searches | Searches use the UK catalogue. |
 | `APPLE_ARTWORK_EMBEDDING_ENABLED` | Dashboard var | Optional | `false` | Album-artwork and Recovery artwork selection | Apple results may be shown but cannot be selected for acquisition. |
+| `ANTHROPIC_API_KEY` | Dashboard secret | Optional | None | `worker/features/mix-curator.ts` (Claude picks and names the Home "Made for you" mixes) | Tomify builds simpler mixes itself from the same listening data. |
+| `TOMIFY_MIXES_MODEL` | Dashboard var | Optional | `claude-sonnet-5-5` | `worker/features/mix-curator.ts` | Mixes use Claude Sonnet 5.5. |
 | `TOMIFY_VERSION` | Build-time constant | Required, generated | Current Git short SHA; then `CF_PAGES_COMMIT_SHA`; then `WORKERS_CI_COMMIT_SHA`; then `unknown` | `/api/version` | Reports `unknown` only when Git and both CI fallbacks are unavailable. |
 | `TOMIFY_AGENT_CONTRACT` | Build-time constant | Required, generated | `2` | `/api/version` and the recovery-agent compatibility gate | Build generation supplies it; a missing generated module fails the build. |
 | `WORKERS_CI_COMMIT_SHA` | Build-time constant input | Optional | None | `scripts/build-worker-info.mjs` final SHA fallback | `unknown` is used when Git and `CF_PAGES_COMMIT_SHA` are also unavailable. |
@@ -135,6 +137,8 @@ Migrations live in `drizzle/`:
 | `0010_quality_settings.sql` | `tomify_settings` (site-wide settings such as the quality target) |
 | `0011_recovery_playback.sql` | `recovery_items.playback_json` |
 | `0012_schema_catch_up.sql` | `release_metadata`; every other table again with `IF NOT EXISTS`; indexes for the Recovery list, uploads, shares and OAuth state expiry |
+| `0013_library_health_dismissals.sql` | `library_health_dismissals` (Library health findings marked as fine) |
+| `0014_listening_and_mixes.sql` | `listening_events` (Tomify's own play history, kept 400 days), `made_for_you` (each account's current mixes) |
 
 The migrations are the only source of the schema: `pnpm run deploy` applies new ones before deploying the Worker, and the Worker runs no DDL. A query against a table no migration has created gets a 503 `schema-out-of-date`. Production was baselined with `scripts/d1-baseline.sh`; see [D1 migrations](RECOVERY.md#d1-migrations).
 

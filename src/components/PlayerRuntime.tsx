@@ -3,6 +3,8 @@ import { useApi } from '../lib/api-context'
 import { StreamFirstSourceResolver } from '../lib/sourceResolver'
 import { bindPlayerRuntime, usePlayer } from '../stores/player'
 import { setMediaMetadata } from '../lib/mediaSession'
+import { ListeningTracker, sendListeningEvent } from '../lib/listening-log'
+import { localPlaybackDeviceName } from '../stores/livePlayback'
 import { albumArtworkUrl, useAlbumArtwork } from '../stores/albumArtwork'
 import { RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import type { Track } from '../types'
@@ -29,6 +31,7 @@ export function PlayerRuntime() {
   const nowPlayingTrackId = useRef<string | undefined>(undefined)
   const restoredPositionTrackId = useRef<string | undefined>(undefined)
   const initialRestore = useRef<{ trackId?: string; position: number } | null>(null)
+  const listening = useRef(new ListeningTracker())
   const resumeAt = useRef<{ slot: AudioSlot; trackId: string; position: number } | null>(null)
   const retries = useRef(0)
   const retryTimer = useRef<number | undefined>(undefined)
@@ -62,6 +65,19 @@ export function PlayerRuntime() {
     clearStall()
   }, [track?.id])
 
+  // Listening history for mixes: a play ends when the track changes (or the page closes), and only
+  // starts once the track actually plays, so restoring a paused queue doesn't count as a play.
+  useEffect(() => {
+    const tracker = listening.current
+    if (tracker.trackId && tracker.trackId !== track?.id) void sendListeningEvent(tracker.finish(false, localPlaybackDeviceName))
+    if (track && playing) tracker.begin(track)
+  }, [track, playing])
+
+  useEffect(() => {
+    const onPageHide = () => void sendListeningEvent(listening.current.finish(false, localPlaybackDeviceName))
+    window.addEventListener('pagehide', onPageHide)
+    return () => window.removeEventListener('pagehide', onPageHide)
+  }, [])
   useEffect(() => () => { clearRetry(); clearStall() }, [])
 
   // Tell Navidrome "now playing" only once the track actually plays, not when a page load restores a paused queue.
@@ -338,6 +354,7 @@ export function PlayerRuntime() {
       if (track && pending?.trackId === track.id && pending.position > 0 && restoredPositionTrackId.current !== track.id) return
       if (resumeAt.current?.slot === slot) return
       usePlayer.getState().setProgress(element.currentTime, duration)
+      if (track && listening.current.trackId === track.id) listening.current.progress(element.currentTime, duration, !element.paused)
       if (track && duration > 0 && element.currentTime >= Math.min(duration / 2, 240) && submittedTrackId.current !== track.id) {
         submittedTrackId.current = track.id
         void api.scrobble(track.id, true).catch(() => { if (submittedTrackId.current === track.id) submittedTrackId.current = undefined })
@@ -390,6 +407,10 @@ export function PlayerRuntime() {
     },
     onEnded: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       if (activeSlot.current !== slot) return
+      if (track && listening.current.trackId === track.id) {
+        void sendListeningEvent(listening.current.finish(true, localPlaybackDeviceName))
+        if (usePlayer.getState().repeat === 'one') listening.current.begin(track)
+      }
       if (track && submittedTrackId.current !== track.id) {
         submittedTrackId.current = track.id
         void api.scrobble(track.id, true).catch(() => undefined)
