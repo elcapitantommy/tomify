@@ -13,6 +13,12 @@ type AudioSlot = 0 | 1
 // those stalled downloads hold up the rest of the app's requests.
 const preloadFor = (playing: boolean) => playing ? 'auto' : 'metadata'
 
+// Every open copy of Tomify on a device shares one live-playback device id, so
+// the server can't tell them apart. They tell each other directly instead: the
+// copy that starts playing announces it and any other copy stops.
+const PLAYER_CHANNEL = 'tomify-player'
+const newInstanceId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
+
 export function PlayerRuntime() {
   const audioA = useRef<HTMLAudioElement>(null)
   const audioB = useRef<HTMLAudioElement>(null)
@@ -26,6 +32,8 @@ export function PlayerRuntime() {
   const retries = useRef(0)
   const retryTimer = useRef<number | undefined>(undefined)
   const stallTimer = useRef<number | undefined>(undefined)
+  const instanceId = useRef(newInstanceId())
+  const channel = useRef<BroadcastChannel | null>(null)
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
@@ -62,6 +70,13 @@ export function PlayerRuntime() {
 
   const getAudio = (slot: AudioSlot) => slot === 0 ? audioA.current : audioB.current
   const currentAudio = () => getAudio(activeSlot.current)
+
+  function pauseAll() {
+    for (const slot of [0, 1] as const) {
+      const element = getAudio(slot)
+      if (element && !element.paused) element.pause()
+    }
+  }
 
   function clearRetry() {
     if (retryTimer.current !== undefined) window.clearTimeout(retryTimer.current)
@@ -152,9 +167,10 @@ export function PlayerRuntime() {
       if (loadedTrackIds.current[current] !== nextTrack.id && loadedTrackIds.current[standby] === nextTrack.id && !getAudio(standby)?.error) {
         activeSlot.current = standby
         target = standby
-        const oldElement = getAudio(current)
-        if (oldElement && !oldElement.paused) oldElement.pause()
       }
+      // Only one element may ever be heard.
+      const other = getAudio(target === 0 ? 1 : 0)
+      if (other && !other.paused) other.pause()
 
       const element = getAudio(target)
       if (!element) return
@@ -242,7 +258,7 @@ export function PlayerRuntime() {
     } else {
       clearRetry()
       clearStall()
-      element.pause()
+      pauseAll()
     }
   }, [playing, track]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -275,6 +291,23 @@ export function PlayerRuntime() {
   useEffect(() => {
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
   }, [playing])
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return
+    const bus = new BroadcastChannel(PLAYER_CHANNEL)
+    channel.current = bus
+    bus.onmessage = (event: MessageEvent<{ type?: string; id?: string }>) => {
+      if (event.data?.type !== 'playing' || event.data.id === instanceId.current) return
+      clearRetry()
+      clearStall()
+      pauseAll()
+      if (usePlayer.getState().playing) usePlayer.setState({ playing: false })
+    }
+    return () => {
+      channel.current = null
+      bus.close()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // When the connection comes back, retry straight away instead of waiting out the back-off.
   useEffect(() => {
@@ -336,8 +369,15 @@ export function PlayerRuntime() {
     },
     onWaiting: () => watchForStall(slot),
     onStalled: () => watchForStall(slot),
-    onPlay: () => {
-      if (activeSlot.current === slot && !usePlayer.getState().playing) usePlayer.setState({ playing: true })
+    onPlay: (event: React.SyntheticEvent<HTMLAudioElement>) => {
+      // The pre-loaded next track must stay silent until it is handed over. If
+      // anything (the OS resuming audio, a stale play request) starts it, stop it.
+      if (activeSlot.current !== slot) {
+        event.currentTarget.pause()
+        return
+      }
+      channel.current?.postMessage({ type: 'playing', id: instanceId.current })
+      if (!usePlayer.getState().playing) usePlayer.setState({ playing: true })
     },
     onPause: () => {
       if (activeSlot.current === slot && usePlayer.getState().playing) usePlayer.setState({ playing: false })
