@@ -130,7 +130,15 @@ export function torrentConfig(env = process.env) {
     category: text(env.TOMIFY_TORRENT_CATEGORY) || 'tomify', downloadRoot: text(env.TOMIFY_QBITTORRENT_DOWNLOAD_DIR) || null,
     maxBytes: Number.isFinite(configuredMax) && configuredMax > 0 ? configuredMax : 4 * 1024 * 1024 * 1024,
     maxActiveDownloads: torrentMaxActive(env.TOMIFY_TORRENT_MAX_ACTIVE),
+    maxFiles: torrentMaxFiles(env.TOMIFY_TORRENT_MAX_FILES),
   }
+}
+
+// How many files and folders a completed torrent may hold. Discographies of 100 CDs run to a few thousand.
+export const DEFAULT_TORRENT_MAX_FILES = 10000
+function torrentMaxFiles(value) {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed >= 100 && parsed <= 100000 ? parsed : DEFAULT_TORRENT_MAX_FILES
 }
 
 // How many torrents qBittorrent downloads at once. qBittorrent's own queue limits decide this, so the agent sets them.

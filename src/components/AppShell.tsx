@@ -7,6 +7,7 @@ import { LivePlaybackSync } from './LivePlaybackSync'
 import { usePlayer } from '../stores/player'
 import { useRemoteSession } from '../stores/livePlayback'
 import { useAuth } from '../stores/auth'
+import { useScrollRestoration } from '../hooks/useScrollRestoration'
 
 const primary = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }]
 const library = [{ to: '/playlists', label: 'Playlists', icon: ListMusic }, { to: '/favourites', label: 'Favourites', icon: Heart }, { to: '/downloads', label: 'Downloads', icon: Download }]
@@ -29,6 +30,7 @@ export function AppShell() {
   const isAdmin = useAuth((state) => state.isAdmin) === true
   const logout = useAuth((state) => state.logout)
   const [accountOpen, setAccountOpen] = useState(false)
+  useScrollRestoration()
 
   useEffect(() => {
     document.title = titleTrack
