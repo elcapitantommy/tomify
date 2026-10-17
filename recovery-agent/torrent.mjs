@@ -129,7 +129,22 @@ export function torrentConfig(env = process.env) {
     type: 'qbittorrent', url: serviceUrl(url, 'qBittorrent URL'), username: text(env.TOMIFY_QBITTORRENT_USERNAME), password: text(env.TOMIFY_QBITTORRENT_PASSWORD),
     category: text(env.TOMIFY_TORRENT_CATEGORY) || 'tomify', downloadRoot: text(env.TOMIFY_QBITTORRENT_DOWNLOAD_DIR) || null,
     maxBytes: Number.isFinite(configuredMax) && configuredMax > 0 ? configuredMax : 4 * 1024 * 1024 * 1024,
+    maxActiveDownloads: torrentMaxActive(env.TOMIFY_TORRENT_MAX_ACTIVE),
   }
+}
+
+// How many torrents qBittorrent downloads at once. qBittorrent's own queue limits decide this, so the agent sets them.
+export const DEFAULT_TORRENT_MAX_ACTIVE = 5
+function torrentMaxActive(value) {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 50 ? parsed : DEFAULT_TORRENT_MAX_ACTIVE
+}
+
+// qBittorrent queue settings for a download limit. Finished torrents waiting to be imported still take an active
+// torrent slot, so the overall limit leaves room for them on top of the downloads.
+export function qbittorrentQueuePreferences(maxActiveDownloads = DEFAULT_TORRENT_MAX_ACTIVE) {
+  const downloads = torrentMaxActive(maxActiveDownloads)
+  return { queueing_enabled: true, max_active_downloads: downloads, max_active_uploads: downloads, max_active_torrents: downloads * 2 }
 }
 
 export function torrentCapability({ config = null, downloadRoot = null } = {}) {
@@ -200,10 +215,21 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
     if (!response.ok && response.status !== 409) throw new Error(`qBittorrent category returned HTTP ${response.status}.`)
   }
 
+  let queueApplied = false
+  // Sets qBittorrent's queue limits once per agent run. A failure is not fatal: the torrent is still added or polled
+  // and the next call tries again.
+  async function ensureQueueLimits(cookie) {
+    if (queueApplied) return
+    const preferences = qbittorrentQueuePreferences(config.maxActiveDownloads)
+    const { response } = await call(cookie, 'app/setPreferences', { json: JSON.stringify(preferences) }, 'qBittorrent preferences').catch(() => ({ response: { ok: false } }))
+    if (response.ok) queueApplied = true
+  }
+
   return {
     async add(link, { tag, savePath }) {
       const cookie = await session()
       await ensureCategory(cookie, savePath)
+      await ensureQueueLimits(cookie)
       const { response, body } = await call(cookie, 'torrents/add', { urls: link, category: config.category, tags: tag, savepath: savePath }, 'qBittorrent add')
       if (!response.ok) throw new Error(`qBittorrent add returned HTTP ${response.status}.`)
       if (/^fails/i.test(text(body))) throw new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).')
@@ -231,6 +257,8 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
     },
     async info(tag) {
       const cookie = await session()
+      // Also applied while polling, so torrents already queued pick up the limits after an agent update.
+      await ensureQueueLimits(cookie)
       const url = new URL(`${config.url}/api/v2/torrents/info`)
       url.searchParams.set('tag', tag)
       const response = await fetchImpl(url, { headers: cookie ? { cookie } : {}, signal: AbortSignal.timeout(30_000) })

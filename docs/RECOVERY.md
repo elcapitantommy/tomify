@@ -675,6 +675,8 @@ The job runner needs the agent to be redeployed (see [Updating the recovery agen
 
 Each Recovery item has a **Torrent link** field beside the search buttons. Paste a magnet link or an `http(s)` link to a `.torrent` file and press **Add link**: the agent checks the link and Tomify adds it as the item's torrent candidate and selects it, which opens the usual MusicBrainz and artwork review. Import still needs the source-specific authorisation confirmation. The link is then queued in qBittorrent-nox on the media server, and the Recovery row shows live progress: percentage, download speed, connected seeds and peers (with the swarm totals in brackets), downloaded size and time left.
 
+qBittorrent downloads up to `TOMIFY_TORRENT_MAX_ACTIVE` torrents at once (5 by default); any more wait as **Queued in qBittorrent**. The agent sets qBittorrent's queue limits to match the first time it adds or checks a torrent after starting: maximum active downloads and uploads to that number, and maximum active torrents to twice it, so finished torrents waiting to be imported do not hold up new downloads. Change the number in `/etc/tomify/recovery-agent.env` and restart the agent; changing the limits in qBittorrent's own settings is undone at the next agent start.
+
 When qBittorrent finishes, the agent:
 
 1. Resolves the torrent's content path and rejects anything outside `TOMIFY_TORRENT_DOWNLOAD_DIR`, symlinks, excessive file counts and downloads over `TOMIFY_TORRENT_MAX_BYTES` (4 GiB by default; larger torrents are failed and removed as soon as their size is known).
