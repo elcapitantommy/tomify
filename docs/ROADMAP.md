@@ -2,45 +2,47 @@
 
 The roadmap now lives in [TOMIFY_ROADMAP.md](TOMIFY_ROADMAP.md), which comes from the [technical review](TOMIFY_TECHNICAL_REVIEW.md). The original pre-build plan that used to be here is in git history.
 
-The tables below record how far `main` has got with each numbered item, checked against the code on 2026-10-16. Update a row when a change lands.
+The tables below record how far `main` has got with each numbered item, checked against the code on 2026-10-17. Update a row when a change lands.
 
 **Status:** Done · Partly done · Not started
 
 ## Top 20 tasks
 
+All 20 are done. Each row names the PR that finished it.
+
 | # | Task | Status | What is on `main` |
 | --- | --- | --- | --- |
-| 1 | Exclude API and proxy paths from the PWA navigation fallback | Done | `vite.config.ts` sets `navigateFallbackDenylist` for `/api/` and `/navidrome/`. The Worker returns a JSON 404 for unknown `/api/*`. Both are tested in `scripts/build-routing.node-test.mjs`. |
-| 2 | Serialise Usenet job advancement in the agent | Partly done | `recovery-agent/usenet-job.mjs` runs one poll per job at a time, with a concurrency test. The agent does not persist `importing` before importing, and `Recovery.tsx` still polls with `setInterval`. |
-| 3 | Agent-owned background job runner | Not started | Jobs still advance only when the Worker polls `/v1/jobs/status`. YouTube and Internet Archive acquisition is synchronous. |
-| 4 | Crash-safe import manifest and resume | Not started | Imports roll back on error, but nothing resumes or rolls back after a restart. |
-| 5 | Recovery agent auth guard and public health minimisation | Partly done | `recovery-agent/config.mjs` refuses to start without a 32-character token unless insecure loopback is set. `/health` still returns the backend list and YouTube cookie state. |
-| 6 | Lost-downloader detection and job cancel | Partly done | Torrent jobs can be cancelled (`/v1/jobs/cancel`, used when a torrent item is deleted). There is no lost-downloader timeout, no cancel for Usenet, and `importing` items can still be deleted. |
-| 7 | Version and contract reporting with a compatibility gate | Not started | No `/api/version` or agent version. The Worker only explains a bare 404 from an older agent. |
-| 8 | CI pipeline and pinned toolchain | Not started | No `.github/workflows` and no `packageManager` in `package.json`. |
-| 9 | Single-command, versioned release and agent deploy | Partly done | The systemd example now points at `/opt/tomify/recovery-agent`. There is no release script, symlink swap or added sandbox hardening. |
-| 10 | Migrations as the schema source of truth | Not started | `release_metadata` and `live_playback` have no migration, and the Worker still runs DDL on the request path. |
-| 11 | Unified release-directory resolver for every backend | Partly done | `resolveReleaseDirectory` in `usenet-import.mjs` matches existing folders ignoring case and accents, for Usenet and torrents. YouTube and Internet Archive imports in `index.mjs` still build paths with `safeName`. |
-| 12 | Truthful quality classification | Done | `shared/quality.mjs` sorts imports into lossless, transparent-lossy, lossy or unknown; the Worker marks `recovered`/`needs-upgrade` against the Settings target; files are tagged with their tier. |
-| 13 | Duplicate preflight before acquisition | Not started | |
-| 14 | Separate pipeline states through to "playable" | Not started | Settings can start a Navidrome scan, but Recovery items do not track scan or playability. |
-| 15 | Spotify matching fixes | Not started | `src/lib/catalogue-import.ts` and `scripts/catalogue-import.mjs` still each have a matcher, with no edition-suffix stripping or re-checking of `available` items. |
-| 16 | Make the Worker a real TypeScript module | Complete | Workers Static Assets, TypeScript modules, a configurable Navidrome origin and the full binding reference are in place. |
-| 17 | Read-only library inventory in the agent | Not started | |
-| 18 | Library health dashboard | Not started | |
-| 19 | Release import mapped to the MusicBrainz tracklist | Not started | Album completeness fetches MusicBrainz tracklists, but release imports do not use them. |
-| 20 | Mobile navigation, Albums paging and favourites | Partly done | On mobile, Playlists is in the tab bar, Spotify import is on the Playlists page, and Settings is in the account sheet. Downloads is not reachable on mobile, the Albums page loads at most 500 albums, and there is no star/unstar. |
+| 1 | Exclude API and proxy paths from the PWA navigation fallback | Done | `navigateFallbackDenylist` covers `/api/` and `/navidrome/`; unknown `/api/*` returns a JSON 404. |
+| 2 | Serialise Usenet job advancement in the agent | Done (#37) | One locked poll per job in `recovery-agent/usenet-job.mjs`; `importing` is saved before an import starts. |
+| 3 | Agent-owned background job runner | Done (#49) | `recovery-agent/jobs.mjs` advances every job on a timer, so downloads and imports finish with no browser open; the status endpoint is read-only. |
+| 4 | Crash-safe import manifest and resume | Done (#56) | `recovery-agent/manifest.mjs`; on start-up the runner resumes or rolls back interrupted imports. |
+| 5 | Recovery agent auth guard and public health minimisation | Done (#42) | The agent refuses a token shorter than 32 characters; `/health` returns only `{ ok, version }`. |
+| 6 | Lost-downloader detection and job cancel | Done (#46, #57) | A job missing from SABnzbd/NZBGet for 15 minutes fails as `downloader-lost`; Usenet and torrent jobs can be cancelled. |
+| 7 | Version and contract reporting with a compatibility gate | Done (#50) | `/api/version`, agent version and contract 2; Settings warns when contracts differ. |
+| 8 | CI pipeline and pinned toolchain | Done (#44) | `.github/workflows/ci.yml`; pnpm pinned by `packageManager`. |
+| 9 | Single-command, versioned release and agent deploy | Done (#54) | `scripts/deploy-agent.ps1`: versioned releases, symlink swap, health check with automatic rollback, hardened systemd unit. |
+| 10 | Migrations as the schema source of truth | Done (#59) | `drizzle/` migrations applied by `pnpm run deploy`; a test checks the Worker's SQL against the migrated schema and that it runs no DDL. |
+| 11 | Unified release-directory resolver for every backend | Done (#45) | YouTube and Internet Archive imports use `planDestination`/`resolveReleaseDirectory`, case, accent and NFC/NFD insensitive. |
+| 12 | Truthful quality classification | Done (#51) | `shared/quality.mjs` tiers; `recovered`/`needs-upgrade` follow the Settings target. |
+| 13 | Duplicate preflight before acquisition | Done (#58) | `recovery-agent/preflight.mjs` checks the library before a download starts. |
+| 14 | Separate pipeline states through to "playable" | Done (#55) | Recovery items track scan-pending, ready and scan-failed after a Navidrome scan. |
+| 15 | Spotify matching fixes | Done (#43) | One matcher in `src/lib/catalogue-match.mjs`, with edition-suffix stripping. |
+| 16 | Make the Worker a real TypeScript module | Done (#63, #71, #72) | Workers Static Assets, TypeScript modules under `worker/`, `NAVIDROME_ORIGIN` and the binding reference. Ten feature modules still carry `@ts-nocheck`. |
+| 17 | Read-only library inventory in the agent | Done (#61) | `recovery-agent/inventory.mjs`. |
+| 18 | Library health dashboard | Done (#62, #64-#66) | Settings → Library health, with "Mark as fine". |
+| 19 | Release import mapped to the MusicBrainz tracklist | Done (#60) | Release imports map files onto the MusicBrainz tracklist. |
+| 20 | Mobile navigation, Albums paging and favourites | Done (#38, #67) | Mobile tab bar with Playlists and Favourites, star/unstar, and Albums loads every album. Downloads stays desktop-only until offline downloads (3.1) exist. |
 
 ## Phase items without a numbered task
 
 | # | Item | Status | What is on `main` |
 | --- | --- | --- | --- |
 | 0.6 | Stop tagging lossless files `lossy-recovery-copy`; stop marking every import `needs-upgrade` | Done | See task 12. |
-| 0.7 | Pin pnpm | Not started | See task 8. |
+| 0.7 | Pin pnpm | Done | See task 8. |
 | 0.8 | Back up and record deployed versions before changes | Unknown | A manual step on the box, so the code cannot show it. |
-| 1.8 | Quieter live-playback sync | Not started | `LivePlaybackSync.tsx` polls and publishes on fixed intervals. |
-| 1.9 | Atomic final commits; never overwrite `cover.jpg`; clean up SAB downloads | Partly done | Usenet and torrent imports leave an existing `cover.jpg` alone. YouTube and Internet Archive imports replace it, and completed SABnzbd downloads are not removed. |
-| 1.10 | Nightly D1 export and agent state backup; uptime check | Not started | |
+| 1.8 | Quieter live-playback sync | Done | `LivePlaybackSync.tsx` publishes in short bursts after a change, then only a 30-second keepalive. |
+| 1.9 | Atomic final commits; never overwrite `cover.jpg`; clean up SAB downloads | Done (#52) | Imports commit atomically and keep an existing `cover.jpg`; SABnzbd download clean-up is opt-in with `TOMIFY_SABNZBD_CLEANUP=true`. |
+| 1.10 | Nightly D1 export and agent state backup; uptime check | Done (#39) | `scripts/backup.sh` with a systemd timer; see docs/RECOVERY.md "Backups and uptime checks". |
 | 1.11 | Replace the stale `ARCHITECTURE.md` and `ROADMAP.md`; add `DEPLOYMENT.md` | Partly done | Both documents are rewritten. There is no `DEPLOYMENT.md`. |
 | 2.9 | Mobile Library tab, Albums paging, recovery source badges, star/unstar, plainer language | Partly done | See task 20. |
 | 3.1 | Offline downloads v1 | Not started | The Downloads page is a placeholder, and `src/lib/sourceResolver.ts` always streams. |
