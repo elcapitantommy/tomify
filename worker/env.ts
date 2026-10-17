@@ -14,6 +14,10 @@ export interface Env {
   APPLE_CATALOGUE_COUNTRY?: string
   APPLE_ARTWORK_EMBEDDING_ENABLED?: string
   SPOTIFY_ARTWORK_EMBEDDING_ENABLED?: string
+  // Optional: lets Claude pick and name the "Made for you" mixes. Without it Tomify builds simpler mixes itself.
+  ANTHROPIC_API_KEY?: string
+  // Optional: the Claude model for mixes (default claude-sonnet-5-5).
+  TOMIFY_MIXES_MODEL?: string
 }
 
 export type RouteHandler = (request: Request, env: Env, url: URL) => Promise<Response | null>

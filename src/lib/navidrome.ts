@@ -40,10 +40,10 @@ export class NavidromeClient {
     return url
   }
 
-  private async get<T>(endpoint: string, params?: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<T> {
+  private async get<T>(endpoint: string, params?: Record<string, string | number | undefined>, signal?: AbortSignal, url = this.url(endpoint, params)): Promise<T> {
     let response: Response
     try {
-      response = await this.fetcher(this.url(endpoint, params), { signal, credentials: 'omit', cache: 'no-store' })
+      response = await this.fetcher(url, { signal, credentials: 'omit', cache: 'no-store' })
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') throw error
       console.error('Navidrome request failed', {
@@ -78,6 +78,8 @@ export class NavidromeClient {
   async playlists(signal?: AbortSignal): Promise<Playlist[]> { const r = await this.get<{ playlists?: { playlist?: Playlist[] } }>('getPlaylists', {}, signal); return (r.playlists?.playlist ?? []).filter((playlist) => this.ownsPlaylist(playlist)) }
   async playlist(id: string, signal?: AbortSignal, sharedBy?: string): Promise<Playlist> { const r = await this.get<{ playlist: Playlist }>('getPlaylist', { id }, signal); if (!this.ownsPlaylist(r.playlist) && !(sharedBy && sameAccount(r.playlist.owner, sharedBy))) throw new NavidromeError('Playlist not found.', 70); return r.playlist }
   // Sharing needs the playlist public in Navidrome so recipients' own credentials can read it.
+  // Subsonic takes one songId parameter per song, in order.
+  async createPlaylist(name: string, songIds: string[]): Promise<Playlist> { const url = this.url('createPlaylist', { name }); songIds.forEach((id) => url.searchParams.append('songId', id)); const r = await this.get<{ playlist?: Playlist }>('createPlaylist', undefined, undefined, url); return r.playlist ?? { id: '', name } }
   async setPlaylistPublic(id: string, isPublic: boolean) { await this.get('updatePlaylist', { playlistId: id, public: String(isPublic) }) }
   ownsPlaylist(playlist: Pick<Playlist, 'owner'>) { return sameAccount(playlist.owner, this.session.username) }
   async starred(signal?: AbortSignal): Promise<SearchResults> { const r = await this.get<{ starred2?: { artist?: Artist[]; album?: Album[]; song?: Track[] } }>('getStarred2', {}, signal); const s = r.starred2; return { artists: s?.artist ?? [], albums: s?.album ?? [], tracks: s?.song ?? [] } }

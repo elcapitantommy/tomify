@@ -3,6 +3,8 @@ import { useApi } from '../lib/api-context'
 import { StreamFirstSourceResolver } from '../lib/sourceResolver'
 import { bindPlayerRuntime, usePlayer } from '../stores/player'
 import { setMediaMetadata } from '../lib/mediaSession'
+import { ListeningTracker, sendListeningEvent } from '../lib/listening-log'
+import { localPlaybackDeviceName } from '../stores/livePlayback'
 import type { Track } from '../types'
 
 type AudioSlot = 0 | 1
@@ -21,6 +23,7 @@ export function PlayerRuntime() {
   const nowPlayingTrackId = useRef<string | undefined>(undefined)
   const restoredPositionTrackId = useRef<string | undefined>(undefined)
   const initialRestore = useRef<{ trackId?: string; position: number } | null>(null)
+  const listening = useRef(new ListeningTracker())
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
@@ -42,6 +45,20 @@ export function PlayerRuntime() {
   useEffect(() => {
     submittedTrackId.current = undefined
   }, [track?.id])
+
+  // Listening history for mixes: a play ends when the track changes (or the page closes), and only
+  // starts once the track actually plays, so restoring a paused queue doesn't count as a play.
+  useEffect(() => {
+    const tracker = listening.current
+    if (tracker.trackId && tracker.trackId !== track?.id) void sendListeningEvent(tracker.finish(false, localPlaybackDeviceName))
+    if (track && playing) tracker.begin(track)
+  }, [track, playing])
+
+  useEffect(() => {
+    const onPageHide = () => void sendListeningEvent(listening.current.finish(false, localPlaybackDeviceName))
+    window.addEventListener('pagehide', onPageHide)
+    return () => window.removeEventListener('pagehide', onPageHide)
+  }, [])
 
   // Tell Navidrome "now playing" only once the track actually plays, not when a page load restores a paused queue.
   useEffect(() => {
@@ -208,6 +225,7 @@ export function PlayerRuntime() {
       const pending = initialRestore.current
       if (track && pending?.trackId === track.id && pending.position > 0 && restoredPositionTrackId.current !== track.id) return
       usePlayer.getState().setProgress(element.currentTime, duration)
+      if (track && listening.current.trackId === track.id) listening.current.progress(element.currentTime, duration, !element.paused)
       if (track && duration > 0 && element.currentTime >= Math.min(duration / 2, 240) && submittedTrackId.current !== track.id) {
         submittedTrackId.current = track.id
         void api.scrobble(track.id, true).catch(() => { if (submittedTrackId.current === track.id) submittedTrackId.current = undefined })
@@ -237,6 +255,10 @@ export function PlayerRuntime() {
     },
     onEnded: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       if (activeSlot.current !== slot) return
+      if (track && listening.current.trackId === track.id) {
+        void sendListeningEvent(listening.current.finish(true, localPlaybackDeviceName))
+        if (usePlayer.getState().repeat === 'one') listening.current.begin(track)
+      }
       if (track && submittedTrackId.current !== track.id) {
         submittedTrackId.current = track.id
         void api.scrobble(track.id, true).catch(() => undefined)
