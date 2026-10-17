@@ -1,118 +1,12 @@
-import { mkdir, writeFile } from 'node:fs/promises'
-import { execFileSync } from 'node:child_process'
-import { recoveryMetadataWorkerSource } from './recovery-metadata.mjs'
-import { recoveryArtworkWorkerSource } from './recovery-artwork.mjs'
-import { catalogueImportWorkerSource } from './catalogue-import.mjs'
-import { catalogueWorkerSource } from './catalogue-worker.mjs'
-import { completenessWorkerSource } from './completeness-worker.mjs'
-import { albumArtworkWorkerSource } from './album-artwork-worker.mjs'
-import { playlistShareWorkerSource } from './playlist-share-worker.mjs'
-import { livePlaybackWorkerSource } from './live-playback-worker.mjs'
-import { qualityWorkerSource } from './quality-worker.mjs'
-import { libraryScanWorkerSource } from './library-scan-worker.mjs'
-import { preflightWorkerSource } from './preflight-worker.mjs'
-import { inventoryWorkerSource } from './inventory-worker.mjs'
-
-const workerPath = new URL('../dist/server/index.js', import.meta.url)
-const TOMIFY_AGENT_CONTRACT = 2
-
-function buildVersion() {
-  try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim() }
-  catch { return String(process.env.CF_PAGES_COMMIT_SHA || process.env.WORKERS_CI_COMMIT_SHA || 'unknown').trim() || 'unknown' }
-}
-
-const TOMIFY_VERSION = buildVersion()
-const worker = `const TOMIFY_VERSION = ${JSON.stringify(TOMIFY_VERSION)}
-const TOMIFY_AGENT_CONTRACT = ${TOMIFY_AGENT_CONTRACT}
-
-${recoveryMetadataWorkerSource}
-
-${recoveryArtworkWorkerSource}
-
-${catalogueImportWorkerSource}
-
-${catalogueWorkerSource}
-
-${completenessWorkerSource}
-
-${albumArtworkWorkerSource}
-
-${playlistShareWorkerSource}
-
-${livePlaybackWorkerSource}
-
-${qualityWorkerSource}
-
-${libraryScanWorkerSource}
-
-${preflightWorkerSource}
-
-${inventoryWorkerSource}
-
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } })
-}
-
-const authCache = new Map()
-
-async function authenticate(request) {
-  const username = request.headers.get('x-tomify-user')
-  const token = request.headers.get('x-tomify-token')
-  const salt = request.headers.get('x-tomify-salt')
-  if (!username || !token || !salt) return null
-  const cacheKey = username + ':' + token + ':' + salt
-  const cachedAt = authCache.get(cacheKey)
-  if (cachedAt && Date.now() - cachedAt < 30000) return username
-  try {
-    const ping = new URL('https://tomify.tomdixon.uk/rest/ping.view')
-    ping.searchParams.set('u', username)
-    ping.searchParams.set('t', token)
-    ping.searchParams.set('s', salt)
-    ping.searchParams.set('v', '1.16.1')
-    ping.searchParams.set('c', 'Tomify')
-    ping.searchParams.set('f', 'json')
-    const response = await fetch(ping, { headers: { accept: 'application/json' } })
-    if (!response.ok) return null
-    const body = await response.json()
-    if (body && body['subsonic-response'] && body['subsonic-response'].status === 'ok') {
-      authCache.set(cacheKey, Date.now())
-      return username
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-// Only Navidrome administrators may use Recovery, reboot the media server or change its VPN.
-async function isNavidromeAdmin(request, username) {
-  try {
-    const lookup = new URL('https://tomify.tomdixon.uk/rest/getUser.view')
-    lookup.searchParams.set('u', username)
-    lookup.searchParams.set('t', request.headers.get('x-tomify-token') || '')
-    lookup.searchParams.set('s', request.headers.get('x-tomify-salt') || '')
-    lookup.searchParams.set('v', '1.16.1')
-    lookup.searchParams.set('c', 'Tomify')
-    lookup.searchParams.set('f', 'json')
-    lookup.searchParams.set('username', username)
-    const response = await fetch(lookup, { headers: { accept: 'application/json' } })
-    if (!response.ok) return false
-    const body = await response.json()
-    const subsonic = body && body['subsonic-response']
-    return Boolean(subsonic && subsonic.status === 'ok' && subsonic.user && subsonic.user.adminRole === true)
-  } catch {
-    return false
-  }
-}
-
-// The D1 schema comes only from the migrations in drizzle/, applied by "pnpm run deploy" before the
-// Worker is deployed. A query that names a table or column no migration has created yet means the
-// database is behind this Worker, so the request gets a clear 503 instead of a 500 or a silent repair.
-function schemaOutOfDateResponse(error) {
-  const match = /no such (table|column): ([A-Za-z0-9_.]+)/.exec(error instanceof Error ? error.message : String(error))
-  if (!match) return null
-  return json({ error: 'schema-out-of-date', message: 'The Tomify database is missing the ' + match[1] + ' ' + match[2] + '. Apply the D1 migrations (pnpm run deploy) and try again.', missing: { kind: match[1], name: match[2] } }, 503)
-}
+import { applyRecoveryMetadataChoices, metadataTextSimilarity, normaliseMetadataText, resolveRecoveryMetadata } from '../../scripts/recovery-metadata.mjs'
+import { appleArtworkUrl, rankArtworkCandidates } from '../../scripts/recovery-artwork.mjs'
+import { completenessText, isMusicBrainzId, releaseGroupTypeFit, resolveAlbumTracklist, selectTracklist } from '../features/completeness.ts'
+import { recoveryImportStatus } from '../features/quality.ts'
+import { markRecoveryScanPending, parseRecoveryPlayback } from '../features/library-scan.ts'
+import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
+import { json } from '../lib/http.ts'
+import { callRecoveryAgent, RecoveryAgentOutdated, recoveryAgentStatus } from '../lib/agent.ts'
+import { TOMIFY_AGENT_CONTRACT } from '../generated/build-info.ts'
 
 function recoveryCandidateRow(row) {
   let provenance = null
@@ -126,7 +20,7 @@ function recoveryCandidateRow(row) {
   }
 }
 
-async function recoveryItem(db, username, id) {
+export async function recoveryItem(db, username, id) {
   const row = await db.prepare('SELECT id, artist, title, album, duration, track_number AS trackNumber, disc_number AS discNumber, musicbrainz_id AS musicBrainzId, metadata_resolution_json AS metadataResolutionJson, artwork_resolution_json AS artworkResolutionJson, source_json AS sourceJson, playback_json AS playbackJson, status, notes, error, created_at AS createdAt, updated_at AS updatedAt FROM recovery_items WHERE username = ? AND id = ?').bind(username, id).first()
   if (!row) return null
   const candidates = await db.prepare('SELECT id, backend, external_id AS externalId, url, title, channel, channel_id AS channelId, duration, official, match_score AS matchScore, thumbnail, codec, container, bitrate, sample_rate AS sampleRate, channels, imported_path AS importedPath, provenance_json AS provenanceJson, selected FROM recovery_candidates WHERE recovery_id = ? ORDER BY selected DESC, match_score DESC, created_at DESC').bind(id).all()
@@ -136,8 +30,12 @@ async function recoveryItem(db, username, id) {
   try { metadataResolution = row.metadataResolutionJson ? JSON.parse(row.metadataResolutionJson) : null } catch { metadataResolution = null }
   try { artworkResolution = row.artworkResolutionJson ? JSON.parse(row.artworkResolutionJson) : null } catch { artworkResolution = null }
   try { catalogueSource = row.sourceJson ? JSON.parse(row.sourceJson) : null } catch { catalogueSource = null }
-  const { metadataResolutionJson, artworkResolutionJson, sourceJson, playbackJson, ...item } = row
-  return { ...item, metadataResolution, artworkResolution, catalogueSource, playback: parseRecoveryPlayback(playbackJson), duration: row.duration == null ? null : Number(row.duration), trackNumber: row.trackNumber == null ? null : Number(row.trackNumber), discNumber: row.discNumber == null ? null : Number(row.discNumber), candidates: (candidates.results || []).map(recoveryCandidateRow) }
+  const item = { ...row }
+  delete item.metadataResolutionJson
+  delete item.artworkResolutionJson
+  delete item.sourceJson
+  delete item.playbackJson
+  return { ...item, metadataResolution, artworkResolution, catalogueSource, playback: parseRecoveryPlayback(row.playbackJson), duration: row.duration == null ? null : Number(row.duration), trackNumber: row.trackNumber == null ? null : Number(row.trackNumber), discNumber: row.discNumber == null ? null : Number(row.discNumber), candidates: (candidates.results || []).map(recoveryCandidateRow) }
 }
 
 function isReleaseRecoveryCandidate(candidate) {
@@ -242,44 +140,13 @@ function scoreRecoveryCandidate(item, candidate) {
   return { official: looksOfficial, score: Math.max(0, Math.min(100, Math.round(title * 48 + artist * 28 + duration * 18 + (looksOfficial ? 6 : 0) - (unwanted ? 24 : 0)))) }
 }
 
-async function callRecoveryAgent(env, path, body) {
-  if (!env.RECOVERY_AGENT_URL) throw new Error('The recovery agent is not configured.')
-  const headers = { 'content-type': 'application/json', accept: 'application/json' }
-  if (env.RECOVERY_AGENT_TOKEN) headers.authorization = 'Bearer ' + env.RECOVERY_AGENT_TOKEN
-  const baseUrl = String(env.RECOVERY_AGENT_URL)
-  const response = await fetch((baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl) + path, { method: 'POST', headers, body: JSON.stringify(body) })
-  const result = await response.json().catch(() => ({}))
-  // An agent older than this Worker answers new endpoints with a bare 404.
-  if (response.status === 404 && result.error === 'not-found') throw new RecoveryAgentOutdated()
-  if (!response.ok) throw new Error(result.message || result.error || 'Recovery agent request failed.')
-  return result
-}
-
-const recoveryAgentStatusCache = new Map()
-
-async function recoveryAgentStatus(env) {
-  const cacheKey = String(env.RECOVERY_AGENT_URL || '') + ':' + String(env.RECOVERY_AGENT_TOKEN || '')
-  const cached = recoveryAgentStatusCache.get(cacheKey)
-  if (cached && Date.now() - cached.checkedAt < 60000) return cached.status
-  const status = await callRecoveryAgent(env, '/v1/status', {})
-  recoveryAgentStatusCache.set(cacheKey, { checkedAt: Date.now(), status })
-  return status
-}
-
-class RecoveryAgentOutdated extends Error {
-  constructor() {
-    super('The recovery agent is out of date. Redeploy it using docs/RECOVERY.md, “Updating the recovery agent”: https://github.com/elcapitantommy/tomify/blob/main/docs/RECOVERY.md#updating-the-recovery-agent')
-    this.name = 'RecoveryAgentOutdated'
-  }
-}
-
 async function requireRecoveryAgentContract(env) {
   const status = await recoveryAgentStatus(env)
   if (!Number.isInteger(status?.contract) || status.contract < TOMIFY_AGENT_CONTRACT) throw new RecoveryAgentOutdated()
   return status
 }
 
-function rowToItem(row) {
+export function rowToItem(row) {
   if (!row) return null
   return {
     albumId: row.albumId,
@@ -303,11 +170,11 @@ function releaseTitleHint(title) {
   return null
 }
 
-function cleanReleaseTitle(title) {
+export function cleanReleaseTitle(title) {
   return String(title || '').replace(/\s*\((?:cd|disc)?\s*\d*\s*(?:single(?:\s*version)?|e\.?p\.?)\)\s*$/i, '').trim()
 }
 
-function musicBrainzType(group) {
+export function musicBrainzType(group) {
   const secondary = (group['secondary-types'] || []).map((value) => String(value).toLowerCase())
   if (secondary.includes('compilation')) return 'compilation'
   const primary = String(group['primary-type'] || '').toLowerCase()
@@ -325,7 +192,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 let musicBrainzQueue = Promise.resolve()
 let lastMusicBrainzRequestAt = 0
 
-async function musicBrainzJson(url) {
+export async function musicBrainzJson(url) {
   const operation = musicBrainzQueue.then(async () => {
     const wait = Math.max(0, 1100 - (Date.now() - lastMusicBrainzRequestAt))
     if (wait) await sleep(wait)
@@ -357,7 +224,7 @@ async function resolveMusicBrainzRecovery(item, candidateId) {
   return { authority: 'musicbrainz', ...resolveRecoveryMetadata({ artist: item.artist, title: item.title, album: item.album, duration: item.duration || item.candidates.find((value) => value.id === candidateId)?.duration || null, isrc: isrc || null }, result.recordings), candidateId, resolvedAt: new Date().toISOString() }
 }
 
-function artworkYearScore(expectedDate, actualDate) {
+export function artworkYearScore(expectedDate, actualDate) {
   const expected = String(expectedDate || '').slice(0, 4)
   const actual = String(actualDate || '').slice(0, 4)
   if (!expected || !actual) return 0.5
@@ -389,7 +256,8 @@ async function appleArtworkCandidates(env, metadata) {
 }
 
 let spotifyTokenCache = null
-async function spotifyAccessToken(env) {
+export function resetSpotifyTokenCache() { spotifyTokenCache = null }
+export async function spotifyAccessToken(env) {
   if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) return null
   if (spotifyTokenCache && spotifyTokenCache.expiresAt > Date.now() + 60_000) return spotifyTokenCache.token
   const response = await fetch('https://accounts.spotify.com/api/token', { method: 'POST', headers: { authorization: 'Basic ' + btoa(String(env.SPOTIFY_CLIENT_ID) + ':' + String(env.SPOTIFY_CLIENT_SECRET)), 'content-type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials' })
@@ -469,7 +337,7 @@ async function resolveRecoveryArtwork(env, metadataResolution, item, sourceCandi
   return { candidates, selectedCandidateId: candidates.find((candidate) => candidate.selectable)?.id || null, resolvedAt: new Date().toISOString(), candidateId: sourceCandidate.id, configurationKey: artworkConfigurationKey(env), providers: { apple: { available: true, acquisitionEnabled: String(env.APPLE_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true' }, spotify: { available: Boolean(env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET), acquisitionEnabled: String(env.SPOTIFY_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true' }, coverArtArchive: { available: Boolean(metadata.releaseId) }, youtube: { available: sourceCandidate.backend === 'youtube' && Boolean(sourceCandidate.thumbnail) } } }
 }
 
-async function lookupMusicBrainzReleaseGroup(album) {
+export async function lookupMusicBrainzReleaseGroup(album) {
   const mbid = typeof album.musicBrainzId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(album.musicBrainzId) ? album.musicBrainzId : null
 
   if (mbid) {
@@ -520,75 +388,14 @@ async function lookupMusicBrainzReleaseGroup(album) {
   return candidates[0] ? { group: candidates[0].group, score: Math.min(100, candidates[0].rawScore) } : null
 }
 
-async function selectRelease(db, albumId) {
+export async function selectRelease(db, albumId) {
   const row = await db.prepare('SELECT album_id AS albumId, release_type AS releaseType, release_date AS releaseDate, updated_at AS updatedAt, source, musicbrainz_id AS musicBrainzId, match_score AS matchScore FROM release_metadata WHERE album_id = ?').bind(albumId).first()
   return rowToItem(row)
 }
 
-const tomifyRoutes = {
-  async fetch(request, env) {
-    const url = new URL(request.url)
-    let pathname = decodeURIComponent(url.pathname)
-    const catalogueResponse = await handleCatalogueRequest(request, env, url)
-    if (catalogueResponse) return catalogueResponse
-    const completenessResponse = await handleCompletenessRequest(request, env, url)
-    if (completenessResponse) return completenessResponse
-    const albumArtworkResponse = await handleAlbumArtworkRequest(request, env, url)
-    if (albumArtworkResponse) return albumArtworkResponse
-    const playlistShareResponse = await handlePlaylistShareRequest(request, env, url)
-    if (playlistShareResponse) return playlistShareResponse
-    const livePlaybackResponse = await handleLivePlaybackRequest(request, env, url)
-    if (livePlaybackResponse) return livePlaybackResponse
-    const qualityResponse = await handleQualityRequest(request, env, url)
-    if (qualityResponse) return qualityResponse
-    const libraryScanResponse = await handleLibraryScanRequest(request, env, url)
-    if (libraryScanResponse) return libraryScanResponse
-    const preflightResponse = await handlePreflightRequest(request, env, url)
-    if (preflightResponse) return preflightResponse
-    const inventoryResponse = await handleInventoryRequest(request, env, url)
-    if (inventoryResponse) return inventoryResponse
-
-    if (pathname === '/api/version' && request.method === 'GET') return json({ version: TOMIFY_VERSION, contract: TOMIFY_AGENT_CONTRACT })
-
-    if (pathname === '/api/recovery-agent/status' && request.method === 'GET') {
-      const username = await authenticate(request)
-      if (!username) return json({ error: 'unauthorized' }, 401)
-      if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can inspect the recovery agent.' }, 403)
-      try {
-        const status = await recoveryAgentStatus(env)
-        return json({ version: status?.version ?? null, contract: Number.isInteger(status?.contract) ? status.contract : null })
-      } catch (error) {
-        return json({ error: 'recovery-agent-status-failed', message: error instanceof Error ? error.message : 'The recovery agent status is unavailable.' }, 502)
-      }
-    }
-
-    if (pathname === '/api/system/reboot' && request.method === 'POST') {
-      const username = await authenticate(request)
-      if (!username) return json({ error: 'unauthorized' }, 401)
-      if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can restart the media server.' }, 403)
-      const body = await request.json().catch(() => ({}))
-      if (!body || body.confirm !== 'reboot') return json({ error: 'confirmation-required', message: 'Confirm the restart first.' }, 400)
-      try {
-        return json(await callRecoveryAgent(env, '/v1/system/reboot', { confirm: 'reboot' }), 202)
-      } catch (error) {
-        return json({ error: 'reboot-failed', message: error instanceof Error ? error.message : 'The media server could not be restarted.' }, 502)
-      }
-    }
-
-    if (pathname === '/api/system/vpn' && (request.method === 'GET' || request.method === 'POST')) {
-      const username = await authenticate(request)
-      if (!username) return json({ error: 'unauthorized' }, 401)
-      if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can manage the VPN.' }, 403)
-      try {
-        if (request.method === 'GET') return json(await callRecoveryAgent(env, '/v1/system/vpn/status', {}))
-        const body = await request.json().catch(() => ({}))
-        const action = body && body.action
-        if (action !== 'connect' && action !== 'disconnect') return json({ error: 'invalid-action', message: 'Choose connect or disconnect.' }, 400)
-        return json(await callRecoveryAgent(env, '/v1/system/vpn', { action }))
-      } catch (error) {
-        return json({ error: 'vpn-failed', message: error instanceof Error ? error.message : 'The VPN could not be changed.' }, 502)
-      }
-    }
+export async function handleRecoveryRequest(request, env, url) {
+    const pathname = decodeURIComponent(url.pathname)
+    if (pathname !== '/api/recovery' && !pathname.startsWith('/api/recovery/')) return null
 
     // Recovery downloads and imports into the shared library, so every Recovery route is for administrators only.
     if (pathname === '/api/recovery' || pathname.startsWith('/api/recovery/')) {
@@ -642,7 +449,7 @@ const tomifyRoutes = {
       return json({ item: await recoveryItem(env.TOMIFY_DB, username, id) }, 201)
     }
 
-    const recoveryMatch = pathname.match(/^\\/api\\/recovery\\/([^/]+)(?:\\/(search|select|acquire|job|cancel|import-remaining))?$/)
+    const recoveryMatch = pathname.match(/^\/api\/recovery\/([^/]+)(?:\/(search|select|acquire|job|cancel|import-remaining))?$/)
     if (recoveryMatch && recoveryMatch[2] === 'cancel' && request.method === 'POST') {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request)
@@ -898,94 +705,5 @@ const tomifyRoutes = {
     }
 
 
-    if (pathname === '/api/release-meta' && request.method === 'GET') {
-      if (!env || !env.TOMIFY_DB) return json({ error: 'metadata-store-unavailable' }, 503)
-      const username = await authenticate(request)
-      if (!username) return json({ error: 'unauthorized' }, 401)
-      const result = await env.TOMIFY_DB.prepare('SELECT album_id AS albumId, release_type AS releaseType, release_date AS releaseDate, updated_at AS updatedAt, source, musicbrainz_id AS musicBrainzId, match_score AS matchScore FROM release_metadata ORDER BY album_id').all()
-      return json({ items: (result.results || []).map(rowToItem) })
-    }
-
-    if (pathname === '/api/release-meta/enrich' && request.method === 'POST') {
-      if (!env || !env.TOMIFY_DB) return json({ error: 'metadata-store-unavailable' }, 503)
-      const username = await authenticate(request)
-      if (!username) return json({ error: 'unauthorized' }, 401)
-      const album = await request.json()
-      if (!album || typeof album.albumId !== 'string' || typeof album.name !== 'string' || typeof album.artist !== 'string') return json({ error: 'invalid-album' }, 400)
-
-      const existing = await selectRelease(env.TOMIFY_DB, album.albumId)
-      const force = album.force === true
-      const replaceManual = album.replaceManual === true
-      if (existing && (!force || (existing.source === 'manual' && !replaceManual))) return json({ item: existing, cached: true })
-      // Anyone opening an album fills in a missing classification; refreshing or replacing one is an edit, so administrators only.
-      if (existing && !(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can edit release metadata.' }, 403)
-
-      const match = await lookupMusicBrainzReleaseGroup(album)
-      if (!match?.group) return json({ error: 'musicbrainz-no-match' }, 404)
-
-      const releaseType = musicBrainzType(match.group)
-      const releaseDate = typeof match.group['first-release-date'] === 'string' && /^\\d{4}(?:-\\d{2})?(?:-\\d{2})?$/.test(match.group['first-release-date']) ? match.group['first-release-date'] : null
-      const groupId = typeof match.group.id === 'string' ? match.group.id : null
-
-      await env.TOMIFY_DB.prepare("INSERT INTO release_metadata (album_id, release_type, release_date, updated_at, updated_by, source, musicbrainz_id, match_score) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, 'musicbrainz', ?, ?) ON CONFLICT(album_id) DO UPDATE SET release_type = excluded.release_type, release_date = excluded.release_date, updated_at = CURRENT_TIMESTAMP, updated_by = excluded.updated_by, source = 'musicbrainz', musicbrainz_id = excluded.musicbrainz_id, match_score = excluded.match_score")
-        .bind(album.albumId, releaseType, releaseDate, username, groupId, match.score).run()
-
-      const item = await selectRelease(env.TOMIFY_DB, album.albumId)
-      return json({ item, cached: false })
-    }
-
-    const releaseMetaMatch = pathname.match(/^\\/api\\/release-meta\\/([^/]+)$/)
-    if (releaseMetaMatch && request.method === 'PUT') {
-      if (!env || !env.TOMIFY_DB) return json({ error: 'metadata-store-unavailable' }, 503)
-      const username = await authenticate(request)
-      if (!username) return json({ error: 'unauthorized' }, 401)
-      if (!(await isNavidromeAdmin(request, username))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can edit release metadata.' }, 403)
-      const body = await request.json()
-      const allowed = ['album', 'single', 'ep', 'compilation', 'other']
-      if (!body || !allowed.includes(body.releaseType)) return json({ error: 'invalid-release-type' }, 400)
-      const releaseDate = typeof body.releaseDate === 'string' && /^\\d{4}-\\d{2}-\\d{2}$/.test(body.releaseDate) ? body.releaseDate : null
-      await env.TOMIFY_DB.prepare("INSERT INTO release_metadata (album_id, release_type, release_date, updated_at, updated_by, source) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, 'manual') ON CONFLICT(album_id) DO UPDATE SET release_type = excluded.release_type, release_date = excluded.release_date, updated_at = CURRENT_TIMESTAMP, updated_by = excluded.updated_by, source = 'manual'")
-        .bind(releaseMetaMatch[1], body.releaseType, releaseDate, username).run()
-      const item = await selectRelease(env.TOMIFY_DB, releaseMetaMatch[1])
-      return json({ ok: true, item })
-    }
-
-    if (pathname === '/api' || pathname.startsWith('/api/')) return json({ error: 'not-found' }, 404)
-
-    if (pathname === '/navidrome' || pathname.startsWith('/navidrome/')) {
-      const upstreamPath = pathname.slice('/navidrome'.length) || '/'
-      const upstream = new URL('https://tomify.tomdixon.uk' + upstreamPath)
-      upstream.search = url.search
-      const headers = new Headers(request.headers)
-      headers.delete('host')
-      headers.delete('origin')
-      return fetch(upstream, {
-        method: request.method,
-        headers,
-        body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
-        redirect: 'follow',
-      })
-    }
-
-    // Static Assets normally handles these requests before this Worker runs. The binding keeps direct
-    // Worker invocations (including local route tests) aligned with the deployed routing behavior.
-    if (env?.ASSETS) return env.ASSETS.fetch(request)
-    return new Response(null, { status: 404 })
-  },
+    return json({ error: 'not-found' }, 404)
 }
-
-export default {
-  async fetch(request, env) {
-    try {
-      return await tomifyRoutes.fetch(request, env)
-    } catch (error) {
-      const schemaResponse = schemaOutOfDateResponse(error)
-      if (schemaResponse) return schemaResponse
-      throw error
-    }
-  },
-}
-`
-
-await mkdir(new URL('../dist/server/', import.meta.url), { recursive: true })
-await writeFile(workerPath, worker)

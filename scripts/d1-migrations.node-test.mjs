@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 const drizzle = fileURLToPath(new URL('../drizzle/', import.meta.url))
 const scripts = fileURLToPath(new URL('./', import.meta.url))
+const workerBundle = fileURLToPath(new URL('../dist/server/index.js', import.meta.url))
 const baselineScript = join(scripts, 'd1-baseline.sh')
 const runtimeDdl = readFileSync(join(scripts, 'fixtures', 'd1-runtime-ddl.sql'), 'utf8')
 const migrations = readdirSync(drizzle).filter((name) => name.endsWith('.sql')).sort()
@@ -43,24 +44,20 @@ function schemaOf(db) {
 
 const indexesOf = (db) => db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map((row) => row.name)
 
-// Every SQL string literal in the Worker modules. Building the Worker joins these modules' functions
-// into dist/server/index.js, so this is all the SQL the Worker can send to D1.
+// Every SQL string literal in the real unminified Wrangler bundle used by the route suite.
 function workerSql() {
   const statements = []
-  for (const file of readdirSync(scripts).filter((name) => name.endsWith('.mjs') && !name.endsWith('.node-test.mjs'))) {
-    const source = readFileSync(join(scripts, file), 'utf8')
-    for (const match of source.matchAll(/'((?:SELECT|INSERT|UPDATE|DELETE)\b[^'\n]*(?:'[^'\n]*'[^'\n]*)*?)'(?=\s*[),+\]])|"((?:SELECT|INSERT|UPDATE|DELETE)\b[^"\n]*)"/g)) {
-      let sql = match[1] ?? match[2]
-      // Multi-row INSERTs build their VALUES list at run time; give them one row of placeholders.
-      const insert = /^INSERT INTO \w+ \(([^)]+)\) VALUES\s*$/.exec(sql)
-      if (insert) sql += '(' + insert[1].split(',').map(() => '?').join(', ') + ')'
-      statements.push({ file, sql })
-    }
+  const source = readFileSync(workerBundle, 'utf8')
+  for (const match of source.matchAll(/'((?:SELECT|INSERT|UPDATE|DELETE)\b[^'\n]*(?:'[^'\n]*'[^'\n]*)*?)'(?=\s*[),+\]])|"((?:SELECT|INSERT|UPDATE|DELETE)\b[^"\n]*)"/g)) {
+    let sql = match[1] ?? match[2]
+    // Multi-row INSERTs build their VALUES list at run time; give them one row of placeholders.
+    const insert = /^INSERT INTO \w+ \(([^)]+)\) VALUES\s*$/.exec(sql)
+    if (insert) sql += '(' + insert[1].split(',').map(() => '?').join(', ') + ')'
+    statements.push({ file: 'dist/server/index.js', sql })
   }
   // The album artwork queries splice in a shared column list.
-  const artwork = readFileSync(join(scripts, 'album-artwork-worker.mjs'), 'utf8')
-  const columns = /const albumArtworkColumns = '([^']+)'/.exec(artwork)[1]
-  statements.push({ file: 'album-artwork-worker.mjs', sql: `SELECT ${columns} FROM album_artwork` })
+  const columns = /(?:const|var) albumArtworkColumns = ["']([^"']+)["']/.exec(source)[1]
+  statements.push({ file: 'dist/server/index.js', sql: `SELECT ${columns} FROM album_artwork` })
   return statements
 }
 

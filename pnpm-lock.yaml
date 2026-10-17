@@ -30,6 +30,9 @@ importers:
         specifier: ^5.0.2
         version: 5.0.15(@types/react@18.3.31)(react@18.3.1)
     devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20261015.1
+        version: 5.20261015.1
       '@eslint/js':
         specifier: ^9.17.0
         version: 9.39.5
@@ -620,6 +623,9 @@ packages:
 
   '@canvas/image-data@1.1.0':
     resolution: {integrity: sha512-QdObRRjRbcXGmM1tmJ+MrHcaz1MftF2+W7YI+MsphnsCrmtyfS0d5qJbk0MeSbUeyM/jCb0hmnkXPsy026L7dA==}
+
+  '@cloudflare/workers-types@5.20261015.1':
+    resolution: {integrity: sha512-ef6KOceBMzxf1O/CelPF2ei8Mtlaw+7vQ9cdaUKFG8CC0xAe8/SuPdRpmbogEE18u6JbfFWWAOGQLaav8UTFWg==}
 
   '@csstools/color-helpers@5.1.0':
     resolution: {integrity: sha512-S11EXWJyy0Mz5SYvRmY8nJYTFFd1LCNV+7cXyAgQtOOuzb4EsgfqDufL+9esx72/eLhsRdGZwaldu/h+E4t4BA==}
@@ -3916,6 +3922,8 @@ snapshots:
       '@babel/helper-validator-identifier': 7.29.7
 
   '@canvas/image-data@1.1.0': {}
+
+  '@cloudflare/workers-types@5.20261015.1': {}
 
   '@csstools/color-helpers@5.1.0': {}
 

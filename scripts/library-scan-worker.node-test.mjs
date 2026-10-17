@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { matchLibrarySong, parseRecoveryPlayback, pendingRecoveryPlayback, playbackCheckDue, playbackTimedOut, recoveryPlaybackTarget } from './library-scan-worker.mjs'
+import { matchLibrarySong, parseRecoveryPlayback, pendingRecoveryPlayback, playbackCheckDue, playbackTimedOut, recoveryPlaybackTarget } from '../worker/features/library-scan.ts'
 
 const mbid = '00000000-0000-4000-8000-000000000001'
 const target = { path: '/recovery/They Might Be Giants/Flood/01 - Birdhouse in Your Soul.flac', title: 'Birdhouse in Your Soul', artist: 'They Might Be Giants', recordingId: null }

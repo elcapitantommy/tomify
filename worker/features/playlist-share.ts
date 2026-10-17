@@ -2,6 +2,9 @@
 // Navidrome only knows public/private, so sharing a Navidrome playlist also marks it public there (done by the owner's client)
 // and Tomify decides who sees it from the playlist_shares rows here.
 
+import { authenticate } from '../lib/auth.ts'
+import { json } from '../lib/http.ts'
+
 const PLAYLIST_SHARE_KINDS = ['navidrome', 'imported']
 
 function normaliseAccountName(value) {
@@ -99,4 +102,3 @@ async function handlePlaylistShareRequest(request, env, url) {
 }
 
 export { PLAYLIST_SHARE_KINDS, normaliseAccountName, normaliseShareRecipients, rememberTomifyAccount, playlistShareFor, handlePlaylistShareRequest }
-export const playlistShareWorkerSource = ['const PLAYLIST_SHARE_KINDS = ' + JSON.stringify(PLAYLIST_SHARE_KINDS), ...[normaliseAccountName, normaliseShareRecipients, rememberTomifyAccount, playlistShareFor, navidromePlaylistOwner, handlePlaylistShareRequest].map((fn) => fn.toString())].join('\n\n')

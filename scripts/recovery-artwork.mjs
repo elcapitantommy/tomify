@@ -9,7 +9,6 @@ export function artworkQuality(width, height) {
   if (square && minimum >= 600) return { tier: 'preferred', square, minimum }
   return { tier: 'fallback', square, minimum }
 }
-
 export function rankArtworkCandidates(candidates) {
   const deduplicated = []
   const seen = new Set()
@@ -36,5 +35,3 @@ export function appleArtworkUrl(url, size = 1200) {
   const value = String(url || '').replace(/^http:/, 'https:')
   return value.replace(/\d+x\d+(?=[^/]*\.(?:jpg|jpeg|png|webp)(?:\?|$))/i, `${size}x${size}`)
 }
-
-export const recoveryArtworkWorkerSource = `const artworkProviderPriority = ${JSON.stringify(artworkProviderPriority)}\n\n${[artworkQuality, rankArtworkCandidates, appleArtworkUrl].map((fn) => fn.toString()).join('\n\n')}`

@@ -11,7 +11,6 @@ export function parseSpotifyPlaylistId(value) {
     return match?.[1] || null
   } catch { return null }
 }
-
 export function occurrenceKeys(items) {
   const counts = new Map()
   return items.map((item) => {
@@ -64,5 +63,3 @@ export function mapSpotifyPlaylist(playlist, entries, sourceUrl) {
   })
   return { provider: 'spotify', providerPlaylistId: playlist.id, name: playlist.name, description: playlist.description || null, sourceUrl, snapshotId: playlist.snapshot_id || null, artwork: (playlist.images || []).map((image) => ({ url: image.url, width: image.width || null, height: image.height || null })), items }
 }
-
-export const catalogueImportWorkerSource = [parseSpotifyPlaylistId, normaliseCatalogueText, occurrenceKeys, diffCataloguePlaylist, reusableRecoveryId, shouldCreateRecovery, mapSpotifyPlaylist].map((fn) => fn.toString()).join('\n\n')

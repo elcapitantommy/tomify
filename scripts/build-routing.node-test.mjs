@@ -4,7 +4,8 @@ import { readdir, readFile } from 'node:fs/promises'
 import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:net'
 import { build } from 'vite'
-import { catalogueWorkerSource } from './catalogue-worker.mjs'
+import { encryptCatalogueToken } from '../worker/features/catalogue.ts'
+import { parseLiveCommands } from '../worker/features/live-playback.ts'
 
 function mockDatabase() {
   return {
@@ -21,7 +22,13 @@ function mockDatabase() {
 }
 
 await build({ configFile: new URL('../vite.config.ts', import.meta.url).pathname.replace(/^\/(.:\/)/, '$1'), logLevel: 'silent' })
-await import(`./build-worker.mjs?test=${Date.now()}`)
+const windows = process.platform === 'win32'
+const bundle = spawnSync(windows ? process.env.ComSpec : 'npx', windows
+  ? ['/d', '/s', '/c', 'npx --yes wrangler@4 deploy --dry-run --outdir dist/server --no-minify']
+  : ['--yes', 'wrangler@4', 'deploy', '--dry-run', '--outdir', 'dist/server', '--no-minify'], {
+  cwd: new URL('..', import.meta.url), encoding: 'utf8', windowsHide: true,
+})
+if (bundle.status !== 0) throw new Error(`Could not bundle the Worker for route tests.\n${bundle.stdout}\n${bundle.stderr}`)
 
 const serviceWorker = await readFile(new URL('../dist/client/sw.js', import.meta.url), 'utf8')
 const { default: builtWorker } = await import(`../dist/server/index.js?test=${Date.now()}`)
@@ -547,7 +554,6 @@ test('album artwork reports rate limits and errors only when every catalogue fai
 
 test('album artwork searches Spotify as the connected account and explains a 403', async () => {
   const env = { SPOTIFY_CLIENT_ID: 'id', SPOTIFY_CLIENT_SECRET: 'secret', SPOTIFY_TOKEN_ENCRYPTION_KEY: 'test-key' }
-  const { encryptCatalogueToken } = new Function(catalogueWorkerSource + '\nreturn { encryptCatalogueToken }')()
   const encryptedToken = await encryptCatalogueToken(env, { accessToken: 'user-token', refreshToken: 'refresh', expiresAt: Date.now() + 3_600_000 })
   const database = artworkDatabase()
   const prepare = database.prepare
@@ -1378,7 +1384,6 @@ test('a closing tab leaves the device list and shows its playback as paused', as
 })
 
 test('live playback reads the single command stored by the previous Worker', async () => {
-  const { parseLiveCommands } = await import('./live-playback-worker.mjs')
   assert.deepEqual(parseLiveCommands({ commandJson: JSON.stringify({ action: 'pause' }), commandRevision: 4, commandTargetDevice: 'desktop', commandUpdatedAt: 99 }), [{ action: 'pause', revision: 4, targetDeviceId: 'desktop', updatedAt: 99 }])
   assert.deepEqual(parseLiveCommands({ commandJson: 'not json' }), [])
 })

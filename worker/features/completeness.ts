@@ -3,10 +3,13 @@
 // exported for tests; handleCompletenessRequest relies on Worker globals (authenticate,
 // json, musicBrainzJson, lookupMusicBrainzReleaseGroup, selectRelease).
 
+import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
+import { json } from '../lib/http.ts'
+import { lookupMusicBrainzReleaseGroup, musicBrainzJson, selectRelease } from '../routes/recovery.ts'
+
 export function completenessText(value) {
   return String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').normalize('NFC').toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[\u2019']/g, '').replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ').trim()
 }
-
 export function isMusicBrainzId(value) {
   return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
 }
@@ -101,7 +104,7 @@ export function matchRecoveryItems(tracks, rows) {
 }
 
 
-async function selectTracklist(db, albumId) {
+export async function selectTracklist(db, albumId) {
   const row = await db.prepare('SELECT tracklist_json AS tracklistJson, editions_json AS editionsJson FROM release_tracklists WHERE album_id = ?').bind(albumId).first()
   if (!row) return null
   try { return { tracklist: JSON.parse(row.tracklistJson), editions: row.editionsJson ? JSON.parse(row.editionsJson) : [] } } catch { return null }
@@ -126,7 +129,7 @@ async function releaseGroupEditions(releaseGroupId) {
   return summariseReleaseEditions((await musicBrainzJson(browse))?.releases)
 }
 
-async function resolveAlbumTracklist(db, album, requestedReleaseId) {
+export async function resolveAlbumTracklist(db, album, requestedReleaseId) {
   const local = album.localTrackCount
   let release = null
   let source = 'auto'
@@ -163,7 +166,7 @@ async function completenessRecoveryRows(db, username) {
   return rows.results || []
 }
 
-async function handleCompletenessRequest(request, env, url) {
+export async function handleCompletenessRequest(request, env, url) {
   if (!url.pathname.startsWith('/api/album-completeness/')) return null
   if (!env?.TOMIFY_DB) return json({ error: 'completeness-store-unavailable' }, 503)
   const username = await authenticate(request)
@@ -218,5 +221,3 @@ async function handleCompletenessRequest(request, env, url) {
 
   return json({ error: 'not-found' }, 404)
 }
-
-export const completenessWorkerSource = [completenessText, isMusicBrainzId, completenessCredit, summariseReleaseEditions, chooseReleaseEdition, editionFitsLocal, releaseGroupTypeFit, releaseTrackCount, mapReleaseTracklist, matchRecoveryItems, selectTracklist, fetchMusicBrainzRelease, releaseGroupEditions, resolveAlbumTracklist, completenessRecoveryRows, handleCompletenessRequest].map((fn) => fn.toString()).join('\n\n')

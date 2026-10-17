@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { classifyQuality, qualityMeetsTarget } from '../shared/quality.mjs'
-import { qualityRecheckChanges, qualityTargetState, qualityWorkerSource, recoveryImportStatus, recoveryStatusForQuality, storedSourceQuality } from './quality-worker.mjs'
+import { qualityRecheckChanges, qualityTargetState, recoveryImportStatus, recoveryStatusForQuality, storedSourceQuality } from '../worker/features/quality.ts'
 
 // Probe-like fixtures in the shape recovery-agent probe() returns: bitrate in bits per second.
 const fixtures = [
@@ -72,7 +73,8 @@ test('re-check uses the stored source quality and only reports items whose statu
   assert.deepEqual(qualityRecheckChanges(rows, 'lossless'), [])
 })
 
-test('the Worker source embeds the classifier without module imports', () => {
-  assert.ok(!/\bimport\b.*from/.test(qualityWorkerSource))
-  for (const name of ['classifyQuality', 'qualityRuleFor', 'qualityLooksV0', 'recoveryImportStatus', 'handleQualityRequest']) assert.match(qualityWorkerSource, new RegExp(`function ${name}\\(`))
+test('the Worker quality module imports the shared classifier normally', () => {
+  const source = readFileSync(new URL('../worker/features/quality.ts', import.meta.url), 'utf8')
+  assert.match(source, /from '..\/..\/shared\/quality\.mjs'/)
+  assert.doesNotMatch(source, /WorkerSource|\.toString\(\)/)
 })

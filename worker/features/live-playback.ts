@@ -2,6 +2,9 @@
 // the recent remote-control commands, and which of the account's devices are open right now (presence).
 // Clients poll GET /api/live-playback; the owner publishes with POST; other devices send commands; a closing tab calls /leave.
 
+import { authenticate } from '../lib/auth.ts'
+import { json } from '../lib/http.ts'
+
 const LIVE_PLAYBACK_COMMANDS = ['play', 'pause', 'next', 'previous', 'seek', 'toggle-shuffle', 'cycle-repeat', 'play-index', 'remove-index', 'clear-queue', 'toggle-muted', 'set-volume', 'add-to-queue', 'transfer']
 // A device counts as online if it polled within this window; presence rows are only rewritten this often to save D1 writes.
 const LIVE_DEVICE_ONLINE_MS = 45000
@@ -13,7 +16,6 @@ const LIVE_COMMAND_HISTORY = 10
 function cleanDeviceName(value) {
   return typeof value === 'string' && value.trim() ? value.trim().slice(0, 64) : 'Web'
 }
-
 // command_json used to hold a single command object; it now holds the most recent commands, newest last.
 function parseLiveCommands(row) {
   if (!row || !row.commandJson) return []
@@ -48,7 +50,7 @@ async function touchLiveDevice(db, username, deviceId, deviceName, now, devices)
   return [...devices.filter((device) => device.deviceId !== deviceId), { deviceId, deviceName, lastSeen: now }].sort((a, b) => a.deviceName.localeCompare(b.deviceName))
 }
 
-async function handleLivePlaybackRequest(request, env, url) {
+export async function handleLivePlaybackRequest(request, env, url) {
   if (!url.pathname.startsWith('/api/live-playback')) return null
   if (!env || !env.TOMIFY_DB) return json({ error: 'live-playback-store-unavailable' }, 503)
   const username = await authenticate(request)
@@ -143,7 +145,7 @@ async function handleLivePlaybackRequest(request, env, url) {
 
     const commands = parseLiveCommands(row)
     const revision = Math.max(Number(row.commandRevision || 0), ...commands.map((item) => item.revision)) + 1
-    const command = { action: body.action, revision, targetDeviceId: body.targetDeviceId, updatedAt: now }
+    const command: { action: unknown, revision: number, targetDeviceId: unknown, updatedAt: number, value?: number, track?: unknown } = { action: body.action, revision, targetDeviceId: body.targetDeviceId, updatedAt: now }
     if (typeof body.value === 'number' && Number.isFinite(body.value)) command.value = body.value
     if (body.action === 'add-to-queue') {
       const track = cleanQueuedTrack(body.track)
@@ -169,11 +171,3 @@ export {
   cleanQueuedTrack,
   parseLiveCommands,
 }
-
-export const livePlaybackWorkerSource = [
-  'const LIVE_PLAYBACK_COMMANDS = ' + JSON.stringify(LIVE_PLAYBACK_COMMANDS),
-  'const LIVE_DEVICE_ONLINE_MS = ' + LIVE_DEVICE_ONLINE_MS,
-  'const LIVE_PRESENCE_WRITE_MS = ' + LIVE_PRESENCE_WRITE_MS,
-  'const LIVE_COMMAND_HISTORY = ' + LIVE_COMMAND_HISTORY,
-  ...[cleanDeviceName, parseLiveCommands, cleanQueuedTrack, onlineLiveDevices, touchLiveDevice, handleLivePlaybackRequest].map((fn) => fn.toString()),
-].join('\n\n')

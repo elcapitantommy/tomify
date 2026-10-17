@@ -186,7 +186,7 @@ pnpm build
 
 GitHub Actions runs the frozen-lockfile install, lint, typecheck, production build, and complete test suite on every push and pull request. Build deliberately runs before tests because the Worker routing tests inspect the generated service worker and Worker bundle.
 
-`pnpm build` writes the Vite application to `dist/client/` and the generated Worker code to `dist/server/index.js`. Use `npx wrangler dev` when testing the complete local deployment, including Cloudflare's Static Assets routing; `pnpm dev` runs the frontend development server only.
+`pnpm build` writes the Vite application to `dist/client/` and asks Wrangler to bundle the TypeScript Worker from `worker/index.ts` into an unminified `dist/server/index.js` for route and SQL tests. Use `npx wrangler dev` when testing the complete local deployment, including Worker routes and Cloudflare's Static Assets routing; its custom build step refreshes the git SHA exposed by `/api/version`. `pnpm dev` runs the frontend development server only.
 
 ### Implemented
 
@@ -255,7 +255,7 @@ Tomify works like Spotify Connect between the tabs and apps signed in to the sam
 - Syncing checks every 1–1.5 seconds while something is playing and backs off to every 10 seconds when nothing changes. A background tab that is playing keeps checking (so it still hears pause from your phone); a background tab that is not playing checks every 20 seconds.
 - An iPhone app in the background may stop checking in. Other devices then keep showing it as playing until its current track would have ended.
 
-The state lives in the D1 tables `live_playback` and `live_playback_devices` (`drizzle/0009_live_playback.sql`). The Worker code is in `scripts/live-playback-worker.mjs`.
+The state lives in the D1 tables `live_playback` and `live_playback_devices` (`drizzle/0009_live_playback.sql`). The Worker code is in `worker/features/live-playback.ts`, routed by `worker/routes/live-playback.ts`.
 
 ### Known limitations
 

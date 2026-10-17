@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chooseReleaseEdition, completenessText, editionFitsLocal, mapReleaseTracklist, matchRecoveryItems, releaseGroupTypeFit, releaseTrackCount, summariseReleaseEditions } from './completeness-worker.mjs'
+import { chooseReleaseEdition, completenessText, editionFitsLocal, mapReleaseTracklist, matchRecoveryItems, releaseGroupTypeFit, releaseTrackCount, summariseReleaseEditions } from '../worker/features/completeness.ts'
 
 const mbid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
 const release = (id, trackCount, patch = {}) => ({ id: mbid(id), title: 'Flood', status: 'Official', date: '1990-01-15', country: 'US', media: [{ format: 'CD', 'track-count': trackCount }], ...patch })

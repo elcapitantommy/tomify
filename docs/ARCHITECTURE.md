@@ -47,21 +47,24 @@ Navidrome stays the source of truth for accounts, the library, playlists, favour
 
 ## 3. The Cloudflare Worker
 
-The Worker is generated, not hand-written. `pnpm build` runs `tsc -b`, `vite build`, then `node scripts/build-worker.mjs`, which:
+The Worker is a normal TypeScript module rooted at `worker/index.ts`. `pnpm build`:
 
-1. writes the Vite client build to `dist/client/`;
-2. concatenates the source of each feature module (exported as a `...WorkerSource` string built from `fn.toString()`);
-3. writes only the dynamic Worker code to `dist/server/index.js`.
+1. generates `worker/generated/build-info.ts` with the current git SHA and agent contract;
+2. typechecks both the app and Worker, then writes the Vite client build to `dist/client/`;
+3. asks Wrangler to bundle `worker/index.ts` unminified into `dist/server/index.js` for the route and D1 SQL tests. Deployment bundles the same entry point with minification enabled.
 
 Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/client/`, applies the cache policy in `public/_headers`, and provides SPA fallback. The `run_worker_first` rules send `/api*` and `/navidrome*` to the Worker before asset lookup. If a non-route request reaches the Worker, it delegates to the `ASSETS` binding.
 
 | Module | Routes | Purpose |
 | --- | --- | --- |
-| `scripts/build-worker.mjs` | `/api/recovery*`, `/api/system/reboot`, `/api/system/vpn`, `/api/live-playback*`, `/api/release-meta*`, `/navidrome/*` | Core routes, auth, the Navidrome proxy and the agent client |
-| `scripts/catalogue-worker.mjs` (+ `catalogue-import.mjs`) | `/api/catalogue-auth/spotify/*`, `/api/catalogue-imports/spotify/analyse`, `/api/catalogue-playlists*` | Spotify OAuth, playlist import and matching |
-| `scripts/completeness-worker.mjs` | `/api/album-completeness/*` | MusicBrainz tracklists and "add missing to Recovery" |
-| `scripts/album-artwork-worker.mjs` | `/api/album-artwork*` | Apple, Deezer and Spotify artwork lookup, overrides and uploads |
-| `scripts/playlist-share-worker.mjs` | `/api/playlist-shares*` | Sharing playlists between Tomify accounts |
+| `worker/routes/recovery.ts`, `worker/lib/agent.ts` | `/api/recovery*` | Recovery routes and the recovery-agent client |
+| `worker/routes/catalogue.ts` (+ shared `scripts/catalogue-import.mjs`) | `/api/catalogue-auth/spotify/*`, `/api/catalogue-imports/spotify/analyse`, `/api/catalogue-playlists*` | Spotify OAuth, playlist import and matching |
+| `worker/routes/release-metadata.ts` | `/api/release-meta*`, `/api/album-completeness/*` | Release metadata, MusicBrainz tracklists and "add missing to Recovery" |
+| `worker/routes/album-artwork.ts` | `/api/album-artwork*` | Apple, Deezer and Spotify artwork lookup, overrides and uploads |
+| `worker/routes/playlists.ts` | `/api/playlist-shares*` | Sharing playlists between Tomify accounts |
+| `worker/routes/live-playback.ts` | `/api/live-playback*` | Cross-device playback state and commands |
+| `worker/routes/inventory.ts`, `worker/routes/system-settings.ts` | `/api/inventory*`, `/api/library-health*`, `/api/system*`, quality, scan and preflight routes | Administrative library and server operations |
+| `worker/routes/navidrome.ts`, `worker/routes/version.ts` | `/navidrome/*`, `/api/version` | Navidrome proxy and deployed version information |
 | `scripts/recovery-metadata.mjs`, `scripts/recovery-artwork.mjs` | (helpers) | MusicBrainz metadata review and artwork resolution for Recovery |
 
 Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configuration falls back to `index.html` for client-side routes.
@@ -162,6 +165,6 @@ See [RECOVERY.md](RECOVERY.md#recovery-files-on-the-library-ssd) for the `fstab`
 - Tests:
   - vitest for `src/**/*.test.ts(x)`;
   - `node --test` for `recovery-agent/*.node-test.mjs` and `scripts/*.node-test.mjs`;
-  - Worker routes are tested against the built bundle in `scripts/build-routing.node-test.mjs`.
+  - Worker routes are tested against Wrangler's unminified bundle in `scripts/build-routing.node-test.mjs`; the D1 migration test scans that same real bundle so every SQL literal is checked against the migrated schema.
 - Cloudflare's unchanged `pnpm build` command produces `dist/client/` and `dist/server/index.js`. The unchanged `npx pnpm run deploy` command applies D1 migrations, uploads the static assets and deploys the Worker according to `wrangler.toml`.
 - The recovery agent is copied to the box by hand after any change under `recovery-agent/` ([RECOVERY.md](RECOVERY.md#updating-the-recovery-agent)).

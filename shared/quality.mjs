@@ -1,7 +1,6 @@
-// Quality tiers shared by the Worker (scripts/quality-worker.mjs), the recovery agent
-// (recovery-agent/metadata.mjs) and the frontend (src/lib/recovery.ts). Plain functions only:
-// the Worker build embeds them with Function.prototype.toString, so nothing here may refer
-// to module-level values.
+// Quality tiers shared by the Worker (worker/features/quality.ts), the recovery agent
+// (recovery-agent/metadata.mjs) and the frontend (src/lib/recovery.ts). Keep the module free
+// of runtime-specific dependencies so every consumer can import the same classifier.
 
 /** Tiers from best to worst. `unknown` means there was not enough data to judge. */
 export function qualityTiers() {

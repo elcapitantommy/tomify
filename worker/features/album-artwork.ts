@@ -6,6 +6,13 @@
 // spotifyAccessToken, spotifyTokenCache, spotifyUserToken, rankArtworkCandidates,
 // metadataTextSimilarity, artworkYearScore, cleanReleaseTitle, selectRelease).
 
+import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
+import { json } from '../lib/http.ts'
+import { metadataTextSimilarity } from '../../scripts/recovery-metadata.mjs'
+import { rankArtworkCandidates } from '../../scripts/recovery-artwork.mjs'
+import { spotifyUserToken } from './catalogue.ts'
+import { artworkYearScore, cleanReleaseTitle, resetSpotifyTokenCache, selectRelease, spotifyAccessToken } from '../routes/recovery.ts'
+
 export const albumArtworkHosts = ['i.scdn.co', 'mosaic.scdn.co', 'image-cdn-ak.spotifycdn.com', 'image-cdn-fa.spotifycdn.com']
 export const albumArtworkHostSuffixes = ['.mzstatic.com', '.dzcdn.net']
 export const albumArtworkProviders = ['apple', 'deezer', 'spotify']
@@ -88,7 +95,7 @@ export function decodeAlbumArtworkUpload(dataUrl) {
   let binary
   try { binary = atob(match[2]) } catch { return { error: 'The image could not be read.' } }
   if (binary.length > albumArtworkUploadMaxBytes) return { error: 'The image is too large; upload one under 1 MB.' }
-  const bytes = Array.from(binary.slice(0, 12), (character) => character.charCodeAt(0))
+  const bytes = Array.from(binary.slice(0, 12), (character: string) => character.charCodeAt(0))
   const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
   const png = bytes[0] === 0x89 && binary.slice(1, 4) === 'PNG'
   const webp = binary.slice(0, 4) === 'RIFF' && binary.slice(8, 12) === 'WEBP'
@@ -145,7 +152,7 @@ async function searchSpotifyAlbums(env, db, username, query, refreshed = false) 
   url.searchParams.set('market', String(env.SPOTIFY_MARKET || 'GB').slice(0, 2).toUpperCase())
   const response = await fetch(url, { headers: { authorization: 'Bearer ' + token, accept: 'application/json' } })
   if (response.status === 429) throw Object.assign(new Error('Spotify is rate limiting Tomify.'), { code: 'spotify-rate-limited', retryAfter: Math.min(120, Math.max(1, Number(response.headers.get('retry-after')) || 5)) })
-  if (response.status === 401 && !refreshed) { if (!account) spotifyTokenCache = null; return searchSpotifyAlbums(env, db, username, query, true) }
+  if (response.status === 401 && !refreshed) { if (!account) resetSpotifyTokenCache(); return searchSpotifyAlbums(env, db, username, query, true) }
   const body = await response.json().catch(() => null)
   if (!response.ok) {
     const detail = typeof body?.error?.message === 'string' ? ': ' + body.error.message.slice(0, 200).replace(/[.\s]+$/, '') : ''
@@ -221,7 +228,7 @@ async function lookupAlbumArtwork(env, db, username, album, { stopAtConfident = 
   return candidates
 }
 
-async function handleAlbumArtworkRequest(request, env, url) {
+export async function handleAlbumArtworkRequest(request, env, url) {
   if (url.pathname !== '/api/album-artwork' && !url.pathname.startsWith('/api/album-artwork/')) return null
   if (!env?.TOMIFY_DB) return json({ error: 'artwork-store-unavailable' }, 503)
   const db = env.TOMIFY_DB
@@ -241,7 +248,7 @@ async function handleAlbumArtworkRequest(request, env, url) {
 
   if (url.pathname === '/api/album-artwork' && request.method === 'GET') {
     const rows = await db.prepare('SELECT ' + albumArtworkColumns + ' FROM album_artwork ORDER BY album_id').all()
-    return json({ items: (rows.results || []).map(albumArtworkRow), providers: Boolean(env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET) ? albumArtworkProviders : albumArtworkProviders.filter((provider) => provider !== 'spotify') })
+    return json({ items: (rows.results || []).map(albumArtworkRow), providers: env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET ? albumArtworkProviders : albumArtworkProviders.filter((provider) => provider !== 'spotify') })
   }
 
   if (request.method !== 'POST') return json({ error: 'not-found' }, 404)
@@ -302,4 +309,4 @@ async function handleAlbumArtworkRequest(request, env, url) {
   return json({ error: 'not-found' }, 404)
 }
 
-export const albumArtworkWorkerSource = `const albumArtworkHosts = ${JSON.stringify(albumArtworkHosts)}\nconst albumArtworkHostSuffixes = ${JSON.stringify(albumArtworkHostSuffixes)}\nconst albumArtworkProviders = ${JSON.stringify(albumArtworkProviders)}\nconst albumArtworkUploadMaxBytes = ${albumArtworkUploadMaxBytes}\nconst albumArtworkColumns = ${JSON.stringify(albumArtworkColumns)}\n\n` + [isAlbumArtworkUrl, baseAlbumTitle, albumArtworkSearchQueries, spotifyAlbumResult, appleAlbumResult, deezerAlbumResult, albumArtworkCandidate, chooseAutomaticAlbumArtwork, decodeAlbumArtworkUpload, albumArtworkRow, pruneAlbumArtworkUploads, selectAlbumArtwork, saveAlbumArtwork, spotifySearchToken, searchSpotifyAlbums, searchAppleAlbums, searchDeezerAlbums, searchSpotifyArtwork, lookupAlbumArtwork, handleAlbumArtworkRequest].map((fn) => fn.toString()).join('\n\n')
+export { lookupAlbumArtwork }
