@@ -1,9 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
-import { NavidromeClient, NavidromeError, createAuthSession, normaliseServerUrl } from './navidrome'
+import { DEFAULT_NAVIDROME_SERVER, NavidromeClient, NavidromeError, createAuthSession, normaliseServerUrl } from './navidrome'
 
 describe('NavidromeClient', () => {
   const session = { serverUrl: 'https://music.example', username: 'tom', salt: 'salt', token: 'token' }
   it('centralises authenticated request parameters', () => { const url = new NavidromeClient(session).url('ping'); expect(url.pathname).toBe('/rest/ping.view'); expect(url.searchParams.get('u')).toBe('tom'); expect(url.searchParams.get('p')).toBeNull(); expect(url.searchParams.get('c')).toBe('Tomify') })
+  it('offers adaptive streaming only for the Tomify music server, signed with the Subsonic login', () => {
+    expect(new NavidromeClient(session).hlsUrl('a')).toBeNull()
+    const url = new URL(new NavidromeClient({ ...session, serverUrl: DEFAULT_NAVIDROME_SERVER }).hlsUrl('tr_1')!)
+    expect(url.origin).toBe(window.location.origin)
+    expect(url.pathname).toBe('/api/hls/tr_1/master.m3u8')
+    expect(Object.fromEntries(url.searchParams)).toEqual({ u: 'tom', t: 'token', s: 'salt' })
+  })
   it('normalises servers and never stores the password', () => { const auth = createAuthSession('https://music.example///', ' tom ', 'secret'); expect(auth.serverUrl).toBe(normaliseServerUrl('https://music.example/')); expect(auth.username).toBe('tom'); expect(auth.salt).toMatch(/^[a-f0-9]{12}$/); expect(JSON.stringify(auth)).not.toContain('secret') })
   it('loads every album page, not just the first 500', async () => {
     const page = (offset: number, count: number) => Array.from({ length: count }, (_, index) => ({ id: String(offset + index), name: `Album ${offset + index}`, artist: 'Artist' }))

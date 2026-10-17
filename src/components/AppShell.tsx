@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { StreamingQuality } from './StreamingQuality'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Activity, Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, LogOut, Search, Settings, UsersRound, X } from 'lucide-react'
 import { PlayerBar } from './Player'
@@ -81,6 +82,7 @@ function AccountSheet({ isAdmin, onClose, onLogout }: { isAdmin: boolean; onClos
     <div className="account-sheet" role="dialog" aria-modal="true" aria-label="Account" onClick={(event) => event.stopPropagation()}>
       <header><CircleUserRound/><span><strong>{username}</strong><small>{isAdmin ? 'Navidrome administrator' : 'Your Navidrome account'}</small></span><button type="button" className="account-sheet-close" onClick={onClose} aria-label="Close"><X/></button></header>
       {isAdmin && <><NavLink to="/recovery"><LifeBuoy/>Recovery</NavLink><NavLink to="/library-health"><Activity/>Library health</NavLink><NavLink to="/settings"><Settings/>Settings</NavLink></>}
+      <StreamingQuality/>
       <button type="button" onClick={onLogout}><LogOut/>Sign out</button>
     </div>
   </div>
