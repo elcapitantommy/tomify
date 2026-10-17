@@ -118,6 +118,19 @@ test('the Navidrome proxy uses NAVIDROME_ORIGIN without changing the path, query
   } finally { globalThis.fetch = originalFetch }
 })
 
+test('the Navidrome proxy never leaves NAVIDROME_ORIGIN, even for a path starting with //', async () => {
+  const originalFetch = globalThis.fetch
+  let outbound = null
+  globalThis.fetch = async (input) => { outbound = new URL(String(input)); return new Response('proxied', { status: 200 }) }
+  try {
+    for (const path of ['/navidrome//evil.test/rest/ping.view', '/navidrome/%2F%2Fevil.test/rest/ping.view']) {
+      outbound = null
+      await worker.fetch(new Request('https://app.tomify.test' + path))
+      assert.equal(outbound?.origin, TEST_NAVIDROME_ORIGIN, path)
+    }
+  } finally { globalThis.fetch = originalFetch }
+})
+
 test('a missing or invalid NAVIDROME_ORIGIN fails closed without contacting a fallback host', async () => {
   const originalFetch = globalThis.fetch
   const outbound = []

@@ -21,8 +21,13 @@ export function navidromeOrigin(env: Pick<Env, 'NAVIDROME_ORIGIN'>): string {
   }
 }
 
+// Joins the origin and path as text, as the Worker always did. `new URL(path, origin)` would treat a
+// proxied path such as `//evil.example/x` as another host and turn /navidrome into an open proxy.
 export function navidromeUrl(env: Pick<Env, 'NAVIDROME_ORIGIN'>, path: string): URL {
-  return new URL(path, navidromeOrigin(env) + '/')
+  const origin = navidromeOrigin(env)
+  const url = new URL(origin + (path.startsWith('/') ? path : '/' + path))
+  if (url.origin !== new URL(origin).origin) throw new NavidromeConfigurationError()
+  return url
 }
 
 export function isNavidromeConfigurationError(error: unknown): error is NavidromeConfigurationError {
