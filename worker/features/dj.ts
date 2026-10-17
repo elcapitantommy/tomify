@@ -11,19 +11,19 @@ import { callClaudeJson } from './mix-curator.ts'
 const DJ_POOL_SIZE = 150
 const MAX_SCRIPT_CHARS = 600
 const MAX_REQUEST_CHARS = 200
-export const DEFAULT_DJ_VOICE = 'draco'
+export const DEFAULT_DJ_VOICE = 'ophelia'
 export const DJ_TTS_MODEL = '@cf/deepgram/aura-2-en'
 
 export interface DjSegment { tracks: MixTrack[], script: string, curatedBy: 'claude' | 'tomify', voice: boolean }
 export interface DjSegmentInput { recentTrackIds: string[], request: string | null, first: boolean, username: string, now: number }
 
-export const DJ_SYSTEM = `You are the DJ inside Tomify, a personal music player for one household's own music library. You talk to one listener between songs, like a warm, relaxed British radio presenter who knows their taste.
+export const DJ_SYSTEM = `You are the DJ inside Tomify, a personal music player. You talk to one listener between songs, like a bubbly, upbeat radio presenter who loves their music and knows their taste.
 
 Each time, pick the next 3 to 5 songs from the candidate pool and write the short spoken link that plays before them.
 - Only use refs from the pool. Never pick a recently played song. Order them so they flow.
 - Mix familiar favourites with things they haven't played in a while or have never played, guided by the listening history.
 - If the listener asked for something, honour it.
-- The link is 2 to 4 sentences and at most 70 words, spoken aloud by a text-to-speech voice: plain words only, no emojis, lists, stage directions or sound effects. Introduce what's coming (you can name the first song and artist) and give a personal reason when there is one, such as an old favourite, a new arrival or a request.
+- The link is 2 to 4 sentences and at most 70 words, spoken aloud by a text-to-speech voice: plain words only, no emojis, lists, stage directions or sound effects. Introduce what's coming (you can name the first song and artist) and give a personal reason when there is one.
 - On the first link of a session, greet the listener by name and mention the time of day.`
 
 const DJ_SCHEMA = {
@@ -50,7 +50,7 @@ export function partOfDay(now: number) {
 
 // "Saturday 17 October", so the DJ never has to guess the day.
 export function ukDate(now: number) {
-  return new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Europe/London' }).format(new Date(now)).replace(',', '')
+  return new Date(now).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Europe/London' })
 }
 
 // A varied pool for one set: anything not played this session, songs with a reason to be there first.
@@ -72,7 +72,7 @@ export function djPrompt(pool: Candidate[], snapshot: LibrarySnapshot, input: Dj
     return `${ref} | ${song.artist} - ${song.title} | ${song.album}${song.year ? ` (${song.year})` : ''} | plays ${candidate.playCount}, last ${shortDate(candidate.lastPlayed)}${candidate.starred ? ', favourite' : ''} | ${candidate.sources.join(', ')}`
   })
   const prompt = [
-    `Listener: ${input.username}. It is ${ukDate(input.now)}, ${partOfDay(input.now)} in the UK. Only mention the day or date as given here.`,
+    `Listener: ${input.username}. It is ${ukDate(input.now)}, ${partOfDay(input.now)} in the UK.`,
     input.first ? 'This is the first link of the session.' : 'The session is already under way.',
     `Artists they play most lately: ${snapshot.topArtists.join(', ') || 'not enough history yet'}.`,
     input.request ? `The listener asked: "${input.request}"` : '',

@@ -39,7 +39,7 @@ test('the DJ never picks a song from this session again', () => {
 
 test('the DJ prompt names the listener, the time and any request', () => {
   const { prompt, refs } = djPrompt(pool.slice(0, 3), snapshot, input({ request: 'more 80s' }))
-  assert.match(prompt, /^Listener: Tom\. It is Saturday 17 October, morning in the UK\. Only mention the day or date as given here\.$/m)
+  assert.match(prompt, /^Listener: Tom\. It is Saturday 17 October, morning in the UK\.$/m)
   assert.match(prompt, /first link of the session/)
   assert.match(prompt, /The listener asked: "more 80s"/)
   assert.match(prompt, /^t1 \| Artist 0 - Song s0 \|/m)
@@ -77,6 +77,7 @@ test('the voice endpoint reads the link with Aura-2 and explains when Workers AI
   const spoken = await call({ AI }, 'Morning Tom.')
   assert.equal(spoken.headers.get('content-type'), 'audio/mpeg')
   assert.equal(await spoken.text(), 'mp3-bytes')
+  assert.equal(DEFAULT_DJ_VOICE, 'ophelia', 'a bubbly female voice, as Tom asked')
   assert.deepEqual(ran, { model: DJ_TTS_MODEL, inputs: { text: 'Morning Tom.', speaker: DEFAULT_DJ_VOICE, encoding: 'mp3' }, options: { returnRawResponse: true } })
   await call({ AI, TOMIFY_DJ_VOICE: 'pandora' }, 'Hi.')
   assert.equal(ran.inputs.speaker, 'pandora')
