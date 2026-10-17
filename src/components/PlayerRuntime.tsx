@@ -35,6 +35,8 @@ export function PlayerRuntime() {
   const initialRestore = useRef<{ trackId?: string; position: number } | null>(null)
   const listening = useRef(new ListeningTracker())
   const resumeAt = useRef<{ slot: AudioSlot; trackId: string; position: number } | null>(null)
+  // A reload's seek back to where it was, checked again once the stream can play (iPhone can drop a seek made too early).
+  const resumeCheck = useRef<{ slot: AudioSlot; trackId: string; position: number } | null>(null)
   const retries = useRef(0)
   const retryTimer = useRef<number | undefined>(undefined)
   const stallTimer = useRef<number | undefined>(undefined)
@@ -215,12 +217,26 @@ export function PlayerRuntime() {
     watchForStall(slot)
   }
 
+  // A stream only counts as stuck if it hasn't moved on by the time the watchdog fires. Safari
+  // reports 'stalled' while an adaptive stream plays on happily from what it has buffered.
   function watchForStall(slot: AudioSlot, timeout = STALL_TIMEOUT_MS) {
     if (activeSlot.current !== slot || !usePlayer.getState().playing || stallTimer.current !== undefined) return
+    const startedAt = getAudio(slot)?.currentTime ?? 0
     stallTimer.current = window.setTimeout(() => {
       stallTimer.current = undefined
-      if (activeSlot.current === slot && usePlayer.getState().playing) recover(slot)
+      if (activeSlot.current !== slot || !usePlayer.getState().playing) return
+      const element = getAudio(slot)
+      if (element && !element.paused && !element.error && element.currentTime >= startedAt + 1) return
+      recover(slot)
     }, timeout)
+  }
+
+  function confirmResume(element: HTMLAudioElement, slot: AudioSlot) {
+    const check = resumeCheck.current
+    if (!check || check.slot !== slot) return
+    resumeCheck.current = null
+    if (track?.id !== check.trackId || !Number.isFinite(element.duration)) return
+    if (element.currentTime < check.position - 2) element.currentTime = Math.min(check.position, Math.max(0, element.duration - 0.05))
   }
 
   useEffect(() => bindPlayerRuntime({
@@ -417,6 +433,7 @@ export function PlayerRuntime() {
         resumeAt.current = null
         if (track?.id === resume.trackId && Number.isFinite(element.duration)) {
           element.currentTime = Math.min(resume.position, Math.max(0, element.duration - 0.05))
+          resumeCheck.current = resume
         }
         usePlayer.getState().setProgress(element.currentTime, element.duration)
         return
@@ -431,14 +448,21 @@ export function PlayerRuntime() {
       }
       usePlayer.getState().setProgress(element.currentTime, element.duration)
     },
+    onCanPlay: (event: React.SyntheticEvent<HTMLAudioElement>) => {
+      if (activeSlot.current === slot) confirmResume(event.currentTarget, slot)
+    },
     onPlaying: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       if (activeSlot.current !== slot) return
+      confirmResume(event.currentTarget, slot)
       retries.current = 0
       clearStall()
       reportToLockScreen(event.currentTarget, usePlayer.getState().playing)
     },
     onWaiting: (event: React.SyntheticEvent<HTMLAudioElement>) => buffering(event.currentTarget, slot),
-    onStalled: (event: React.SyntheticEvent<HTMLAudioElement>) => buffering(event.currentTarget, slot),
+    // 'stalled' only means the download has paused; it matters only when playback has run out of audio.
+    onStalled: (event: React.SyntheticEvent<HTMLAudioElement>) => {
+      if (event.currentTarget.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) buffering(event.currentTarget, slot)
+    },
     onPlay: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       // The pre-loaded next track must stay silent until it is handed over. If
       // anything (the OS resuming audio, a stale play request) starts it, stop it.
