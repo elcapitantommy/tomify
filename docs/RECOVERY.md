@@ -272,11 +272,11 @@ The recovery directory may be added to Navidrome as a separate library path afte
 
 The agent also serves adaptive streams for the player (see the README, "Adaptive streaming"). The Worker route `GET /api/hls/<trackId>/<file>?u=&t=&s=` checks the listener's Navidrome login, then asks the agent for `GET /v1/hls/<trackId>/<file>` with the agent token and the listener's login. On the first request for a track the agent:
 
-1. fetches the original file from Navidrome on the box (`stream.view?format=raw`, using the listener's login) into the cache folder,
-2. starts one ffmpeg per bitrate (AAC 64k, 128k and 256k, 48 kHz stereo) writing 6-second MPEG-TS chunks, and
+1. asks Navidrome for the track's size and length (`getSong`) and reads the exact length with ffprobe from the start of the stream,
+2. starts one ffmpeg that reads the original straight from Navidrome (`stream.view?format=raw`, using the listener's login) as it downloads and writes all three bitrates (AAC 64k, 128k and 256k, 48 kHz stereo) as 6-second MPEG-TS chunks, and
 3. answers playlists straight away from the track's length, serving each chunk as soon as ffmpeg finishes it, so playback starts within a second or so while encoding carries on at many times real time.
 
-Once all three bitrates are written the original copy is deleted and the chunks stay cached. A cached track is packaged again if Navidrome reports a different file size (the file was replaced). Only two tracks are packaged at once (the one playing and the pre-loaded next one); skipping through tracks stops the encoders of the ones skipped. The least recently played tracks are deleted once the cache passes its limit. A 4-minute song takes about 13 MB of cache.
+Once all three bitrates are written the chunks stay cached. The listener's login is in ffmpeg's command line while it runs, so it is visible to other accounts on the box in `ps`. A cached track is packaged again if Navidrome reports a different file size (the file was replaced). Only two tracks are packaged at once (the one playing and the pre-loaded next one); skipping through tracks stops the encoders of the ones skipped. The least recently played tracks are deleted once the cache passes its limit. A 4-minute song takes about 13 MB of cache.
 
 Settings in `/etc/tomify/recovery-agent.env` (all optional):
 

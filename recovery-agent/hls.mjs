@@ -1,18 +1,15 @@
 // Adaptive streaming (HLS) for the Tomify player.
 //
-// The agent fetches a track's original file from Navidrome on the box, then runs one
-// ffmpeg per bitrate that cuts it into 6-second AAC chunks. The player (hls.js, or
+// The agent has ffmpeg read a track's original file straight from Navidrome and cut it into
+// 6-second AAC chunks at three bitrates. The player (hls.js, or
 // Safari's own HLS) picks the bitrate chunk by chunk from how fast they arrive, so
 // it drops to a smaller bitrate on a weak signal and climbs back when it improves.
 //
 // The playlists are written by the agent from the track's length, not by ffmpeg, so
 // the player can start on the first chunk while ffmpeg is still encoding the rest.
 import { spawn as nodeSpawn } from 'node:child_process'
-import { createWriteStream } from 'node:fs'
 import { mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { Readable } from 'node:stream'
-import { pipeline } from 'node:stream/promises'
 
 export const HLS_SEGMENT_SECONDS = 6
 export const HLS_VARIANTS = Object.freeze([
@@ -27,7 +24,6 @@ const TRACK_ID = /^[A-Za-z0-9_-]{1,64}$/
 const FILE = /^(?:master\.m3u8|(v[0-9])\/index\.m3u8|(v[0-9])\/seg(\d{5})\.ts)$/
 const ENCODER_TIMEOUT_MS = 10 * 60_000
 const SEGMENT_WAIT_MS = 45_000
-const MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
 // The current track and the pre-loaded next one; anything older is a track the listener skipped.
 const MAX_ACTIVE_TRACKS = 2
 
@@ -98,18 +94,20 @@ export function mediaPlaylist(duration) {
   return lines.join('\n') + '\n'
 }
 
-export function ffmpegHlsArguments(input, outputDir, variant) {
-  return [
-    '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
-    '-i', input,
+// One ffmpeg reads the track once, straight from Navidrome as it downloads, and writes all three
+// bitrates. The first chunks are ready within a second or so instead of after the whole file.
+export function ffmpegHlsArguments(input, trackDir) {
+  const reconnect = /^https?:/.test(input) ? ['-reconnect', '1', '-reconnect_on_network_error', '1', '-reconnect_delay_max', '10'] : []
+  const outputs = HLS_VARIANTS.flatMap((variant) => [
     '-map', '0:a:0', '-vn', '-sn', '-dn', '-map_metadata', '-1',
     '-c:a', 'aac', '-aac_coder', variant.coder, '-b:a', String(variant.bitrate), '-ar', '48000', '-ac', '2',
     '-f', 'hls', '-hls_time', String(HLS_SEGMENT_SECONDS), '-hls_playlist_type', 'vod', '-hls_list_size', '0',
     // Chunks are written under a temporary name and renamed when finished, so a chunk that exists is complete.
     '-hls_flags', 'temp_file', '-hls_segment_type', 'mpegts',
-    '-hls_segment_filename', join(outputDir, 'seg%05d.ts'),
-    join(outputDir, 'ffmpeg.m3u8'),
-  ]
+    '-hls_segment_filename', join(trackDir, variant.id, 'seg%05d.ts'),
+    join(trackDir, variant.id, 'ffmpeg.m3u8'),
+  ])
+  return ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', ...reconnect, '-i', input, ...outputs]
 }
 
 export function navidromeSourceUrl(baseUrl, trackId, credentials, endpoint = 'stream') {
@@ -178,39 +176,19 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
     throw new HlsError(502, 'navidrome-unreachable', `Navidrome could not be reached (${failure instanceof Error ? failure.message : 'no address'}). Set TOMIFY_NAVIDROME_URL.`)
   }
 
-  async function songSize(trackId, credentials) {
-    try {
-      const response = await navidromeFetch(trackId, credentials, 'getSong')
-      const body = await response.json()
-      const song = body?.['subsonic-response']?.song
-      return song ? { size: Number(song.size) || null, suffix: String(song.suffix || '') } : null
-    } catch { return null }
+  // Navidrome's own record of the track: its size tells a replaced file apart, its length is the
+  // fallback when ffprobe can't read one from the stream.
+  async function songInfo(trackId, credentials) {
+    const response = await navidromeFetch(trackId, credentials, 'getSong')
+    const body = await response.json().catch(() => null)
+    const song = body?.['subsonic-response']?.song
+    if (!response.ok || !song) throw new HlsError(response.status === 401 || response.status === 403 ? 401 : 404, 'source-unavailable', 'The music server did not return this track.')
+    return { size: Number(song.size) || null, duration: Number(song.duration) || null }
   }
 
-  async function download(trackId, credentials, target) {
-    const response = await navidromeFetch(trackId, credentials, 'stream')
-    const type = String(response.headers.get('content-type') || '').toLowerCase()
-    // Navidrome reports a bad id or login as a Subsonic error document, not an HTTP error.
-    if (!response.ok || !response.body || /json|xml|text\//.test(type)) {
-      throw new HlsError(response.status === 401 || response.status === 403 ? 401 : 404, 'source-unavailable', 'The music server did not return this track.')
-    }
-    const declared = Number(response.headers.get('content-length'))
-    if (Number.isFinite(declared) && declared > MAX_SOURCE_BYTES) throw new HlsError(413, 'source-too-large', 'This track is too large to stream adaptively.')
-    let received = 0
-    const limit = new TransformStream({
-      transform(chunk, controller) {
-        received += chunk.byteLength
-        if (received > MAX_SOURCE_BYTES) controller.error(new HlsError(413, 'source-too-large', 'This track is too large to stream adaptively.'))
-        else controller.enqueue(chunk)
-      },
-    })
-    await pipeline(Readable.fromWeb(response.body.pipeThrough(limit)), createWriteStream(target))
-  }
-
-  function encode(job, variant, source) {
-    const outputDir = join(job.dir, variant.id)
+  function encode(job, input) {
     return new Promise((resolvePromise, reject) => {
-      const child = spawn(ffmpeg, ffmpegHlsArguments(source, outputDir, variant), { shell: false, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+      const child = spawn(ffmpeg, ffmpegHlsArguments(input, job.dir), { shell: false, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
       job.children.add(child)
       let stderr = ''
       const timer = setTimeout(() => child.kill('SIGKILL'), ENCODER_TIMEOUT_MS)
@@ -221,7 +199,7 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
         clearTimeout(timer)
         job.children.delete(child)
         if (code === 0) resolvePromise()
-        else reject(new Error(`ffmpeg failed for ${variant.id}: ${stderr.trim().split('\n').pop() || `exit ${code}`}`))
+        else reject(new Error(`ffmpeg failed: ${stderr.trim().split('\n').pop() || `exit ${code}`}`))
       })
     })
   }
@@ -234,19 +212,21 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
     job.ready = (async () => {
       await rm(dir, { recursive: true, force: true })
       for (const variant of HLS_VARIANTS) await mkdir(join(dir, variant.id), { recursive: true })
-      const source = join(dir, 'source')
-      await download(trackId, credentials, source)
-      const duration = Number(await probeDuration(source))
+      const info = sourceInfo ?? await songInfo(trackId, credentials)
+      job.size = info.size
+      const source = navidromeSourceUrl(reachableBase ?? config.navidromeUrl, trackId, credentials).toString()
+      // ffprobe reads only the start of the stream; Navidrome's whole-second length is the fallback.
+      const probed = Number(await probeDuration(source).catch(() => null))
+      const duration = Number.isFinite(probed) && probed > 0 ? probed : info.duration
       if (!Number.isFinite(duration) || duration <= 0) throw new HlsError(415, 'unreadable-source', 'This track could not be read for streaming.')
       job.duration = duration
-      await writeFile(join(dir, 'info.json'), JSON.stringify({ trackId, duration, size: sourceInfo?.size ?? null, complete: false }))
+      await writeFile(join(dir, 'info.json'), JSON.stringify({ trackId, duration, size: info.size, complete: false }))
       return source
     })()
     job.finished = job.ready.then(async (source) => {
-      await Promise.all(HLS_VARIANTS.map((variant) => encode(job, variant, source)))
+      await encode(job, source)
       if (job.cancelled) return
-      await rm(source, { force: true })
-      await writeFile(join(dir, 'info.json'), JSON.stringify({ trackId, duration: job.duration, size: sourceInfo?.size ?? null, complete: true }))
+      await writeFile(join(dir, 'info.json'), JSON.stringify({ trackId, duration: job.duration, size: job.size, complete: true }))
       job.done = true
     }).catch(async (error) => {
       job.failed = error
@@ -327,15 +307,13 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
       return { duration: running.duration, job: running }
     }
     const info = await cached(trackId)
-    if (info) {
-      const source = checkSource ? await songSize(trackId, credentials) : null
-      if (!source || source.size === null || info.size === null || source.size === info.size) {
-        await touch(trackId)
-        return { duration: info.duration, job: null }
-      }
+    const latest = info && checkSource ? await songInfo(trackId, credentials).catch(() => null) : null
+    if (info && (!latest || latest.size === null || info.size === null || latest.size === info.size)) {
+      await touch(trackId)
+      return { duration: info.duration, job: null }
     }
     // A track left half-packaged by an agent restart is started again from scratch.
-    const job = await start(trackId, credentials, checkSource ? await songSize(trackId, credentials) : null)
+    const job = await start(trackId, credentials, latest)
     await job.ready
     return { duration: job.duration, job }
   }
