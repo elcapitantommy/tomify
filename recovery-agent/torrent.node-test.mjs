@@ -57,6 +57,9 @@ test('qBittorrent configuration requires loopback HTTP or HTTPS and defaults its
   assert.equal(torrentConfig({}), null)
   const config = torrentConfig({ TOMIFY_QBITTORRENT_URL: 'http://127.0.0.1:8081/', TOMIFY_QBITTORRENT_USERNAME: 'tomify', TOMIFY_QBITTORRENT_PASSWORD: 'secret' })
   assert.deepEqual({ url: config.url, category: config.category, maxBytes: config.maxBytes }, { url: 'http://127.0.0.1:8081', category: 'tomify', maxBytes: 4 * 1024 ** 3 })
+  assert.equal(config.maxFiles, 10000)
+  assert.equal(torrentConfig({ TOMIFY_QBITTORRENT_URL: 'http://127.0.0.1:8081', TOMIFY_TORRENT_MAX_FILES: '20000' }).maxFiles, 20000)
+  assert.equal(torrentConfig({ TOMIFY_QBITTORRENT_URL: 'http://127.0.0.1:8081', TOMIFY_TORRENT_MAX_FILES: '5' }).maxFiles, 10000)
   assert.throws(() => torrentConfig({ TOMIFY_QBITTORRENT_URL: 'http://192.168.1.5:8081' }), /HTTPS \(or loopback HTTP\)/)
 })
 
