@@ -8,11 +8,13 @@ export function DjRuntime() {
   return null
 }
 
+// Shows at once that a tap did something: "Starting DJ" while the first set is picked, then "Stop DJ".
 export function DjButton() {
   const active = useDj((state) => state.active)
-  const loading = useDj((state) => state.loading)
-  if (active) return null
-  return <button className="button secondary" onClick={() => void useDj.getState().start()} disabled={loading}>{loading ? <Loader2 className="spin"/> : <Radio/>}DJ</button>
+  const starting = useDj((state) => state.active && state.loading && !state.trackIds.length)
+  if (starting) return <button className="button primary" disabled aria-busy="true"><Loader2 className="spin"/>Starting DJ…</button>
+  if (active) return <button className="button primary" onClick={() => useDj.getState().stop()}><Square/>Stop DJ</button>
+  return <button className="button secondary" onClick={() => void useDj.getState().start()}><Radio/>DJ</button>
 }
 
 export function DjPanel() {
@@ -26,7 +28,7 @@ export function DjPanel() {
     setRequest('')
   }
   return <section className="dj-panel" aria-label="Tomify DJ">
-    <div className="dj-panel-head"><span className="eyebrow"><Radio size={14}/>{active ? (speaking ? 'DJ is talking' : 'DJ is on') : 'DJ'}</span>{active && <button className="button secondary" onClick={() => useDj.getState().stop()}><Square/>Stop DJ</button>}</div>
+    <div className="dj-panel-head"><span className="eyebrow"><Radio size={14}/>{active ? (speaking ? 'DJ is talking' : 'DJ is on') : 'DJ'}</span></div>
     {active && <p className="dj-script">{script ?? (loading ? 'Picking your first songs…' : '')}</p>}
     {error && <p className="dj-error" role="alert">{error}</p>}
     {active && <form onSubmit={send} className="dj-request"><input value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Tell the DJ: something calmer, more 80s…" aria-label="Tell the DJ what you want" maxLength={200}/><button className="button secondary" type="submit" disabled={loading || !request.trim()}>{loading ? <Loader2 className="spin"/> : <Send/>}Send</button></form>}
