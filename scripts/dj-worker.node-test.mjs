@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_BACKUP_TTS_MODEL, meloAudio, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment, styleMatcher, ukDate } from '../worker/features/dj.ts'
+import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_BACKUP_TTS_MODEL, DJ_LISTEN_MODEL, meloAudio, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment, styleMatcher, ukDate } from '../worker/features/dj.ts'
 import { buildCandidates } from '../worker/features/mixes.ts'
 
 const NOW = Date.parse('2026-10-17T08:30:00Z')
@@ -22,8 +22,10 @@ function d1() {
 }
 
 test('segment requests are cleaned and the time of day is UK time', () => {
-  assert.deepEqual(cleanSegmentRequest({ recentTrackIds: ['a', 2, 'b'], recentArtists: ['Blur', '', 3, 'Oasis'], request: '  something calmer  ', first: true }), { recentTrackIds: ['a', 'b'], recentArtists: ['Blur', 'Oasis'], request: 'something calmer', first: true })
-  assert.deepEqual(cleanSegmentRequest(null), { recentTrackIds: [], recentArtists: [], request: null, first: false })
+  assert.deepEqual(cleanSegmentRequest({ recentTrackIds: ['a', 2, 'b'], recentArtists: ['Blur', '', 3, 'Oasis'], request: '  something calmer  ', first: true }), { recentTrackIds: ['a', 'b'], recentArtists: ['Blur', 'Oasis'], request: 'something calmer', justAsked: false, first: true })
+  assert.deepEqual(cleanSegmentRequest(null), { recentTrackIds: [], recentArtists: [], request: null, justAsked: false, first: false })
+  assert.equal(cleanSegmentRequest({ request: 'upbeat', justAsked: true }).justAsked, true)
+  assert.equal(cleanSegmentRequest({ request: ' ', justAsked: true }).justAsked, false)
   assert.equal(partOfDay(NOW), 'morning')
   assert.equal(partOfDay(Date.parse('2026-10-17T17:30:00Z')), 'evening', '18:30 BST')
   assert.equal(ukDate(Date.parse('2026-10-17T17:30:00Z')), 'Saturday 17 October')
@@ -92,7 +94,8 @@ test('the DJ prompt names the listener, the time and any request', () => {
   const { prompt, refs } = djPrompt(pool.slice(0, 3), snapshot, input({ request: 'more 80s' }))
   assert.match(prompt, /^Listener: Tom\. It is Saturday 17 October, morning in the UK\.$/m)
   assert.match(prompt, /first link of the session/)
-  assert.match(prompt, /The listener asked: "more 80s"/)
+  assert.match(prompt, /Earlier the listener asked: "more 80s"/, 'later sets keep to the request without answering it again')
+  assert.match(djPrompt(pool.slice(0, 3), snapshot, input({ request: 'upbeat', justAsked: true })).prompt, /The listener just asked: "upbeat"/)
   assert.match(prompt, /^t1 \| Artist 0 - Song s0 \|/m)
   assert.equal(refs.size, 3)
 })
@@ -168,6 +171,24 @@ test('the voice endpoint reads the link with MeloTTS, or Aura-2 first when chose
   assert.equal(meloAudio(new Uint8Array([1, 2])).byteLength, 2)
   assert.equal((await call({ AI: ai(auraOk) }, '   ')).status, 400)
   assert.equal((await call({}, 'Hi.')).status, 503)
+})
+
+test('the listen endpoint turns a spoken request into text with Whisper', async (t) => {
+  t.mock.method(console, 'error', () => undefined)
+  const runs = []
+  const call = (env, body) => { const request = new Request('https://tomify.test/api/dj/listen', { method: 'POST', headers: { ...headers, 'content-type': 'audio/webm' }, body }); return createDjHandler()(request, { NAVIDROME_ORIGIN: 'https://navidrome.test', ...env }, new URL(request.url)) }
+  const heard = await call({ AI: { run: async (model, inputs) => { runs.push({ model, inputs }); return { text: '  Something upbeat please. ' } } } }, new Uint8Array([1, 2, 3]))
+  assert.deepEqual(await heard.json(), { text: 'Something upbeat please.' })
+  assert.deepEqual(runs, [{ model: DJ_LISTEN_MODEL, inputs: { audio: Buffer.from([1, 2, 3]).toString('base64'), language: 'en' } }])
+
+  const refused = await call({ AI: { run: async () => { throw new Error('4006: you have used up your daily free allocation') } } }, new Uint8Array([1]))
+  assert.equal(refused.status, 502)
+  assert.equal((await refused.json()).message, 'Cloudflare\'s free daily allowance for the DJ\'s hearing is used up. It resets at midnight UTC, or move to the Workers Paid plan.')
+  assert.equal((await call({ AI: { run: async () => ({}) } }, new Uint8Array(0))).status, 400)
+  assert.equal((await call({ AI: { run: async () => ({}) } }, new Uint8Array(3 * 1024 * 1024))).status, 413)
+  assert.equal((await call({}, new Uint8Array([1]))).status, 503)
+  const anonymous = new Request('https://tomify.test/api/dj/listen', { method: 'POST', body: new Uint8Array([1]) })
+  assert.equal((await createDjHandler()(anonymous, { NAVIDROME_ORIGIN: 'https://navidrome.test' }, new URL(anonymous.url))).status, 401)
 })
 
 test('the segment endpoint picks songs from the library for the signed-in account', async (t) => {

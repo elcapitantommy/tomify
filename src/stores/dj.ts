@@ -22,7 +22,9 @@ export interface DjState {
   trackIds: string[]
   start(): Promise<void>
   stop(): void
-  steer(request: string): Promise<void>
+  // Replaces the songs after this one with a set for the request. With now, that set starts straight
+  // away (the DJ answers first); resolves whether it worked.
+  steer(request: string, options?: { now?: boolean }): Promise<boolean>
 }
 
 // Sets are fetched when this many songs or fewer are left after the current one.
@@ -34,7 +36,7 @@ function headers(): HeadersInit {
   return { 'content-type': 'application/json', 'x-tomify-user': session.username, 'x-tomify-token': session.token, 'x-tomify-salt': session.salt }
 }
 
-export async function fetchSegment(body: { recentTrackIds: string[]; recentArtists: string[]; request: string | null; first: boolean }, fetcher: typeof fetch = fetch): Promise<DjSegment> {
+export async function fetchSegment(body: { recentTrackIds: string[]; recentArtists: string[]; request: string | null; justAsked?: boolean; first: boolean }, fetcher: typeof fetch = fetch): Promise<DjSegment> {
   const response = await fetcher('/api/dj/segment', { method: 'POST', headers: headers(), body: JSON.stringify(body) })
   const result = await response.json().catch(() => ({})) as DjSegment & { message?: string; error?: string }
   if (!response.ok) throw new Error(result.message || result.error || 'The DJ could not pick the next songs.')
@@ -166,8 +168,8 @@ const recentIds = (extra: string[] = []) => [...new Set([...usePlayer.getState()
 export const DJ_RECENT_ARTIST_TRACKS = 12
 const recentArtists = () => [...new Set(usePlayer.getState().queue.slice(-DJ_RECENT_ARTIST_TRACKS).map((track) => track.artist).filter(Boolean))]
 
-async function loadSet(first: boolean, request: string | null) {
-  const segment = await fetchSegment({ recentTrackIds: recentIds(useDj.getState().trackIds), recentArtists: recentArtists(), request, first })
+async function loadSet(first: boolean, request: string | null, justAsked = false) {
+  const segment = await fetchSegment({ recentTrackIds: recentIds(useDj.getState().trackIds), recentArtists: recentArtists(), request, first, ...(justAsked ? { justAsked } : {}) })
   if (!segment.tracks.length) throw new Error('The DJ could not find anything to play.')
   const audioUrl = segment.voice && segment.script ? await fetchVoice(segment.script) : null
   return { segment, link: { firstTrackId: segment.tracks[0].id, script: segment.script, audioUrl, voice: segment.voice } }
@@ -208,22 +210,34 @@ export const useDj = create<DjState>((set, get) => ({
   },
 
   // Asks for something different: the songs after the current one are replaced by a new set.
-  steer: async (request) => {
-    if (!get().active) return
+  steer: async (request, options = {}) => {
+    if (!get().active) return false
     set({ request, loading: true, error: null })
     try {
-      const { segment, link } = await loadSet(false, request)
-      if (!get().active) return
+      const { segment, link } = await loadSet(false, request, true)
+      if (!get().active) return false
       const replaced = get().pending
       if (replaced?.audioUrl) URL.revokeObjectURL(replaced.audioUrl)
       const player = usePlayer.getState()
       usePlayer.setState({ queue: [...player.queue.slice(0, player.currentIndex + 1), ...segment.tracks], activitySerial: player.activitySerial + 1 })
       set((state) => ({ pending: link, trackIds: [...state.trackIds, ...segment.tracks.map((track) => track.id)], loading: false }))
+      // Moving on to the new set's first song is what makes the DJ speak its link.
+      if (options.now) usePlayer.getState().next()
+      return true
     } catch (reason) {
       set({ loading: false, error: reason instanceof Error ? reason.message : 'The DJ could not change direction.' })
+      return false
     }
   },
 }))
+
+// What the listener said, heard by the server (for browsers without their own speech recognition).
+export async function fetchHeard(audio: Blob, fetcher: typeof fetch = fetch): Promise<string> {
+  const response = await fetcher('/api/dj/listen', { method: 'POST', headers: { ...headers(), 'content-type': audio.type || 'application/octet-stream' }, body: audio })
+  const result = await response.json().catch(() => ({})) as { text?: string; message?: string; error?: string }
+  if (!response.ok) throw new Error(result.message || result.error || `The DJ couldn't hear you (${response.status}).`)
+  return result.text ?? ''
+}
 
 // Holds the music while the link is spoken: the recorded voice if there is one (fetched again if it
 // went missing), otherwise, or if it won't play, the browser's own speech. The music always comes back.

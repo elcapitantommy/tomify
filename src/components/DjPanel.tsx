@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
-import { Loader2, Radio, Send, Square } from 'lucide-react'
-import { bindDj, useDj } from '../stores/dj'
+import { useEffect, useRef, useState } from 'react'
+import { Loader2, Mic, Radio, Send, Square } from 'lucide-react'
+import { bindDj, fetchHeard, useDj } from '../stores/dj'
+import { usePlayer } from '../stores/player'
+import { canListen, listen, type Listening } from '../lib/dj-listen'
 
 // Keeps the DJ going while the app is open, whatever page is showing.
 export function DjRuntime() {
@@ -17,9 +19,76 @@ export function DjButton() {
   return <button className="button secondary" onClick={() => void useDj.getState().start()}><Radio/>DJ</button>
 }
 
+// Shorter presses than this are taken as a tap, which gets a hint to hold the button instead.
+export const DJ_TALK_MIN_MS = 350
+
+// Hold to talk: the music pauses so the mic can hear you, and on letting go the DJ answers and the new
+// songs start. Nothing heard, or a failed request, puts the music back on.
+function DjTalk({ disabled }: { disabled: boolean }) {
+  const [phase, setPhase] = useState<'idle' | 'listening' | 'hearing'>('idle')
+  const [heard, setHeard] = useState('')
+  const [problem, setProblem] = useState<string | null>(null)
+  const loading = useDj((state) => state.loading)
+  const held = useRef<{ listening: Listening; resume: boolean; since: number } | null>(null)
+  useEffect(() => () => held.current?.listening.cancel(), [])
+
+  const begin = () => {
+    if (held.current || disabled) return
+    const player = usePlayer.getState()
+    const resume = player.playing
+    if (resume) player.setPlaying(false)
+    setProblem(null)
+    setHeard('')
+    setPhase('listening')
+    held.current = { listening: listen({ onHeard: setHeard, transcribe: (audio) => fetchHeard(audio) }), resume, since: Date.now() }
+  }
+  const end = async () => {
+    const current = held.current
+    if (!current) return
+    held.current = null
+    let text = ''
+    let trouble: string | null = null
+    if (Date.now() - current.since < DJ_TALK_MIN_MS) {
+      current.listening.cancel()
+      trouble = 'Hold the button down while you talk, then let go.'
+    } else {
+      setPhase('hearing')
+      try {
+        text = await current.listening.finish()
+      } catch (reason) {
+        trouble = reason instanceof Error ? reason.message : 'The DJ didn\'t catch that.'
+      }
+      if (!text && !trouble) trouble = 'The DJ didn\'t catch that. Hold the button while you talk.'
+    }
+    setPhase('idle')
+    setHeard(text)
+    setProblem(trouble)
+    const steered = text ? await useDj.getState().steer(text, { now: true }) : false
+    if (!steered && current.resume && useDj.getState().active) usePlayer.getState().setPlaying(true)
+  }
+  const key = (event: React.KeyboardEvent, down: boolean) => {
+    if (event.key !== ' ' && event.key !== 'Enter') return
+    event.preventDefault()
+    if (down && !event.repeat) begin()
+    else if (!down) void end()
+  }
+
+  const line = phase === 'listening' ? (heard || 'Listening…') : phase === 'hearing' ? (heard || 'Working out what you said…') : heard && loading ? `“${heard}”` : null
+  return <>
+    <button type="button" className={`button secondary dj-talk${phase === 'listening' ? ' listening' : ''}`} aria-label="Hold to talk to the DJ" aria-pressed={phase === 'listening'} disabled={disabled && phase === 'idle'}
+      onPointerDown={(event) => { event.preventDefault(); event.currentTarget.setPointerCapture?.(event.pointerId); begin() }}
+      onPointerUp={() => void end()} onPointerCancel={() => void end()} onContextMenu={(event) => event.preventDefault()}
+      onKeyDown={(event) => key(event, true)} onKeyUp={(event) => key(event, false)}>
+      {phase === 'hearing' ? <Loader2 className="spin"/> : <Mic/>}
+    </button>
+    {(line || problem) && <p className="dj-heard" role="status">{line ?? problem}</p>}
+  </>
+}
+
 export function DjPanel() {
   const { active, loading, speaking, script, voiceNote, error } = useDj()
   const [request, setRequest] = useState('')
+  const [talkable] = useState(canListen)
   if (!active && !error) return null
   const send = (event: React.FormEvent) => {
     event.preventDefault()
@@ -32,6 +101,6 @@ export function DjPanel() {
     {active && <p className="dj-script">{script ?? (loading ? 'Picking your first songs…' : '')}</p>}
     {active && voiceNote && <p className="dj-voice-note">{voiceNote}</p>}
     {error && <p className="dj-error" role="alert">{error}</p>}
-    {active && <form onSubmit={send} className="dj-request"><input value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Tell the DJ: something calmer, 124 bpm house…" aria-label="Tell the DJ what you want" maxLength={200}/><button className="button secondary" type="submit" disabled={loading || !request.trim()}>{loading ? <Loader2 className="spin"/> : <Send/>}Send</button></form>}
+    {active && <form onSubmit={send} className="dj-request">{talkable && <DjTalk disabled={speaking}/>}<input value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Tell the DJ: something calmer, 124 bpm house…" aria-label="Tell the DJ what you want" maxLength={200}/><button className="button secondary" type="submit" disabled={loading || !request.trim()}>{loading ? <Loader2 className="spin"/> : <Send/>}Send</button></form>}
   </section>
 }

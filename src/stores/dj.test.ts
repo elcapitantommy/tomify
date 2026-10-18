@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuth } from './auth'
 import { usePlayer } from './player'
-import { bindDj, djVoiceElement, DJ_SPEECH_TIMEOUT_MS, DJ_VOICE_GAIN, fetchVoice, useDj } from './dj'
+import { bindDj, djVoiceElement, DJ_SPEECH_TIMEOUT_MS, DJ_VOICE_GAIN, fetchHeard, fetchVoice, useDj } from './dj'
 
 const session = { serverUrl: 'https://music.example', username: 'tom', salt: 's', token: 't' }
 const track = (id: string) => ({ id, title: `Song ${id}`, artist: `Artist ${id}`, album: 'Album' })
@@ -75,6 +75,33 @@ describe('Tomify DJ', () => {
     await useDj.getState().start()
     expect(useDj.getState()).toEqual(expect.objectContaining({ active: false, error: 'The DJ couldn\'t pick the next songs: Navidrome is down.' }))
   })
+  it('answers a spoken request straight away: the new set starts with the DJ\'s reply', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/voice')) return new Response(new Blob(['mp3']))
+      const body = JSON.parse(String(init?.body))
+      return body.request ? json({ tracks: [track('u'), track('v'), track('w')], script: 'Upbeat it is!', curatedBy: 'claude', voice: true }) : json({ tracks: [track('a'), track('b'), track('c')], script: 'Morning Tom.', curatedBy: 'claude', voice: true })
+    })
+    vi.stubGlobal('fetch', fetcher)
+    await useDj.getState().start()
+    djVoiceElement()?.onended?.(new Event('ended'))
+
+    expect(await useDj.getState().steer('something upbeat', { now: true })).toBe(true)
+    expect(JSON.parse(String(fetcher.mock.calls.at(-2)?.[1]?.body))).toEqual(expect.objectContaining({ request: 'something upbeat', justAsked: true }))
+    expect(usePlayer.getState().queue.map((item) => item.id)).toEqual(['a', 'u', 'v', 'w'])
+    expect(usePlayer.getState().currentIndex).toBe(1)
+    expect(useDj.getState()).toEqual(expect.objectContaining({ speaking: true, script: 'Upbeat it is!', pending: null }))
+    djVoiceElement()?.onended?.(new Event('ended'))
+    expect(usePlayer.getState().playing).toBe(true)
+  })
+
+  it('hears a recording through the server when the browser cannot', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => json({ text: 'Something calmer' }))
+    expect(await fetchHeard(new Blob(['audio'], { type: 'audio/mp4' }), fetcher)).toBe('Something calmer')
+    expect(fetcher.mock.calls[0][0]).toBe('/api/dj/listen')
+    expect(fetcher.mock.calls[0][1]?.headers).toEqual(expect.objectContaining({ 'content-type': 'audio/mp4', 'x-tomify-user': 'tom' }))
+    await expect(fetchHeard(new Blob(['a']), async () => json({ message: 'Cloudflare\'s free daily allowance for the DJ\'s hearing is used up.' }, 502))).rejects.toThrow('the DJ\'s hearing')
+  })
+
   describe('making sure the link is spoken', () => {
     class Utterance { onend: (() => void) | null = null; onerror: (() => void) | null = null; lang = ''; constructor(public text: string) {} }
     let spoken: Utterance[]

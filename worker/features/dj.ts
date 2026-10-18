@@ -21,9 +21,12 @@ export const DJ_TTS_MODEL = '@cf/deepgram/aura-2-en'
 // default: the free 10,000 a day are shared by every model, and Aura-2 alone spends them in about nine
 // links. TOMIFY_DJ_VOICE_MODEL=aura uses Aura-2 first (for a Workers Paid account), with MeloTTS as backup.
 export const DJ_BACKUP_TTS_MODEL = '@cf/myshell-ai/melotts'
+// Hears a spoken request when the browser can't (about 47 neurons a minute; a request is a few seconds).
+export const DJ_LISTEN_MODEL = '@cf/openai/whisper-large-v3-turbo'
+const MAX_LISTEN_BYTES = 2 * 1024 * 1024
 
 export interface DjSegment { tracks: MixTrack[], script: string, curatedBy: 'claude' | 'tomify', voice: boolean }
-export interface DjSegmentInput { recentTrackIds: string[], recentArtists: string[], request: string | null, first: boolean, username: string, now: number }
+export interface DjSegmentInput { recentTrackIds: string[], recentArtists: string[], request: string | null, justAsked?: boolean, first: boolean, username: string, now: number }
 
 export const DJ_SYSTEM = `You are the DJ inside Tomify, a personal music player. You talk to one listener between songs, like a bubbly, upbeat radio presenter who loves their music and knows their taste.
 
@@ -31,7 +34,7 @@ Each time, pick the next 3 to 5 songs from the candidate pool and write the shor
 - Only use refs from the pool. Never pick a recently played song. Order them so they flow.
 - At most one song per artist in a set. Don't keep returning to the same few artists.
 - Mix familiar favourites with things they haven't played in a while or have never played, guided by the listening history.
-- If the listener asked for something, honour it. Songs show their tempo (bpm), genre and mood when known: when asked for a style, mood or tempo, keep the whole set to it and order it by tempo so it flows.
+- If the listener asked for something, honour it. When they have just asked, start the link by answering them in a few words ("Upbeat it is!") before introducing the first song. Songs show their tempo (bpm), genre and mood when known: when asked for a style, mood or tempo, keep the whole set to it and order it by tempo so it flows.
 - The link is 2 to 4 sentences and at most 70 words, spoken aloud by a text-to-speech voice: plain words only, no emojis, lists, stage directions or sound effects. Introduce what's coming (you can name the first song and artist) and give a personal reason when there is one.
 - On the first link of a session, greet the listener by name and mention the time of day.`
 
@@ -45,13 +48,13 @@ const DJ_SCHEMA = {
   },
 } as const
 
-export function cleanSegmentRequest(body: unknown): { recentTrackIds: string[], recentArtists: string[], request: string | null, first: boolean } {
+export function cleanSegmentRequest(body: unknown): { recentTrackIds: string[], recentArtists: string[], request: string | null, justAsked: boolean, first: boolean } {
   const input = body && typeof body === 'object' ? body as Record<string, unknown> : {}
   const strings = (value: unknown, limit: number) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item !== '').slice(-limit) : []
   const recentTrackIds = strings(input.recentTrackIds, 200)
   const recentArtists = strings(input.recentArtists, 20).map((artist) => artist.slice(0, MAX_REQUEST_CHARS))
   const request = typeof input.request === 'string' && input.request.trim() ? input.request.trim().slice(0, MAX_REQUEST_CHARS) : null
-  return { recentTrackIds, recentArtists, request, first: input.first === true }
+  return { recentTrackIds, recentArtists, request, justAsked: Boolean(request) && input.justAsked === true, first: input.first === true }
 }
 
 export function partOfDay(now: number) {
@@ -111,7 +114,7 @@ export function djPrompt(pool: Candidate[], snapshot: LibrarySnapshot, input: Dj
     input.first ? 'This is the first link of the session.' : 'The session is already under way.',
     `Artists they play most lately: ${snapshot.topArtists.join(', ') || 'not enough history yet'}.`,
     input.recentArtists.length ? `Played this session, so rest them unless asked: ${input.recentArtists.join(', ')}.` : '',
-    input.request ? `The listener asked: "${input.request}"` : '',
+    input.request ? (input.justAsked ? `The listener just asked: "${input.request}"` : `Earlier the listener asked: "${input.request}"`) : '',
     '',
     'Candidate songs:',
     ...lines,
@@ -154,11 +157,17 @@ export async function buildSegment(env: Env, candidates: Candidate[], snapshot: 
 
 // A short reason for the panel: Workers AI errors arrive as long JSON, and running out of the free
 // daily allowance (4006) is the common one.
-export function voiceFailure(detail: string, status?: number) {
-  if (/\b4006\b|daily free allocation/i.test(detail)) return 'Cloudflare\'s free daily allowance for the DJ voice is used up. It resets at midnight UTC, or move to the Workers Paid plan.'
+export function voiceFailure(detail: string, status?: number, what = 'the DJ voice') {
+  if (/\b4006\b|daily free allocation/i.test(detail)) return `Cloudflare's free daily allowance for ${what} is used up. It resets at midnight UTC, or move to the Workers Paid plan.`
   const parsed = /"message"\s*:\s*"([^"]+)"/.exec(detail)?.[1] ?? detail
   const reason = parsed.replace(/^\w*Error:\s*/, '').trim().slice(0, 120)
-  return `The DJ voice failed${status ? ` (${status})` : ''}${reason ? `: ${reason}` : '.'}`
+  return `${what[0].toUpperCase()}${what.slice(1)} failed${status ? ` (${status})` : ''}${reason ? `: ${reason}` : '.'}`
+}
+
+function base64(bytes: Uint8Array) {
+  let text = ''
+  for (let index = 0; index < bytes.length; index += 0x8000) text += String.fromCharCode(...bytes.subarray(index, index + 0x8000))
+  return btoa(text)
 }
 
 // MeloTTS answers with base64 MP3 ({ audio }) or raw bytes, depending on the runtime.
@@ -172,10 +181,26 @@ export function meloAudio(result: unknown): Uint8Array | null {
 
 export function createDjHandler(deps: DjDependencies & { fetcher?: typeof fetch } = {}): RouteHandler {
   return async (request, env, url) => {
-    if (url.pathname !== '/api/dj/segment' && url.pathname !== '/api/dj/voice') return null
+    if (!['/api/dj/segment', '/api/dj/voice', '/api/dj/listen'].includes(url.pathname)) return null
     if (request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405)
     const signedIn = await authenticate(request, env)
     if (!signedIn) return json({ error: 'unauthorized' }, 401)
+
+    // A recording of the listener talking to the DJ (hold to talk), as text.
+    if (url.pathname === '/api/dj/listen') {
+      if (!env.AI) return json({ error: 'dj-listen-unavailable', message: 'Talking to the DJ needs the Workers AI binding (AI).' }, 503)
+      const audio = new Uint8Array(await request.arrayBuffer())
+      if (!audio.byteLength) return json({ error: 'invalid-dj-audio' }, 400)
+      if (audio.byteLength > MAX_LISTEN_BYTES) return json({ error: 'dj-audio-too-long', message: 'That was too long for the DJ. Keep requests to a few seconds.' }, 413)
+      try {
+        const result = await env.AI.run(DJ_LISTEN_MODEL, { audio: base64(audio), language: 'en' } as never) as { text?: unknown }
+        return json({ text: typeof result?.text === 'string' ? result.text.trim().slice(0, MAX_REQUEST_CHARS) : '' })
+      } catch (error) {
+        console.error('DJ listen failed', error)
+        return json({ error: 'dj-listen-failed', message: voiceFailure(error instanceof Error ? error.message : String(error), undefined, 'the DJ\'s hearing') }, 502)
+      }
+    }
+
     const body = await request.json().catch(() => ({}))
 
     if (url.pathname === '/api/dj/voice') {
