@@ -132,6 +132,15 @@ export async function buildSegment(env: Env, candidates: Candidate[], snapshot: 
   return { ...plainSegment(pool, input), curatedBy: 'tomify' }
 }
 
+// A short reason for the panel: Workers AI errors arrive as long JSON, and running out of the free
+// daily allowance (4006) is the common one.
+export function voiceFailure(detail: string, status?: number) {
+  if (/\b4006\b|daily free allocation/i.test(detail)) return 'Cloudflare\'s free daily allowance for the DJ voice is used up. It resets at midnight UTC, or move to the Workers Paid plan.'
+  const parsed = /"message"\s*:\s*"([^"]+)"/.exec(detail)?.[1] ?? detail
+  const reason = parsed.replace(/^\w*Error:\s*/, '').trim().slice(0, 120)
+  return `The DJ voice failed${status ? ` (${status})` : ''}${reason ? `: ${reason}` : '.'}`
+}
+
 export function createDjHandler(deps: DjDependencies & { fetcher?: typeof fetch } = {}): RouteHandler {
   return async (request, env, url) => {
     if (url.pathname !== '/api/dj/segment' && url.pathname !== '/api/dj/voice') return null
@@ -150,12 +159,12 @@ export function createDjHandler(deps: DjDependencies & { fetcher?: typeof fetch 
       } catch (error) {
         // Quota, model and binding errors are thrown rather than returned; say which, so the app can show it.
         console.error('DJ voice failed', error)
-        return json({ error: 'dj-voice-failed', message: `The DJ voice failed: ${error instanceof Error ? error.message : String(error)}` }, 502)
+        return json({ error: 'dj-voice-failed', message: voiceFailure(error instanceof Error ? error.message : String(error)) }, 502)
       }
       if (!audio.ok) {
         const detail = (await audio.text().catch(() => '')).slice(0, 200)
         console.error('DJ voice failed', audio.status, detail)
-        return json({ error: 'dj-voice-failed', message: `The DJ voice failed (${audio.status})${detail ? `: ${detail}` : '.'}` }, 502)
+        return json({ error: 'dj-voice-failed', message: voiceFailure(detail, audio.status) }, 502)
       }
       return new Response(audio.body, { headers: { 'content-type': 'audio/mpeg', 'cache-control': 'no-store' } })
     }

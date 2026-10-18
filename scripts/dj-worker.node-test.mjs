@@ -138,10 +138,12 @@ test('the voice endpoint reads the link with Aura-2 and explains when Workers AI
   t.mock.method(console, 'error', () => undefined)
   const quota = await call({ AI: { run: async () => { throw new Error('4006: you have used up your daily free allocation') } } }, 'Hi.')
   assert.equal(quota.status, 502)
-  assert.equal((await quota.json()).message, 'The DJ voice failed: 4006: you have used up your daily free allocation')
+  assert.equal((await quota.json()).message, 'Cloudflare\'s free daily allowance for the DJ voice is used up. It resets at midnight UTC, or move to the Workers Paid plan.')
   const refused = await call({ AI: { run: async () => new Response('{"errors":[{"message":"bad speaker"}]}', { status: 400 }) } }, 'Hi.')
   assert.equal(refused.status, 502)
-  assert.equal((await refused.json()).message, 'The DJ voice failed (400): {"errors":[{"message":"bad speaker"}]}')
+  assert.equal((await refused.json()).message, 'The DJ voice failed (400): bad speaker')
+  const limited = await call({ AI: { run: async () => new Response('{"name":"AiError","internalCode":4006,"httpCode":429,"message":"AiError: you have used up your daily free allocation of 10,000 neurons"}', { status: 429 }) } }, 'Hi.')
+  assert.match((await limited.json()).message, /^Cloudflare's free daily allowance/)
 })
 
 test('the segment endpoint picks songs from the library for the signed-in account', async (t) => {
