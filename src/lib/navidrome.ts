@@ -31,6 +31,13 @@ function requestServerUrl(serverUrl: string) {
   if (typeof window !== 'undefined' && normalised === DEFAULT_NAVIDROME_SERVER) return `${window.location.origin}/navidrome`
   return normalised
 }
+// Web Audio (the equaliser) can only read audio served from the app's own origin; another server's
+// streams would play silent through it. The Tomify music server is proxied through the Worker.
+export function streamsFromThisOrigin(serverUrl: string) {
+  if (typeof window === 'undefined') return false
+  try { return new URL(requestServerUrl(serverUrl)).origin === window.location.origin } catch { return false }
+}
+
 export function createAuthSession(serverUrl: string, username: string, password: string): AuthSession {
   const salt = Array.from(crypto.getRandomValues(new Uint8Array(6)), (byte) => byte.toString(16).padStart(2, '0')).join('')
   return { serverUrl: normaliseServerUrl(serverUrl), username: username.trim(), salt, token: SparkMD5.hash(password + salt) }
@@ -106,6 +113,7 @@ export class NavidromeClient {
   async scrobble(id: string, submission = true) { await this.get('scrobble', { id, submission: submission ? 'true' : 'false' }); return true }
   coverArtUrl(id?: string, size = 600) { return id ? this.url('getCoverArt', { id, size }).toString() : '' }
   streamUrl(id: string) { return this.url('stream', { id, estimateContentLength: 'true' }).toString() }
+  streamsSameOrigin() { return streamsFromThisOrigin(this.session.serverUrl) }
   // Adaptive streaming goes through the Tomify Worker, so it only exists for the Tomify music server.
   // `gain` asks for the stream with that ReplayGain baked in.
   hlsUrl(id: string, gain: ReplayGainMode | null = null) {
