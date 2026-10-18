@@ -22,6 +22,7 @@ export interface Env {
   AI?: Ai
   // Optional: the DJ's Deepgram Aura-2 voice (default pandora, a British female voice).
   TOMIFY_DJ_VOICE?: string
+  TOMIFY_DJ_VOICE_MODEL?: string
 }
 
 export type RouteHandler = (request: Request, env: Env, url: URL) => Promise<Response | null>

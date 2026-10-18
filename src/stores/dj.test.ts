@@ -113,6 +113,15 @@ describe('Tomify DJ', () => {
       expect(useDj.getState().voiceNote).toBe('Your phone\'s voice read this one. The DJ voice failed: 4006: daily free allocation used up')
     })
 
+    it('says when the server\'s backup voice read the link', async () => {
+      const backup = () => new Response(new Blob(['mp3']), { headers: { 'x-tomify-voice': 'backup', 'x-tomify-voice-problem': encodeURIComponent('Cloudflare\'s free daily allowance for the DJ voice is used up.') } })
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/voice') ? backup() : segment()))
+      await useDj.getState().start()
+      await vi.waitFor(() => expect(djVoiceElement()?.src).toBe('blob:voice'))
+      expect(useDj.getState().voiceNote).toBe('The backup voice read this one. Cloudflare\'s free daily allowance for the DJ voice is used up.')
+      expect(said()).toEqual([])
+    })
+
     it('reads the link out with the browser voice when the recorded voice is unavailable', async () => {
       const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/voice') ? new Response('down', { status: 502 }) : segment())
       vi.stubGlobal('fetch', fetcher)
