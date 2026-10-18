@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { StreamingQuality } from './StreamingQuality'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Activity, Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, LogOut, Search, Settings, UsersRound, X } from 'lucide-react'
+import { Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, LogOut, Search, Settings, UsersRound, X } from 'lucide-react'
 import { PlayerBar } from './Player'
 import { PlayerRuntime } from './PlayerRuntime'
 import { LivePlaybackSync } from './LivePlaybackSync'
@@ -32,6 +31,8 @@ export function AppShell() {
   const isAdmin = useAuth((state) => state.isAdmin) === true
   const logout = useAuth((state) => state.logout)
   const [accountOpen, setAccountOpen] = useState(false)
+  // Set when Back leaves a page opened from the account sheet, so the sheet comes back instead of the page underneath.
+  const reopenAccount = useRef(false)
   useScrollRestoration()
 
   useEffect(() => {
@@ -41,7 +42,10 @@ export function AppShell() {
     return () => { document.title = 'Tomify' }
   }, [titleTrack?.id, titleTrack?.title, titleTrack?.artist])
 
-  useEffect(() => { setAccountOpen(false) }, [location.pathname])
+  useEffect(() => {
+    setAccountOpen(reopenAccount.current)
+    reopenAccount.current = false
+  }, [location.pathname])
 
   useEffect(() => {
     lastScrollY.current = window.scrollY
@@ -58,7 +62,10 @@ export function AppShell() {
     return () => window.removeEventListener('scroll', onScroll)
   }, [location.pathname])
   const goBack = () => {
-    if (window.history.length > 1) navigate(-1)
+    // Settings and Recovery are reached from the account sheet, so Back returns to that menu rather than the page behind it.
+    if ((location.state as { fromAccount?: boolean } | null)?.fromAccount) reopenAccount.current = true
+    // The first page of a visit has no in-app history (key 'default'), so Back goes Home rather than leaving Tomify.
+    if (location.key !== 'default') navigate(-1)
     else navigate('/')
   }
 
@@ -81,8 +88,8 @@ function AccountSheet({ isAdmin, onClose, onLogout }: { isAdmin: boolean; onClos
   return <div className="account-sheet-backdrop" onClick={onClose}>
     <div className="account-sheet" role="dialog" aria-modal="true" aria-label="Account" onClick={(event) => event.stopPropagation()}>
       <header><CircleUserRound/><span><strong>{username}</strong><small>{isAdmin ? 'Navidrome administrator' : 'Your Navidrome account'}</small></span><button type="button" className="account-sheet-close" onClick={onClose} aria-label="Close"><X/></button></header>
-      {isAdmin && <><NavLink to="/recovery"><LifeBuoy/>Recovery</NavLink><NavLink to="/library-health"><Activity/>Library health</NavLink><NavLink to="/settings"><Settings/>Settings</NavLink></>}
-      <StreamingQuality/>
+      {isAdmin && <NavLink to="/recovery" state={{ fromAccount: true }}><LifeBuoy/>Recovery</NavLink>}
+      <NavLink to="/settings" state={{ fromAccount: true }}><Settings/>Settings</NavLink>
       <button type="button" onClick={onLogout}><LogOut/>Sign out</button>
     </div>
   </div>

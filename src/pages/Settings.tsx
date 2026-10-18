@@ -38,8 +38,8 @@ export function Settings() {
     return () => { active = false }
   }, [isAdmin, session])
 
-  // Hidden from the navigation for everyone else; this keeps a typed /settings from showing admin controls, and keeps sign out reachable.
-  if (isAdmin !== true) return <div className="page narrow-page"><header className="page-header"><span className="eyebrow">Tomify</span><h1>Settings</h1><p>{isAdmin === null ? 'Checking your account…' : 'Settings are only available to Navidrome administrators.'}</p></header>{isAdmin === false && <section className="settings-card"><div className="setting-row"><LockKeyhole/><span><strong>Signed in as {session?.username}</strong><small>Ask an administrator if you need something changed.</small></span></div><button className="button danger" onClick={logout}><LogOut/>Sign out</button></section>}</div>
+  // Everyone else gets only their per-device playback choice and sign out; server controls stay admin-only.
+  if (isAdmin !== true) return <div className="page narrow-page"><header className="page-header"><span className="eyebrow">Tomify</span><h1>Settings</h1><p>{isAdmin === null ? 'Checking your account…' : 'Server settings are only available to Navidrome administrators.'}</p></header>{isAdmin === false && <><section className="settings-card"><h2>Playback</h2><StreamingQuality/></section><section className="settings-card"><div className="setting-row"><LockKeyhole/><span><strong>Signed in as {session?.username}</strong><small>Ask an administrator if you need something changed.</small></span></div><button className="button danger" onClick={logout}><LogOut/>Sign out</button></section></>}</div>
 
   // Site-only deploys change the app version without touching the agent, so only a contract difference needs a redeploy.
   const mismatch = Boolean(versions.app && versions.agent && versions.app.contract !== versions.agent.contract)
