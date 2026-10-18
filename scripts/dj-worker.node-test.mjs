@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment, styleMatcher, ukDate } from '../worker/features/dj.ts'
+import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_BACKUP_TTS_MODEL, meloAudio, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment, styleMatcher, ukDate } from '../worker/features/dj.ts'
 import { buildCandidates } from '../worker/features/mixes.ts'
 
 const NOW = Date.parse('2026-10-17T08:30:00Z')
@@ -120,30 +120,54 @@ test('Claude picks the songs and writes the link, and the plain DJ takes over wh
   assert.equal(noKey.curatedBy, 'tomify')
 })
 
-test('the voice endpoint reads the link with Aura-2 and explains when Workers AI is missing', async (t) => {
+test('the voice endpoint reads the link with MeloTTS, or Aura-2 first when chosen, and explains failures', async (t) => {
   t.mock.method(globalThis, 'fetch', async () => subsonic({}))
-  let ran
-  const AI = { run: async (model, inputs, options) => { ran = { model, inputs, options }; return new Response('mp3-bytes', { headers: { 'content-type': 'audio/mpeg' } }) } }
-  const call = (env, text) => { const request = new Request('https://tomify.test/api/dj/voice', { method: 'POST', headers, body: JSON.stringify({ text }) }); return createDjHandler()(request, { NAVIDROME_ORIGIN: 'https://navidrome.test', ...env }, new URL(request.url)) }
-  const spoken = await call({ AI }, 'Morning Tom.')
-  assert.equal(spoken.headers.get('content-type'), 'audio/mpeg')
-  assert.equal(await spoken.text(), 'mp3-bytes')
-  assert.equal(DEFAULT_DJ_VOICE, 'pandora', 'the British female voice Tom chose')
-  assert.deepEqual(ran, { model: DJ_TTS_MODEL, inputs: { text: 'Morning Tom.', speaker: DEFAULT_DJ_VOICE, encoding: 'mp3' }, options: { returnRawResponse: true } })
-  await call({ AI, TOMIFY_DJ_VOICE: 'pandora' }, 'Hi.')
-  assert.equal(ran.inputs.speaker, 'pandora')
-  assert.equal((await call({ AI }, '   ')).status, 400)
-  assert.equal((await call({}, 'Hi.')).status, 503)
-
   t.mock.method(console, 'error', () => undefined)
-  const quota = await call({ AI: { run: async () => { throw new Error('4006: you have used up your daily free allocation') } } }, 'Hi.')
-  assert.equal(quota.status, 502)
-  assert.equal((await quota.json()).message, 'Cloudflare\'s free daily allowance for the DJ voice is used up. It resets at midnight UTC, or move to the Workers Paid plan.')
-  const refused = await call({ AI: { run: async () => new Response('{"errors":[{"message":"bad speaker"}]}', { status: 400 }) } }, 'Hi.')
-  assert.equal(refused.status, 502)
-  assert.equal((await refused.json()).message, 'The DJ voice failed (400): bad speaker')
-  const limited = await call({ AI: { run: async () => new Response('{"name":"AiError","internalCode":4006,"httpCode":429,"message":"AiError: you have used up your daily free allocation of 10,000 neurons"}', { status: 429 }) } }, 'Hi.')
-  assert.match((await limited.json()).message, /^Cloudflare's free daily allowance/)
+  const runs = []
+  const melo = { audio: Buffer.from('melo-mp3').toString('base64') }
+  const ai = (aura) => ({ run: async (model, inputs, options) => { runs.push({ model, inputs, options }); return model === DJ_TTS_MODEL ? aura() : melo } })
+  const call = (env, text) => { const request = new Request('https://tomify.test/api/dj/voice', { method: 'POST', headers, body: JSON.stringify({ text }) }); return createDjHandler()(request, { NAVIDROME_ORIGIN: 'https://navidrome.test', ...env }, new URL(request.url)) }
+  const auraOk = () => new Response('aura-mp3', { headers: { 'content-type': 'audio/mpeg' } })
+
+  // By default only MeloTTS is used: Aura-2 would spend the shared free allowance in about nine links.
+  const plain = await call({ AI: ai(auraOk) }, 'Morning Tom.')
+  assert.equal(plain.headers.get('content-type'), 'audio/mpeg')
+  assert.equal(plain.headers.get('x-tomify-voice'), 'melotts')
+  assert.equal(await plain.text(), 'melo-mp3')
+  assert.deepEqual(runs, [{ model: DJ_BACKUP_TTS_MODEL, inputs: { prompt: 'Morning Tom.', lang: 'en' }, options: undefined }])
+
+  // Chosen Aura-2 goes first, with the configured speaker.
+  runs.length = 0
+  const aura = await call({ AI: ai(auraOk), TOMIFY_DJ_VOICE_MODEL: 'aura' }, 'Morning Tom.')
+  assert.equal(await aura.text(), 'aura-mp3')
+  assert.equal(aura.headers.get('x-tomify-voice'), 'aura')
+  assert.equal(DEFAULT_DJ_VOICE, 'pandora', 'the British female voice Tom chose')
+  assert.deepEqual(runs, [{ model: DJ_TTS_MODEL, inputs: { text: 'Morning Tom.', speaker: DEFAULT_DJ_VOICE, encoding: 'mp3' }, options: { returnRawResponse: true } }])
+
+  // A refused Aura-2 falls back to MeloTTS, and the app is told why.
+  const quota = () => { throw new Error('4006: you have used up your daily free allocation of 10,000 neurons') }
+  const backed = await call({ AI: ai(quota), TOMIFY_DJ_VOICE_MODEL: 'aura' }, 'Hi Tom.')
+  assert.equal(backed.status, 200)
+  assert.equal(await backed.text(), 'melo-mp3')
+  assert.equal(backed.headers.get('x-tomify-voice'), 'backup')
+  assert.equal(decodeURIComponent(backed.headers.get('x-tomify-voice-problem')), 'Cloudflare\'s free daily allowance for the DJ voice is used up. It resets at midnight UTC, or move to the Workers Paid plan.')
+
+  // The allowance is account-wide, so MeloTTS can be refused too: the app then gets the reason and uses the phone's voice.
+  const refusedAll = { run: async (model) => { if (model === DJ_TTS_MODEL) return new Response('{"errors":[{"message":"bad speaker"}]}', { status: 400 }); throw new Error('4006: you have used up your daily free allocation') } }
+  const both = await call({ AI: refusedAll, TOMIFY_DJ_VOICE_MODEL: 'aura' }, 'Hi.')
+  assert.equal(both.status, 502)
+  assert.equal((await both.json()).message, 'The DJ voice failed (400): bad speaker')
+  const meloOnly = await call({ AI: refusedAll }, 'Hi.')
+  assert.equal(meloOnly.status, 502)
+  assert.match((await meloOnly.json()).message, /^Cloudflare's free daily allowance/)
+  const empty = await call({ AI: { run: async () => ({}) } }, 'Hi.')
+  assert.equal((await empty.json()).message, 'The DJ voice failed: MeloTTS returned no audio.')
+  const limited = { run: async (model) => model === DJ_TTS_MODEL ? new Response('{"name":"AiError","internalCode":4006,"httpCode":429,"message":"AiError: you have used up your daily free allocation of 10,000 neurons"}', { status: 429 }) : {} }
+  assert.match((await (await call({ AI: limited, TOMIFY_DJ_VOICE_MODEL: 'aura' }, 'Hi.')).json()).message, /^Cloudflare's free daily allowance/)
+
+  assert.equal(meloAudio(new Uint8Array([1, 2])).byteLength, 2)
+  assert.equal((await call({ AI: ai(auraOk) }, '   ')).status, 400)
+  assert.equal((await call({}, 'Hi.')).status, 503)
 })
 
 test('the segment endpoint picks songs from the library for the signed-in account', async (t) => {

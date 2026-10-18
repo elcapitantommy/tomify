@@ -1,6 +1,6 @@
 // Tomify DJ: plays a few songs at a time from your library with a short spoken link before each set,
 // like a radio DJ who knows what you listen to. Claude picks the songs and writes the link; Workers AI
-// (Deepgram Aura-2) reads it out. Without an Anthropic key the DJ still picks songs and reads a plain intro.
+// (MeloTTS, or Deepgram Aura-2 when chosen) reads it out. Without an Anthropic key the DJ still picks songs and reads a plain intro.
 import type { Env, RouteHandler } from '../env.ts'
 import { authenticate } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
@@ -17,6 +17,10 @@ const MAX_SCRIPT_CHARS = 600
 const MAX_REQUEST_CHARS = 200
 export const DEFAULT_DJ_VOICE = 'pandora'
 export const DJ_TTS_MODEL = '@cf/deepgram/aura-2-en'
+// MeloTTS is plainer than Aura-2 but costs about 8 neurons a link against Aura-2's ~1,100, so it is the
+// default: the free 10,000 a day are shared by every model, and Aura-2 alone spends them in about nine
+// links. TOMIFY_DJ_VOICE_MODEL=aura uses Aura-2 first (for a Workers Paid account), with MeloTTS as backup.
+export const DJ_BACKUP_TTS_MODEL = '@cf/myshell-ai/melotts'
 
 export interface DjSegment { tracks: MixTrack[], script: string, curatedBy: 'claude' | 'tomify', voice: boolean }
 export interface DjSegmentInput { recentTrackIds: string[], recentArtists: string[], request: string | null, first: boolean, username: string, now: number }
@@ -157,6 +161,15 @@ export function voiceFailure(detail: string, status?: number) {
   return `The DJ voice failed${status ? ` (${status})` : ''}${reason ? `: ${reason}` : '.'}`
 }
 
+// MeloTTS answers with base64 MP3 ({ audio }) or raw bytes, depending on the runtime.
+export function meloAudio(result: unknown): Uint8Array | null {
+  if (result instanceof Uint8Array) return result
+  if (result instanceof ArrayBuffer) return new Uint8Array(result)
+  const audio = result && typeof result === 'object' ? (result as { audio?: unknown }).audio : null
+  if (typeof audio !== 'string' || !audio) return null
+  return Uint8Array.from(atob(audio), (char) => char.charCodeAt(0))
+}
+
 export function createDjHandler(deps: DjDependencies & { fetcher?: typeof fetch } = {}): RouteHandler {
   return async (request, env, url) => {
     if (url.pathname !== '/api/dj/segment' && url.pathname !== '/api/dj/voice') return null
@@ -169,20 +182,30 @@ export function createDjHandler(deps: DjDependencies & { fetcher?: typeof fetch 
       if (!env.AI) return json({ error: 'dj-voice-unavailable', message: 'The DJ voice needs the Workers AI binding (AI).' }, 503)
       const text = typeof (body as { text?: unknown }).text === 'string' ? (body as { text: string }).text.trim().slice(0, MAX_SCRIPT_CHARS) : ''
       if (!text) return json({ error: 'invalid-dj-text' }, 400)
-      let audio: Response
+      let problem: string | null = null
+      if (env.TOMIFY_DJ_VOICE_MODEL === 'aura') {
+        try {
+          const audio = await env.AI.run(DJ_TTS_MODEL, { text, speaker: env.TOMIFY_DJ_VOICE || DEFAULT_DJ_VOICE, encoding: 'mp3' } as never, { returnRawResponse: true }) as unknown as Response
+          if (audio.ok) return new Response(audio.body, { headers: { 'content-type': 'audio/mpeg', 'cache-control': 'no-store', 'x-tomify-voice': 'aura' } })
+          const detail = (await audio.text().catch(() => '')).slice(0, 200)
+          console.error('DJ voice failed', audio.status, detail)
+          problem = voiceFailure(detail, audio.status)
+        } catch (error) {
+          // Quota, model and binding errors are thrown rather than returned; say which, so the app can show it.
+          console.error('DJ voice failed', error)
+          problem = voiceFailure(error instanceof Error ? error.message : String(error))
+        }
+      }
       try {
-        audio = await env.AI.run(DJ_TTS_MODEL, { text, speaker: env.TOMIFY_DJ_VOICE || DEFAULT_DJ_VOICE, encoding: 'mp3' } as never, { returnRawResponse: true }) as unknown as Response
+        const bytes = meloAudio(await env.AI.run(DJ_BACKUP_TTS_MODEL, { prompt: text, lang: 'en' } as never) as unknown)
+        if (!bytes?.byteLength) throw new Error('MeloTTS returned no audio.')
+        const headers: Record<string, string> = { 'content-type': 'audio/mpeg', 'cache-control': 'no-store', 'x-tomify-voice': problem ? 'backup' : 'melotts' }
+        if (problem) headers['x-tomify-voice-problem'] = encodeURIComponent(problem)
+        return new Response(bytes, { headers })
       } catch (error) {
-        // Quota, model and binding errors are thrown rather than returned; say which, so the app can show it.
-        console.error('DJ voice failed', error)
-        return json({ error: 'dj-voice-failed', message: voiceFailure(error instanceof Error ? error.message : String(error)) }, 502)
+        console.error('DJ MeloTTS voice failed', error)
+        return json({ error: 'dj-voice-failed', message: problem ?? voiceFailure(error instanceof Error ? error.message : String(error)) }, 502)
       }
-      if (!audio.ok) {
-        const detail = (await audio.text().catch(() => '')).slice(0, 200)
-        console.error('DJ voice failed', audio.status, detail)
-        return json({ error: 'dj-voice-failed', message: voiceFailure(detail, audio.status) }, 502)
-      }
-      return new Response(audio.body, { headers: { 'content-type': 'audio/mpeg', 'cache-control': 'no-store' } })
     }
 
     if (!env.TOMIFY_DB) return json({ error: 'dj-store-unavailable' }, 503)

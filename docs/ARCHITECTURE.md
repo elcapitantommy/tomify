@@ -111,7 +111,8 @@ Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configura
 | `ANTHROPIC_API_KEY` | Dashboard secret | Optional | None | `worker/features/mix-curator.ts` (Claude picks and names the Home "Made for you" mixes) | Tomify builds simpler mixes itself from the same listening data. |
 | `TOMIFY_MIXES_MODEL` | Dashboard var | Optional | `claude-sonnet-5-5` | `worker/features/mix-curator.ts` (mixes and the DJ) | Mixes and the DJ use Claude Sonnet 5.5. |
 | `AI` | Workers AI binding (`wrangler.toml`) | Optional | Workers AI | `worker/features/dj.ts` (the DJ's voice, Deepgram Aura-2) | The DJ still plays its sets but doesn't speak; `/api/dj/voice` returns `503`. |
-| `TOMIFY_DJ_VOICE` | Dashboard var | Optional | `pandora` | `worker/features/dj.ts` | The DJ uses Aura-2's British female voice. |
+| `TOMIFY_DJ_VOICE` | Dashboard var | Optional | `pandora` | `worker/features/dj.ts` | The Aura-2 voice, used when `TOMIFY_DJ_VOICE_MODEL` is `aura`. |
+| `TOMIFY_DJ_VOICE_MODEL` | Dashboard var | Optional | `melotts` | `worker/features/dj.ts` | The DJ reads links with MeloTTS, which costs about 8 free neurons a link. Set `aura` to use Aura-2 (about 1,100 a link) first, with MeloTTS as backup. |
 | `TOMIFY_VERSION` | Build-time constant | Required, generated | Current Git short SHA; then `CF_PAGES_COMMIT_SHA`; then `WORKERS_CI_COMMIT_SHA`; then `unknown` | `/api/version` | Reports `unknown` only when Git and both CI fallbacks are unavailable. |
 | `TOMIFY_AGENT_CONTRACT` | Build-time constant | Required, generated | `2` | `/api/version` and the recovery-agent compatibility gate | Build generation supplies it; a missing generated module fails the build. |
 | `WORKERS_CI_COMMIT_SHA` | Build-time constant input | Optional | None | `scripts/build-worker-info.mjs` final SHA fallback | `unknown` is used when Git and `CF_PAGES_COMMIT_SHA` are also unavailable. |

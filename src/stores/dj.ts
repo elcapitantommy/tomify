@@ -45,6 +45,8 @@ export async function fetchSegment(body: { recentTrackIds: string[]; recentArtis
 // A failed request is tried once more, since a missed voice means a silent link. Why the last one
 // failed is kept, so the panel can say why the phone's voice stood in.
 let voiceProblem: string | null = null
+// Links read by the server's backup voice, with why Aura-2 wasn't used, keyed by their audio URL.
+const backupNotes = new Map<string, string>()
 export async function fetchVoice(script: string, fetcher: typeof fetch = fetch, attempts = 2): Promise<string | null> {
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
@@ -56,7 +58,11 @@ export async function fetchVoice(script: string, fetcher: typeof fetch = fetch, 
         continue
       }
       const audio = await response.blob()
-      if (audio.size) return URL.createObjectURL(audio)
+      if (audio.size) {
+        const url = URL.createObjectURL(audio)
+        if (response.headers.get('x-tomify-voice') === 'backup') backupNotes.set(url, `The backup voice read this one. ${decodeURIComponent(response.headers.get('x-tomify-voice-problem') ?? '')}`.trim())
+        return url
+      }
       voiceProblem = 'The DJ voice came back empty.'
     } catch (reason) {
       voiceProblem = `The DJ voice could not be reached${reason instanceof Error && reason.message ? `: ${reason.message}` : '.'}`
@@ -270,7 +276,8 @@ function speakLink(link: PendingLink) {
   const playRecording = (url: string) => {
     if (!stillSpeaking()) { URL.revokeObjectURL(url); return }
     link.audioUrl = url
-    useDj.setState({ voiceNote: null })
+    useDj.setState({ voiceNote: backupNotes.get(url) ?? null })
+    backupNotes.delete(url)
     void playThroughContext(url, finish).then((playing) => {
       if (!playing) playElement(url)
       else if (!stillSpeaking()) silenceVoice()
