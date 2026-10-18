@@ -1,5 +1,6 @@
 import SparkMD5 from 'spark-md5'
 import type { Album, Artist, Playlist, SearchResults, Track } from '../types'
+import type { ReplayGainMode } from '../../shared/replaygain.mjs'
 
 export interface ScanStatus { scanning: boolean; count?: number; folderCount?: number; lastScan?: string }
 export interface AuthSession { serverUrl: string; username: string; salt: string; token: string }
@@ -106,9 +107,10 @@ export class NavidromeClient {
   coverArtUrl(id?: string, size = 600) { return id ? this.url('getCoverArt', { id, size }).toString() : '' }
   streamUrl(id: string) { return this.url('stream', { id, estimateContentLength: 'true' }).toString() }
   // Adaptive streaming goes through the Tomify Worker, so it only exists for the Tomify music server.
-  hlsUrl(id: string) {
+  // `gain` asks for the stream with that ReplayGain baked in.
+  hlsUrl(id: string, gain: ReplayGainMode | null = null) {
     if (typeof window === 'undefined' || normaliseServerUrl(this.session.serverUrl) !== DEFAULT_NAVIDROME_SERVER) return null
-    const url = new URL(`/api/hls/${encodeURIComponent(id)}/master.m3u8`, window.location.origin)
+    const url = new URL(`/api/hls/${encodeURIComponent(id)}/${gain ? `${gain}/` : ''}master.m3u8`, window.location.origin)
     url.searchParams.set('u', this.session.username)
     url.searchParams.set('t', this.session.token)
     url.searchParams.set('s', this.session.salt)

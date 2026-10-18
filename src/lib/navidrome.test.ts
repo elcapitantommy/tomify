@@ -10,6 +10,7 @@ describe('NavidromeClient', () => {
     expect(url.origin).toBe(window.location.origin)
     expect(url.pathname).toBe('/api/hls/tr_1/master.m3u8')
     expect(Object.fromEntries(url.searchParams)).toEqual({ u: 'tom', t: 'token', s: 'salt' })
+    expect(new URL(new NavidromeClient({ ...session, serverUrl: DEFAULT_NAVIDROME_SERVER }).hlsUrl('tr_1', 'album')!).pathname).toBe('/api/hls/tr_1/album/master.m3u8')
   })
   it('normalises servers and never stores the password', () => { const auth = createAuthSession('https://music.example///', ' tom ', 'secret'); expect(auth.serverUrl).toBe(normaliseServerUrl('https://music.example/')); expect(auth.username).toBe('tom'); expect(auth.salt).toMatch(/^[a-f0-9]{12}$/); expect(JSON.stringify(auth)).not.toContain('secret') })
   it('loads every album page, not just the first 500', async () => {
