@@ -153,8 +153,9 @@ export function plainSegment(pool: Candidate[], input: DjSegmentInput): { tracks
 export interface DjDependencies { claude?: (env: Env, system: string, prompt: string, schema: object) => Promise<unknown> }
 
 export async function buildSegment(env: Env, candidates: Candidate[], snapshot: LibrarySnapshot, input: DjSegmentInput, deps: DjDependencies = {}): Promise<Omit<DjSegment, 'voice'>> {
-  // A request ("more Radiohead") may name a resting artist, so nobody is rested then; Claude is still told who played.
-  const pool = djPool(candidates, input.recentTrackIds, `${input.username}:${input.now}`, DJ_POOL_SIZE, input.request ? [] : input.recentArtists, input.request ? styleMatcher(input.request) : undefined)
+  // A request just made ("more Radiohead") may name a resting artist, so nobody is rested for that set; the sets
+  // after it keep to its style but rest artists again, or the session would replay the same few. Claude is still told who played.
+  const pool = djPool(candidates, input.recentTrackIds, `${input.username}:${input.now}`, DJ_POOL_SIZE, input.justAsked ? [] : input.recentArtists, input.request ? styleMatcher(input.request) : undefined)
   if (!pool.length) throw new Error('There is nothing left in the library the DJ hasn\'t just played.')
   if (env.ANTHROPIC_API_KEY) {
     try {
@@ -262,7 +263,7 @@ export function createDjHandler(deps: DjDependencies & { fetcher?: typeof fetch 
       // A request naming a song or artist is searched for in the whole library, since the gathered songs are
       // only a sample of it; one naming one of the library's genres ("some deep house") brings in that genre too.
       if (input.request) {
-        for (const query of requestSearches(input.request)) {
+        for (const query of input.justAsked ? requestSearches(input.request) : []) {
           const found = await subsonic<{ searchResult3?: { song?: unknown } }>('search3', { query, songCount: 20, artistCount: 0, albumCount: 0 }).catch(() => ({ searchResult3: undefined }))
           const songs = songsOf(found.searchResult3?.song)
           for (const song of songs) snapshot.songs.push({ song, source: 'request' })

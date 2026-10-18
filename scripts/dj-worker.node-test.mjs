@@ -85,9 +85,11 @@ test('a set plays several different artists and Claude is told who to rest', asy
   assert.equal(new Set(segment.tracks.map((track) => track.artist)).size, segment.tracks.length, 'one song per artist in a set')
   assert.match(asked, /^Played this session, so rest them unless asked: Blur\.$/m)
   assert.doesNotMatch(asked, / \| Blur - /, 'resting artists are left out of the pool')
-  const steered = await buildSegment({ ANTHROPIC_API_KEY: 'key' }, library, snapshot, input({ recentArtists: ['Blur'], request: 'more Blur' }), { claude: async (env, system, prompt) => { asked = prompt; return { script: 'x', trackRefs: ['t1'] } } })
+  const steered = await buildSegment({ ANTHROPIC_API_KEY: 'key' }, library, snapshot, input({ recentArtists: ['Blur'], request: 'more Blur', justAsked: true }), { claude: async (env, system, prompt) => { asked = prompt; return { script: 'x', trackRefs: ['t1'] } } })
   assert.equal(steered.curatedBy, 'claude')
   assert.match(asked, / \| Blur - /, 'a request can bring a resting artist back')
+  await buildSegment({ ANTHROPIC_API_KEY: 'key' }, library, snapshot, input({ recentArtists: ['Blur'], request: 'more Blur' }), { claude: async (env, system, prompt) => { asked = prompt; return { script: 'x', trackRefs: ['t1'] } } })
+  assert.doesNotMatch(asked, / \| Blur - /, 'the sets after a request rest artists again, so the session does not replay them')
 })
 
 test('the DJ prompt names the listener, the time and any request', () => {
