@@ -217,6 +217,19 @@ test('the cache drops the least recently played tracks once it is over its limit
   await rm(cacheDir, { recursive: true, force: true })
 })
 
+test('overlapping cache prunes never delete more than they need to', async () => {
+  for (let round = 0; round < 10; round += 1) {
+    const { hls, cacheDir } = await packager({ maxCacheBytes: 200 })
+    for (const id of ['old', 'new']) {
+      await hls.handle(parseHlsPath(`/v1/hls/${id}/master.m3u8`), credentials)
+      await settle(hls)
+    }
+    await Promise.all([hls.prune(), hls.prune(), hls.prune()])
+    assert.deepEqual(await readdir(cacheDir), ['new'])
+    await rm(cacheDir, { recursive: true, force: true })
+  }
+})
+
 test('Navidrome is reached through the public origin when the box address refuses the connection', async () => {
   const seen = []
   const navidrome = fakeNavidrome()

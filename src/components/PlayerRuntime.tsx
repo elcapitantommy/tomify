@@ -9,6 +9,8 @@ import { albumArtworkUrl, useAlbumArtwork } from '../stores/albumArtwork'
 import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import { AdaptiveSources, chooseSource, loadHlsLibrary, markAdaptiveUnavailable, wantsAdaptive, type StreamSource } from '../lib/adaptiveStream'
 import { useStreamQuality } from '../stores/streamQuality'
+import { useEqualiser } from '../stores/equaliser'
+import { EqualiserGraph, equaliserSupported } from '../lib/equaliser'
 import { useNormalisation } from '../stores/normalisation'
 import { gainModeAt, originalVolumeScale, queueIndexOf, streamGainMode } from '../lib/loudness'
 import type { Track } from '../types'
@@ -45,6 +47,7 @@ export function PlayerRuntime() {
   const instanceId = useRef(newInstanceId())
   const channel = useRef<BroadcastChannel | null>(null)
   const sources = useRef(new AdaptiveSources())
+  const equaliser = useRef<EqualiserGraph | null>(null)
   // Loudness normalisation for each element: what the listener's volume is multiplied by. Adaptive
   // streams arrive normalised, so theirs is 1; an original file is turned down by its ReplayGain.
   const volumeScale = useRef<[number, number]>([1, 1])
@@ -55,6 +58,8 @@ export function PlayerRuntime() {
   const volume = usePlayer((s) => s.volume)
   const muted = usePlayer((s) => s.muted)
   const repeat = usePlayer((s) => s.repeat)
+  const equaliserEnabled = useEqualiser((s) => s.enabled)
+  const equaliserGains = useEqualiser((s) => s.gains)
   const normalisation = useNormalisation((s) => s.setting)
   const track = queue[currentIndex]
   // Tomify's replacement covers load after the player restores, and can change while a
@@ -213,6 +218,7 @@ export function PlayerRuntime() {
   // that is not a failure. A blocked autoplay pauses; anything else is a broken
   // source and goes through recovery.
   function playElement(element: HTMLAudioElement, slot: AudioSlot) {
+    equaliser.current?.resume()
     sources.current.startLoading(element)
     // Safari's own HLS player can sit silent without reporting an error; give an adaptive
     // stream a few seconds to start before switching to the original file.
@@ -381,6 +387,16 @@ export function PlayerRuntime() {
       if (loaded) refreshVolumeScale(slot, loaded)
     }
   }, [normalisation, queue]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Both elements go through the equaliser from the first time it is switched on (see lib/equaliser.ts).
+  useEffect(() => {
+    if (equaliserEnabled && !equaliser.current && equaliserSupported() && api.streamsSameOrigin()) {
+      const graph = new EqualiserGraph()
+      if (graph.attach([audioA.current, audioB.current].filter((element): element is HTMLAudioElement => element !== null))) equaliser.current = graph
+    }
+    equaliser.current?.apply(equaliserGains, equaliserEnabled)
+    if (usePlayer.getState().playing) equaliser.current?.resume()
+  }, [api, equaliserEnabled, equaliserGains])
 
   useEffect(() => {
     if (!track || !('mediaSession' in navigator)) return
