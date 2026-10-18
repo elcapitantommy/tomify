@@ -262,7 +262,8 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
   }
 
   async function stopSkippedJobs(keepKey) {
-    const running = [...jobs.values()].filter((job) => !job.done && !job.failed && job.key !== keepKey).sort((left, right) => right.lastUsed - left.lastUsed)
+    // Newest-started first before the stable sort, so tracks requested in the same millisecond still stop oldest first.
+    const running = [...jobs.values()].reverse().filter((job) => !job.done && !job.failed && job.key !== keepKey).sort((left, right) => right.lastUsed - left.lastUsed)
     for (const job of running.slice(MAX_ACTIVE_TRACKS - 1)) {
       job.cancelled = true
       job.failed = new HlsError(410, 'cancelled', 'Packaging was stopped because the track was skipped.')
