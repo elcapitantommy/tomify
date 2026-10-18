@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuth } from './auth'
 import { usePlayer } from './player'
-import { bindDj, djVoiceElement, DJ_SPEECH_TIMEOUT_MS, fetchVoice, useDj } from './dj'
+import { bindDj, djVoiceElement, DJ_SPEECH_TIMEOUT_MS, DJ_VOICE_GAIN, fetchVoice, useDj } from './dj'
 
 const session = { serverUrl: 'https://music.example', username: 'tom', salt: 's', token: 't' }
 const track = (id: string) => ({ id, title: `Song ${id}`, artist: `Artist ${id}`, album: 'Album' })
@@ -13,7 +13,7 @@ describe('Tomify DJ', () => {
   beforeEach(() => {
     useAuth.setState({ session })
     usePlayer.setState({ queue: [], currentIndex: -1, playing: false, shuffle: true })
-    useDj.setState({ active: false, loading: false, speaking: false, script: null, error: null, request: null, pending: null, trackIds: [] })
+    useDj.setState({ active: false, loading: false, speaking: false, voiceNote: null, script: null, error: null, request: null, pending: null, trackIds: [] })
     play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
     vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined)
     vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:voice'), revokeObjectURL: vi.fn() }))
@@ -106,6 +106,13 @@ describe('Tomify DJ', () => {
       expect(usePlayer.getState().playing).toBe(true)
     })
 
+    it('says why the phone voice stood in', async () => {
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/voice') ? json({ message: 'The DJ voice failed: 4006: daily free allocation used up' }, 502) : segment()))
+      await useDj.getState().start()
+      await vi.waitFor(() => expect(said()).toEqual(['Morning Tom.']))
+      expect(useDj.getState().voiceNote).toBe('Your phone\'s voice read this one. The DJ voice failed: 4006: daily free allocation used up')
+    })
+
     it('reads the link out with the browser voice when the recorded voice is unavailable', async () => {
       const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/voice') ? new Response('down', { status: 502 }) : segment())
       vi.stubGlobal('fetch', fetcher)
@@ -142,6 +149,63 @@ describe('Tomify DJ', () => {
       await vi.waitFor(() => expect(said()).toEqual(['Morning Tom.']))
       useDj.getState().stop()
       expect(speechSynthesis.cancel).toHaveBeenCalled()
+      expect(usePlayer.getState().playing).toBe(true)
+    })
+  })
+  describe('playing the recorded voice through Web Audio', () => {
+    type FakeSource = { onended: (() => void) | null; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }
+    let context: { state: string; gains: number[]; sources: FakeSource[] }
+    // The DJ keeps one audio context for the session, so the fake reads whichever test's record is current.
+    const node = () => ({ connect: vi.fn((next: unknown) => next) })
+    class FakeContext {
+      get state() { return context.state }
+      destination = {}
+      async resume() { return undefined }
+      createBuffer() { return {} }
+      async decodeAudioData() { return { duration: 3 } }
+      createBufferSource() { const source = { ...node(), buffer: null, onended: null, start: vi.fn(), stop: vi.fn() }; context.sources.push(source); return source }
+      createGain() { const gain = { ...node(), gain: { value: 1 } }; queueMicrotask(() => context.gains.push(gain.gain.value)); return gain }
+      createDynamicsCompressor() { return node() }
+    }
+    beforeEach(() => {
+      context = { state: 'running', gains: [], sources: [] }
+      vi.stubGlobal('AudioContext', FakeContext)
+    })
+    const fetcher = () => vi.fn(async (input: RequestInfo | URL) => String(input).startsWith('blob:') ? new Response(new Blob(['mp3']))
+      : String(input).endsWith('/voice') ? new Response(new Blob(['mp3'])) : json({ tracks: [track('a'), track('b'), track('c')], script: 'Morning Tom.', curatedBy: 'claude', voice: true }))
+
+    it('plays the voice louder through the audio context, then the music', async () => {
+      vi.stubGlobal('fetch', fetcher())
+      await useDj.getState().start()
+      // The tap's unlock blip, then the link itself.
+      await vi.waitFor(() => expect(context.sources).toHaveLength(2))
+      expect(context.sources[1].start).toHaveBeenCalled()
+      await vi.waitFor(() => expect(context.gains).toContain(DJ_VOICE_GAIN))
+      expect(DJ_VOICE_GAIN).toBeGreaterThan(1)
+      expect(usePlayer.getState().playing).toBe(false)
+      expect(play).toHaveBeenCalledTimes(1) // only the unlock, never the voice element
+
+      context.sources[1].onended?.()
+      expect(useDj.getState().speaking).toBe(false)
+      expect(usePlayer.getState().playing).toBe(true)
+    })
+
+    it('falls back to the audio element when the context will not run', async () => {
+      context.state = 'suspended'
+      vi.stubGlobal('fetch', fetcher())
+      await useDj.getState().start()
+      await vi.waitFor(() => expect(djVoiceElement()?.src).toBe('blob:voice'))
+      expect(context.sources).toHaveLength(1)
+      djVoiceElement()?.onended?.(new Event('ended'))
+      expect(usePlayer.getState().playing).toBe(true)
+    })
+
+    it('stops the voice when the DJ is stopped', async () => {
+      vi.stubGlobal('fetch', fetcher())
+      await useDj.getState().start()
+      await vi.waitFor(() => expect(context.sources).toHaveLength(2))
+      useDj.getState().stop()
+      expect(context.sources[1].stop).toHaveBeenCalled()
       expect(usePlayer.getState().playing).toBe(true)
     })
   })
