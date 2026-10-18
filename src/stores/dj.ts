@@ -13,6 +13,8 @@ export interface DjState {
   active: boolean
   loading: boolean
   speaking: boolean
+  // Why the phone's own voice stood in for the DJ's, shown under the link.
+  voiceNote: string | null
   script: string | null
   error: string | null
   request: string | null
@@ -40,16 +42,25 @@ export async function fetchSegment(body: { recentTrackIds: string[]; recentArtis
 }
 
 // The spoken link as a playable URL, or null if the voice isn't available (the DJ then just plays the music).
-// A failed request is tried once more, since a missed voice means a silent link.
+// A failed request is tried once more, since a missed voice means a silent link. Why the last one
+// failed is kept, so the panel can say why the phone's voice stood in.
+let voiceProblem: string | null = null
 export async function fetchVoice(script: string, fetcher: typeof fetch = fetch, attempts = 2): Promise<string | null> {
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       const response = await fetcher('/api/dj/voice', { method: 'POST', headers: headers(), body: JSON.stringify({ text: script }) })
-      if (response.status === 503) return null
-      if (!response.ok) continue
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({})) as { message?: string; error?: string }
+        voiceProblem = result.message || result.error || `The DJ voice failed (${response.status}).`
+        if (response.status === 503) return null
+        continue
+      }
       const audio = await response.blob()
       if (audio.size) return URL.createObjectURL(audio)
-    } catch { /* try again */ }
+      voiceProblem = 'The DJ voice came back empty.'
+    } catch (reason) {
+      voiceProblem = `The DJ voice could not be reached${reason instanceof Error && reason.message ? `: ${reason.message}` : '.'}`
+    }
   }
   return null
 }
@@ -71,8 +82,66 @@ export function djVoiceElement() {
   if (!voiceElement && typeof Audio !== 'undefined') voiceElement = new Audio()
   return voiceElement
 }
+// The recorded voice plays through Web Audio when it can: a context started from the DJ tap may play
+// later without another tap (an <audio> element is often refused), and it can lift the voice to sit
+// level with the music. DJ_VOICE_GAIN is that lift; the compressor keeps it from clipping.
+export const DJ_VOICE_GAIN = 2.5
+type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext }
+let voiceContext: AudioContext | null = null
+let voiceSource: AudioBufferSourceNode | null = null
+function djVoiceContext() {
+  if (voiceContext || typeof window === 'undefined') return voiceContext
+  const Context = window.AudioContext ?? (window as WebkitWindow).webkitAudioContext
+  if (!Context) return null
+  try { voiceContext = new Context() } catch { return null }
+  return voiceContext
+}
+// Lets Web Audio play with the iPhone's silent switch on, like the music does.
+function playbackSession() {
+  const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession
+  if (session) try { session.type = 'playback' } catch { /* older Safari */ }
+}
+async function playThroughContext(url: string, onEnded: () => void): Promise<boolean> {
+  const context = djVoiceContext()
+  if (!context) return false
+  try {
+    if (context.state !== 'running') await context.resume()
+    if (context.state !== 'running') return false
+    const decoded = await context.decodeAudioData(await (await fetch(url)).arrayBuffer())
+    const source = context.createBufferSource()
+    const gain = context.createGain()
+    const compressor = context.createDynamicsCompressor()
+    source.buffer = decoded
+    gain.gain.value = DJ_VOICE_GAIN
+    source.connect(gain).connect(compressor).connect(context.destination)
+    source.onended = () => { if (voiceSource === source) voiceSource = null; onEnded() }
+    voiceSource = source
+    source.start()
+    return true
+  } catch {
+    return false
+  }
+}
+function silenceVoice() {
+  try { voiceSource?.stop() } catch { /* already stopped */ }
+  voiceSource = null
+  djVoiceElement()?.pause()
+  try { speech()?.cancel() } catch { /* no browser speech */ }
+}
+
 const speech = () => typeof window !== 'undefined' && 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined' ? window.speechSynthesis : null
 function unlockVoice() {
+  playbackSession()
+  const context = djVoiceContext()
+  if (context) {
+    try {
+      void context.resume()?.catch(() => undefined)
+      const blip = context.createBufferSource()
+      blip.buffer = context.createBuffer(1, 1, 22050)
+      blip.connect(context.destination)
+      blip.start()
+    } catch { /* the <audio> element still gets unlocked below */ }
+  }
   const element = djVoiceElement()
   if (element) {
     element.src = SILENCE
@@ -99,11 +168,11 @@ async function loadSet(first: boolean, request: string | null) {
 }
 
 export const useDj = create<DjState>((set, get) => ({
-  active: false, loading: false, speaking: false, script: null, error: null, request: null, pending: null, trackIds: [],
+  active: false, loading: false, speaking: false, voiceNote: null, script: null, error: null, request: null, pending: null, trackIds: [],
 
   start: async () => {
     unlockVoice()
-    set({ active: true, loading: true, error: null, request: null, pending: null, trackIds: [], script: null })
+    set({ active: true, loading: true, error: null, request: null, pending: null, trackIds: [], script: null, voiceNote: null })
     try {
       const { segment, link } = await loadSet(true, null)
       if (!get().active) return
@@ -125,10 +194,8 @@ export const useDj = create<DjState>((set, get) => ({
   stop: () => {
     const pending = get().pending
     if (pending?.audioUrl) URL.revokeObjectURL(pending.audioUrl)
-    const element = djVoiceElement()
     if (get().speaking) {
-      element?.pause()
-      try { speech()?.cancel() } catch { /* no browser speech */ }
+      silenceVoice()
       usePlayer.getState().setPlaying(true)
     }
     set({ active: false, loading: false, speaking: false, pending: null, request: null })
@@ -171,8 +238,9 @@ function speakLink(link: PendingLink) {
     if (useDj.getState().active) usePlayer.getState().setPlaying(true)
   }
   const stillSpeaking = () => !done && useDj.getState().speaking
-  const browserSpeech = () => {
+  const browserSpeech = (problem: string | null) => {
     if (!stillSpeaking()) return
+    useDj.setState({ voiceNote: `Your phone's voice read this one. ${problem ?? 'The DJ voice wouldn\'t play.'}` })
     const synth = speech()
     if (!synth) { finish(); return }
     try {
@@ -186,20 +254,33 @@ function speakLink(link: PendingLink) {
       finish()
     }
   }
+  const playElement = (url: string) => {
+    if (!stillSpeaking()) return
+    const refused = (reason: unknown) => {
+      if (element) { element.onended = null; element.onerror = null }
+      const name = reason && typeof reason === 'object' && 'name' in reason ? String((reason as { name: unknown }).name) : ''
+      browserSpeech(name === 'NotAllowedError' ? 'The browser wouldn\'t let the DJ voice start.' : 'The DJ voice wouldn\'t play.')
+    }
+    if (!element) { refused(null); return }
+    element.onended = finish
+    element.onerror = refused
+    element.src = url
+    void element.play()?.catch(refused)
+  }
   const playRecording = (url: string) => {
     if (!stillSpeaking()) { URL.revokeObjectURL(url); return }
     link.audioUrl = url
-    if (!element) { browserSpeech(); return }
-    element.onended = finish
-    element.onerror = () => { element.onended = null; element.onerror = null; browserSpeech() }
-    element.src = url
-    void element.play()?.catch(() => { element.onended = null; element.onerror = null; browserSpeech() })
+    useDj.setState({ voiceNote: null })
+    void playThroughContext(url, finish).then((playing) => {
+      if (!playing) playElement(url)
+      else if (!stillSpeaking()) silenceVoice()
+    })
   }
   // Nothing may hold the music for long, whatever the browser does or doesn't report.
   const timer = setTimeout(finish, DJ_SPEECH_TIMEOUT_MS)
   if (link.audioUrl) playRecording(link.audioUrl)
-  else if (link.voice) void fetchVoice(link.script).then((url) => url ? playRecording(url) : browserSpeech())
-  else browserSpeech()
+  else if (link.voice) void fetchVoice(link.script).then((url) => url ? playRecording(url) : browserSpeech(voiceProblem))
+  else browserSpeech('The DJ voice isn\'t set up on the server (Workers AI).')
 }
 
 // Called when the queue moves on. Fetches the next set near the end, and holds the first song of a new
