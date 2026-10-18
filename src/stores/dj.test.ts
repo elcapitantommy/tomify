@@ -33,7 +33,7 @@ describe('Tomify DJ', () => {
     expect(useDj.getState()).toEqual(expect.objectContaining({ active: true, speaking: true, script: 'Morning Tom.', pending: null }))
     expect(usePlayer.getState().playing).toBe(false)
     expect(djVoiceElement()?.src).toBe('blob:voice')
-    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ recentTrackIds: [], request: null, first: true })
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ recentTrackIds: [], recentArtists: [], request: null, first: true })
 
     djVoiceElement()?.onended?.(new Event('ended'))
     expect(useDj.getState().speaking).toBe(false)
@@ -50,7 +50,7 @@ describe('Tomify DJ', () => {
     await useDj.getState().start()
     expect(usePlayer.getState().playing).toBe(true)
     await vi.waitFor(() => expect(usePlayer.getState().queue.map((item) => item.id)).toEqual(['a', 'b', 'd', 'e']))
-    expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body)).recentTrackIds).toEqual(['a', 'b'])
+    expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toEqual(expect.objectContaining({ recentTrackIds: ['a', 'b'], recentArtists: ['Artist a', 'Artist b'] }))
 
     usePlayer.getState().playTracks([track('z')])
     expect(useDj.getState().active).toBe(false)

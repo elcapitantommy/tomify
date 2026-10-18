@@ -5,22 +5,27 @@ import type { Env, RouteHandler } from '../env.ts'
 import { authenticate } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
 import { subsonicForRequest } from '../lib/subsonic.ts'
-import { buildCandidates, gatherLibrary, listeningStats, seededRandom, toMixTrack, type Candidate, type LibrarySnapshot, type MixTrack, type SubsonicSong } from './mixes.ts'
+import { buildCandidates, gatherLibrary, limitPerArtist, listeningStats, seededRandom, toMixTrack, type Candidate, type LibrarySnapshot, type MixTrack, type SubsonicSong } from './mixes.ts'
 import { callClaudeJson } from './mix-curator.ts'
 
 const DJ_POOL_SIZE = 150
+// No artist gets more than this many songs in a pool, so a few favourite artists can't fill it.
+export const DJ_POOL_PER_ARTIST = 3
+// Artists from the last few sets are rested while there are at least this many other artists to pick from.
+const DJ_MIN_RESTED_ARTISTS = 8
 const MAX_SCRIPT_CHARS = 600
 const MAX_REQUEST_CHARS = 200
 export const DEFAULT_DJ_VOICE = 'pandora'
 export const DJ_TTS_MODEL = '@cf/deepgram/aura-2-en'
 
 export interface DjSegment { tracks: MixTrack[], script: string, curatedBy: 'claude' | 'tomify', voice: boolean }
-export interface DjSegmentInput { recentTrackIds: string[], request: string | null, first: boolean, username: string, now: number }
+export interface DjSegmentInput { recentTrackIds: string[], recentArtists: string[], request: string | null, first: boolean, username: string, now: number }
 
 export const DJ_SYSTEM = `You are the DJ inside Tomify, a personal music player. You talk to one listener between songs, like a bubbly, upbeat radio presenter who loves their music and knows their taste.
 
 Each time, pick the next 3 to 5 songs from the candidate pool and write the short spoken link that plays before them.
 - Only use refs from the pool. Never pick a recently played song. Order them so they flow.
+- At most one song per artist in a set. Don't keep returning to the same few artists.
 - Mix familiar favourites with things they haven't played in a while or have never played, guided by the listening history.
 - If the listener asked for something, honour it.
 - The link is 2 to 4 sentences and at most 70 words, spoken aloud by a text-to-speech voice: plain words only, no emojis, lists, stage directions or sound effects. Introduce what's coming (you can name the first song and artist) and give a personal reason when there is one.
@@ -36,11 +41,13 @@ const DJ_SCHEMA = {
   },
 } as const
 
-export function cleanSegmentRequest(body: unknown): { recentTrackIds: string[], request: string | null, first: boolean } {
+export function cleanSegmentRequest(body: unknown): { recentTrackIds: string[], recentArtists: string[], request: string | null, first: boolean } {
   const input = body && typeof body === 'object' ? body as Record<string, unknown> : {}
-  const recentTrackIds = Array.isArray(input.recentTrackIds) ? input.recentTrackIds.filter((id): id is string => typeof id === 'string').slice(-200) : []
+  const strings = (value: unknown, limit: number) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item !== '').slice(-limit) : []
+  const recentTrackIds = strings(input.recentTrackIds, 200)
+  const recentArtists = strings(input.recentArtists, 20).map((artist) => artist.slice(0, MAX_REQUEST_CHARS))
   const request = typeof input.request === 'string' && input.request.trim() ? input.request.trim().slice(0, MAX_REQUEST_CHARS) : null
-  return { recentTrackIds, request, first: input.first === true }
+  return { recentTrackIds, recentArtists, request, first: input.first === true }
 }
 
 export function partOfDay(now: number) {
@@ -53,12 +60,20 @@ export function ukDate(now: number) {
   return new Date(now).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Europe/London' })
 }
 
-// A varied pool for one set: anything not played this session, songs with a reason to be there first.
-export function djPool(candidates: Candidate[], recentTrackIds: string[], seed: string, size = DJ_POOL_SIZE): Candidate[] {
+// A varied pool for one set: anything not played this session, songs with a reason to be there first,
+// at most a few songs per artist, and the artists from the last few sets rested when there's enough else.
+// The library gathers many songs by the artists played most (their top songs, similar songs, most played
+// albums), so without the cap and the rest those few artists fill the pool and every set.
+export function djPool(candidates: Candidate[], recentTrackIds: string[], seed: string, size = DJ_POOL_SIZE, recentArtists: string[] = []): Candidate[] {
   const recent = new Set(recentTrackIds)
+  const resting = new Set(recentArtists)
   const random = seededRandom(seed)
-  const fresh = candidates.filter((candidate) => !recent.has(candidate.song.id)).map((candidate) => ({ candidate, order: random() - (candidate.sources.some((source) => source !== 'library') ? 0.5 : 0) }))
-  return fresh.sort((a, b) => a.order - b.order).slice(0, size).map(({ candidate }) => candidate)
+  const fresh = candidates.filter((candidate) => !recent.has(candidate.song.id))
+    .map((candidate) => ({ candidate, order: random() - (candidate.sources.some((source) => source !== 'library') ? 0.5 : 0) + (resting.has(candidate.song.artist) ? 2 : 0) }))
+    .sort((a, b) => a.order - b.order).map(({ candidate }) => candidate)
+  const pool = limitPerArtist(fresh, DJ_POOL_PER_ARTIST)
+  const rested = pool.filter((candidate) => !resting.has(candidate.song.artist))
+  return (new Set(rested.map((candidate) => candidate.song.artist)).size >= DJ_MIN_RESTED_ARTISTS ? rested : pool).slice(0, size)
 }
 
 const shortDate = (time: number | null) => time ? new Date(time).toISOString().slice(0, 7) : 'never'
@@ -75,6 +90,7 @@ export function djPrompt(pool: Candidate[], snapshot: LibrarySnapshot, input: Dj
     `Listener: ${input.username}. It is ${ukDate(input.now)}, ${partOfDay(input.now)} in the UK.`,
     input.first ? 'This is the first link of the session.' : 'The session is already under way.',
     `Artists they play most lately: ${snapshot.topArtists.join(', ') || 'not enough history yet'}.`,
+    input.recentArtists.length ? `Played this session, so rest them unless asked: ${input.recentArtists.join(', ')}.` : '',
     input.request ? `The listener asked: "${input.request}"` : '',
     '',
     'Candidate songs:',
@@ -96,16 +112,18 @@ export function plainSegment(pool: Candidate[], input: DjSegmentInput): { tracks
 export interface DjDependencies { claude?: (env: Env, system: string, prompt: string, schema: object) => Promise<unknown> }
 
 export async function buildSegment(env: Env, candidates: Candidate[], snapshot: LibrarySnapshot, input: DjSegmentInput, deps: DjDependencies = {}): Promise<Omit<DjSegment, 'voice'>> {
-  const pool = djPool(candidates, input.recentTrackIds, `${input.username}:${input.now}`)
+  // A request ("more Radiohead") may name a resting artist, so nobody is rested then; Claude is still told who played.
+  const pool = djPool(candidates, input.recentTrackIds, `${input.username}:${input.now}`, DJ_POOL_SIZE, input.request ? [] : input.recentArtists)
   if (!pool.length) throw new Error('There is nothing left in the library the DJ hasn\'t just played.')
   if (env.ANTHROPIC_API_KEY) {
     try {
       const { prompt, refs } = djPrompt(pool, snapshot, input)
       const result = await (deps.claude ?? callClaudeJson)(env, DJ_SYSTEM, prompt, DJ_SCHEMA) as { script?: unknown, trackRefs?: unknown }
+      // One song per artist in a set, whatever Claude returns.
       const seen = new Set<string>()
       const tracks = (Array.isArray(result.trackRefs) ? result.trackRefs : [])
         .map((ref) => typeof ref === 'string' ? refs.get(ref.trim()) : undefined)
-        .filter((song): song is SubsonicSong => Boolean(song) && !seen.has(song!.id) && Boolean(seen.add(song!.id)))
+        .filter((song): song is SubsonicSong => Boolean(song) && !seen.has(song!.artist) && Boolean(seen.add(song!.artist)))
         .slice(0, 6).map(toMixTrack)
       const script = typeof result.script === 'string' ? result.script.trim().slice(0, MAX_SCRIPT_CHARS) : ''
       if (tracks.length && script) return { tracks, script, curatedBy: 'claude' }
