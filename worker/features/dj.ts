@@ -34,9 +34,10 @@ Each time, pick the next 3 to 5 songs from the candidate pool and write the shor
 - Only use refs from the pool. Never pick a recently played song. Order them so they flow.
 - At most one song per artist in a set. Don't keep returning to the same few artists.
 - Mix familiar favourites with things they haven't played in a while or have never played, guided by the listening history.
-- If the listener asked for something, honour it. Songs from "request" are the library's matches for their words: when they named a song, play it first. When they have just asked, start the link by answering them in a few words ("Upbeat it is!") before introducing the first song. Songs show their tempo (bpm), genre and mood when known: when asked for a style, mood or tempo, keep the whole set to it and order it by tempo so it flows.
+- If the listener asked for something, honour it. When they have just asked, start the link by answering them in a few words ("Upbeat it is!") before introducing the first song. Never mention an earlier request: it has been answered. Songs show their tempo (bpm), genre and mood when known: when asked for a style, mood or tempo, keep the whole set to it and order it by tempo so it flows.
 - The link is 2 to 4 sentences and at most 70 words, spoken aloud by a text-to-speech voice: plain words only, no emojis, lists, stage directions or sound effects. Introduce what's coming (you can name the first song and artist) and give a personal reason when there is one.
-- On the first link of a session, greet the listener by name and mention the time of day.`
+- On the first link of a session, greet the listener by name and mention the time of day.
+- Never guess what a song sounds like.`
 
 const DJ_SCHEMA = {
   type: 'object',
@@ -118,8 +119,17 @@ export function djPool(candidates: Candidate[], recentTrackIds: string[], seed: 
 
 const shortDate = (time: number | null) => time ? new Date(time).toISOString().slice(0, 7) : 'never'
 
+// The song a request names ("play Hangman Jury"), when the library search found one whose title is in it.
+export function namedSong(pool: Candidate[], input: DjSegmentInput): Candidate | undefined {
+  const words = (text: string) => ` ${text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()} `
+  const request = input.justAsked && input.request ? words(input.request) : ''
+  return request ? pool.filter((candidate) => candidate.sources.includes('request') && words(candidate.song.title).trim() && request.includes(words(candidate.song.title)))
+    .sort((a, b) => b.song.title.length - a.song.title.length)[0] : undefined
+}
+
 export function djPrompt(pool: Candidate[], snapshot: LibrarySnapshot, input: DjSegmentInput): { prompt: string, refs: Map<string, SubsonicSong> } {
   const refs = new Map<string, SubsonicSong>()
+  const named = namedSong(pool, input)
   const lines = pool.map((candidate, index) => {
     const ref = `t${index + 1}`
     refs.set(ref, candidate.song)
@@ -132,7 +142,8 @@ export function djPrompt(pool: Candidate[], snapshot: LibrarySnapshot, input: Dj
     input.first ? 'This is the first link of the session.' : 'The session is already under way.',
     `Artists they play most lately: ${snapshot.topArtists.join(', ') || 'not enough history yet'}.`,
     input.recentArtists.length ? `Played this session, so rest them unless asked: ${input.recentArtists.join(', ')}.` : '',
-    input.request ? (input.justAsked ? `The listener just asked: "${input.request}"` : `Earlier the listener asked: "${input.request}"`) : '',
+    input.request ? (input.justAsked ? `The listener just asked: "${input.request}"` : `Earlier the listener asked: "${input.request}". Keep to its style, mood or tempo but don't mention it.`) : '',
+    named ? `They named ${named.song.artist} - ${named.song.title} (t${pool.indexOf(named) + 1}). Pick it first and name it.` : '',
     '',
     'Candidate songs:',
     ...lines,
@@ -143,7 +154,8 @@ export function djPrompt(pool: Candidate[], snapshot: LibrarySnapshot, input: Dj
 // Without Claude: a few songs from the pool, one per artist, and a simple spoken intro.
 export function plainSegment(pool: Candidate[], input: DjSegmentInput): { tracks: MixTrack[], script: string } {
   const artists = new Set<string>()
-  const picked = pool.filter((candidate) => !artists.has(candidate.song.artist) && artists.add(candidate.song.artist)).slice(0, 4).map((candidate) => toMixTrack(candidate.song))
+  const named = namedSong(pool, input)
+  const picked = (named ? [named, ...pool.filter((candidate) => candidate !== named)] : pool).filter((candidate) => !artists.has(candidate.song.artist) && artists.add(candidate.song.artist)).slice(0, 4).map((candidate) => toMixTrack(candidate.song))
   const first = picked[0]
   const greeting = input.first ? `Good ${partOfDay(input.now) === 'late night' ? 'evening' : partOfDay(input.now)}, ${input.username}. ` : ''
   const script = first ? `${greeting}Coming up, ${first.title} by ${first.artist}${picked.length > 1 ? `, then ${picked.length - 1} more from your library` : ''}.` : ''
@@ -162,12 +174,15 @@ export async function buildSegment(env: Env, candidates: Candidate[], snapshot: 
       const { prompt, refs } = djPrompt(pool, snapshot, input)
       const result = await (deps.claude ?? callClaudeJson)(env, DJ_SYSTEM, prompt, DJ_SCHEMA) as { script?: unknown, trackRefs?: unknown }
       // One song per artist in a set, whatever Claude returns.
+      // A song the listener named plays first even if Claude leaves it out.
+      const named = namedSong(pool, input)?.song
       const seen = new Set<string>()
-      const tracks = (Array.isArray(result.trackRefs) ? result.trackRefs : [])
-        .map((ref) => typeof ref === 'string' ? refs.get(ref.trim()) : undefined)
+      const tracks = [named, ...(Array.isArray(result.trackRefs) ? result.trackRefs : [])
+        .map((ref) => typeof ref === 'string' ? refs.get(ref.trim()) : undefined)]
         .filter((song): song is SubsonicSong => Boolean(song) && !seen.has(song!.artist) && Boolean(seen.add(song!.artist)))
         .slice(0, 6).map(toMixTrack)
-      const script = typeof result.script === 'string' ? result.script.trim().slice(0, MAX_SCRIPT_CHARS) : ''
+      let script = typeof result.script === 'string' ? result.script.trim().slice(0, MAX_SCRIPT_CHARS) : ''
+      if (named && script && !script.toLowerCase().includes(named.title.toLowerCase())) script = `Here's ${named.title} by ${named.artist}. ${script}`
       if (tracks.length && script) return { tracks, script, curatedBy: 'claude' }
     } catch { /* fall through to the plain DJ */ }
   }

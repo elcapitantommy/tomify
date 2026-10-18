@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_BACKUP_TTS_MODEL, DJ_LISTEN_MODEL, meloAudio, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment, requestSearches, styleMatcher, ukDate } from '../worker/features/dj.ts'
+import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_BACKUP_TTS_MODEL, DJ_LISTEN_MODEL, meloAudio, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, namedSong, partOfDay, plainSegment, requestSearches, styleMatcher, ukDate } from '../worker/features/dj.ts'
 import { buildCandidates } from '../worker/features/mixes.ts'
 
 const NOW = Date.parse('2026-10-17T08:30:00Z')
@@ -96,7 +96,7 @@ test('the DJ prompt names the listener, the time and any request', () => {
   const { prompt, refs } = djPrompt(pool.slice(0, 3), snapshot, input({ request: 'more 80s' }))
   assert.match(prompt, /^Listener: Tom\. It is Saturday 17 October, morning in the UK\.$/m)
   assert.match(prompt, /first link of the session/)
-  assert.match(prompt, /Earlier the listener asked: "more 80s"/, 'later sets keep to the request without answering it again')
+  assert.match(prompt, /Earlier the listener asked: "more 80s"\. Keep to its style, mood or tempo but don't mention it\./, 'later sets keep to the request without talking about it again')
   assert.match(djPrompt(pool.slice(0, 3), snapshot, input({ request: 'upbeat', justAsked: true })).prompt, /The listener just asked: "upbeat"/)
   assert.match(prompt, /^t1 \| Artist 0 - Song s0 \|/m)
   assert.equal(refs.size, 3)
@@ -281,6 +281,30 @@ test('a named song is found in the whole library even when the sample, caps and 
   assert.deepEqual(searched, ['hangman jury aerosmith'])
   assert.equal(body.tracks[0].title, 'Hangman Jury')
   assert.equal(body.tracks.filter((track) => track.title === 'Hangman Jury').length, 1, 'one copy of the song, not every version')
+})
+
+// Claude said "Hangman Jury and more like it" and then played The Beach Boys without it.
+test('a song the listener named plays first and is introduced by name, whatever Claude picks', async () => {
+  const songs = [
+    ...['Hangman Jury', 'Rag Doll', 'Dude (Looks Like A Lady)'].map((title, index) => ({ song: song(`aero-${index}`, 'Aerosmith', { title }), source: 'request' })),
+    ...Array.from({ length: 30 }, (_, index) => ({ song: song(`lib-${index}`, `Artist ${index}`), source: 'library' })),
+  ]
+  const candidates = buildCandidates({ songs, stats: [], topArtists: [] }, NOW)
+  const asked = input({ request: 'Play Hangman Jury by Aerosmith', justAsked: true })
+  assert.equal(namedSong(candidates, asked)?.song.title, 'Hangman Jury')
+  assert.equal(namedSong(candidates, input({ request: 'more Aerosmith', justAsked: true })), undefined, 'naming an artist names no song')
+  assert.equal(namedSong(candidates, input({ request: 'Play Hangman Jury by Aerosmith' })), undefined, 'only the set answering the request')
+  let prompt
+  const segment = await buildSegment({ ANTHROPIC_API_KEY: 'key' }, candidates, snapshot, asked, { claude: async (env, system, text) => {
+    prompt = text
+    return { script: 'Hangman Jury and more like it, coming up! We start with a sunny one.', trackRefs: [...text.matchAll(/^(t\d+) \| Artist/gm)].slice(0, 3).map((match) => match[1]) }
+  } })
+  assert.match(prompt, /^They named Aerosmith - Hangman Jury \(t\d+\)\. Pick it first/m)
+  assert.equal(segment.tracks[0].title, 'Hangman Jury')
+  assert.equal(segment.tracks.length, 4)
+  const unnamed = await buildSegment({ ANTHROPIC_API_KEY: 'key' }, candidates, snapshot, asked, { claude: async (env, system, text) => ({ script: 'Something sunny next.', trackRefs: [[...text.matchAll(/^(t\d+) \| Artist/gm)][0][1]] }) })
+  assert.equal(unnamed.script, 'Here\'s Hangman Jury by Aerosmith. Something sunny next.')
+  assert.equal(plainSegment(candidates, asked).tracks[0].title, 'Hangman Jury')
 })
 
 test('DJ and mix tracks keep their ReplayGain tags so they play normalised', async () => {
