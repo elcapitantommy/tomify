@@ -9,6 +9,8 @@ import { albumArtworkUrl, useAlbumArtwork } from '../stores/albumArtwork'
 import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import { AdaptiveSources, chooseSource, loadHlsLibrary, markAdaptiveUnavailable, wantsAdaptive, type StreamSource } from '../lib/adaptiveStream'
 import { useStreamQuality } from '../stores/streamQuality'
+import { useEqualiser } from '../stores/equaliser'
+import { EqualiserGraph, equaliserSupported } from '../lib/equaliser'
 import type { Track } from '../types'
 
 type AudioSlot = 0 | 1
@@ -43,6 +45,7 @@ export function PlayerRuntime() {
   const instanceId = useRef(newInstanceId())
   const channel = useRef<BroadcastChannel | null>(null)
   const sources = useRef(new AdaptiveSources())
+  const equaliser = useRef<EqualiserGraph | null>(null)
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
@@ -50,6 +53,8 @@ export function PlayerRuntime() {
   const volume = usePlayer((s) => s.volume)
   const muted = usePlayer((s) => s.muted)
   const repeat = usePlayer((s) => s.repeat)
+  const equaliserEnabled = useEqualiser((s) => s.enabled)
+  const equaliserGains = useEqualiser((s) => s.gains)
   const track = queue[currentIndex]
   // Tomify's replacement covers load after the player restores, and can change while a
   // track plays, so the lock screen and car display must be refreshed when they do.
@@ -186,6 +191,7 @@ export function PlayerRuntime() {
   // that is not a failure. A blocked autoplay pauses; anything else is a broken
   // source and goes through recovery.
   function playElement(element: HTMLAudioElement, slot: AudioSlot) {
+    equaliser.current?.resume()
     sources.current.startLoading(element)
     // Safari's own HLS player can sit silent without reporting an error; give an adaptive
     // stream a few seconds to start before switching to the original file.
@@ -352,6 +358,16 @@ export function PlayerRuntime() {
       }
     }
   }, [volume, muted])
+
+  // Both elements go through the equaliser from the first time it is switched on (see lib/equaliser.ts).
+  useEffect(() => {
+    if (equaliserEnabled && !equaliser.current && equaliserSupported() && api.streamsSameOrigin()) {
+      const graph = new EqualiserGraph()
+      if (graph.attach([audioA.current, audioB.current].filter((element): element is HTMLAudioElement => element !== null))) equaliser.current = graph
+    }
+    equaliser.current?.apply(equaliserGains, equaliserEnabled)
+    if (usePlayer.getState().playing) equaliser.current?.resume()
+  }, [api, equaliserEnabled, equaliserGains])
 
   useEffect(() => {
     if (!track || !('mediaSession' in navigator)) return

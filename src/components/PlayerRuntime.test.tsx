@@ -9,6 +9,8 @@ import { PlayerRuntime } from './PlayerRuntime'
 import { loadHlsLibrary, resetAdaptiveAvailability } from '../lib/adaptiveStream'
 import { DEFAULT_NAVIDROME_SERVER } from '../lib/navidrome'
 import { useStreamQuality } from '../stores/streamQuality'
+import { useEqualiser } from '../stores/equaliser'
+import { FakeAudioContext } from '../test/fakeAudioContext'
 
 const hlsPlayers: { source?: string; media?: HTMLMediaElement; destroyed: boolean; emit(event: string, data: unknown): void }[] = []
 vi.mock('hls.js/light', () => {
@@ -277,6 +279,32 @@ describe('PlayerRuntime', () => {
     other.close()
     expect(usePlayer.getState().playing).toBe(false)
     expect(pausedElements()).toContain(current)
+  })
+
+  it('routes both players through the equaliser only once it is switched on, and starts it with playback', async () => {
+    FakeAudioContext.instances = []
+    vi.stubGlobal('AudioContext', FakeAudioContext)
+    useAuth.setState({ session: { ...session, serverUrl: DEFAULT_NAVIDROME_SERVER } })
+    const elements = await startPlaying()
+    expect(FakeAudioContext.instances).toHaveLength(0)
+    await act(async () => { useEqualiser.getState().setEnabled(true); useEqualiser.getState().choosePreset('treble') })
+    const context = FakeAudioContext.instances[0]
+    expect(context.sources.map((source) => source.element)).toEqual(elements)
+    expect(context.filters.at(-1)!.gain.value).toBe(6)
+    expect(context.state).toBe('running')
+    await act(async () => { useEqualiser.getState().setEnabled(false) })
+    expect(context.filters.at(-1)!.gain.value).toBe(0)
+    expect(FakeAudioContext.instances).toHaveLength(1)
+    useEqualiser.setState({ enabled: false, preset: 'flat', gains: Array(10).fill(0) })
+  })
+
+  it('leaves the players alone when the equaliser is on but streams come from another server', async () => {
+    FakeAudioContext.instances = []
+    vi.stubGlobal('AudioContext', FakeAudioContext)
+    useEqualiser.setState({ enabled: true })
+    await startPlaying()
+    expect(FakeAudioContext.instances).toHaveLength(0)
+    useEqualiser.setState({ enabled: false })
   })
 
   describe('adaptive streaming', () => {
