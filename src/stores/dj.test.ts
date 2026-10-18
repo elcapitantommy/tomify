@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuth } from './auth'
 import { usePlayer } from './player'
-import { bindDj, djVoiceElement, useDj } from './dj'
+import { bindDj, djVoiceElement, DJ_SPEECH_TIMEOUT_MS, fetchVoice, useDj } from './dj'
 
 const session = { serverUrl: 'https://music.example', username: 'tom', salt: 's', token: 't' }
 const track = (id: string) => ({ id, title: `Song ${id}`, artist: `Artist ${id}`, album: 'Album' })
@@ -74,5 +74,75 @@ describe('Tomify DJ', () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ message: 'The DJ couldn\'t pick the next songs: Navidrome is down.' }, 502)))
     await useDj.getState().start()
     expect(useDj.getState()).toEqual(expect.objectContaining({ active: false, error: 'The DJ couldn\'t pick the next songs: Navidrome is down.' }))
+  })
+  describe('making sure the link is spoken', () => {
+    class Utterance { onend: (() => void) | null = null; onerror: (() => void) | null = null; lang = ''; constructor(public text: string) {} }
+    let spoken: Utterance[]
+    const segment = json.bind(null, { tracks: [track('a'), track('b'), track('c')], script: 'Morning Tom.', curatedBy: 'claude', voice: true })
+    beforeEach(() => {
+      spoken = []
+      vi.stubGlobal('SpeechSynthesisUtterance', Utterance)
+      vi.stubGlobal('speechSynthesis', { speak: vi.fn((utterance: Utterance) => spoken.push(utterance)), cancel: vi.fn() })
+    })
+    const said = () => spoken.filter((utterance) => utterance.text).map((utterance) => utterance.text)
+
+    it('tries the voice again when the first request fails', async () => {
+      let calls = 0
+      const url = await fetchVoice('Hello.', vi.fn(async () => ++calls === 1 ? new Response('busy', { status: 502 }) : new Response(new Blob(['mp3']))))
+      expect(url).toBe('blob:voice')
+      expect(calls).toBe(2)
+    })
+
+    it('reads the link out with the browser voice when the recording will not play', async () => {
+      play.mockRejectedValue(Object.assign(new Error('blocked'), { name: 'NotAllowedError' }))
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/voice') ? new Response(new Blob(['mp3'])) : segment()))
+      await useDj.getState().start()
+
+      await vi.waitFor(() => expect(said()).toEqual(['Morning Tom.']))
+      expect(useDj.getState().speaking).toBe(true)
+      expect(usePlayer.getState().playing).toBe(false)
+      spoken.at(-1)?.onend?.()
+      expect(useDj.getState().speaking).toBe(false)
+      expect(usePlayer.getState().playing).toBe(true)
+    })
+
+    it('reads the link out with the browser voice when the recorded voice is unavailable', async () => {
+      const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/voice') ? new Response('down', { status: 502 }) : segment())
+      vi.stubGlobal('fetch', fetcher)
+      await useDj.getState().start()
+
+      await vi.waitFor(() => expect(said()).toEqual(['Morning Tom.']))
+      // Two tries while the set was picked, two more when the link came up.
+      expect(fetcher.mock.calls.filter(([input]) => String(input).endsWith('/voice'))).toHaveLength(4)
+      expect(usePlayer.getState().playing).toBe(false)
+      spoken.at(-1)?.onend?.()
+      expect(usePlayer.getState().playing).toBe(true)
+    })
+
+    it('never holds the music for good if the speech never reports back', async () => {
+      vi.useFakeTimers()
+      try {
+        play.mockRejectedValue(new Error('blocked'))
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/voice') ? new Response(new Blob(['mp3'])) : segment()))
+        await useDj.getState().start()
+        await vi.waitFor(() => expect(said()).toEqual(['Morning Tom.']))
+        expect(usePlayer.getState().playing).toBe(false)
+        vi.advanceTimersByTime(DJ_SPEECH_TIMEOUT_MS)
+        expect(useDj.getState().speaking).toBe(false)
+        expect(usePlayer.getState().playing).toBe(true)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('stops the browser voice when the DJ is stopped', async () => {
+      play.mockRejectedValue(new Error('blocked'))
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/voice') ? new Response(new Blob(['mp3'])) : segment()))
+      await useDj.getState().start()
+      await vi.waitFor(() => expect(said()).toEqual(['Morning Tom.']))
+      useDj.getState().stop()
+      expect(speechSynthesis.cancel).toHaveBeenCalled()
+      expect(usePlayer.getState().playing).toBe(true)
+    })
   })
 })

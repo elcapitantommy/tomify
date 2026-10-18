@@ -7,7 +7,7 @@ import type { Track } from '../types'
 // while the current one plays; when its first song comes up the music waits while the DJ talks.
 
 export interface DjSegment { tracks: Track[]; script: string; curatedBy: 'claude' | 'tomify'; voice: boolean }
-interface PendingLink { firstTrackId: string; script: string; audioUrl: string | null }
+interface PendingLink { firstTrackId: string; script: string; audioUrl: string | null; voice: boolean }
 
 export interface DjState {
   active: boolean
@@ -40,29 +40,45 @@ export async function fetchSegment(body: { recentTrackIds: string[]; recentArtis
 }
 
 // The spoken link as a playable URL, or null if the voice isn't available (the DJ then just plays the music).
-export async function fetchVoice(script: string, fetcher: typeof fetch = fetch): Promise<string | null> {
-  try {
-    const response = await fetcher('/api/dj/voice', { method: 'POST', headers: headers(), body: JSON.stringify({ text: script }) })
-    if (!response.ok) return null
-    return URL.createObjectURL(await response.blob())
-  } catch {
-    return null
+// A failed request is tried once more, since a missed voice means a silent link.
+export async function fetchVoice(script: string, fetcher: typeof fetch = fetch, attempts = 2): Promise<string | null> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const response = await fetcher('/api/dj/voice', { method: 'POST', headers: headers(), body: JSON.stringify({ text: script }) })
+      if (response.status === 503) return null
+      if (!response.ok) continue
+      const audio = await response.blob()
+      if (audio.size) return URL.createObjectURL(audio)
+    } catch { /* try again */ }
   }
+  return null
 }
 
 // One shared element for the DJ's voice. Browsers only let audio start from a tap, so it is unlocked
-// when the DJ button is pressed and reused for every later link.
+// when the DJ button is pressed and reused for every later link. The browser's own speech is unlocked
+// at the same time, as the fallback when the recorded voice is missing or won't play.
 let voiceElement: HTMLAudioElement | null = null
-const SILENCE = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA='
+// A tenth of a second of real silence: Safari won't count an empty file as having played.
+const SILENCE = silentWav(800)
+function silentWav(samples: number) {
+  const header = [0x46464952, 36 + samples, 0x45564157, 0x20746d66, 16, 0x00010001, 8000, 8000, 0x00080001, 0x61746164, samples]
+  const bytes = new Uint8Array(44 + samples).fill(128)
+  const view = new DataView(bytes.buffer)
+  header.forEach((value, index) => view.setUint32(index * 4, value, true))
+  return `data:audio/wav;base64,${btoa(String.fromCharCode(...bytes))}`
+}
 export function djVoiceElement() {
   if (!voiceElement && typeof Audio !== 'undefined') voiceElement = new Audio()
   return voiceElement
 }
+const speech = () => typeof window !== 'undefined' && 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined' ? window.speechSynthesis : null
 function unlockVoice() {
   const element = djVoiceElement()
-  if (!element) return
-  element.src = SILENCE
-  void element.play()?.catch(() => undefined)
+  if (element) {
+    element.src = SILENCE
+    void element.play()?.catch(() => undefined)
+  }
+  try { speech()?.speak(new SpeechSynthesisUtterance('')) } catch { /* no browser speech */ }
 }
 
 // True while start() swaps the queue over to the DJ's first set.
@@ -79,7 +95,7 @@ async function loadSet(first: boolean, request: string | null) {
   const segment = await fetchSegment({ recentTrackIds: recentIds(useDj.getState().trackIds), recentArtists: recentArtists(), request, first })
   if (!segment.tracks.length) throw new Error('The DJ could not find anything to play.')
   const audioUrl = segment.voice && segment.script ? await fetchVoice(segment.script) : null
-  return { segment, link: { firstTrackId: segment.tracks[0].id, script: segment.script, audioUrl } }
+  return { segment, link: { firstTrackId: segment.tracks[0].id, script: segment.script, audioUrl, voice: segment.voice } }
 }
 
 export const useDj = create<DjState>((set, get) => ({
@@ -110,7 +126,11 @@ export const useDj = create<DjState>((set, get) => ({
     const pending = get().pending
     if (pending?.audioUrl) URL.revokeObjectURL(pending.audioUrl)
     const element = djVoiceElement()
-    if (get().speaking && element) { element.pause(); usePlayer.getState().setPlaying(true) }
+    if (get().speaking) {
+      element?.pause()
+      try { speech()?.cancel() } catch { /* no browser speech */ }
+      usePlayer.getState().setPlaying(true)
+    }
     set({ active: false, loading: false, speaking: false, pending: null, request: null })
   },
 
@@ -132,6 +152,56 @@ export const useDj = create<DjState>((set, get) => ({
   },
 }))
 
+// Holds the music while the link is spoken: the recorded voice if there is one (fetched again if it
+// went missing), otherwise, or if it won't play, the browser's own speech. The music always comes back.
+export const DJ_SPEECH_TIMEOUT_MS = 30_000
+function speakLink(link: PendingLink) {
+  useDj.setState({ speaking: true })
+  usePlayer.getState().setPlaying(false)
+  const element = djVoiceElement()
+  let done = false
+  const finish = () => {
+    if (done) return
+    done = true
+    clearTimeout(timer)
+    if (element) { element.onended = null; element.onerror = null }
+    if (link.audioUrl) URL.revokeObjectURL(link.audioUrl)
+    if (!useDj.getState().speaking) return
+    useDj.setState({ speaking: false })
+    if (useDj.getState().active) usePlayer.getState().setPlaying(true)
+  }
+  const stillSpeaking = () => !done && useDj.getState().speaking
+  const browserSpeech = () => {
+    if (!stillSpeaking()) return
+    const synth = speech()
+    if (!synth) { finish(); return }
+    try {
+      const utterance = new SpeechSynthesisUtterance(link.script)
+      utterance.lang = 'en-GB'
+      utterance.onend = finish
+      utterance.onerror = finish
+      synth.cancel()
+      synth.speak(utterance)
+    } catch {
+      finish()
+    }
+  }
+  const playRecording = (url: string) => {
+    if (!stillSpeaking()) { URL.revokeObjectURL(url); return }
+    link.audioUrl = url
+    if (!element) { browserSpeech(); return }
+    element.onended = finish
+    element.onerror = () => { element.onended = null; element.onerror = null; browserSpeech() }
+    element.src = url
+    void element.play()?.catch(() => { element.onended = null; element.onerror = null; browserSpeech() })
+  }
+  // Nothing may hold the music for long, whatever the browser does or doesn't report.
+  const timer = setTimeout(finish, DJ_SPEECH_TIMEOUT_MS)
+  if (link.audioUrl) playRecording(link.audioUrl)
+  else if (link.voice) void fetchVoice(link.script).then((url) => url ? playRecording(url) : browserSpeech())
+  else browserSpeech()
+}
+
 // Called when the queue moves on. Fetches the next set near the end, and holds the first song of a new
 // set while the DJ talks. Returns a cleanup function for tests.
 export function bindDj(now: () => number = Date.now): () => void {
@@ -150,21 +220,8 @@ export function bindDj(now: () => number = Date.now): () => void {
     if (track && dj.pending && dj.pending.firstTrackId === track.id && !dj.speaking && player.playing) {
       const link = dj.pending
       useDj.setState({ pending: null, script: link.script })
-      const element = djVoiceElement()
-      if (link.audioUrl && element) {
-        useDj.setState({ speaking: true })
-        usePlayer.getState().setPlaying(false)
-        const finish = () => {
-          element.onended = null; element.onerror = null
-          URL.revokeObjectURL(link.audioUrl!)
-          if (!useDj.getState().speaking) return
-          useDj.setState({ speaking: false })
-          if (useDj.getState().active) usePlayer.getState().setPlaying(true)
-        }
-        element.onended = finish
-        element.onerror = finish
-        element.src = link.audioUrl
-        void element.play()?.catch(finish)
+      if (link.script) {
+        speakLink(link)
         return
       }
     }

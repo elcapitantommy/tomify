@@ -283,6 +283,7 @@ Press **DJ** on Home (it shows **Starting DJ…** while the first songs are pick
 
 - Claude (the same key and model as the mixes) picks each set from your library and listening history and writes the link. Without the key the DJ still picks a set, one song per artist, and reads a plain intro.
 - The voice is Workers AI's Deepgram Aura-2 (`AI` binding in `wrangler.toml`), the British female voice `pandora` by default; set `TOMIFY_DJ_VOICE` to another Aura-2 voice to change it (for example `ophelia`, a bubblier American female voice, or `draco`, a British male voice). Workers AI's free daily allowance covers light use; beyond it a link costs a fraction of a penny.
+- Every link is spoken. A failed voice request is retried, and fetched again when the link comes up; if the recorded voice still can't be had or won't play, the browser's own voice reads the link instead. The music never waits more than 30 seconds.
 - A set with Claude costs about 1p, so roughly 4–6p per hour of listening including the voice.
 - On iPhone the DJ keeps going only while Tomify is open; the browser may not let the voice start from the background.
 
