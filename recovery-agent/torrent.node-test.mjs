@@ -259,5 +259,5 @@ test('qBittorrent search refuses to run while offline or without plugins', async
   await assert.rejects(createQbittorrentClient(searchConfig, offline.fetchImpl).search('Flood'), /NordVPN is connected/)
   assert.equal(offline.calls.some((call) => call.path === '/api/v2/search/start'), false)
   const noPlugins = fakeSearch({ plugins: [{ name: 'piratebay', enabled: false }] })
-  await assert.rejects(createQbittorrentClient(searchConfig, noPlugins.fetchImpl).search('Flood'), /no search plugins enabled/)
+  await assert.rejects(createQbittorrentClient(searchConfig, noPlugins.fetchImpl).search('Flood'), /No torrent search source is set up/)
 })

@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto'
 import { lstat, readdir } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { isIP } from 'node:net'
-import { usenetSearchQuery, usenetSearchSpec } from './usenet.mjs'
+import { configuredTorrentIndexers, fetchIndexerTorrent, isIndexerLink, searchTorrentIndexers } from './torrent-indexers.mjs'
+import { usenetSearchSpec } from './usenet.mjs'
 
 const ARCHIVE_EXTENSIONS = new Set(['.zip', '.rar', '.7z'])
 // qBittorrent states for a torrent whose data is fully downloaded (4.x names, plus the 5.x "stopped" rename).
@@ -46,8 +47,9 @@ function privateHost(hostname) {
 }
 
 // Accepts a magnet link or an http(s) link to a .torrent file. The full link is what qBittorrent is given;
-// displayUrl drops trackers and query strings, which can carry private-tracker passkeys.
-export function parseTorrentLink(value) {
+// displayUrl drops trackers and query strings, which can carry private-tracker passkeys. Download links from a
+// configured Prowlarr or Jackett are allowed on a private address; the agent fetches those itself.
+export function parseTorrentLink(value, { indexers = configuredTorrentIndexers() } = {}) {
   const link = text(value)
   if (!link) throw new Error('Paste a magnet link or a link to a .torrent file.')
   if (link.length > 8000) throw new Error('The torrent link is too long.')
@@ -65,7 +67,7 @@ export function parseTorrentLink(value) {
   try { url = new URL(link) } catch { throw new Error('Paste a magnet link or a link to a .torrent file.') }
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Torrent links must be magnet links or http(s) links to a .torrent file.')
   if (url.username || url.password) throw new Error('Torrent links must not contain a username or password.')
-  if (privateHost(url.hostname)) throw new Error('Torrent file links must point to a public host.')
+  if (privateHost(url.hostname) && !isIndexerLink(url.toString(), indexers)) throw new Error('Torrent file links must point to a public host.')
   let name = null
   try { name = decodeURIComponent(basename(url.pathname)).replace(/\.torrent$/i, '').trim().slice(0, 500) || null } catch { name = null }
   return { type: 'url', link: url.toString(), infoHash: null, name, displayUrl: `${url.origin}${url.pathname}` }
@@ -76,8 +78,8 @@ export function torrentSearchMode(track) {
   return text(track?.title) ? 'track' : 'release'
 }
 
-export function torrentCandidate(value, track) {
-  const parsed = parseTorrentLink(value)
+export function torrentCandidate(value, track, options) {
+  const parsed = parseTorrentLink(value, options)
   const resultId = parsed.infoHash || createHash('sha256').update(parsed.link).digest('hex')
   const searchMode = torrentSearchMode(track)
   return {
@@ -91,34 +93,39 @@ function siteName(value) {
   try { return new URL(text(value)).hostname.replace(/^www\./, '') || null } catch { return null }
 }
 
-// Turns qBittorrent search-plugin results into Recovery candidates. Only results with at least one seed are kept
-// (plugins report -1 when they do not know), the best-seeded come first, and links qBittorrent could not be
-// given safely (private hosts, credentials, plugin-only URLs) are dropped.
-export function torrentSearchCandidates(results, track, input) {
+// Turns qBittorrent search-plugin and indexer results into Recovery candidates. Only results with at least one seed
+// are kept (sources report -1 when they do not know), the best-seeded come first, the same torrent found by several
+// sources appears once, and links qBittorrent could not be given safely (private hosts other than a configured
+// indexer, credentials, plugin-only URLs) are dropped.
+export function torrentSearchCandidates(results, track, input, options) {
   const { fields: searchFields, mode: searchMode } = usenetSearchSpec(input, track)
   const seen = new Set()
   const candidates = []
-  for (const result of Array.isArray(results) ? results : []) {
+  // Best-seeded first, so where several sources found the same torrent the copy with the most seeds is kept.
+  const ranked = (Array.isArray(results) ? results : []).map((result) => ({ result, seeds: number(result?.nbSeeders) ?? -1 })).sort((a, b) => b.seeds - a.seeds).map(({ result }) => result)
+  for (const result of ranked) {
     const seeds = number(result?.nbSeeders)
     if (seeds === null || seeds < 1) continue
     let parsed
-    try { parsed = parseTorrentLink(result?.fileUrl) } catch { continue }
+    try { parsed = parseTorrentLink(result?.fileUrl, options) } catch { continue }
     const resultId = parsed.infoHash || createHash('sha256').update(parsed.link).digest('hex')
-    if (seen.has(resultId)) continue
-    seen.add(resultId)
+    const key = parsed.infoHash || text(result?.infoHash).toLowerCase() || resultId
+    if (seen.has(key)) continue
+    seen.add(key)
     let detailsUrl = null
     try { const details = new URL(text(result?.descrLink)); if (['http:', 'https:'].includes(details.protocol) && !details.username && !details.password) detailsUrl = details.toString() } catch { /* The plugin gave no details page. */ }
     const leechers = number(result?.nbLeechers)
     const size = number(result?.fileSize)
-    const site = siteName(result?.siteUrl) || siteName(detailsUrl) || 'Torrent search'
+    const site = text(result?.siteName).slice(0, 120) || siteName(result?.siteUrl) || siteName(detailsUrl) || 'Torrent search'
     const title = text(result?.fileName).slice(0, 500) || parsed.name || `Torrent ${resultId.slice(0, 12)}`
     candidates.push({
       externalId: createHash('sha256').update(`torrent\0${resultId}`).digest('hex'), url: detailsUrl || parsed.displayUrl,
       title, channel: site, duration: null, thumbnail: null,
-      provenance: { providerType: 'torrent', providerId: 'qbittorrent-search', providerName: site, resultId, linkType: parsed.type, infoHash: parsed.infoHash, link: parsed.link, displayUrl: parsed.displayUrl, detailsUrl, postedTitle: title, searchMode, searchFields, seeds, peers: leechers !== null && leechers >= 0 ? leechers : null, size: size !== null && size > 0 ? size : null },
+      // providerId stays qbittorrent-search for every search result: the agent labels the job from it.
+      provenance: { providerType: 'torrent', providerId: 'qbittorrent-search', providerName: site, searchSource: text(result?.indexerId) || 'qbittorrent-plugins', resultId, linkType: parsed.type, infoHash: parsed.infoHash, link: parsed.link, displayUrl: parsed.displayUrl, detailsUrl, postedTitle: title, searchMode, searchFields, seeds, peers: leechers !== null && leechers >= 0 ? leechers : null, size: size !== null && size > 0 ? size : null },
     })
   }
-  return candidates.sort((a, b) => b.provenance.seeds - a.provenance.seeds).slice(0, SEARCH_RESULT_LIMIT)
+  return candidates.slice(0, SEARCH_RESULT_LIMIT)
 }
 
 export function torrentConfig(env = process.env) {
@@ -131,6 +138,7 @@ export function torrentConfig(env = process.env) {
     maxBytes: Number.isFinite(configuredMax) && configuredMax > 0 ? configuredMax : 4 * 1024 * 1024 * 1024,
     maxActiveDownloads: torrentMaxActive(env.TOMIFY_TORRENT_MAX_ACTIVE),
     maxFiles: torrentMaxFiles(env.TOMIFY_TORRENT_MAX_FILES),
+    indexers: configuredTorrentIndexers(env),
   }
 }
 
@@ -223,6 +231,14 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
     if (!response.ok && response.status !== 409) throw new Error(`qBittorrent category returned HTTP ${response.status}.`)
   }
 
+  async function upload(cookie, torrent, form) {
+    const data = new FormData()
+    for (const [key, value] of Object.entries(form)) if (key !== 'urls') data.set(key, value)
+    data.set('torrents', new Blob([torrent], { type: 'application/x-bittorrent' }), 'tomify.torrent')
+    const response = await fetchImpl(`${config.url}/api/v2/torrents/add`, { method: 'POST', headers: cookie ? { cookie } : {}, body: data, signal: AbortSignal.timeout(30_000) })
+    return { response, body: await response.text() }
+  }
+
   let queueApplied = false
   // Sets qBittorrent's queue limits once per agent run. A failure is not fatal: the torrent is still added or polled
   // and the next call tries again.
@@ -235,10 +251,13 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
 
   return {
     async add(link, { tag, savePath }) {
+      // An indexer link is fetched here first: it needs the indexer's API key, and qBittorrent may not reach it.
+      const fetched = isIndexerLink(link, config.indexers || []) ? await fetchIndexerTorrent(link, config.indexers, fetchImpl) : null
       const cookie = await session()
       await ensureCategory(cookie, savePath)
       await ensureQueueLimits(cookie)
-      const { response, body } = await call(cookie, 'torrents/add', { urls: link, category: config.category, tags: tag, savepath: savePath }, 'qBittorrent add')
+      const form = { urls: fetched?.magnet || link, category: config.category, tags: tag, savepath: savePath }
+      const { response, body } = fetched?.torrent ? await upload(cookie, fetched.torrent, form) : await call(cookie, 'torrents/add', form, 'qBittorrent add')
       if (!response.ok) throw new Error(`qBittorrent add returned HTTP ${response.status}.`)
       if (/^fails/i.test(text(body))) throw new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).')
       return { downloader: 'qbittorrent', remoteId: tag }
@@ -275,9 +294,10 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
       // Older qBittorrent releases ignore the tag filter, so match the tag here too.
       return (Array.isArray(torrents) ? torrents : []).find((torrent) => text(torrent?.tags).split(',').map(text).includes(tag)) || null
     },
-    // Runs a search across qBittorrent's enabled search plugins (Music category) and returns the raw results.
-    // Plugins run inside qBittorrent on the media server; the search is refused while qBittorrent reports it is
-    // offline, which is what it reports when the VPN interface it is bound to is down.
+    // Searches qBittorrent's enabled search plugins (Music category) and any configured Prowlarr or Torznab indexers
+    // at once, and returns the raw results in the plugins' shape. Plugins run inside qBittorrent on the media server;
+    // the search is refused while qBittorrent reports it is offline, which is what it reports when the VPN interface
+    // it is bound to is down, since nothing found could be downloaded.
     async search(pattern, { timeoutMs = SEARCH_TIMEOUT_MS, pollMs = 1000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
       const cookie = await session()
       const get = async (path, params = {}) => {
@@ -290,25 +310,33 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
       const transfer = await get('transfer/info')
       if (text(transfer?.connection_status) === 'disconnected') throw new Error('qBittorrent is offline, so torrent search is paused. Check that NordVPN is connected on the media server.')
       const plugins = await get('search/plugins')
-      if (!(Array.isArray(plugins) ? plugins : []).some((plugin) => plugin?.enabled)) throw new Error('qBittorrent has no search plugins enabled. Install them as described in docs/RECOVERY.md.')
-      const started = await call(cookie, 'search/start', { pattern, plugins: 'enabled', category: 'music' }, 'qBittorrent search')
-      if (started.response.status === 409) throw new Error('qBittorrent is already running too many searches. Try again in a moment.')
-      if (!started.response.ok) throw new Error(`qBittorrent search returned HTTP ${started.response.status}.`)
-      const id = number(JSON.parse(started.body || '{}')?.id)
-      if (id === null) throw new Error('qBittorrent did not return a search id.')
-      try {
-        const deadline = Date.now() + timeoutMs
-        while (Date.now() < deadline) {
-          const status = await get('search/status', { id })
-          if (text((Array.isArray(status) ? status[0] : status)?.status) === 'Stopped') break
-          await sleep(pollMs)
+      const indexers = config.indexers || []
+      const usePlugins = (Array.isArray(plugins) ? plugins : []).some((plugin) => plugin?.enabled)
+      if (!usePlugins && !indexers.length) throw new Error('No torrent search source is set up: qBittorrent has no search plugins enabled and no Prowlarr or Jackett indexer is configured. See docs/RECOVERY.md.')
+      const pluginSearch = async () => {
+        const started = await call(cookie, 'search/start', { pattern, plugins: 'enabled', category: 'music' }, 'qBittorrent search')
+        if (started.response.status === 409) throw new Error('qBittorrent is already running too many searches. Try again in a moment.')
+        if (!started.response.ok) throw new Error(`qBittorrent search returned HTTP ${started.response.status}.`)
+        const id = number(JSON.parse(started.body || '{}')?.id)
+        if (id === null) throw new Error('qBittorrent did not return a search id.')
+        try {
+          const deadline = Date.now() + timeoutMs
+          while (Date.now() < deadline) {
+            const status = await get('search/status', { id })
+            if (text((Array.isArray(status) ? status[0] : status)?.status) === 'Stopped') break
+            await sleep(pollMs)
+          }
+          const found = await get('search/results', { id, limit: 500 })
+          return Array.isArray(found?.results) ? found.results : []
+        } finally {
+          await call(cookie, 'search/stop', { id }, 'qBittorrent search stop').catch(() => {})
+          await call(cookie, 'search/delete', { id }, 'qBittorrent search delete').catch(() => {})
         }
-        const found = await get('search/results', { id, limit: 500 })
-        return Array.isArray(found?.results) ? found.results : []
-      } finally {
-        await call(cookie, 'search/stop', { id }, 'qBittorrent search stop').catch(() => {})
-        await call(cookie, 'search/delete', { id }, 'qBittorrent search delete').catch(() => {})
       }
+      const searches = [...(usePlugins ? [pluginSearch()] : []), ...(indexers.length ? [searchTorrentIndexers(indexers, pattern, { fetchImpl })] : [])]
+      const settled = await Promise.allSettled(searches)
+      if (settled.every((result) => result.status === 'rejected')) throw settled[0].reason
+      return settled.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
     },
     async remove(hash, deleteFiles) {
       const cookie = await session()
