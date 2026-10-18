@@ -32,7 +32,7 @@ function headers(): HeadersInit {
   return { 'content-type': 'application/json', 'x-tomify-user': session.username, 'x-tomify-token': session.token, 'x-tomify-salt': session.salt }
 }
 
-export async function fetchSegment(body: { recentTrackIds: string[]; request: string | null; first: boolean }, fetcher: typeof fetch = fetch): Promise<DjSegment> {
+export async function fetchSegment(body: { recentTrackIds: string[]; recentArtists: string[]; request: string | null; first: boolean }, fetcher: typeof fetch = fetch): Promise<DjSegment> {
   const response = await fetcher('/api/dj/segment', { method: 'POST', headers: headers(), body: JSON.stringify(body) })
   const result = await response.json().catch(() => ({})) as DjSegment & { message?: string; error?: string }
   if (!response.ok) throw new Error(result.message || result.error || 'The DJ could not pick the next songs.')
@@ -71,9 +71,12 @@ let handingOver = false
 let bindDjCheck: (() => void) | null = null
 
 const recentIds = (extra: string[] = []) => [...new Set([...usePlayer.getState().queue.map((track) => track.id), ...extra])].slice(-200)
+// Artists from roughly the last three sets, so the DJ rests them for a while.
+export const DJ_RECENT_ARTIST_TRACKS = 12
+const recentArtists = () => [...new Set(usePlayer.getState().queue.slice(-DJ_RECENT_ARTIST_TRACKS).map((track) => track.artist).filter(Boolean))]
 
 async function loadSet(first: boolean, request: string | null) {
-  const segment = await fetchSegment({ recentTrackIds: recentIds(useDj.getState().trackIds), request, first })
+  const segment = await fetchSegment({ recentTrackIds: recentIds(useDj.getState().trackIds), recentArtists: recentArtists(), request, first })
   if (!segment.tracks.length) throw new Error('The DJ could not find anything to play.')
   const audioUrl = segment.voice && segment.script ? await fetchVoice(segment.script) : null
   return { segment, link: { firstTrackId: segment.tracks[0].id, script: segment.script, audioUrl } }

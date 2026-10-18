@@ -2,6 +2,8 @@ name = "tomify"
 main = "worker/index.ts"
 compatibility_date = "2026-10-11"
 minify = true
+# Nothing reads function names, and keeping them costs about 4 KB of the 150 KB Worker budget.
+keep_names = false
 workers_dev = true
 
 [build]

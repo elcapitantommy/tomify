@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment, ukDate } from '../worker/features/dj.ts'
+import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment, ukDate } from '../worker/features/dj.ts'
 import { buildCandidates } from '../worker/features/mixes.ts'
 
 const NOW = Date.parse('2026-10-17T08:30:00Z')
@@ -11,7 +11,7 @@ const subsonic = (body) => new Response(JSON.stringify({ 'subsonic-response': { 
 const headers = { 'x-tomify-user': 'Tom', 'x-tomify-token': 'dj-token', 'x-tomify-salt': 'salt' }
 const pool = buildCandidates({ songs: Array.from({ length: 20 }, (_, index) => ({ song: song(`s${index}`, `Artist ${index % 5}`), source: index < 10 ? 'favourite' : 'library' })), stats: [], topArtists: ['Artist 1'] }, NOW)
 const snapshot = { songs: [], stats: [], topArtists: ['Artist 1'] }
-const input = (extra = {}) => ({ recentTrackIds: [], request: null, first: true, username: 'Tom', now: NOW, ...extra })
+const input = (extra = {}) => ({ recentTrackIds: [], recentArtists: [], request: null, first: true, username: 'Tom', now: NOW, ...extra })
 
 function d1() {
   const db = new DatabaseSync(':memory:')
@@ -22,8 +22,8 @@ function d1() {
 }
 
 test('segment requests are cleaned and the time of day is UK time', () => {
-  assert.deepEqual(cleanSegmentRequest({ recentTrackIds: ['a', 2, 'b'], request: '  something calmer  ', first: true }), { recentTrackIds: ['a', 'b'], request: 'something calmer', first: true })
-  assert.deepEqual(cleanSegmentRequest(null), { recentTrackIds: [], request: null, first: false })
+  assert.deepEqual(cleanSegmentRequest({ recentTrackIds: ['a', 2, 'b'], recentArtists: ['Blur', '', 3, 'Oasis'], request: '  something calmer  ', first: true }), { recentTrackIds: ['a', 'b'], recentArtists: ['Blur', 'Oasis'], request: 'something calmer', first: true })
+  assert.deepEqual(cleanSegmentRequest(null), { recentTrackIds: [], recentArtists: [], request: null, first: false })
   assert.equal(partOfDay(NOW), 'morning')
   assert.equal(partOfDay(Date.parse('2026-10-17T17:30:00Z')), 'evening', '18:30 BST')
   assert.equal(ukDate(Date.parse('2026-10-17T17:30:00Z')), 'Saturday 17 October')
@@ -32,9 +32,60 @@ test('segment requests are cleaned and the time of day is UK time', () => {
 
 test('the DJ never picks a song from this session again', () => {
   const picked = djPool(pool, ['s0', 's1', 's2'], 'seed')
-  assert.equal(picked.length, 17)
+  assert.equal(picked.length, 15, `17 fresh songs, at most ${DJ_POOL_PER_ARTIST} per artist`)
   assert.ok(!picked.some((candidate) => ['s0', 's1', 's2'].includes(candidate.song.id)))
   assert.ok(picked.slice(0, 7).every((candidate) => candidate.sources.includes('favourite')), 'songs with a reason come first')
+})
+
+// A library like the real one: lots of songs gathered for the 5 most played artists (top songs, similar
+// songs that are mostly the same artists, most played albums, favourites), and random picks from 80 others.
+function realisticPool() {
+  const top = ['Blur', 'Oasis', 'Pulp', 'Suede', 'Elastica']
+  const songs = []
+  top.forEach((artist, a) => {
+    for (let index = 0; index < 15; index += 1) songs.push({ song: song(`top-${a}-${index}`, artist), source: `top-songs:${artist}` })
+    for (let index = 0; index < 30; index += 1) songs.push({ song: song(`sim-${a}-${index}`, top[(a + index) % top.length]), source: `similar-to:${artist}` })
+    for (let index = 0; index < 12; index += 1) songs.push({ song: song(`alb-${a}-${index}`, artist), source: 'most-played-album' })
+    for (let index = 0; index < 6; index += 1) songs.push({ song: song(`fav-${a}-${index}`, artist), source: 'favourite' })
+  })
+  for (let index = 0; index < 200; index += 1) songs.push({ song: song(`lib-${index}`, `Library artist ${index % 80}`), source: 'library' })
+  return { pool: buildCandidates({ songs, stats: [], topArtists: top }, NOW), top }
+}
+
+test('the DJ pool is not taken over by the few most played artists', () => {
+  const { pool: library, top } = realisticPool()
+  const picked = djPool(library, [], 'seed')
+  const artists = new Map()
+  for (const candidate of picked) artists.set(candidate.song.artist, (artists.get(candidate.song.artist) ?? 0) + 1)
+  assert.ok(Math.max(...artists.values()) <= DJ_POOL_PER_ARTIST)
+  assert.ok(artists.size >= 40, `only ${artists.size} artists in the pool`)
+  assert.ok(picked.filter((candidate) => top.includes(candidate.song.artist)).length <= top.length * DJ_POOL_PER_ARTIST)
+})
+
+test('artists from the last few sets are rested while there is enough else to play', () => {
+  const { pool: library, top } = realisticPool()
+  const rested = djPool(library, [], 'seed', 150, top)
+  assert.ok(!rested.some((candidate) => top.includes(candidate.song.artist)))
+  const smallLibrary = djPool(pool, [], 'seed', 150, ['Artist 0', 'Artist 1'])
+  assert.ok(smallLibrary.some((candidate) => candidate.song.artist === 'Artist 0'), 'with only a few artists nobody is rested')
+  assert.ok(!smallLibrary.slice(0, 9).some((candidate) => ['Artist 0', 'Artist 1'].includes(candidate.song.artist)), 'but they come last')
+})
+
+test('a set plays several different artists and Claude is told who to rest', async () => {
+  const { pool: library } = realisticPool()
+  let asked
+  const claude = async (env, system, prompt) => {
+    asked = prompt
+    const refs = [...prompt.matchAll(/^(t\d+) \| Library artist 3 - /gm)].map((match) => match[1])
+    return { script: 'More from one artist.', trackRefs: [...refs, 't1'] }
+  }
+  const segment = await buildSegment({ ANTHROPIC_API_KEY: 'key' }, library, snapshot, input({ recentArtists: ['Blur'] }), { claude })
+  assert.equal(new Set(segment.tracks.map((track) => track.artist)).size, segment.tracks.length, 'one song per artist in a set')
+  assert.match(asked, /^Played this session, so rest them unless asked: Blur\.$/m)
+  assert.doesNotMatch(asked, / \| Blur - /, 'resting artists are left out of the pool')
+  const steered = await buildSegment({ ANTHROPIC_API_KEY: 'key' }, library, snapshot, input({ recentArtists: ['Blur'], request: 'more Blur' }), { claude: async (env, system, prompt) => { asked = prompt; return { script: 'x', trackRefs: ['t1'] } } })
+  assert.equal(steered.curatedBy, 'claude')
+  assert.match(asked, / \| Blur - /, 'a request can bring a resting artist back')
 })
 
 test('the DJ prompt names the listener, the time and any request', () => {

@@ -222,7 +222,7 @@ export function spreadArtists<T extends { artist: string }>(tracks: T[]): T[] {
   return result
 }
 
-function limitPerArtist(candidates: Candidate[], perArtist: number) {
+export function limitPerArtist(candidates: Candidate[], perArtist: number) {
   const counts = new Map<string, number>()
   return candidates.filter((candidate) => {
     const count = counts.get(candidate.song.artist) ?? 0
