@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { chmod, mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { spawn as nodeSpawn, spawnSync } from 'node:child_process'
+import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createStyleTagger, existingStyle, genreName, moodsFromTags, probedTags, styleWriteArguments, topGenres } from './track-style.mjs'
 import { backfillStyle, parseArguments } from './style-backfill.mjs'
@@ -96,7 +96,7 @@ test('style tagging is off without BPM_PATH or STYLE_LOOKUP and never touches fi
 })
 
 test('backfill arguments name the folders and the options', () => {
-  assert.deepEqual(parseArguments(['--dry-run', '--limit', '5', '/srv/music']), { dryRun: true, recheck: false, limit: 5, roots: ['/srv/music'] })
+  assert.deepEqual(parseArguments(['--dry-run', '--limit', '5', '/srv/music']), { dryRun: true, recheck: false, limit: 5, roots: [resolve('/srv/music')] })
   assert.throws(() => parseArguments(['--dry-run']), /library folder/)
 })
 
@@ -105,16 +105,16 @@ test('real ffmpeg: an import measures BPM, looks up genre and mood and keeps eve
   try {
     const stagingRoot = join(base, 'staging')
     await mkdir(stagingRoot)
-    // bpm-tools stand-in: reads the decoded audio and prints a tempo.
-    const bpm = join(base, 'bpm')
-    await writeFile(bpm, '#!/bin/sh\ncat > /dev/null\necho 127.6\n')
-    await chmod(bpm, 0o755)
+    // bpm-tools stand-in, run with node so it works on Windows too: reads the decoded audio and prints a tempo.
+    const bpmScript = join(base, 'bpm.mjs')
+    await writeFile(bpmScript, "process.stdin.resume(); process.stdin.on('end', () => console.log('127.6'))\n")
+    const spawn = (command, args, options) => command === 'fake-bpm' ? nodeSpawn(process.execPath, [bpmScript], options) : nodeSpawn(command, args, options)
     for (const name of ['0.flac', '1.mp3']) {
       const made = spawnSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-metadata', 'artist=Bicep', '-metadata', 'title=Glue', '-metadata', 'MUSICBRAINZ_TRACKID=rec-3', '-metadata', 'REPLAYGAIN_TRACK_GAIN=-4.00 dB', join(stagingRoot, name)])
       assert.equal(made.status, 0, made.stderr?.toString())
     }
     const { fetcher } = fakeFetch({ [`${mb}recording/rec-3?`]: { genres: [{ name: 'breakbeat', count: 2 }], tags: [{ name: 'dreamy', count: 1 }] } })
-    const tag = createStyleTagger({ bpm, lookup: true, fetcher, ...quiet })
+    const tag = createStyleTagger({ bpm: 'fake-bpm', lookup: true, fetcher, spawn, ...quiet })
     const entries = ['0.flac', '1.mp3'].map((name) => ({ role: 'derivative', source: join(stagingRoot, name), destination: join(base, 'library', name) }))
     assert.deepEqual(await tag(entries, stagingRoot), { tagged: 2, failed: 0 })
     for (const name of ['0.flac', '1.mp3']) {
