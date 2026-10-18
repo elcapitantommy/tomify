@@ -9,6 +9,8 @@ import { albumArtworkUrl, useAlbumArtwork } from '../stores/albumArtwork'
 import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import { AdaptiveSources, chooseSource, loadHlsLibrary, markAdaptiveUnavailable, wantsAdaptive, type StreamSource } from '../lib/adaptiveStream'
 import { useStreamQuality } from '../stores/streamQuality'
+import { useNormalisation } from '../stores/normalisation'
+import { gainModeAt, originalVolumeScale, queueIndexOf, streamGainMode } from '../lib/loudness'
 import type { Track } from '../types'
 
 type AudioSlot = 0 | 1
@@ -43,6 +45,9 @@ export function PlayerRuntime() {
   const instanceId = useRef(newInstanceId())
   const channel = useRef<BroadcastChannel | null>(null)
   const sources = useRef(new AdaptiveSources())
+  // Loudness normalisation for each element: what the listener's volume is multiplied by. Adaptive
+  // streams arrive normalised, so theirs is 1; an original file is turned down by its ReplayGain.
+  const volumeScale = useRef<[number, number]>([1, 1])
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
@@ -50,6 +55,7 @@ export function PlayerRuntime() {
   const volume = usePlayer((s) => s.volume)
   const muted = usePlayer((s) => s.muted)
   const repeat = usePlayer((s) => s.repeat)
+  const normalisation = useNormalisation((s) => s.setting)
   const track = queue[currentIndex]
   // Tomify's replacement covers load after the player restores, and can change while a
   // track plays, so the lock screen and car display must be refreshed when they do.
@@ -103,8 +109,28 @@ export function PlayerRuntime() {
   const getAudio = (slot: AudioSlot) => slot === 0 ? audioA.current : audioB.current
   const currentAudio = () => getAudio(activeSlot.current)
 
+  // The ReplayGain mode for a track, from where it sits in the queue.
+  function gainModeFor(wanted: Track) {
+    const { queue: currentQueue, currentIndex: index } = usePlayer.getState()
+    return gainModeAt(currentQueue, queueIndexOf(currentQueue, index, wanted), useNormalisation.getState().setting)
+  }
+
   function sourceFor(element: HTMLAudioElement, wanted: Track): StreamSource {
-    return chooseSource(element, { direct: api.streamUrl(wanted.id), hls: api.hlsUrl(wanted.id) }, useStreamQuality.getState().quality)
+    return chooseSource(element, { direct: api.streamUrl(wanted.id), hls: api.hlsUrl(wanted.id, streamGainMode(wanted, gainModeFor(wanted))) }, useStreamQuality.getState().quality)
+  }
+
+  function applyVolume(slot: AudioSlot) {
+    const element = getAudio(slot)
+    if (!element) return
+    const { volume: level, muted: isMuted } = usePlayer.getState()
+    element.volume = Math.min(1, Math.max(0, level * volumeScale.current[slot]))
+    element.muted = isMuted
+  }
+
+  function refreshVolumeScale(slot: AudioSlot, wanted: Track) {
+    const element = getAudio(slot)
+    volumeScale.current[slot] = element && sources.current.kind(element) === 'direct' ? originalVolumeScale(wanted, gainModeFor(wanted)) : 1
+    applyVolume(slot)
   }
 
   // Every track load goes through here, so a slot is either a plain stream or an HLS
@@ -114,6 +140,7 @@ export function PlayerRuntime() {
     if (!element) return
     sources.current.attach(element, source ?? sourceFor(element, wanted), { preload, onFatal: (unavailable) => adaptiveFailed(slot, wanted.id, unavailable) })
     loadedTrackIds.current[slot] = wanted.id
+    refreshVolumeScale(slot, wanted)
   }
 
   // hls.js gave up. If the box can't stream adaptively, switch to originals; if the signal
@@ -248,7 +275,7 @@ export function PlayerRuntime() {
       for (const slot of [0, 1] as const) {
         const element = getAudio(slot)
         if (element) {
-          element.volume = value
+          element.volume = Math.min(1, Math.max(0, value * volumeScale.current[slot]))
           element.muted = isMuted
         }
       }
@@ -326,8 +353,6 @@ export function PlayerRuntime() {
 
     if (!element.paused) element.pause()
     loadInto(slot, nextTrack, 'auto')
-    element.volume = volume
-    element.muted = muted
   }, [api, currentIndex, muted, playing, queue, repeat, track?.id, volume]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -344,14 +369,18 @@ export function PlayerRuntime() {
   }, [playing, track]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    for (const slot of [0, 1] as const) applyVolume(slot)
+  }, [volume, muted]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A new normalisation setting turns original files up or down straight away; an adaptive
+  // stream takes it from the next track, like a new streaming quality.
+  useEffect(() => {
+    const { queue: currentQueue } = usePlayer.getState()
     for (const slot of [0, 1] as const) {
-      const element = getAudio(slot)
-      if (element) {
-        element.volume = volume
-        element.muted = muted
-      }
+      const loaded = currentQueue.find((candidate) => candidate.id === loadedTrackIds.current[slot])
+      if (loaded) refreshVolumeScale(slot, loaded)
     }
-  }, [volume, muted])
+  }, [normalisation, queue]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!track || !('mediaSession' in navigator)) return

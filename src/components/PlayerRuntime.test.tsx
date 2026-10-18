@@ -9,6 +9,7 @@ import { PlayerRuntime } from './PlayerRuntime'
 import { loadHlsLibrary, resetAdaptiveAvailability } from '../lib/adaptiveStream'
 import { DEFAULT_NAVIDROME_SERVER } from '../lib/navidrome'
 import { useStreamQuality } from '../stores/streamQuality'
+import { useNormalisation } from '../stores/normalisation'
 
 const hlsPlayers: { source?: string; media?: HTMLMediaElement; destroyed: boolean; emit(event: string, data: unknown): void }[] = []
 vi.mock('hls.js/light', () => {
@@ -279,6 +280,19 @@ describe('PlayerRuntime', () => {
     expect(pausedElements()).toContain(current)
   })
 
+  it('turns an original file down by its ReplayGain and follows a new normalisation setting', async () => {
+    usePlayer.setState({ volume: 0.8, muted: false, queue: [{ ...tracks[0], replayGain: { trackGain: -6.0206, trackPeak: 0.5 } }, { ...tracks[1], replayGain: { trackGain: 4, trackPeak: 0.2 } }] })
+    const [current, standby] = await startPlaying()
+    expect(current.volume).toBeCloseTo(0.4)
+    // A track mastered quieter than the reference can't be turned up past the listener's volume.
+    expect(standby.volume).toBeCloseTo(0.8)
+    await act(async () => { usePlayer.getState().setVolume(0.5) })
+    expect(current.volume).toBeCloseTo(0.25)
+    await act(async () => { useNormalisation.setState({ setting: 'off' }) })
+    expect(current.volume).toBeCloseTo(0.5)
+    useNormalisation.setState({ setting: 'auto' })
+  })
+
   describe('adaptive streaming', () => {
     beforeEach(async () => {
       hlsPlayers.length = 0
@@ -335,6 +349,24 @@ describe('PlayerRuntime', () => {
       await act(async () => { current.dispatchEvent(new Event('playing')) })
       await act(async () => { vi.advanceTimersByTime(ADAPTIVE_START_TIMEOUT_MS + RETRY_DELAYS_MS[0]) })
       expect(playerFor(current)).toBeDefined()
+    })
+
+    it('asks for adaptive streams with the album’s ReplayGain baked in while an album plays in order', async () => {
+      const replayGain = { trackGain: -7, trackPeak: 0.9, albumGain: -6, albumPeak: 0.95 }
+      usePlayer.setState({ queue: [{ ...tracks[0], albumId: 'lincoln', replayGain }, { ...tracks[1], albumId: 'lincoln', replayGain }, { ...tracks[2], albumId: 'flood' }] })
+      const [current, standby] = await startPlaying()
+      expect(new URL(playerFor(current)!.source!).pathname).toBe('/api/hls/a/album/master.m3u8')
+      expect(new URL(playerFor(standby)!.source!).pathname).toBe('/api/hls/b/album/master.m3u8')
+      // The stream is already normalised, so the element plays at the listener's volume.
+      expect(current.volume).toBeCloseTo(usePlayer.getState().volume)
+    })
+
+    it('asks for the untouched stream when normalisation is off', async () => {
+      useNormalisation.setState({ setting: 'off' })
+      usePlayer.setState({ queue: [{ ...tracks[0], replayGain: { trackGain: -7 } }, tracks[1]] })
+      const [current] = await startPlaying()
+      expect(new URL(playerFor(current)!.source!).pathname).toBe('/api/hls/a/master.m3u8')
+      useNormalisation.setState({ setting: 'auto' })
     })
 
     it('streams originals when the device is set to always original', async () => {
