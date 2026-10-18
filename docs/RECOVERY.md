@@ -91,6 +91,25 @@ An imported file is not playable in Tomify until Navidrome has scanned it, so ea
 
 The Worker code is in `worker/features/library-scan.ts`, routed through `worker/routes/system-settings.ts`.
 
+## ReplayGain tagging
+
+Navidrome passes ReplayGain tags on to players (the OpenSubsonic `replayGain` field on every song) but never measures loudness itself, so Tomify's loudness normalisation only works on tagged files. When `RSGAIN_PATH` is set, the agent runs [rsgain](https://github.com/complexlogic/rsgain) over every import's staged derivatives before the import manifest records them (`recovery-agent/loudness.mjs`, called from `runManifestImport`). It writes ReplayGain 2.0 track and album gain and peak tags (EBU R128, -18 LUFS reference), one rsgain run per album folder, so album gain covers the tracks that import brings. Because tagging happens before the sha256 is taken, a resumed or rolled-back import still recognises its files. Preserved originals under `.tomify-source` are never touched.
+
+Tagging is best effort. If rsgain fails on an album the error goes to the agent log and the import carries on untagged; if the binary is missing, tagging switches itself off until the agent restarts. Tracks added to an album that is already in recovery get album gain for the new tracks only.
+
+To turn it on:
+
+1. Install rsgain on the box: `sudo apt install rsgain` on Debian 13, or on Debian 12 the `.deb` from the [rsgain releases](https://github.com/complexlogic/rsgain/releases) (`sudo apt install ./rsgain_*_amd64.deb`).
+2. Add `RSGAIN_PATH=/usr/bin/rsgain` to `/etc/tomify/recovery-agent.env` and redeploy the agent ([Updating the recovery agent](#updating-the-recovery-agent)).
+
+To tag what is already in the libraries, run once on the box as the user that owns the files, then start a Navidrome scan (Settings, or wait for the scheduled one):
+
+```sh
+rsgain easy -S -m MAX /srv/music
+```
+
+`easy` treats each folder as an album, `-S` skips files that already have ReplayGain tags (so it is safe to re-run) and `-m MAX` uses every core. It only rewrites tags, never audio, but it does change each file's size and modification time, so the next backup copies them again. `/srv/music/_Recovery` is inside `/srv/music` on the current box, so this covers recovery files too.
+
 ## Canonical metadata review
 
 Selecting any acquisition candidate triggers a MusicBrainz recording search using the wanted artist/title plus any available album and duration evidence. Tomify stores the resulting suggestion, recording/release/release-group identifiers, confidence and resolution time on the existing Recovery item. That saved result is reused for 30 days when the same candidate is selected again.
