@@ -28,14 +28,14 @@ const MAX_LISTEN_BYTES = 2 * 1024 * 1024
 export interface DjSegment { tracks: MixTrack[], script: string, curatedBy: 'claude' | 'tomify', voice: boolean }
 export interface DjSegmentInput { recentTrackIds: string[], recentArtists: string[], request: string | null, justAsked?: boolean, first: boolean, username: string, now: number }
 
-export const DJ_SYSTEM = `You are the DJ inside Tomify, a personal music player. You talk to one listener between songs, like a bubbly, upbeat radio presenter who loves their music and knows their taste.
+export const DJ_SYSTEM = `You are the DJ in Tomify, a personal music player: a bubbly, upbeat radio presenter talking to one listener between songs, who knows their taste.
 
 Each time, pick the next 3 to 5 songs from the candidate pool and write the short spoken link that plays before them.
 - Only use refs from the pool. Never pick a recently played song. Order them so they flow.
 - At most one song per artist in a set. Don't keep returning to the same few artists.
-- Mix familiar favourites with things they haven't played in a while or have never played, guided by the listening history.
+- Mix favourites with songs they haven't played lately or ever.
 - If the listener asked for something, honour it. When they have just asked, start the link by answering them in a few words ("Upbeat it is!") before introducing the first song. Never mention an earlier request: it has been answered. Songs show their tempo (bpm), genre and mood when known: when asked for a style, mood or tempo, keep the whole set to it and order it by tempo so it flows.
-- The link is 2 to 4 sentences and at most 70 words, spoken aloud by a text-to-speech voice: plain words only, no emojis, lists, stage directions or sound effects. Introduce what's coming (you can name the first song and artist) and give a personal reason when there is one.
+- The link is 2 to 4 sentences and at most 70 words, read by a text-to-speech voice: plain words, no emojis, lists, stage directions or sound effects. Introduce what's coming (you can name the first song and artist) and give a personal reason when there is one.
 - On the first link of a session, greet the listener by name and mention the time of day.
 - Never guess what a song sounds like.`
 
@@ -87,17 +87,18 @@ export function styleMatcher(request: string): (song: SubsonicSong) => boolean {
 
 const styleOf = (song: SubsonicSong) => [...new Set([...(song.genres ?? []).map((genre) => genre.name), song.genre ?? '', ...(song.moods ?? [])].filter(Boolean))]
 
-// The words of a request to search the library with: "play Hangman Jury by Aerosmith" searches
-// "Hangman Jury Aerosmith", then the words as said ("Stand by Me"), then "Hangman Jury" (Navidrome's search needs every word to match).
+// What to search the library for: "can you play Hangman Jury and some songs like it" tries the whole
+// phrase, then "hangman jury" (cut at "and", "like" and the like), then the artist after "by" alone.
+// Navidrome needs every word to match, so the first search with results is used.
 export function requestSearches(request: string): string[] {
   let text = request.toLowerCase().replace(/[^\p{L}\p{N}' ]+/gu, ' ').replace(/\s+/g, ' ').trim()
   for (let before = ''; before !== text;) {
     before = text
-    text = text.replace(/^(?:hey dj|dj|can you|could you|will you|please|play|put on|queue|i want|i'd like|i would like|to hear|let's have|give me|some|me|the song|song) /, '')
+    text = text.replace(/^(?:hey dj|dj|can you|could you|will you|please|play|put on|queue|i want|i'd like|i would like|to hear|let's have|give me|some|me|the song|song) /, '').replace(/ (?:please|now|next|for me)$/, '')
   }
-  text = text.replace(/ please$/, '')
-  const [title, artist] = text.split(' by ')
-  return [...new Set([artist ? `${title} ${artist}` : text, text, title].map((query) => query.trim()).filter((query) => query.length > 2))]
+  const [title, artist = ''] = text.split(' by ')
+  const short = title.split(/ (?:and|then|with|like|or|plus|followed) /)[0]
+  return [...new Set([`${title} ${artist}`, text, `${short} ${artist}`, title, short, artist].map((query) => query.trim()).filter((query) => query.length > 2))].slice(0, 4)
 }
 
 export function djPool(candidates: Candidate[], recentTrackIds: string[], seed: string, size = DJ_POOL_SIZE, recentArtists: string[] = [], matches?: (song: SubsonicSong) => boolean): Candidate[] {
