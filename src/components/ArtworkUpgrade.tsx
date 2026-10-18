@@ -1,4 +1,4 @@
-import { ImageUp, LoaderCircle, Square } from 'lucide-react'
+import { ImageUp, LoaderCircle } from 'lucide-react'
 import { useApi } from '../lib/api-context'
 import { upgradeIntervalMs, useAlbumArtwork, type ArtworkUpgradeProgress } from '../stores/albumArtwork'
 
@@ -26,9 +26,10 @@ export function ArtworkUpgrade() {
     : available ? `Replaces library artwork with a confident square match of at least 600px from ${sources}. Albums already upgraded or chosen by hand are skipped, and nothing on the music server is changed.`
       : 'The artwork store is unavailable.')
 
-  return <div className="setting-row"><ImageUp/><span><strong>Upgrade album artwork</strong><small>{detail}</small></span>
-    {running ? <button className="button secondary" onClick={stopUpgrade}><Square/>Stop</button>
+  return <div className="setting-row stacked-detail"><ImageUp/><strong>Upgrade album artwork</strong>
+    {running ? <button className="button danger" onClick={stopUpgrade}>Stop</button>
       : <button className="button secondary" disabled={!available} onClick={() => void startUpgrade((signal) => api.allAlbums(signal))}>{progress ? 'Run again' : 'Upgrade'}</button>}
     {running && <LoaderCircle className="spin" aria-label="Upgrading artwork"/>}
+    <small>{detail}</small>
   </div>
 }
