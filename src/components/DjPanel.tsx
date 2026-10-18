@@ -32,6 +32,6 @@ export function DjPanel() {
     {active && <p className="dj-script">{script ?? (loading ? 'Picking your first songs…' : '')}</p>}
     {active && voiceNote && <p className="dj-voice-note">{voiceNote}</p>}
     {error && <p className="dj-error" role="alert">{error}</p>}
-    {active && <form onSubmit={send} className="dj-request"><input value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Tell the DJ: something calmer, more 80s…" aria-label="Tell the DJ what you want" maxLength={200}/><button className="button secondary" type="submit" disabled={loading || !request.trim()}>{loading ? <Loader2 className="spin"/> : <Send/>}Send</button></form>}
+    {active && <form onSubmit={send} className="dj-request"><input value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Tell the DJ: something calmer, 124 bpm house…" aria-label="Tell the DJ what you want" maxLength={200}/><button className="button secondary" type="submit" disabled={loading || !request.trim()}>{loading ? <Loader2 className="spin"/> : <Send/>}Send</button></form>}
   </section>
 }

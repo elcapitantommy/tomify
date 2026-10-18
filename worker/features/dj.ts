@@ -5,7 +5,7 @@ import type { Env, RouteHandler } from '../env.ts'
 import { authenticate } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
 import { subsonicForRequest } from '../lib/subsonic.ts'
-import { buildCandidates, gatherLibrary, limitPerArtist, listeningStats, seededRandom, toMixTrack, type Candidate, type LibrarySnapshot, type MixTrack, type SubsonicSong } from './mixes.ts'
+import { buildCandidates, gatherLibrary, songsOf, limitPerArtist, listeningStats, seededRandom, toMixTrack, type Candidate, type LibrarySnapshot, type MixTrack, type SubsonicSong } from './mixes.ts'
 import { callClaudeJson } from './mix-curator.ts'
 
 const DJ_POOL_SIZE = 150
@@ -27,7 +27,7 @@ Each time, pick the next 3 to 5 songs from the candidate pool and write the shor
 - Only use refs from the pool. Never pick a recently played song. Order them so they flow.
 - At most one song per artist in a set. Don't keep returning to the same few artists.
 - Mix familiar favourites with things they haven't played in a while or have never played, guided by the listening history.
-- If the listener asked for something, honour it.
+- If the listener asked for something, honour it. Songs show their tempo (bpm), genre and mood when known: when asked for a style, mood or tempo, keep the whole set to it and order it by tempo so it flows.
 - The link is 2 to 4 sentences and at most 70 words, spoken aloud by a text-to-speech voice: plain words only, no emojis, lists, stage directions or sound effects. Introduce what's coming (you can name the first song and artist) and give a personal reason when there is one.
 - On the first link of a session, greet the listener by name and mention the time of day.`
 
@@ -64,12 +64,27 @@ export function ukDate(now: number) {
 // at most a few songs per artist, and the artists from the last few sets rested when there's enough else.
 // The library gathers many songs by the artists played most (their top songs, similar songs, most played
 // albums), so without the cap and the rest those few artists fill the pool and every set.
-export function djPool(candidates: Candidate[], recentTrackIds: string[], seed: string, size = DJ_POOL_SIZE, recentArtists: string[] = []): Candidate[] {
+// Songs that fit what the listener asked for: a genre or mood they named, or a tempo ("120 bpm", "120-130 bpm"),
+// counting half and double time. Everyday words for the agent's moods ("something calmer") count as that mood.
+const MOOD_WORDS: [RegExp, string][] = [[/calm|relax|mellow|chill|quiet|soft/, 'chill'], [/happy|upbeat|cheer|fun/, 'upbeat'], [/energ|party|workout|pump|lively/, 'energetic'], [/sad|melanchol/, 'sad'], [/romantic|love/, 'romantic']]
+export function styleMatcher(request: string): (song: SubsonicSong) => boolean {
+  const lower = request.toLowerCase()
+  const text = [lower, ...MOOD_WORDS.filter(([words]) => words.test(lower)).map(([, mood]) => mood)].join(' ')
+  const tempo = text.match(/(\d{2,3})(?:\s*(?:-|to)\s*(\d{2,3}))?\s*bpm/)
+  const low = tempo ? Number(tempo[1]) - (tempo[2] ? 0 : 4) : 0
+  const high = tempo ? (tempo[2] ? Number(tempo[2]) : low + 8) : 0
+  return (song) => (Boolean(song.bpm) && [1, 2, 0.5].some((scale) => song.bpm! * scale >= low && song.bpm! * scale <= high))
+    || styleOf(song).some((tag) => tag.length > 2 && text.includes(tag.toLowerCase()))
+}
+
+const styleOf = (song: SubsonicSong) => [...new Set([...(song.genres ?? []).map((genre) => genre.name), song.genre ?? '', ...(song.moods ?? [])].filter(Boolean))]
+
+export function djPool(candidates: Candidate[], recentTrackIds: string[], seed: string, size = DJ_POOL_SIZE, recentArtists: string[] = [], matches?: (song: SubsonicSong) => boolean): Candidate[] {
   const recent = new Set(recentTrackIds)
   const resting = new Set(recentArtists)
   const random = seededRandom(seed)
   const fresh = candidates.filter((candidate) => !recent.has(candidate.song.id))
-    .map((candidate) => ({ candidate, order: random() - (candidate.sources.some((source) => source !== 'library') ? 0.5 : 0) + (resting.has(candidate.song.artist) ? 2 : 0) }))
+    .map((candidate) => ({ candidate, order: random() - (candidate.sources.some((source) => source !== 'library') ? 0.5 : 0) + (resting.has(candidate.song.artist) ? 2 : 0) - (matches?.(candidate.song) ? 2 : 0) }))
     .sort((a, b) => a.order - b.order).map(({ candidate }) => candidate)
   const pool = limitPerArtist(fresh, DJ_POOL_PER_ARTIST)
   const rested = pool.filter((candidate) => !resting.has(candidate.song.artist))
@@ -84,7 +99,8 @@ export function djPrompt(pool: Candidate[], snapshot: LibrarySnapshot, input: Dj
     const ref = `t${index + 1}`
     refs.set(ref, candidate.song)
     const song = candidate.song
-    return `${ref} | ${song.artist} - ${song.title} | ${song.album}${song.year ? ` (${song.year})` : ''} | plays ${candidate.playCount}, last ${shortDate(candidate.lastPlayed)}${candidate.starred ? ', favourite' : ''} | ${candidate.sources.join(', ')}`
+    const style = [song.bpm ? `${song.bpm} bpm` : '', ...styleOf(song)].filter(Boolean).join(', ')
+    return `${ref} | ${song.artist} - ${song.title} | ${song.album}${song.year ? ` (${song.year})` : ''}${style ? ` | ${style}` : ''} | plays ${candidate.playCount}, last ${shortDate(candidate.lastPlayed)}${candidate.starred ? ', favourite' : ''} | ${candidate.sources.join(', ')}`
   })
   const prompt = [
     `Listener: ${input.username}. It is ${ukDate(input.now)}, ${partOfDay(input.now)} in the UK.`,
@@ -113,7 +129,7 @@ export interface DjDependencies { claude?: (env: Env, system: string, prompt: st
 
 export async function buildSegment(env: Env, candidates: Candidate[], snapshot: LibrarySnapshot, input: DjSegmentInput, deps: DjDependencies = {}): Promise<Omit<DjSegment, 'voice'>> {
   // A request ("more Radiohead") may name a resting artist, so nobody is rested then; Claude is still told who played.
-  const pool = djPool(candidates, input.recentTrackIds, `${input.username}:${input.now}`, DJ_POOL_SIZE, input.request ? [] : input.recentArtists)
+  const pool = djPool(candidates, input.recentTrackIds, `${input.username}:${input.now}`, DJ_POOL_SIZE, input.request ? [] : input.recentArtists, input.request ? styleMatcher(input.request) : undefined)
   if (!pool.length) throw new Error('There is nothing left in the library the DJ hasn\'t just played.')
   if (env.ANTHROPIC_API_KEY) {
     try {
@@ -166,7 +182,18 @@ export function createDjHandler(deps: DjDependencies & { fetcher?: typeof fetch 
     const input = { ...cleanSegmentRequest(body), username: signedIn, now }
     try {
       const stats = await listeningStats(env, username, now)
-      const snapshot = await gatherLibrary(subsonicForRequest(request, signedIn, env, deps.fetcher), stats)
+      const subsonic = subsonicForRequest(request, signedIn, env, deps.fetcher)
+      const snapshot = await gatherLibrary(subsonic, stats)
+      // A request naming one of the library's genres ("some deep house") brings in songs of that genre too.
+      if (input.request) {
+        const text = input.request.toLowerCase()
+        const genres = await subsonic<{ genres?: { genre?: { value?: string }[] } }>('getGenres').catch(() => ({ genres: undefined }))
+        const named = (genres.genres?.genre ?? []).map((genre) => genre.value ?? '').filter((genre) => genre.length > 2 && text.includes(genre.toLowerCase())).slice(0, 2)
+        for (const genre of named) {
+          const found = await subsonic<{ songsByGenre?: { song?: unknown } }>('getSongsByGenre', { genre, count: 100 }).catch(() => ({ songsByGenre: undefined }))
+          for (const song of songsOf(found.songsByGenre?.song)) snapshot.songs.push({ song, source: `genre:${genre}` })
+        }
+      }
       const segment = await buildSegment(env, buildCandidates(snapshot, now), snapshot, input, deps)
       return json({ ...segment, voice: Boolean(env.AI) } satisfies DjSegment)
     } catch (error) {
