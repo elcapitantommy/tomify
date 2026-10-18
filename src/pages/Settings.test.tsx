@@ -32,13 +32,14 @@ describe('Settings', () => {
     expect(screen.getByText('quality control')).toBeInTheDocument()
   })
 
-  it('shows other users only that settings are for administrators, and lets them sign out', () => {
+  it('shows other users only streaming quality and sign out', () => {
     useAuth.setState({ isAdmin: false })
     render(<MemoryRouter><Settings/></MemoryRouter>)
     expect(screen.getByText(/only available to Navidrome administrators/)).toBeInTheDocument()
     expect(screen.queryByText('vpn control')).not.toBeInTheDocument()
     expect(screen.queryByText('restart control')).not.toBeInTheDocument()
     expect(screen.queryByText('quality control')).not.toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Streaming quality' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
   })
 
