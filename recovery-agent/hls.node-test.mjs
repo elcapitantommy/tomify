@@ -7,15 +7,17 @@ import { EventEmitter } from 'node:events'
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { createHlsPackager, credentialsFromHeaders, ffmpegHlsArguments, hlsConfig, HLS_VARIANTS, masterPlaylist, mediaPlaylist, navidromeSourceUrl, parseHlsPath, segmentCount, segmentName } from './hls.mjs'
+import { createHlsPackager, credentialsFromHeaders, ffmpegHlsArguments, hlsCacheKey, hlsConfig, HLS_VARIANTS, masterPlaylist, mediaPlaylist, navidromeSourceUrl, parseHlsPath, segmentCount, segmentName } from './hls.mjs'
 
 const credentials = { user: 'tom', token: 'a'.repeat(32), salt: 'abc123' }
 
 test('parseHlsPath accepts only the playlist and chunk names the agent writes', () => {
-  assert.deepEqual(parseHlsPath('/v1/hls/abc123/master.m3u8'), { trackId: 'abc123', kind: 'master' })
-  assert.deepEqual(parseHlsPath('/v1/hls/abc123/v1/index.m3u8'), { trackId: 'abc123', kind: 'playlist', variant: 'v1' })
-  assert.deepEqual(parseHlsPath('/v1/hls/abc123/v2/seg00012.ts'), { trackId: 'abc123', kind: 'segment', variant: 'v2', index: 12 })
-  for (const bad of ['/v1/hls/../master.m3u8', '/v1/hls/abc/v9/index.m3u8', '/v1/hls/abc/v1/../../x.ts', '/v1/hls/abc/source', '/v1/hls/a%2Fb/master.m3u8', '/v1/hls/abc/v1/seg1.ts', '/v1/status']) {
+  assert.deepEqual(parseHlsPath('/v1/hls/abc123/master.m3u8'), { trackId: 'abc123', gain: null, kind: 'master' })
+  assert.deepEqual(parseHlsPath('/v1/hls/abc123/v1/index.m3u8'), { trackId: 'abc123', gain: null, kind: 'playlist', variant: 'v1' })
+  assert.deepEqual(parseHlsPath('/v1/hls/abc123/v2/seg00012.ts'), { trackId: 'abc123', gain: null, kind: 'segment', variant: 'v2', index: 12 })
+  assert.deepEqual(parseHlsPath('/v1/hls/abc123/album/master.m3u8'), { trackId: 'abc123', gain: 'album', kind: 'master' })
+  assert.deepEqual(parseHlsPath('/v1/hls/abc123/track/v0/seg00001.ts'), { trackId: 'abc123', gain: 'track', kind: 'segment', variant: 'v0', index: 1 })
+  for (const bad of ['/v1/hls/abc/loud/master.m3u8', '/v1/hls/abc/album/album/master.m3u8', '/v1/hls/abc/album/source', '/v1/hls/../master.m3u8', '/v1/hls/abc/v9/index.m3u8', '/v1/hls/abc/v1/../../x.ts', '/v1/hls/abc/source', '/v1/hls/a%2Fb/master.m3u8', '/v1/hls/abc/v1/seg1.ts', '/v1/status']) {
     assert.equal(parseHlsPath(bad), null, bad)
   }
 })
@@ -43,6 +45,16 @@ test('one ffmpeg reads the track once and writes every bitrate into renamed-on-f
   assert.equal(args.filter((arg) => arg === 'temp_file').length, 3)
   assert.equal(args.at(-1), '/cache/t/v2/ffmpeg.m3u8')
   assert.ok(!ffmpegHlsArguments('/cache/t/source', '/cache/t').includes('-reconnect'))
+})
+
+test('a normalised stream bakes its gain into every bitrate and is cached apart from the untouched one', () => {
+  const args = ffmpegHlsArguments('/cache/t.album/source', '/cache/t.album', -7.25)
+  assert.deepEqual(args.filter((_, index) => args[index - 1] === '-af'), ['volume=-7.25dB', 'volume=-7.25dB', 'volume=-7.25dB'])
+  assert.ok(!ffmpegHlsArguments('/s', '/c', null).includes('-af'))
+  assert.ok(!ffmpegHlsArguments('/s', '/c', 0).includes('-af'))
+  assert.equal(hlsCacheKey('t1'), 't1')
+  assert.equal(hlsCacheKey('t1', 'album'), 't1.album')
+  assert.equal(hlsCacheKey('t1', 'loud'), 't1')
 })
 
 test('the source is fetched from Navidrome untranscoded with the listener’s login', () => {
@@ -88,11 +100,11 @@ function fakeSpawn({ chunks = 3, delayMs = 5, fail = false } = {}) {
   return { spawn, calls }
 }
 
-function fakeNavidrome({ size = 11, duration = 15 } = {}) {
+function fakeNavidrome({ size = 11, duration = 15, replayGain } = {}) {
   const requests = []
   const fetch = async (url) => {
     requests.push(String(url))
-    if (url.pathname.endsWith('/getSong.view')) return Response.json({ 'subsonic-response': { status: 'ok', song: { size, duration, suffix: 'flac' } } })
+    if (url.pathname.endsWith('/getSong.view')) return Response.json({ 'subsonic-response': { status: 'ok', song: { size, duration, suffix: 'flac', ...(replayGain ? { replayGain } : {}) } } })
     return new Response('unexpected', { status: 500 })
   }
   return { fetch, requests }
@@ -137,6 +149,27 @@ test('Navidrome’s own length is used when ffprobe can’t read one from the st
   const { hls, cacheDir } = await packager({ navidrome: fakeNavidrome({ duration: 21 }), probeDuration: async () => { throw new Error('ffprobe failed') } })
   assert.equal((await hls.handle(parseHlsPath('/v1/hls/t1/v0/index.m3u8'), credentials)).body, mediaPlaylist(21))
   await settle(hls)
+  await rm(cacheDir, { recursive: true, force: true })
+})
+
+test('each gain mode is packaged once with the track’s ReplayGain, beside the untouched stream', async () => {
+  const navidrome = fakeNavidrome({ replayGain: { trackGain: -9.1, trackPeak: 0.98, albumGain: -8.4, albumPeak: 0.99 } })
+  const { hls, cacheDir, ffmpeg } = await packager({ navidrome })
+  for (const path of ['/v1/hls/t1/master.m3u8', '/v1/hls/t1/album/master.m3u8', '/v1/hls/t1/track/master.m3u8', '/v1/hls/t1/album/v1/index.m3u8']) await hls.handle(parseHlsPath(path), credentials)
+  const chunk = await hls.handle(parseHlsPath('/v1/hls/t1/album/v0/seg00000.ts'), credentials)
+  assert.equal(chunk.filePath, join(cacheDir, 't1.album', 'v0', 'seg00000.ts'))
+  await settle(hls)
+  assert.deepEqual(ffmpeg.calls.map((call) => call.args.filter((_, index) => call.args[index - 1] === '-af')[0] ?? null), [null, 'volume=-8.4dB', 'volume=-9.1dB'])
+  assert.deepEqual((await readdir(cacheDir)).sort(), ['t1', 't1.album', 't1.track'])
+  assert.equal(JSON.parse(await readFile(join(cacheDir, 't1.album', 'info.json'), 'utf8')).gainDb, -8.4)
+  await rm(cacheDir, { recursive: true, force: true })
+})
+
+test('an untagged track in a normalised mode is packaged as it is', async () => {
+  const { hls, cacheDir, ffmpeg } = await packager()
+  await hls.handle(parseHlsPath('/v1/hls/t1/track/master.m3u8'), credentials)
+  await settle(hls)
+  assert.ok(!ffmpeg.calls[0].args.includes('-af'))
   await rm(cacheDir, { recursive: true, force: true })
 })
 
@@ -234,6 +267,34 @@ test('real ffmpeg streams from an HTTP source and produces the chunks the playli
     await settle(hls)
     const written = (await readdir(join(cacheDir, 'tone', 'v0'))).filter((name) => name.endsWith('.ts'))
     assert.ok(written.length >= listed.length && written.length <= listed.length + 1, `${written.length} written, ${listed.length} listed`)
+  } finally {
+    server.close()
+    await rm(work, { recursive: true, force: true })
+    await rm(cacheDir, { recursive: true, force: true })
+  }
+})
+
+test('real ffmpeg lowers a normalised stream by the track’s ReplayGain', { skip: !hasFfmpeg && 'ffmpeg is not installed' }, async () => {
+  const work = await mkdtemp(join(tmpdir(), 'tomify-hls-gain-'))
+  const source = join(work, 'tone.flac')
+  assert.equal(spawnSync('ffmpeg', ['-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=7:sample_rate=44100', '-ac', '2', source]).status, 0)
+  const audio = await readFile(source)
+  const server = createServer((request, response) => {
+    if (request.url.startsWith('/rest/getSong.view')) { response.writeHead(200, { 'content-type': 'application/json' }); return response.end(JSON.stringify({ 'subsonic-response': { status: 'ok', song: { size: audio.length, duration: 7, replayGain: { trackGain: -12, trackPeak: 0.125 } } } })) }
+    response.writeHead(200, { 'content-type': 'audio/flac', 'content-length': audio.length })
+    response.end(audio)
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${server.address().port}`
+  const probeDuration = async (url) => Number((await promisify(execFile)('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', url])).stdout)
+  const meanVolume = async (path) => Number(/mean_volume: (-?[\d.]+) dB/.exec((await promisify(execFile)('ffmpeg', ['-hide_banner', '-i', path, '-af', 'volumedetect', '-f', 'null', '-'])).stderr)[1])
+  const { hls, cacheDir } = await packager({ navidromeUrl: base, navidrome: { fetch: globalThis.fetch }, ffmpeg: { spawn: (await import('node:child_process')).spawn }, probeDuration })
+  try {
+    const plain = await hls.handle(parseHlsPath('/v1/hls/tone/v2/seg00000.ts'), credentials)
+    const normalised = await hls.handle(parseHlsPath('/v1/hls/tone/track/v2/seg00000.ts'), credentials)
+    await settle(hls)
+    const difference = (await meanVolume(plain.filePath)) - (await meanVolume(normalised.filePath))
+    assert.ok(Math.abs(difference - 12) < 0.5, `${difference} dB quieter`)
   } finally {
     server.close()
     await rm(work, { recursive: true, force: true })

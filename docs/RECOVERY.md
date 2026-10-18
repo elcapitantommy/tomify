@@ -91,6 +91,25 @@ An imported file is not playable in Tomify until Navidrome has scanned it, so ea
 
 The Worker code is in `worker/features/library-scan.ts`, routed through `worker/routes/system-settings.ts`.
 
+## ReplayGain tagging
+
+Navidrome passes ReplayGain tags on to players (the OpenSubsonic `replayGain` field on every song) but never measures loudness itself, so Tomify's loudness normalisation only works on tagged files. When `RSGAIN_PATH` is set, the agent runs [rsgain](https://github.com/complexlogic/rsgain) over every import's staged derivatives before the import manifest records them (`recovery-agent/loudness.mjs`, called from `runManifestImport`). It writes ReplayGain 2.0 track and album gain and peak tags (EBU R128, -18 LUFS reference), one rsgain run per album folder, so album gain covers the tracks that import brings. Because tagging happens before the sha256 is taken, a resumed or rolled-back import still recognises its files. Preserved originals under `.tomify-source` are never touched.
+
+Tagging is best effort. If rsgain fails on an album the error goes to the agent log and the import carries on untagged; if the binary is missing, tagging switches itself off until the agent restarts. Tracks added to an album that is already in recovery get album gain for the new tracks only.
+
+To turn it on:
+
+1. Install rsgain on the box: `sudo apt install rsgain` on Debian 13, or on Debian 12 the `.deb` from the [rsgain releases](https://github.com/complexlogic/rsgain/releases) (`sudo apt install ./rsgain_*_amd64.deb`).
+2. Add `RSGAIN_PATH=/usr/bin/rsgain` to `/etc/tomify/recovery-agent.env` and redeploy the agent ([Updating the recovery agent](#updating-the-recovery-agent)).
+
+To tag what is already in the libraries, run once on the box as the user that owns the files, then start a Navidrome scan (Settings, or wait for the scheduled one):
+
+```sh
+rsgain easy -S -m MAX /srv/music
+```
+
+`easy` treats each folder as an album, `-S` skips files that already have ReplayGain tags (so it is safe to re-run) and `-m MAX` uses every core. It only rewrites tags, never audio, but it does change each file's size and modification time, so the next backup copies them again. `/srv/music/_Recovery` is inside `/srv/music` on the current box, so this covers recovery files too.
+
 ## Canonical metadata review
 
 Selecting any acquisition candidate triggers a MusicBrainz recording search using the wanted artist/title plus any available album and duration evidence. Tomify stores the resulting suggestion, recording/release/release-group identifiers, confidence and resolution time on the existing Recovery item. That saved result is reused for 30 days when the same candidate is selected again.
@@ -275,6 +294,8 @@ The agent also serves adaptive streams for the player (see the README, "Adaptive
 1. asks Navidrome for the track's size and length (`getSong`) and reads the exact length with ffprobe from the start of the stream,
 2. starts one ffmpeg that reads the original straight from Navidrome (`stream.view?format=raw`, using the listener's login) as it downloads and writes all three bitrates (AAC 64k, 128k and 256k, 48 kHz stereo) as 6-second MPEG-TS chunks, and
 3. answers playlists straight away from the track's length, serving each chunk as soon as ffmpeg finishes it, so playback starts within a second or so while encoding carries on at many times real time.
+
+**Loudness-normalised streams.** `GET /api/hls/<trackId>/track/<file>` and `/album/<file>` (agent `/v1/hls/<trackId>/<track|album>/<file>`) ask for the same stream with the track's ReplayGain baked in: the agent reads `replayGain` from `getSong` and adds ffmpeg's `volume` filter with the track or album gain (album falls back to track and the other way round), capped so peaks stay 1 dB below full scale (`shared/replaygain.mjs`). This is how the player normalises on an iPhone, where a web page can't change the volume. Each mode is packaged and cached separately (`<trackId>.track`, `<trackId>.album` beside `<trackId>` in the cache), so a device normalising by album uses up to one extra copy per track it plays. A track with no ReplayGain tags is packaged untouched. Retagging a file changes its size, so the next play packages it again with the new gain. The tags come from [ReplayGain tagging](#replaygain-tagging). An agent from before this change answers the mode paths with `not-found`, which the Worker reports as `hls-unavailable`, so a newer player falls back to original files: deploy the agent before a site that asks for normalised streams.
 
 Once all three bitrates are written the chunks stay cached. The listener's login is in ffmpeg's command line while it runs, so it is visible to other accounts on the box in `ps`. A cached track is packaged again if Navidrome reports a different file size (the file was replaced). Only two tracks are packaged at once (the one playing and the pre-loaded next one); skipping through tracks stops the encoders of the ones skipped. The least recently played tracks are deleted once the cache passes its limit. A 4-minute song takes about 13 MB of cache.
 

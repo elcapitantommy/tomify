@@ -134,6 +134,14 @@ test('the voice endpoint reads the link with Aura-2 and explains when Workers AI
   assert.equal(ran.inputs.speaker, 'pandora')
   assert.equal((await call({ AI }, '   ')).status, 400)
   assert.equal((await call({}, 'Hi.')).status, 503)
+
+  t.mock.method(console, 'error', () => undefined)
+  const quota = await call({ AI: { run: async () => { throw new Error('4006: you have used up your daily free allocation') } } }, 'Hi.')
+  assert.equal(quota.status, 502)
+  assert.equal((await quota.json()).message, 'The DJ voice failed: 4006: you have used up your daily free allocation')
+  const refused = await call({ AI: { run: async () => new Response('{"errors":[{"message":"bad speaker"}]}', { status: 400 }) } }, 'Hi.')
+  assert.equal(refused.status, 502)
+  assert.equal((await refused.json()).message, 'The DJ voice failed (400): {"errors":[{"message":"bad speaker"}]}')
 })
 
 test('the segment endpoint picks songs from the library for the signed-in account', async (t) => {

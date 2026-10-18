@@ -144,8 +144,19 @@ export function createDjHandler(deps: DjDependencies & { fetcher?: typeof fetch 
       if (!env.AI) return json({ error: 'dj-voice-unavailable', message: 'The DJ voice needs the Workers AI binding (AI).' }, 503)
       const text = typeof (body as { text?: unknown }).text === 'string' ? (body as { text: string }).text.trim().slice(0, MAX_SCRIPT_CHARS) : ''
       if (!text) return json({ error: 'invalid-dj-text' }, 400)
-      const audio = await env.AI.run(DJ_TTS_MODEL, { text, speaker: env.TOMIFY_DJ_VOICE || DEFAULT_DJ_VOICE, encoding: 'mp3' } as never, { returnRawResponse: true }) as unknown as Response
-      if (!audio.ok) return json({ error: 'dj-voice-failed', message: `The DJ voice failed (${audio.status}).` }, 502)
+      let audio: Response
+      try {
+        audio = await env.AI.run(DJ_TTS_MODEL, { text, speaker: env.TOMIFY_DJ_VOICE || DEFAULT_DJ_VOICE, encoding: 'mp3' } as never, { returnRawResponse: true }) as unknown as Response
+      } catch (error) {
+        // Quota, model and binding errors are thrown rather than returned; say which, so the app can show it.
+        console.error('DJ voice failed', error)
+        return json({ error: 'dj-voice-failed', message: `The DJ voice failed: ${error instanceof Error ? error.message : String(error)}` }, 502)
+      }
+      if (!audio.ok) {
+        const detail = (await audio.text().catch(() => '')).slice(0, 200)
+        console.error('DJ voice failed', audio.status, detail)
+        return json({ error: 'dj-voice-failed', message: `The DJ voice failed (${audio.status})${detail ? `: ${detail}` : '.'}` }, 502)
+      }
       return new Response(audio.body, { headers: { 'content-type': 'audio/mpeg', 'cache-control': 'no-store' } })
     }
 

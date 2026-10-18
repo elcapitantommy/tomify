@@ -18,7 +18,7 @@ export function DjButton() {
 }
 
 export function DjPanel() {
-  const { active, loading, speaking, script, error } = useDj()
+  const { active, loading, speaking, script, voiceNote, error } = useDj()
   const [request, setRequest] = useState('')
   if (!active && !error) return null
   const send = (event: React.FormEvent) => {
@@ -30,6 +30,7 @@ export function DjPanel() {
   return <section className="dj-panel" aria-label="Tomify DJ">
     <div className="dj-panel-head"><span className="eyebrow"><Radio size={14}/>{active ? (speaking ? 'DJ is talking' : 'DJ is on') : 'DJ'}</span></div>
     {active && <p className="dj-script">{script ?? (loading ? 'Picking your first songs…' : '')}</p>}
+    {active && voiceNote && <p className="dj-voice-note">{voiceNote}</p>}
     {error && <p className="dj-error" role="alert">{error}</p>}
     {active && <form onSubmit={send} className="dj-request"><input value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Tell the DJ: something calmer, more 80s…" aria-label="Tell the DJ what you want" maxLength={200}/><button className="button secondary" type="submit" disabled={loading || !request.trim()}>{loading ? <Loader2 className="spin"/> : <Send/>}Send</button></form>}
   </section>
