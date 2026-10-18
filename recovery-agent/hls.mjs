@@ -7,9 +7,14 @@
 //
 // The playlists are written by the agent from the track's length, not by ffmpeg, so
 // the player can start on the first chunk while ffmpeg is still encoding the rest.
+//
+// A stream can also be loudness-normalised: `/v1/hls/<trackId>/<track|album>/<file>` bakes the
+// track's ReplayGain (track or album gain, from Navidrome's tags) into the chunks, which is the only
+// way to normalise on an iPhone. Each mode is packaged and cached separately.
 import { spawn as nodeSpawn } from 'node:child_process'
 import { mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { isReplayGainMode, replayGainDb } from '../shared/replaygain.mjs'
 
 export const HLS_SEGMENT_SECONDS = 6
 export const HLS_VARIANTS = Object.freeze([
@@ -50,17 +55,25 @@ export function hlsConfig(env = process.env, stateRoot = '.') {
   }
 }
 
-// `/v1/hls/<trackId>/<file>` → what is being asked for, or null for anything else.
+// `/v1/hls/<trackId>/[<gain>/]<file>` → what is being asked for, or null for anything else.
+// `gain` is null for the untouched stream, otherwise the ReplayGain mode baked into it.
 export function parseHlsPath(pathname) {
-  const match = /^\/v1\/hls\/([^/]+)\/(.+)$/.exec(String(pathname || ''))
+  const match = /^\/v1\/hls\/([^/]+)\/(?:(track|album)\/)?(.+)$/.exec(String(pathname || ''))
   if (!match || !TRACK_ID.test(match[1])) return null
-  const file = FILE.exec(match[2])
+  const [, trackId, gainMode, name] = match
+  const file = FILE.exec(name)
   if (!file) return null
-  if (match[2] === 'master.m3u8') return { trackId: match[1], kind: 'master' }
+  const gain = gainMode ?? null
+  if (name === 'master.m3u8') return { trackId, gain, kind: 'master' }
   const variant = HLS_VARIANTS.find((candidate) => candidate.id === (file[1] || file[2]))
   if (!variant) return null
-  if (file[1]) return { trackId: match[1], kind: 'playlist', variant: variant.id }
-  return { trackId: match[1], kind: 'segment', variant: variant.id, index: Number(file[3]) }
+  if (file[1]) return { trackId, gain, kind: 'playlist', variant: variant.id }
+  return { trackId, gain, kind: 'segment', variant: variant.id, index: Number(file[3]) }
+}
+
+// Where a stream is cached: the untouched one under the track id, a normalised one beside it.
+export function hlsCacheKey(trackId, gain = null) {
+  return isReplayGainMode(gain) ? `${trackId}.${gain}` : trackId
 }
 
 export function segmentName(index) { return `seg${String(index).padStart(5, '0')}.ts` }
@@ -96,10 +109,12 @@ export function mediaPlaylist(duration) {
 
 // One ffmpeg reads the track once, straight from Navidrome as it downloads, and writes all three
 // bitrates. The first chunks are ready within a second or so instead of after the whole file.
-export function ffmpegHlsArguments(input, trackDir) {
+// `gainDb`, when given, is the ReplayGain to bake in (already capped against clipping).
+export function ffmpegHlsArguments(input, trackDir, gainDb = null) {
   const reconnect = /^https?:/.test(input) ? ['-reconnect', '1', '-reconnect_on_network_error', '1', '-reconnect_delay_max', '10'] : []
+  const filter = Number.isFinite(gainDb) && gainDb !== 0 ? ['-af', `volume=${gainDb}dB`] : []
   const outputs = HLS_VARIANTS.flatMap((variant) => [
-    '-map', '0:a:0', '-vn', '-sn', '-dn', '-map_metadata', '-1',
+    '-map', '0:a:0', '-vn', '-sn', '-dn', '-map_metadata', '-1', ...filter,
     '-c:a', 'aac', '-aac_coder', variant.coder, '-b:a', String(variant.bitrate), '-ar', '48000', '-ac', '2',
     '-f', 'hls', '-hls_time', String(HLS_SEGMENT_SECONDS), '-hls_playlist_type', 'vod', '-hls_list_size', '0',
     // Chunks are written under a temporary name and renamed when finished, so a chunk that exists is complete.
@@ -159,7 +174,7 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
   const jobs = new Map()
   const deciding = new Map()
 
-  function trackDir(trackId) { return join(config.cacheDir, trackId) }
+  function trackDir(key) { return join(config.cacheDir, key) }
 
   // Navidrome on the box first; the public origin only when the box's address refuses the connection.
   let reachableBase = null
@@ -183,12 +198,12 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
     const body = await response.json().catch(() => null)
     const song = body?.['subsonic-response']?.song
     if (!response.ok || !song) throw new HlsError(response.status === 401 || response.status === 403 ? 401 : 404, 'source-unavailable', 'The music server did not return this track.')
-    return { size: Number(song.size) || null, duration: Number(song.duration) || null }
+    return { size: Number(song.size) || null, duration: Number(song.duration) || null, replayGain: song.replayGain ?? null }
   }
 
   function encode(job, input) {
     return new Promise((resolvePromise, reject) => {
-      const child = spawn(ffmpeg, ffmpegHlsArguments(input, job.dir), { shell: false, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+      const child = spawn(ffmpeg, ffmpegHlsArguments(input, job.dir, job.gainDb), { shell: false, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
       job.children.add(child)
       let stderr = ''
       const timer = setTimeout(() => child.kill('SIGKILL'), ENCODER_TIMEOUT_MS)
@@ -204,53 +219,55 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
     })
   }
 
-  async function start(trackId, credentials, sourceInfo) {
-    const dir = trackDir(trackId)
-    const job = { trackId, dir, duration: null, done: false, failed: null, cancelled: false, children: new Set(), lastUsed: now(), ready: null, finished: null }
-    jobs.set(trackId, job)
-    await stopSkippedJobs(trackId)
+  async function start({ trackId, gain, key }, credentials, sourceInfo) {
+    const dir = trackDir(key)
+    const job = { trackId, key, dir, duration: null, gainDb: null, done: false, failed: null, cancelled: false, children: new Set(), lastUsed: now(), ready: null, finished: null }
+    jobs.set(key, job)
+    await stopSkippedJobs(key)
     job.ready = (async () => {
       await rm(dir, { recursive: true, force: true })
       for (const variant of HLS_VARIANTS) await mkdir(join(dir, variant.id), { recursive: true })
       const info = sourceInfo ?? await songInfo(trackId, credentials)
       job.size = info.size
+      // An untagged track in a normalised mode is packaged as it is.
+      job.gainDb = gain ? replayGainDb(info.replayGain, gain) : null
       const source = navidromeSourceUrl(reachableBase ?? config.navidromeUrl, trackId, credentials).toString()
       // ffprobe reads only the start of the stream; Navidrome's whole-second length is the fallback.
       const probed = Number(await probeDuration(source).catch(() => null))
       const duration = Number.isFinite(probed) && probed > 0 ? probed : info.duration
       if (!Number.isFinite(duration) || duration <= 0) throw new HlsError(415, 'unreadable-source', 'This track could not be read for streaming.')
       job.duration = duration
-      await writeFile(join(dir, 'info.json'), JSON.stringify({ trackId, duration, size: info.size, complete: false }))
+      await writeFile(join(dir, 'info.json'), JSON.stringify({ trackId, gain, gainDb: job.gainDb, duration, size: info.size, complete: false }))
       return source
     })()
     job.finished = job.ready.then(async (source) => {
       await encode(job, source)
       if (job.cancelled) return
-      await writeFile(join(dir, 'info.json'), JSON.stringify({ trackId, duration: job.duration, size: job.size, complete: true }))
+      await writeFile(join(dir, 'info.json'), JSON.stringify({ trackId, gain, gainDb: job.gainDb, duration: job.duration, size: job.size, complete: true }))
       job.done = true
     }).catch(async (error) => {
       job.failed = error
       for (const child of job.children) child.kill('SIGKILL')
       // A skipped track's folder is left for the next packaging of it (which clears it first) or the cache limit.
       if (job.cancelled) return
-      log(`HLS packaging failed for ${trackId}: ${error instanceof Error ? error.message : error}`)
-      if (jobs.get(trackId) === job) jobs.delete(trackId)
+      log(`HLS packaging failed for ${key}: ${error instanceof Error ? error.message : error}`)
+      if (jobs.get(key) === job) jobs.delete(key)
       await rm(dir, { recursive: true, force: true }).catch(() => undefined)
     }).finally(() => {
-      if (jobs.get(trackId) === job && job.done) jobs.delete(trackId)
+      if (jobs.get(key) === job && job.done) jobs.delete(key)
       void prune().catch(() => undefined)
     })
     job.ready.catch(() => undefined)
     return job
   }
 
-  async function stopSkippedJobs(keepTrackId) {
-    const running = [...jobs.values()].filter((job) => !job.done && !job.failed && job.trackId !== keepTrackId).sort((left, right) => right.lastUsed - left.lastUsed)
+  async function stopSkippedJobs(keepKey) {
+    const running = [...jobs.values()].filter((job) => !job.done && !job.failed && job.key !== keepKey).sort((left, right) => right.lastUsed - left.lastUsed)
     for (const job of running.slice(MAX_ACTIVE_TRACKS - 1)) {
       job.cancelled = true
       job.failed = new HlsError(410, 'cancelled', 'Packaging was stopped because the track was skipped.')
       for (const child of job.children) child.kill('SIGKILL')
-      jobs.delete(job.trackId)
+      jobs.delete(job.key)
     }
   }
 
@@ -274,46 +291,47 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
     }
   }
 
-  async function cached(trackId) {
+  async function cached(key) {
     try {
-      const info = JSON.parse(await readFile(join(trackDir(trackId), 'info.json'), 'utf8'))
+      const info = JSON.parse(await readFile(join(trackDir(key), 'info.json'), 'utf8'))
       return info?.complete === true && Number.isFinite(info.duration) ? info : null
     } catch { return null }
   }
 
-  async function touch(trackId) {
+  async function touch(key) {
     const time = new Date(now())
-    await utimes(trackDir(trackId), time, time).catch(() => undefined)
+    await utimes(trackDir(key), time, time).catch(() => undefined)
   }
 
   // Returns a finished or running packaging of the track. A finished one is reused unless the
   // music server now reports a different file size (the file was replaced since).
-  function obtain(trackId, credentials, options = {}) {
+  function obtain(target, credentials, options = {}) {
     // Requests for one track arrive together (playlist and first chunks); only one may start the packaging.
-    const pending = deciding.get(trackId)
-    if (pending) return pending.then(() => obtain(trackId, credentials, options))
-    const decision = decide(trackId, credentials, options)
+    const pending = deciding.get(target.key)
+    if (pending) return pending.then(() => obtain(target, credentials, options))
+    const decision = decide(target, credentials, options)
     const settled = decision.then(() => undefined, () => undefined)
-    deciding.set(trackId, settled)
-    void settled.then(() => { if (deciding.get(trackId) === settled) deciding.delete(trackId) })
+    deciding.set(target.key, settled)
+    void settled.then(() => { if (deciding.get(target.key) === settled) deciding.delete(target.key) })
     return decision
   }
 
-  async function decide(trackId, credentials, { checkSource = false } = {}) {
-    const running = jobs.get(trackId)
+  async function decide(target, credentials, { checkSource = false } = {}) {
+    const running = jobs.get(target.key)
     if (running) {
       running.lastUsed = now()
       await running.ready
       return { duration: running.duration, job: running }
     }
-    const info = await cached(trackId)
-    const latest = info && checkSource ? await songInfo(trackId, credentials).catch(() => null) : null
+    const info = await cached(target.key)
+    const latest = info && checkSource ? await songInfo(target.trackId, credentials).catch(() => null) : null
+    // Retagging a file changes its size too, so a normalised stream follows new ReplayGain tags.
     if (info && (!latest || latest.size === null || info.size === null || latest.size === info.size)) {
-      await touch(trackId)
+      await touch(target.key)
       return { duration: info.duration, job: null }
     }
     // A track left half-packaged by an agent restart is started again from scratch.
-    const job = await start(trackId, credentials, latest)
+    const job = await start(target, credentials, latest)
     await job.ready
     return { duration: job.duration, job }
   }
@@ -331,14 +349,15 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
 
   async function handle(request, credentials) {
     if (!config.enabled) throw new HlsError(503, 'hls-disabled', 'Adaptive streaming is turned off on the agent.')
+    const target = { trackId: request.trackId, gain: request.gain ?? null, key: hlsCacheKey(request.trackId, request.gain) }
     if (request.kind === 'master') {
-      await obtain(request.trackId, credentials, { checkSource: true })
+      await obtain(target, credentials, { checkSource: true })
       return { contentType: 'application/vnd.apple.mpegurl', body: masterPlaylist() }
     }
-    const { duration, job } = await obtain(request.trackId, credentials)
+    const { duration, job } = await obtain(target, credentials)
     if (request.kind === 'playlist') return { contentType: 'application/vnd.apple.mpegurl', body: mediaPlaylist(duration) }
     if (request.index >= segmentCount(duration)) throw new HlsError(404, 'not-found', 'No such chunk.')
-    const path = join(trackDir(request.trackId), request.variant, segmentName(request.index))
+    const path = join(trackDir(target.key), request.variant, segmentName(request.index))
     if (!await waitForSegment(path, job)) throw new HlsError(404, 'not-found', 'No such chunk.')
     return { contentType: 'video/mp2t', filePath: path }
   }

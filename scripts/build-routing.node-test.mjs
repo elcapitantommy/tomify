@@ -1762,11 +1762,19 @@ test('adaptive streaming checks the Navidrome login in the query and signs every
     assert.equal(chunk.headers.get('content-type'), 'video/mp2t')
     assert.equal(await chunk.text(), 'chunk')
 
-    for (const path of ['/api/hls/tr1/source', '/api/hls/..%2Fx/master.m3u8', '/api/hls/tr1/v0/../../v1/status']) {
+    // A loudness-normalised stream keeps its mode in the path; the playlist's relative lines stay under it.
+    const normalised = await worker.fetch(new Request(`https://app.tomify.test/api/hls/tr1/album/master.m3u8?${query}`), env)
+    assert.equal(await normalised.text(), `#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=70400\nv0/index.m3u8?${query}\n`)
+    assert.equal(agentCalls[3].url.href, 'https://agent-hls.tomify.test/v1/hls/tr1/album/master.m3u8')
+    const normalisedChunk = await worker.fetch(new Request(`https://app.tomify.test/api/hls/tr1/track/v2/seg00001.ts?${query}`), env)
+    assert.equal(normalisedChunk.status, 200)
+    assert.equal(agentCalls[4].url.href, 'https://agent-hls.tomify.test/v1/hls/tr1/track/v2/seg00001.ts')
+
+    for (const path of ['/api/hls/tr1/source', '/api/hls/..%2Fx/master.m3u8', '/api/hls/tr1/v0/../../v1/status', '/api/hls/tr1/loud/master.m3u8', '/api/hls/tr1/album/album/master.m3u8']) {
       const response = await worker.fetch(new Request(`https://app.tomify.test${path}?${query}`), env)
       assert.equal(response.status, 404, path)
     }
-    assert.equal(agentCalls.length, 3)
+    assert.equal(agentCalls.length, 5)
   } finally { globalThis.fetch = originalFetch }
 })
 
@@ -1782,6 +1790,9 @@ test('adaptive streaming reports "unavailable" for an agent without it, so the p
     const old = await worker.fetch(new Request(`https://app.tomify.test/api/hls/tr1/master.m3u8?${query}`), { RECOVERY_AGENT_URL: 'https://agent-old.tomify.test' })
     assert.equal(old.status, 503)
     assert.equal((await old.json()).error, 'hls-unavailable')
+    // An agent from before loudness normalisation doesn't know the mode path either.
+    const oldNormalised = await worker.fetch(new Request(`https://app.tomify.test/api/hls/tr1/track/master.m3u8?${query}`), { RECOVERY_AGENT_URL: 'https://agent-old.tomify.test' })
+    assert.equal((await oldNormalised.json()).error, 'hls-unavailable')
     const unconfigured = await worker.fetch(new Request(`https://app.tomify.test/api/hls/tr1/master.m3u8?${query}`), {})
     assert.equal(unconfigured.status, 503)
   } finally { globalThis.fetch = originalFetch }

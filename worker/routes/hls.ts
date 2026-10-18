@@ -7,7 +7,9 @@ import { navidromeOrigin } from '../lib/navidrome.ts'
 // cuts the track into chunks at several bitrates. Audio elements and Safari's own HLS player can't
 // add headers, so the Navidrome login travels in the query, and every playlist line pointing at
 // another playlist or chunk gets the same query so those requests are signed in too.
-const HLS_PATH = /^\/api\/hls\/([A-Za-z0-9_-]{1,64})\/(master\.m3u8|v[0-9]\/index\.m3u8|v[0-9]\/seg\d{5}\.ts)$/
+// `/api/hls/<trackId>/<track|album>/<file>` asks for a loudness-normalised stream; its playlists
+// name their files relatively, so every later request stays under the same mode.
+const HLS_PATH = /^\/api\/hls\/([A-Za-z0-9_-]{1,64})\/((?:(?:track|album)\/)?(?:master\.m3u8|v[0-9]\/index\.m3u8|v[0-9]\/seg\d{5}\.ts))$/
 
 export function signPlaylist(playlist: string, query: string): string {
   return playlist.split('\n').map((line) => {
