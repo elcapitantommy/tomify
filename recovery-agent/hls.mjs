@@ -272,7 +272,16 @@ export function createHlsPackager({ config, ffmpeg = 'ffmpeg', probeDuration, fe
   }
 
   // Oldest-used tracks go first once the cache is over its limit; tracks being packaged stay.
-  async function prune() {
+  // One prune at a time: two overlapping ones each count the whole cache, and the second
+  // can delete the newest track after the first already brought the cache under its limit.
+  let pruning = Promise.resolve()
+  function prune() {
+    const run = pruning.then(pruneOnce, pruneOnce)
+    pruning = run.catch(() => undefined)
+    return run
+  }
+
+  async function pruneOnce() {
     const entries = []
     let total = 0
     for (const entry of await readdir(config.cacheDir, { withFileTypes: true }).catch(() => [])) {
