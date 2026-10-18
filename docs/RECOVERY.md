@@ -32,7 +32,7 @@ Recovery is only for Navidrome administrators (accounts with `adminRole`). The W
 - Classifies every import into a quality tier and marks it `recovered` when the tier meets the preferred quality set in Settings, otherwise `needs-upgrade`. See [Quality tiers](#quality-tiers). Either way the files stay recovery copies, never verified masters, and nothing is promoted to an archival master automatically.
 - Waits for Navidrome to scan each import before calling it playable. See [Library scan after import](#library-scan-after-import).
 - Marks Internet Archive imports `internet-archive-recovery-copy`. A lossless file is still a recovery source, not proof of an archival master.
-- Searches torrents through qBittorrent's search plugins, showing only results that have seeds, or accepts a pasted magnet or `.torrent` link per item. Either way it downloads the torrent with qBittorrent-nox over NordVPN, shows live speed, seeds, peers and time left, unpacks archives, imports the audio and then removes the torrent and its data. See [Torrent links and qBittorrent](#torrent-links-and-qbittorrent) and [Torrent search](#torrent-search).
+- Searches torrents through qBittorrent's search plugins and, when configured, a Prowlarr or Jackett indexer manager, showing only results that have seeds, or accepts a pasted magnet or `.torrent` link per item. Either way it downloads the torrent with qBittorrent-nox over NordVPN, shows live speed, seeds, peers and time left, unpacks archives, imports the audio and then removes the torrent and its data. See [Torrent links and qBittorrent](#torrent-links-and-qbittorrent) and [Torrent search](#torrent-search).
 
 Tomify does not capture credentials, accept Google passwords, circumvent DRM or bypass access controls. Exported cookies are sensitive session credentials: they stay entirely on the media server and are never stored in D1, browser storage, frontend code, Worker assets, logs or API responses.
 
@@ -780,9 +780,35 @@ The same lawful-recovery rules as Usenet apply: only retrieve content you are au
 
 ## Torrent search
 
-**Search torrents** sits next to **Search NZB** and uses the same Artist / Album / Track boxes. The agent asks qBittorrent-nox to run all its enabled search plugins in the Music category, waits up to 25 seconds for them, and returns up to 12 results. Only results with at least one seed are kept (plugins that cannot tell report no seed count, and those results are dropped too), sorted by seeds. Each result shows the site, seeds, peers and size, links to the site's details page, and is imported exactly like a pasted link once selected. Links to private addresses or with embedded credentials are dropped. A new torrent search replaces earlier torrent results and pasted links on that item that have not been imported.
+**Search torrents** sits next to **Search NZB** and uses the same Artist / Album / Track boxes. The agent asks qBittorrent-nox to run all its enabled search plugins in the Music category and, at the same time, searches every indexer in `TOMIFY_TORRENT_INDEXERS_JSON` (see [Prowlarr or Jackett](#prowlarr-or-jackett)). It waits up to 25 seconds and returns up to 12 results. Only results with at least one seed are kept (sources that cannot tell report no seed count, and those results are dropped too), sorted by seeds, and a torrent found by more than one source is listed once with its highest seed count. If one source fails the others' results are still shown. Each result shows the site, seeds, peers and size, links to the site's details page, and is imported exactly like a pasted link once selected. Links to private addresses or with embedded credentials are dropped. A new torrent search replaces earlier torrent results and pasted links on that item that have not been imported.
 
 The search itself runs inside qBittorrent on the media server, so it leaves through NordVPN with the rest of the box's traffic. The agent first checks qBittorrent's connection status and refuses to search while qBittorrent reports it is offline, which is what happens when `nordlynx` (the interface it is bound to) is down. Search plugins are small Python scripts that fetch the search sites directly; they are not bound to `nordlynx` the way BitTorrent traffic is.
+
+### Why plugin results can be dead
+
+qBittorrent's plugins scrape each site's search page, and several of the sites behind them are abandoned mirrors or static dumps (Torrents-CSV, for example, is a periodic snapshot). Their seed counts can be months old, so a result with "40 seeds" may have none left and stalls on **Fetching torrent metadata** or **Waiting for peers**. An indexer manager such as Prowlarr or Jackett keeps its site definitions up to date, reports current seeders from the sites that track them, and covers far more trackers, so adding one is the more reliable source. The plugins can stay enabled alongside it, or be uninstalled.
+
+### Prowlarr or Jackett
+
+Tomify can search a Prowlarr or Jackett you run yourself; it does not ship a list of sites. Either runs on the box and sends its searches through NordVPN with the rest of the box's traffic.
+
+1. Install Prowlarr (recommended; see the [Prowlarr install guide](https://wiki.servarr.com/prowlarr/installation/linux), which has a Debian script) or Jackett, and keep its web UI on `127.0.0.1` (Prowlarr: port 9696, Jackett: 9117).
+2. Add the public or private torrent indexers you use, and make sure each one has the Audio (3000) category. Indexers behind Cloudflare need FlareSolverr configured in Prowlarr or Jackett.
+3. Copy the API key (Prowlarr: **Settings → General → Security**; Jackett: top of the dashboard).
+4. Add the indexer to `/etc/tomify/recovery-agent.env` as a JSON array in single quotes and restart the agent:
+
+```bash
+# Prowlarr searches all its indexers in one call:
+TOMIFY_TORRENT_INDEXERS_JSON='[{"type":"prowlarr","name":"Prowlarr","url":"http://127.0.0.1:9696","apiKey":"PROWLARR_API_KEY"}]'
+# Jackett, through its all-indexers Torznab feed:
+TOMIFY_TORRENT_INDEXERS_JSON='[{"type":"torznab","name":"Jackett","url":"http://127.0.0.1:9117/api/v2.0/indexers/all/results/torznab","apiKey":"JACKETT_API_KEY"}]'
+```
+
+Each entry takes `type` (`prowlarr` for Prowlarr's own search API, or `torznab` for any Torznab feed, such as Jackett's or a single Prowlarr indexer's `http://127.0.0.1:9696/<id>/api`), `name`, `url` (HTTPS, or HTTP on loopback), `apiKey`, and optional `categories` (default `3000`; comma-separated). Several entries are searched at once. A bad entry stops the agent at startup with a message naming it.
+
+Results show the tracker's name (for example *1337x*) as the source. Magnet links are handed straight to qBittorrent. For results that only have a download link from Prowlarr or Jackett, the agent fetches it itself (qBittorrent is bound to `nordlynx` and may not reach loopback) and gives qBittorrent the `.torrent` file or the magnet it redirects to. The API key in those links is replaced with a placeholder before the link is stored with the candidate, and put back only when the agent fetches it. A download link that has gone fails the job with *the result may have been removed*.
+
+If a search reports *rejected the configured API key*, copy the key again; *No torrent search source is set up* means there are neither enabled plugins nor indexers.
 
 ### Installing search plugins
 
@@ -799,7 +825,7 @@ curl -s -b /tmp/qbt.cookie http://127.0.0.1:8081/api/v2/search/plugins; echo   #
 rm -f /tmp/qbt.cookie; unset QBT_PASSWORD
 ```
 
-These are plugins from qBittorrent's official search-plugins repository; add or remove others the same way (`search/uninstallPlugin` with `names=`). No agent setting changes: once the updated agent is deployed, **Search torrents** is enabled whenever torrent links are. If a search reports *qBittorrent has no search plugins enabled*, rerun the commands above; *qBittorrent is offline* means NordVPN is not connected.
+These are plugins from qBittorrent's official search-plugins repository; add or remove others the same way (`search/uninstallPlugin` with `names=`). No agent setting changes: once the updated agent is deployed, **Search torrents** is enabled whenever torrent links are. If a search reports *No torrent search source is set up*, rerun the commands above or configure [Prowlarr or Jackett](#prowlarr-or-jackett); *qBittorrent is offline* means NordVPN is not connected.
 
 ### Installing qBittorrent-nox on the Debian box
 
@@ -955,7 +981,7 @@ The result reports only whether the cookie session is configured and extraction 
 
 An acquisition backend exposes:
 
-- `POST /v1/search` with `{ backend, track, searchFields? }`, where `searchFields` is any non-empty subset of `artist`, `album` and `track` (legacy `searchMode` is still accepted), returning `{ candidates }`. For `backend: "torrent"` the body either carries `link`, and the one candidate returned is that validated link, or no link, in which case qBittorrent's enabled search plugins are searched with the chosen fields and up to 12 results with at least one seed come back, best-seeded first (`provenance.seeds`, `peers`, `size`, `providerId: "qbittorrent-search"`). The torrent entry in `/v1/status` has `search: true` when the agent supports this.
+- `POST /v1/search` with `{ backend, track, searchFields? }`, where `searchFields` is any non-empty subset of `artist`, `album` and `track` (legacy `searchMode` is still accepted), returning `{ candidates }`. For `backend: "torrent"` the body either carries `link`, and the one candidate returned is that validated link, or no link, in which case qBittorrent's enabled search plugins and the configured Prowlarr/Torznab indexers are searched with the chosen fields and up to 12 results with at least one seed come back, best-seeded first (`provenance.seeds`, `peers`, `size`, `providerId: "qbittorrent-search"`, and `searchSource`: the indexer id, or `qbittorrent-plugins`). The torrent entry in `/v1/status` has `search: true` when the agent supports this.
 - `POST /v1/acquire` with `{ backend, candidate, track, artwork, authorisation, background? }`, returning `{ path, quality, artwork, provenance }`. With `background: true`, YouTube and Internet Archive acquisitions return `202` and `{ job }` instead, and the job's final result carries the same fields.
 - For asynchronous Usenet and torrent acquisition (always) and YouTube and Internet Archive acquisition (with `background: true`), `POST /v1/acquire` returns an opaque job that the agent's job runner advances, and `POST /v1/jobs/status` with `{ jobId }` reports queued/downloading/importing/completed/failed state, progress, and the final import result. Status is read-only: it never asks the downloader or starts an import. Torrent jobs also report `details` (`downloadSpeed`, `uploadSpeed`, `seeds`, `seedsInSwarm`, `peers`, `peersInSwarm`, `eta`, `size`, `downloaded`).
 - `POST /v1/preflight` with `{ artist, album, title, mode }`, returning `{ directory, mode, existing }`: the release directory an acquisition would import into (matched ignoring case and Unicode normalisation, as imports do; `null` when there is none yet) and its audio files with `title`, `trackNumber`, `discNumber`, `recordingId` and quality `tier`, read from `.tomify.json` sidecars, or from the file's tags when there is no sidecar. It is read-only and never creates a directory. `POST /v1/acquire` accepts `skipExisting: true` for Usenet and torrent release imports.
