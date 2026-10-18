@@ -34,7 +34,7 @@ Each time, pick the next 3 to 5 songs from the candidate pool and write the shor
 - Only use refs from the pool. Never pick a recently played song. Order them so they flow.
 - At most one song per artist in a set. Don't keep returning to the same few artists.
 - Mix familiar favourites with things they haven't played in a while or have never played, guided by the listening history.
-- If the listener asked for something, honour it. When they have just asked, start the link by answering them in a few words ("Upbeat it is!") before introducing the first song. Songs show their tempo (bpm), genre and mood when known: when asked for a style, mood or tempo, keep the whole set to it and order it by tempo so it flows.
+- If the listener asked for something, honour it. Songs from "request" are the library's matches for their words: when they named a song, play it first. When they have just asked, start the link by answering them in a few words ("Upbeat it is!") before introducing the first song. Songs show their tempo (bpm), genre and mood when known: when asked for a style, mood or tempo, keep the whole set to it and order it by tempo so it flows.
 - The link is 2 to 4 sentences and at most 70 words, spoken aloud by a text-to-speech voice: plain words only, no emojis, lists, stage directions or sound effects. Introduce what's coming (you can name the first song and artist) and give a personal reason when there is one.
 - On the first link of a session, greet the listener by name and mention the time of day.`
 
@@ -86,16 +86,34 @@ export function styleMatcher(request: string): (song: SubsonicSong) => boolean {
 
 const styleOf = (song: SubsonicSong) => [...new Set([...(song.genres ?? []).map((genre) => genre.name), song.genre ?? '', ...(song.moods ?? [])].filter(Boolean))]
 
+// The words of a request to search the library with: "play Hangman Jury by Aerosmith" searches
+// "Hangman Jury Aerosmith", then the words as said ("Stand by Me"), then "Hangman Jury" (Navidrome's search needs every word to match).
+export function requestSearches(request: string): string[] {
+  let text = request.toLowerCase().replace(/[^\p{L}\p{N}' ]+/gu, ' ').replace(/\s+/g, ' ').trim()
+  for (let before = ''; before !== text;) {
+    before = text
+    text = text.replace(/^(?:hey dj|dj|can you|could you|will you|please|play|put on|queue|i want|i'd like|i would like|to hear|let's have|give me|some|me|the song|song) /, '')
+  }
+  text = text.replace(/ please$/, '')
+  const [title, artist] = text.split(' by ')
+  return [...new Set([artist ? `${title} ${artist}` : text, text, title].map((query) => query.trim()).filter((query) => query.length > 2))]
+}
+
 export function djPool(candidates: Candidate[], recentTrackIds: string[], seed: string, size = DJ_POOL_SIZE, recentArtists: string[] = [], matches?: (song: SubsonicSong) => boolean): Candidate[] {
   const recent = new Set(recentTrackIds)
   const resting = new Set(recentArtists)
   const random = seededRandom(seed)
-  const fresh = candidates.filter((candidate) => !recent.has(candidate.song.id))
+  // Songs found by searching for the request go first, whatever the artist caps and rests say,
+  // with one copy of each song when the library has several versions of an album.
+  const titles = new Set<string>()
+  const requested = candidates.filter((candidate) => candidate.sources.includes('request') && !recent.has(candidate.song.id))
+    .filter(({ song }) => { const key = `${song.artist}|${song.title}`.toLowerCase(); return !titles.has(key) && Boolean(titles.add(key)) }).slice(0, 12)
+  const fresh = candidates.filter((candidate) => !recent.has(candidate.song.id) && !requested.includes(candidate))
     .map((candidate) => ({ candidate, order: random() - (candidate.sources.some((source) => source !== 'library') ? 0.5 : 0) + (resting.has(candidate.song.artist) ? 2 : 0) - (matches?.(candidate.song) ? 2 : 0) }))
     .sort((a, b) => a.order - b.order).map(({ candidate }) => candidate)
   const pool = limitPerArtist(fresh, DJ_POOL_PER_ARTIST)
   const rested = pool.filter((candidate) => !resting.has(candidate.song.artist))
-  return (new Set(rested.map((candidate) => candidate.song.artist)).size >= DJ_MIN_RESTED_ARTISTS ? rested : pool).slice(0, size)
+  return [...requested, ...(new Set(rested.map((candidate) => candidate.song.artist)).size >= DJ_MIN_RESTED_ARTISTS ? rested : pool)].slice(0, size)
 }
 
 const shortDate = (time: number | null) => time ? new Date(time).toISOString().slice(0, 7) : 'never'
@@ -135,8 +153,9 @@ export function plainSegment(pool: Candidate[], input: DjSegmentInput): { tracks
 export interface DjDependencies { claude?: (env: Env, system: string, prompt: string, schema: object) => Promise<unknown> }
 
 export async function buildSegment(env: Env, candidates: Candidate[], snapshot: LibrarySnapshot, input: DjSegmentInput, deps: DjDependencies = {}): Promise<Omit<DjSegment, 'voice'>> {
-  // A request ("more Radiohead") may name a resting artist, so nobody is rested then; Claude is still told who played.
-  const pool = djPool(candidates, input.recentTrackIds, `${input.username}:${input.now}`, DJ_POOL_SIZE, input.request ? [] : input.recentArtists, input.request ? styleMatcher(input.request) : undefined)
+  // A request just made ("more Radiohead") may name a resting artist, so nobody is rested for that set; the sets
+  // after it keep to its style but rest artists again, or the session would replay the same few. Claude is still told who played.
+  const pool = djPool(candidates, input.recentTrackIds, `${input.username}:${input.now}`, DJ_POOL_SIZE, input.justAsked ? [] : input.recentArtists, input.request ? styleMatcher(input.request) : undefined)
   if (!pool.length) throw new Error('There is nothing left in the library the DJ hasn\'t just played.')
   if (env.ANTHROPIC_API_KEY) {
     try {
@@ -241,8 +260,15 @@ export function createDjHandler(deps: DjDependencies & { fetcher?: typeof fetch 
       const stats = await listeningStats(env, username, now)
       const subsonic = subsonicForRequest(request, signedIn, env, deps.fetcher)
       const snapshot = await gatherLibrary(subsonic, stats)
-      // A request naming one of the library's genres ("some deep house") brings in songs of that genre too.
+      // A request naming a song or artist is searched for in the whole library, since the gathered songs are
+      // only a sample of it; one naming one of the library's genres ("some deep house") brings in that genre too.
       if (input.request) {
+        for (const query of input.justAsked ? requestSearches(input.request) : []) {
+          const found = await subsonic<{ searchResult3?: { song?: unknown } }>('search3', { query, songCount: 20, artistCount: 0, albumCount: 0 }).catch(() => ({ searchResult3: undefined }))
+          const songs = songsOf(found.searchResult3?.song)
+          for (const song of songs) snapshot.songs.push({ song, source: 'request' })
+          if (songs.length) break
+        }
         const text = input.request.toLowerCase()
         const genres = await subsonic<{ genres?: { genre?: { value?: string }[] } }>('getGenres').catch(() => ({ genres: undefined }))
         const named = (genres.genres?.genre ?? []).map((genre) => genre.value ?? '').filter((genre) => genre.length > 2 && text.includes(genre.toLowerCase())).slice(0, 2)

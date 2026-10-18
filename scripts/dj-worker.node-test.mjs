@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_BACKUP_TTS_MODEL, DJ_LISTEN_MODEL, meloAudio, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment, styleMatcher, ukDate } from '../worker/features/dj.ts'
+import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_BACKUP_TTS_MODEL, DJ_LISTEN_MODEL, meloAudio, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment, requestSearches, styleMatcher, ukDate } from '../worker/features/dj.ts'
 import { buildCandidates } from '../worker/features/mixes.ts'
 
 const NOW = Date.parse('2026-10-17T08:30:00Z')
@@ -85,9 +85,11 @@ test('a set plays several different artists and Claude is told who to rest', asy
   assert.equal(new Set(segment.tracks.map((track) => track.artist)).size, segment.tracks.length, 'one song per artist in a set')
   assert.match(asked, /^Played this session, so rest them unless asked: Blur\.$/m)
   assert.doesNotMatch(asked, / \| Blur - /, 'resting artists are left out of the pool')
-  const steered = await buildSegment({ ANTHROPIC_API_KEY: 'key' }, library, snapshot, input({ recentArtists: ['Blur'], request: 'more Blur' }), { claude: async (env, system, prompt) => { asked = prompt; return { script: 'x', trackRefs: ['t1'] } } })
+  const steered = await buildSegment({ ANTHROPIC_API_KEY: 'key' }, library, snapshot, input({ recentArtists: ['Blur'], request: 'more Blur', justAsked: true }), { claude: async (env, system, prompt) => { asked = prompt; return { script: 'x', trackRefs: ['t1'] } } })
   assert.equal(steered.curatedBy, 'claude')
   assert.match(asked, / \| Blur - /, 'a request can bring a resting artist back')
+  await buildSegment({ ANTHROPIC_API_KEY: 'key' }, library, snapshot, input({ recentArtists: ['Blur'], request: 'more Blur' }), { claude: async (env, system, prompt) => { asked = prompt; return { script: 'x', trackRefs: ['t1'] } } })
+  assert.doesNotMatch(asked, / \| Blur - /, 'the sets after a request rest artists again, so the session does not replay them')
 })
 
 test('the DJ prompt names the listener, the time and any request', () => {
@@ -248,6 +250,37 @@ test('a request naming a library genre brings that genre into the pool', async (
   const body = await (await createDjHandler()(request, { TOMIFY_DB: d1(), NAVIDROME_ORIGIN: 'https://navidrome.test' }, new URL(request.url))).json()
   assert.ok(asked.includes('getSongsByGenre:Techno') && !asked.includes('getSongsByGenre:Rock'))
   assert.deepEqual(body.tracks.slice(0, 2).map((track) => track.id).sort(), ['t1', 't2'])
+})
+
+test('a request is searched for with the filler words left out', () => {
+  assert.deepEqual(requestSearches('Play Hangman Jury by Aerosmith.'), ['hangman jury aerosmith', 'hangman jury by aerosmith', 'hangman jury'])
+  assert.deepEqual(requestSearches('can you put on some Stand by Me please'), ['stand me', 'stand by me', 'stand'])
+  assert.deepEqual(requestSearches('more Radiohead'), ['more radiohead'])
+  assert.deepEqual(requestSearches('play it'), [])
+})
+
+// Hangman Jury wasn't in the gathered sample, and Aerosmith was resting and already had its 3 songs.
+test('a named song is found in the whole library even when the sample, caps and rests leave it out', async (t) => {
+  t.mock.method(Date, 'now', () => NOW)
+  const searched = []
+  const aerosmith = Array.from({ length: 6 }, (_, index) => song(`aero-${index}`, 'Aerosmith'))
+  const versions = Array.from({ length: 5 }, (_, index) => song(`hj-${index}`, 'Aerosmith', { title: 'Hangman Jury', album: 'Permanent Vacation' }))
+  t.mock.method(globalThis, 'fetch', async (input) => {
+    const url = new URL(String(input))
+    const endpoint = url.pathname.replace(/^\/rest\/|\.view$/g, '')
+    if (endpoint === 'getRandomSongs') return subsonic({ randomSongs: { song: [...aerosmith, ...realisticPool().pool.map((candidate) => candidate.song)] } })
+    if (endpoint === 'getAlbumList2') return subsonic({ albumList2: { album: [] } })
+    if (endpoint === 'search3') {
+      searched.push(url.searchParams.get('query'))
+      return subsonic({ searchResult3: url.searchParams.get('query') === 'hangman jury aerosmith' ? { song: versions } : {} })
+    }
+    return subsonic({})
+  })
+  const request = new Request('https://tomify.test/api/dj/segment', { method: 'POST', headers, body: JSON.stringify({ request: 'Play Hangman Jury by Aerosmith', justAsked: true, recentArtists: ['Aerosmith'] }) })
+  const body = await (await createDjHandler()(request, { TOMIFY_DB: d1(), NAVIDROME_ORIGIN: 'https://navidrome.test' }, new URL(request.url))).json()
+  assert.deepEqual(searched, ['hangman jury aerosmith'])
+  assert.equal(body.tracks[0].title, 'Hangman Jury')
+  assert.equal(body.tracks.filter((track) => track.title === 'Hangman Jury').length, 1, 'one copy of the song, not every version')
 })
 
 test('DJ and mix tracks keep their ReplayGain tags so they play normalised', async () => {
