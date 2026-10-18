@@ -11,6 +11,8 @@ command = "node scripts/build-worker-info.mjs"
 
 [vars]
 NAVIDROME_ORIGIN = "https://tomify.tomdixon.uk"
+# The DJ reads links with Deepgram Aura-2 (Workers Paid since 2026-10-18), with MeloTTS as backup.
+TOMIFY_DJ_VOICE_MODEL = "aura"
 
 [[d1_databases]]
 binding = "TOMIFY_DB"
