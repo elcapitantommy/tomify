@@ -253,8 +253,11 @@ test('a request naming a library genre brings that genre into the pool', async (
 })
 
 test('a request is searched for with the filler words left out', () => {
-  assert.deepEqual(requestSearches('Play Hangman Jury by Aerosmith.'), ['hangman jury aerosmith', 'hangman jury by aerosmith', 'hangman jury'])
-  assert.deepEqual(requestSearches('can you put on some Stand by Me please'), ['stand me', 'stand by me', 'stand'])
+  assert.deepEqual(requestSearches('Play Hangman Jury by Aerosmith.'), ['hangman jury aerosmith', 'hangman jury by aerosmith', 'hangman jury', 'aerosmith'])
+  // Tom typed this and the DJ searched for the whole sentence, which nothing matches.
+  assert.deepEqual(requestSearches('can you play hangman jury and some songs like it'), ['hangman jury and some songs like it', 'hangman jury'])
+  assert.deepEqual(requestSearches('can you put on some Stand by Me please'), ['stand me', 'stand by me', 'stand', 'me'].filter((query) => query.length > 2))
+  assert.deepEqual(requestSearches('play rock and roll by led zeppelin'), ['rock and roll led zeppelin', 'rock and roll by led zeppelin', 'rock led zeppelin', 'rock and roll'])
   assert.deepEqual(requestSearches('more Radiohead'), ['more radiohead'])
   assert.deepEqual(requestSearches('play it'), [])
 })
@@ -279,6 +282,29 @@ test('a named song is found in the whole library even when the sample, caps and 
   const request = new Request('https://tomify.test/api/dj/segment', { method: 'POST', headers, body: JSON.stringify({ request: 'Play Hangman Jury by Aerosmith', justAsked: true, recentArtists: ['Aerosmith'] }) })
   const body = await (await createDjHandler()(request, { TOMIFY_DB: d1(), NAVIDROME_ORIGIN: 'https://navidrome.test' }, new URL(request.url))).json()
   assert.deepEqual(searched, ['hangman jury aerosmith'])
+  assert.equal(body.tracks[0].title, 'Hangman Jury')
+  assert.equal(body.tracks.filter((track) => track.title === 'Hangman Jury').length, 1, 'one copy of the song, not every version')
+})
+
+test('a named song is found when the request says more than its title', async (t) => {
+  t.mock.method(Date, 'now', () => NOW)
+  const searched = []
+  const aerosmith = Array.from({ length: 6 }, (_, index) => song(`aero-${index}`, 'Aerosmith'))
+  const versions = Array.from({ length: 5 }, (_, index) => song(`hj-${index}`, 'Aerosmith', { title: 'Hangman Jury', album: 'Permanent Vacation' }))
+  t.mock.method(globalThis, 'fetch', async (input) => {
+    const url = new URL(String(input))
+    const endpoint = url.pathname.replace(/^\/rest\/|\.view$/g, '')
+    if (endpoint === 'getRandomSongs') return subsonic({ randomSongs: { song: [...aerosmith, ...realisticPool().pool.map((candidate) => candidate.song)] } })
+    if (endpoint === 'getAlbumList2') return subsonic({ albumList2: { album: [] } })
+    if (endpoint === 'search3') {
+      searched.push(url.searchParams.get('query'))
+      return subsonic({ searchResult3: url.searchParams.get('query') === 'hangman jury' ? { song: versions } : {} })
+    }
+    return subsonic({})
+  })
+  const request = new Request('https://tomify.test/api/dj/segment', { method: 'POST', headers, body: JSON.stringify({ request: 'can you play hangman jury and some songs like it', justAsked: true, recentArtists: ['Aerosmith'] }) })
+  const body = await (await createDjHandler()(request, { TOMIFY_DB: d1(), NAVIDROME_ORIGIN: 'https://navidrome.test' }, new URL(request.url))).json()
+  assert.deepEqual(searched, ['hangman jury and some songs like it', 'hangman jury'])
   assert.equal(body.tracks[0].title, 'Hangman Jury')
   assert.equal(body.tracks.filter((track) => track.title === 'Hangman Jury').length, 1, 'one copy of the song, not every version')
 })
