@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment, ukDate } from '../worker/features/dj.ts'
+import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, partOfDay, plainSegment, styleMatcher, ukDate } from '../worker/features/dj.ts'
 import { buildCandidates } from '../worker/features/mixes.ts'
 
 const NOW = Date.parse('2026-10-17T08:30:00Z')
@@ -163,4 +163,44 @@ test('the segment endpoint picks songs from the library for the signed-in accoun
   assert.equal(body.tracks.length, 4)
   assert.ok(!body.tracks.some((track) => track.id === 's0'))
   assert.match(body.script, /^Good morning, Tom\./)
+})
+
+test('a request for a genre, mood or tempo matches songs by their tags', () => {
+  const house = song('h', 'Bicep', { bpm: 124, genres: [{ name: 'Deep House' }, { name: 'House' }], moods: ['Chill'] })
+  const dnb = song('d', 'Goldie', { bpm: 87, genre: 'Drum and Bass' })
+  const untagged = song('u', 'Blur')
+  const matching = (request) => [house, dnb, untagged].filter(styleMatcher(request)).map((track) => track.id)
+  assert.deepEqual(matching('some deep house'), ['h'])
+  assert.deepEqual(matching('120-128 bpm'), ['h'])
+  assert.deepEqual(matching('around 172 bpm'), ['d'], 'half-time tempos count')
+  assert.deepEqual(matching('something calmer'), ['h'], 'everyday words for a mood')
+  assert.deepEqual(matching('more Blur'), [])
+})
+
+test('matching songs lead the pool and the prompt shows tempo, genre and mood', () => {
+  const songs = Array.from({ length: 40 }, (_, index) => ({ song: song(`s${index}`, `Artist ${index}`, index % 10 === 0 ? { bpm: 124, genres: [{ name: 'House' }], moods: ['Upbeat'] } : {}), source: 'library' }))
+  const candidates = buildCandidates({ songs, stats: [], topArtists: [] }, NOW)
+  const picked = djPool(candidates, [], 'seed', 150, [], styleMatcher('house please'))
+  assert.deepEqual(picked.slice(0, 4).map((candidate) => candidate.song.id).sort(), ['s0', 's10', 's20', 's30'])
+  const { prompt } = djPrompt(picked.slice(0, 1), snapshot, input())
+  assert.match(prompt, /^t1 \| Artist \d+ - Song s\d+ \| Artist \d+ album \| 124 bpm, House, Upbeat \| plays/m)
+})
+
+test('a request naming a library genre brings that genre into the pool', async (t) => {
+  t.mock.method(Date, 'now', () => NOW)
+  const asked = []
+  t.mock.method(globalThis, 'fetch', async (input) => {
+    const url = new URL(String(input))
+    const endpoint = url.pathname.replace(/^\/rest\/|\.view$/g, '')
+    asked.push(endpoint === 'getSongsByGenre' ? `${endpoint}:${url.searchParams.get('genre')}` : endpoint)
+    if (endpoint === 'getRandomSongs') return subsonic({ randomSongs: { song: pool.map((candidate) => candidate.song) } })
+    if (endpoint === 'getAlbumList2') return subsonic({ albumList2: { album: [] } })
+    if (endpoint === 'getGenres') return subsonic({ genres: { genre: [{ value: 'Techno' }, { value: 'Rock' }] } })
+    if (endpoint === 'getSongsByGenre') return subsonic({ songsByGenre: { song: [song('t1', 'Surgeon', { genre: 'Techno', bpm: 135 }), song('t2', 'Regis', { genre: 'Techno' })] } })
+    return subsonic({})
+  })
+  const request = new Request('https://tomify.test/api/dj/segment', { method: 'POST', headers, body: JSON.stringify({ request: 'some techno' }) })
+  const body = await (await createDjHandler()(request, { TOMIFY_DB: d1(), NAVIDROME_ORIGIN: 'https://navidrome.test' }, new URL(request.url))).json()
+  assert.ok(asked.includes('getSongsByGenre:Techno') && !asked.includes('getSongsByGenre:Rock'))
+  assert.deepEqual(body.tracks.slice(0, 2).map((track) => track.id).sort(), ['t1', 't2'])
 })

@@ -47,6 +47,10 @@ export interface Mix {
 export interface SubsonicSong extends MixTrack {
   year?: number
   genre?: string
+  // OpenSubsonic, from the BPM, GENRE and MOOD tags the agent writes (recovery-agent/track-style.mjs).
+  bpm?: number
+  genres?: { name: string }[]
+  moods?: string[]
   playCount?: number
   played?: string
 }
@@ -81,7 +85,7 @@ export interface LibrarySnapshot {
 
 interface AlbumSummary { id: string, name?: string, artist?: string, artistId?: string, playCount?: number }
 
-const songsOf = (value: unknown): SubsonicSong[] => Array.isArray(value) ? value.filter((song): song is SubsonicSong => Boolean(song && typeof song.id === 'string' && typeof song.title === 'string')) : []
+export const songsOf = (value: unknown): SubsonicSong[] => Array.isArray(value) ? value.filter((song): song is SubsonicSong => Boolean(song && typeof song.id === 'string' && typeof song.title === 'string')) : []
 
 async function albumList(subsonic: SubsonicCall, type: string, size: number): Promise<AlbumSummary[]> {
   const result = await subsonic<{ albumList2?: { album?: AlbumSummary[] } }>('getAlbumList2', { type, size })
