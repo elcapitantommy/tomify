@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuth } from './auth'
 import { usePlayer } from './player'
-import { bindDj, djVoiceElement, DJ_SPEECH_TIMEOUT_MS, DJ_VOICE_GAIN, fetchHeard, fetchVoice, useDj } from './dj'
+import { bindDj, djVoiceElement, DJ_SPEECH_TIMEOUT_MS, fetchHeard, musicLoudness, speechLoudness, voiceGain, DJ_UNTAGGED_LUFS, DJ_VOICE_LIFT_DB, fetchVoice, useDj } from './dj'
 
 const session = { serverUrl: 'https://music.example', username: 'tom', salt: 's', token: 't' }
 const track = (id: string) => ({ id, title: `Song ${id}`, artist: `Artist ${id}`, album: 'Album' })
@@ -188,6 +188,25 @@ describe('Tomify DJ', () => {
       expect(usePlayer.getState().playing).toBe(true)
     })
   })
+  describe('setting the voice level', () => {
+    it('measures speech and matches it to how loud the next song will play', () => {
+      const tone = (amplitude: number) => ({ sampleRate: 1000, getChannelData: () => Float32Array.from({ length: 2000 }, (_, index) => amplitude * Math.sin(index)) })
+      expect(speechLoudness(tone(0.1))).toBeCloseTo(-23.7, 0)
+      expect(speechLoudness(tone(0.2))! - speechLoudness(tone(0.1))!).toBeCloseTo(6, 0)
+      expect(speechLoudness(tone(0))).toBeNull()
+
+      const tagged = { ...track('a'), replayGain: { trackGain: -6.6, trackPeak: 0.9 } }
+      expect(musicLoudness(tagged, 'track')).toBeCloseTo(-18)
+      expect(musicLoudness(tagged, null)).toBeCloseTo(-11.4)
+      expect(musicLoudness(track('a'), 'track')).toBe(DJ_UNTAGGED_LUFS)
+
+      expect(voiceGain(-18, -18 - DJ_VOICE_LIFT_DB, 1)).toBeCloseTo(1)
+      expect(voiceGain(-12, -18 - DJ_VOICE_LIFT_DB, 1)).toBeCloseTo(0.5, 1)
+      expect(voiceGain(-18, -60, 1)).toBeCloseTo(10 ** (-30 / 20), 3)
+      expect(voiceGain(null, -18, 0.7)).toBe(0.7)
+    })
+  })
+
   describe('playing the recorded voice through Web Audio', () => {
     type FakeSource = { onended: (() => void) | null; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }
     let context: { state: string; gains: number[]; sources: FakeSource[] }
@@ -198,10 +217,11 @@ describe('Tomify DJ', () => {
       destination = {}
       async resume() { return undefined }
       createBuffer() { return {} }
-      async decodeAudioData() { return { duration: 3 } }
+      // Three seconds of a steady tone at amplitude 0.1: about -23.7 LUFS by the ungated formula.
+      async decodeAudioData() { return { duration: 3, sampleRate: 1000, getChannelData: () => Float32Array.from({ length: 3000 }, (_, index) => 0.1 * Math.sin(index)) } }
       createBufferSource() { const source = { ...node(), buffer: null, onended: null, start: vi.fn(), stop: vi.fn() }; context.sources.push(source); return source }
       createGain() { const gain = { ...node(), gain: { value: 1 } }; queueMicrotask(() => context.gains.push(gain.gain.value)); return gain }
-      createDynamicsCompressor() { return node() }
+      createDynamicsCompressor() { return { ...node(), threshold: { value: 0 }, knee: { value: 0 }, ratio: { value: 0 } } }
     }
     beforeEach(() => {
       context = { state: 'running', gains: [], sources: [] }
@@ -210,14 +230,17 @@ describe('Tomify DJ', () => {
     const fetcher = () => vi.fn(async (input: RequestInfo | URL) => String(input).startsWith('blob:') ? new Response(new Blob(['mp3']))
       : String(input).endsWith('/voice') ? new Response(new Blob(['mp3'])) : json({ tracks: [track('a'), track('b'), track('c')], script: 'Morning Tom.', curatedBy: 'claude', voice: true }))
 
-    it('plays the voice louder through the audio context, then the music', async () => {
+    it('plays the voice through the audio context at the music\'s loudness, then the music', async () => {
+      usePlayer.setState({ volume: 0.5, muted: false })
       vi.stubGlobal('fetch', fetcher())
       await useDj.getState().start()
       // The tap's unlock blip, then the link itself.
       await vi.waitFor(() => expect(context.sources).toHaveLength(2))
       expect(context.sources[1].start).toHaveBeenCalled()
-      await vi.waitFor(() => expect(context.gains).toContain(DJ_VOICE_GAIN))
-      expect(DJ_VOICE_GAIN).toBeGreaterThan(1)
+      // An untagged song: the voice is brought from about -23.7 LUFS to the library average plus the lift, at half volume.
+      await vi.waitFor(() => expect(context.gains).toHaveLength(1))
+      const expected = 10 ** ((DJ_UNTAGGED_LUFS + DJ_VOICE_LIFT_DB + 23.7) / 20) * 0.5
+      expect(context.gains[0]).toBeCloseTo(expected, 1)
       expect(usePlayer.getState().playing).toBe(false)
       expect(play).toHaveBeenCalledTimes(1) // only the unlock, never the voice element
 

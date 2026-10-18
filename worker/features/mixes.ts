@@ -33,6 +33,8 @@ export interface MixTrack {
   suffix?: string
   contentType?: string
   starred?: string
+  // OpenSubsonic ReplayGain tags, so mixes and the DJ play at the normalised loudness like everything else.
+  replayGain?: Record<string, number>
 }
 
 export interface Mix {
@@ -239,6 +241,7 @@ export function toMixTrack(song: SubsonicSong): MixTrack {
   const track: MixTrack = { id: song.id, title: String(song.title ?? ''), artist: String(song.artist ?? ''), album: String(song.album ?? '') }
   for (const key of ['artistId', 'albumId', 'coverArt', 'suffix', 'contentType', 'starred'] as const) if (typeof song[key] === 'string') track[key] = song[key]
   for (const key of ['duration', 'track', 'discNumber'] as const) if (typeof song[key] === 'number') track[key] = song[key]
+  if (song.replayGain && typeof song.replayGain === 'object') track.replayGain = song.replayGain
   return track
 }
 

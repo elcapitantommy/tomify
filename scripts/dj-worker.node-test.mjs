@@ -249,3 +249,9 @@ test('a request naming a library genre brings that genre into the pool', async (
   assert.ok(asked.includes('getSongsByGenre:Techno') && !asked.includes('getSongsByGenre:Rock'))
   assert.deepEqual(body.tracks.slice(0, 2).map((track) => track.id).sort(), ['t1', 't2'])
 })
+
+test('DJ and mix tracks keep their ReplayGain tags so they play normalised', async () => {
+  const { toMixTrack } = await import('../worker/features/mixes.ts')
+  assert.deepEqual(toMixTrack(song('r1', 'Blur', { replayGain: { trackGain: -6.6, trackPeak: 0.98 } })).replayGain, { trackGain: -6.6, trackPeak: 0.98 })
+  assert.equal('replayGain' in toMixTrack(song('r2', 'Blur')), false)
+})

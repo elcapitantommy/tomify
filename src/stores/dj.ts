@@ -1,6 +1,9 @@
 import { create } from 'zustand'
 import { useAuth } from './auth'
 import { usePlayer } from './player'
+import { useNormalisation } from './normalisation'
+import { gainModeAt } from '../lib/loudness'
+import { replayGainDb, type ReplayGainMode } from '../../shared/replaygain.mjs'
 import type { Track } from '../types'
 
 // Tomify DJ: plays sets of a few songs, with a short spoken link before each set. The next set is fetched
@@ -91,9 +94,64 @@ export function djVoiceElement() {
   return voiceElement
 }
 // The recorded voice plays through Web Audio when it can: a context started from the DJ tap may play
-// later without another tap (an <audio> element is often refused), and it can lift the voice to sit
-// level with the music. DJ_VOICE_GAIN is that lift; the compressor keeps it from clipping.
-export const DJ_VOICE_GAIN = 2.5
+// later without another tap (an <audio> element is often refused), and its level can be set to sit with
+// the music. The voice's loudness is measured and matched to the song it leads into, as that song will
+// play (normalised or not), plus DJ_VOICE_LIFT_DB, then scaled by the volume setting. A limiter stops clipping.
+export const DJ_VOICE_LIFT_DB = 1
+// ReplayGain 2.0's reference loudness: what a tagged song plays at with its gain applied.
+const REFERENCE_LUFS = -18
+// An untagged song is taken to be as loud as the library's average (measured 2026-10-18).
+export const DJ_UNTAGGED_LUFS = -11.5
+
+/** How loud `track` will play, in LUFS, with the gain `mode` gives it. */
+export function musicLoudness(track: Track | undefined, mode: ReplayGainMode | null) {
+  const trackGain = track?.replayGain?.trackGain
+  if (typeof trackGain !== 'number') return DJ_UNTAGGED_LUFS
+  return REFERENCE_LUFS - trackGain + ((mode && replayGainDb(track!.replayGain, mode)) ?? 0)
+}
+
+/** Integrated loudness of speech in LUFS (BS.1770 gating, without the K-weighting), or null for silence. */
+export function speechLoudness(buffer: Pick<AudioBuffer, 'sampleRate' | 'getChannelData'>) {
+  const data = buffer.getChannelData(0)
+  const size = Math.max(1, Math.round(buffer.sampleRate * 0.4))
+  const blocks: number[] = []
+  for (let start = 0; start < data.length; start += size) {
+    let sum = 0
+    const end = Math.min(data.length, start + size)
+    for (let index = start; index < end; index++) sum += data[index] * data[index]
+    blocks.push(sum / (end - start))
+  }
+  const lufs = (power: number) => -0.691 + 10 * Math.log10(power)
+  const mean = (values: number[]) => values.reduce((total, value) => total + value, 0) / values.length
+  const audible = blocks.filter((power) => power > 0 && lufs(power) > -70)
+  if (!audible.length) return null
+  const gated = audible.filter((power) => lufs(power) > lufs(mean(audible)) - 10)
+  return lufs(mean(gated))
+}
+
+/** The multiplier that brings speech at `voiceLufs` to `musicLufs` (plus the lift), at `volume`. */
+export function voiceGain(voiceLufs: number | null, musicLufs: number, volume: number) {
+  if (voiceLufs === null) return volume
+  const db = Math.max(-30, Math.min(15, musicLufs + DJ_VOICE_LIFT_DB - voiceLufs))
+  return 10 ** (db / 20) * volume
+}
+
+// iPhones play every page at full volume (the volume buttons are the only control), and a page can't change it.
+let pageVolume: boolean | null = null
+function pageVolumeWorks() {
+  if (pageVolume === null) {
+    try { const probe = new Audio(); probe.volume = 0.5; pageVolume = Math.abs(probe.volume - 0.5) < 0.01 } catch { pageVolume = false }
+  }
+  return pageVolume
+}
+
+// The level the music is at right now: the song the link leads into, the normalisation setting and the volume.
+function musicLevel() {
+  const player = usePlayer.getState()
+  const volume = player.muted ? 0 : pageVolumeWorks() ? player.volume : 1
+  return { lufs: musicLoudness(player.queue[player.currentIndex], gainModeAt(player.queue, player.currentIndex, useNormalisation.getState().setting)), volume }
+}
+
 type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext }
 let voiceContext: AudioContext | null = null
 let voiceSource: AudioBufferSourceNode | null = null
@@ -109,7 +167,7 @@ function playbackSession() {
   const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession
   if (session) try { session.type = 'playback' } catch { /* older Safari */ }
 }
-async function playThroughContext(url: string, onEnded: () => void): Promise<boolean> {
+async function playThroughContext(url: string, onEnded: () => void, music: { lufs: number; volume: number }): Promise<boolean> {
   const context = djVoiceContext()
   if (!context) return false
   try {
@@ -120,7 +178,10 @@ async function playThroughContext(url: string, onEnded: () => void): Promise<boo
     const gain = context.createGain()
     const compressor = context.createDynamicsCompressor()
     source.buffer = decoded
-    gain.gain.value = DJ_VOICE_GAIN
+    gain.gain.value = voiceGain(speechLoudness(decoded), music.lufs, music.volume)
+    compressor.threshold.value = -3
+    compressor.knee.value = 0
+    compressor.ratio.value = 20
     source.connect(gain).connect(compressor).connect(context.destination)
     source.onended = () => { if (voiceSource === source) voiceSource = null; onEnded() }
     voiceSource = source
@@ -292,7 +353,7 @@ function speakLink(link: PendingLink) {
     link.audioUrl = url
     useDj.setState({ voiceNote: backupNotes.get(url) ?? null })
     backupNotes.delete(url)
-    void playThroughContext(url, finish).then((playing) => {
+    void playThroughContext(url, finish, musicLevel()).then((playing) => {
       if (!playing) playElement(url)
       else if (!stillSpeaking()) silenceVoice()
     })
