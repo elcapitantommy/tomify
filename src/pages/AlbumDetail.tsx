@@ -44,7 +44,7 @@ export function AlbumDetail() {
     if (album && cloudStatus === 'cloud' && !overrides[album.id]) void enrichRelease(album)
   }, [album, cloudStatus, enrichRelease, overrides])
 
-  const { data: versions, loading: versionsLoading } = useLoad(async (signal) => {
+  const { data: versions, loading: versionsFetching } = useLoad(async (signal) => {
     if (!album) return []
     const metadataSnapshot = useReleaseMetadata.getState().overrides
     const summaries = album.artistId
@@ -57,7 +57,10 @@ export function AlbumDetail() {
     return [album, ...others]
   }, [api, album?.id, album?.artistId])
 
-  const fullVersions = useMemo(() => versions?.length ? versions : album ? [album] : [], [album, versions])
+  // Versions always start with the album they were looked up for. Until they match this album, the lookup is still pending:
+  // the render before the lookup restarts otherwise shows the completeness check briefly, then hides it again.
+  const versionsLoading = versionsFetching || (album !== null && versions?.[0]?.id !== album.id)
+  const fullVersions = useMemo(() => !versionsLoading && versions?.length ? versions : album ? [album] : [], [album, versions, versionsLoading])
 
   const groupTitle = album ? releaseFamilyTitle(album) : ''
   const allTracks = fullVersions.flatMap((version) => version.song ?? [])
