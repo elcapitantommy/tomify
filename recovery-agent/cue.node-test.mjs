@@ -65,7 +65,7 @@ test('track plans tag album, artist, track and disc numbers', () => {
   const sheet = parseCueSheet(SHEET)
   const plans = cueTrackPlans(sheet, { path: '/t/PV/image.flac', name: 'image.flac' }, '/t/PV/image.cue', '/out')
   assert.equal(plans.length, 3)
-  assert.equal(plans[0].output, "/out/01 - Heart's Done Time.flac")
+  assert.equal(plans[0].output, join('/out', "01 - Heart's Done Time.flac"))
   assert.ok(plans[0].args.includes('ALBUM=Permanent Vacation'))
   assert.ok(plans[0].args.includes('DISCNUMBER=1'))
   assert.ok(plans[0].args.includes('TRACKTOTAL=3'))

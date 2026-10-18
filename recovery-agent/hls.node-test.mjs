@@ -5,7 +5,7 @@ import { promisify } from 'node:util'
 import { createServer } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHlsPackager, credentialsFromHeaders, ffmpegHlsArguments, hlsCacheKey, hlsConfig, HLS_VARIANTS, masterPlaylist, mediaPlaylist, navidromeSourceUrl, parseHlsPath, segmentCount, segmentName } from './hls.mjs'
 
@@ -41,9 +41,9 @@ test('one ffmpeg reads the track once and writes every bitrate into renamed-on-f
   assert.equal(args.filter((arg) => arg === '-i').length, 1)
   assert.ok(args.includes('-reconnect'))
   assert.deepEqual(args.filter((_, index) => args[index - 1] === '-b:a'), ['64000', '128000', '256000'])
-  assert.deepEqual(args.filter((_, index) => args[index - 1] === '-hls_segment_filename'), ['/cache/t/v0/seg%05d.ts', '/cache/t/v1/seg%05d.ts', '/cache/t/v2/seg%05d.ts'])
+  assert.deepEqual(args.filter((_, index) => args[index - 1] === '-hls_segment_filename'), ['v0', 'v1', 'v2'].map((variant) => join('/cache/t', variant, 'seg%05d.ts')))
   assert.equal(args.filter((arg) => arg === 'temp_file').length, 3)
-  assert.equal(args.at(-1), '/cache/t/v2/ffmpeg.m3u8')
+  assert.equal(args.at(-1), join('/cache/t', 'v2', 'ffmpeg.m3u8'))
   assert.ok(!ffmpegHlsArguments('/cache/t/source', '/cache/t').includes('-reconnect'))
 })
 
@@ -69,7 +69,7 @@ test('the source is fetched from Navidrome untranscoded with the listener’s lo
 test('hlsConfig defaults to Navidrome on the box and a cache under the state folder', () => {
   const config = hlsConfig({}, '/var/lib/tomify-recovery')
   assert.equal(config.navidromeUrl, 'http://127.0.0.1:4533')
-  assert.equal(config.cacheDir, '/var/lib/tomify-recovery/hls-cache')
+  assert.equal(config.cacheDir, resolve('/var/lib/tomify-recovery', 'hls-cache'))
   assert.equal(config.enabled, true)
   assert.equal(hlsConfig({ TOMIFY_HLS_ENABLED: 'false' }, '/x').enabled, false)
   assert.throws(() => hlsConfig({ TOMIFY_NAVIDROME_URL: 'http://user:pw@host' }, '/x'))
