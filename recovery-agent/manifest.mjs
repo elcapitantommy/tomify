@@ -9,6 +9,7 @@ import { basename, dirname, join, resolve, sep } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { commitFile, importTemporaryPath } from './commit.mjs'
 import { defaultLoudnessTagger } from './loudness.mjs'
+import { defaultStyleTagger } from './track-style.mjs'
 
 const importIdPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/
 
@@ -188,9 +189,12 @@ export async function resumeImportManifest(handle, { allowedRoot }) {
 // Writes the manifest, commits every entry, and rolls back on any failure. A job's import keeps its manifest after
 // committing so the runner can still finish the job if the agent stops before the job is saved; the runner discards
 // it once the job is completed or failed. An import with no job behind it discards its own manifest when it ends.
-// Staged derivatives get their ReplayGain tags first (loudness.mjs), so the manifest records the tagged files.
-export async function runManifestImport({ stateRoot, id, jobId = null, kind, root, entries, result, afterCommit = null, tagLoudness = defaultLoudnessTagger() }) {
+// Staged derivatives get their BPM, genre and mood tags (track-style.mjs) and then their ReplayGain tags
+// (loudness.mjs) first, so the manifest records the tagged files. Style tagging rewrites each file with ffmpeg, so it
+// runs before rsgain rather than after it.
+export async function runManifestImport({ stateRoot, id, jobId = null, kind, root, entries, result, afterCommit = null, tagStyle = defaultStyleTagger(), tagLoudness = defaultLoudnessTagger() }) {
   const { manifestPath, stagingRoot } = importStatePaths(stateRoot, id)
+  await tagStyle(entries, stagingRoot)
   await tagLoudness(entries, stagingRoot)
   const handle = await createImportManifest({ path: manifestPath, id, jobId, kind, root, entries, result })
   try {
