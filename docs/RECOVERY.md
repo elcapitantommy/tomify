@@ -110,6 +110,31 @@ rsgain easy -S -m MAX /srv/music
 
 `easy` treats each folder as an album, `-S` skips files that already have ReplayGain tags (so it is safe to re-run) and `-m MAX` uses every core. It only rewrites tags, never audio, but it does change each file's size and modification time, so the next backup copies them again. `/srv/music/_Recovery` is inside `/srv/music` on the current box, so this covers recovery files too.
 
+## BPM, genre and mood tags
+
+Navidrome returns BPM, genre and mood on every song (`bpm`, `genres` and `moods` in OpenSubsonic) but only reads them from tags, so the DJ can only build a set of one tempo or style from tagged files. The agent adds whichever of the three a file is missing (`recovery-agent/track-style.mjs`, called from `runManifestImport` before ReplayGain tagging):
+
+- **BPM** is measured on the box: ffmpeg decodes up to five minutes of the track and [bpm-tools](https://www.pogo.org.uk/~mark/bpm-tools/) works out the tempo, written as a whole number. It looks for tempos between 84 and 146 BPM, so very fast music (drum and bass at 174) is recorded at half speed.
+- **Genre** comes from MusicBrainz: the recording's genres, then its release group's, then the artist's, up to three, most voted first (for example `Deep House; House`). Tracks without a MusicBrainz recording id are matched by an exact artist and title search. With a Last.fm key, Last.fm's top tags fill in when MusicBrainz has none, keeping only tags MusicBrainz lists as genres.
+- **Mood** is one or two of Chill, Upbeat, Energetic, Dark, Sad, Romantic, Dreamy and Aggressive, folded from the tags listeners gave the track on Last.fm (and MusicBrainz, which rarely has any). Without a Last.fm key most tracks get no mood.
+
+Tags a file already has are never replaced, and the audio is never touched: the file is copied with `ffmpeg -c copy` with the new tags added, then swapped in. FLAC, Ogg, Opus and MP3 get all three. M4A gets BPM and genre (MP4 has no mood tag ffmpeg can write), and because ffprobe can't read an M4A's BPM back, its tempo is measured again on every backfill run. Other formats are left alone. MusicBrainz calls are limited to one every 1.1 seconds, so a looked-up import takes about a second or two longer per track. A failed lookup or analysis is logged and the import carries on.
+
+To turn it on:
+
+1. Install bpm-tools: `sudo apt install bpm-tools`.
+2. Add to `/etc/tomify/recovery-agent.env`: `BPM_PATH=/usr/bin/bpm`, `STYLE_LOOKUP=on` and, for moods, `LASTFM_API_KEY=<key>` (a free key from [last.fm/api/account/create](https://www.last.fm/api/account/create)). Redeploy the agent ([Updating the recovery agent](#updating-the-recovery-agent)).
+
+To tag what is already in the libraries, run as the user that owns the files, then start a Navidrome scan:
+
+```sh
+set -a; . /etc/tomify/recovery-agent.env; set +a
+node /opt/tomify/current/recovery-agent/style-backfill.mjs --dry-run --limit 20 /srv/music   # see what it would add
+node /opt/tomify/current/recovery-agent/style-backfill.mjs /srv/music
+```
+
+It prints a line for each file it tags. It skips hidden folders such as `.tomify-source`, files that already have all three tags, and files it looked up before without finding anything (marked with a `TOMIFY_STYLE_CHECKED` date tag; `--recheck` looks them up again). It is safe to stop and re-run. Expect a few seconds per track, so a large library takes hours; running it under `nohup` or `tmux` lets it carry on after you log out. Like rsgain, it rewrites each file it tags, so take a backup first and expect the next backup to copy those files again.
+
 ## Canonical metadata review
 
 Selecting any acquisition candidate triggers a MusicBrainz recording search using the wanted artist/title plus any available album and duration evidence. Tomify stores the resulting suggestion, recording/release/release-group identifiers, confidence and resolution time on the existing Recovery item. That saved result is reused for 30 days when the same candidate is selected again.
