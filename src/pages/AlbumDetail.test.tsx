@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useEffect } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Album, Track } from '../types'
@@ -11,12 +12,13 @@ const album: Album & { song: Track[] } = { id: 'album-1', name: 'Flood', artist:
 const api = { session: { username: 'guest' }, album: vi.fn(async () => album), albums: vi.fn(async () => [album]), allAlbums: vi.fn(async () => [album]), artist: vi.fn(), coverArtUrl: () => 'https://music.example/cover.jpg' }
 
 vi.mock('../lib/api-context', () => ({ useApi: () => api }))
-vi.mock('../components/AlbumCompleteness', () => ({ AlbumCompleteness: () => <p>completeness check</p> }))
+const completenessMounts = vi.hoisted(() => ({ count: 0 }))
+vi.mock('../components/AlbumCompleteness', () => ({ AlbumCompleteness: function MockCompleteness() { useEffect(() => { completenessMounts.count += 1 }, []); return <p>completeness check</p> } }))
 vi.mock('../components/AlbumArtworkPicker', () => ({ AlbumArtworkPicker: ({ searchOnOpen }: { searchOnOpen?: boolean }) => <p>artwork picker{searchOnOpen ? ' searching' : ''}</p> }))
 vi.mock('../components/TrackList', () => ({ TrackList: () => null }))
 
-function renderAlbum() {
-  return render(<MemoryRouter initialEntries={['/album/album-1']}><Routes><Route path="/album/:id" element={<AlbumDetail/>}/></Routes></MemoryRouter>)
+function renderAlbum(id = 'album-1') {
+  return render(<MemoryRouter initialEntries={[`/album/${id}`]}><Routes><Route path="/album/:id" element={<AlbumDetail/>}/></Routes></MemoryRouter>)
 }
 
 describe('AlbumDetail admin tools', () => {
@@ -36,6 +38,20 @@ describe('AlbumDetail admin tools', () => {
     expect(screen.getByText('artwork picker searching')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Close album artwork options' }))
     expect(screen.queryByText(/artwork picker/)).not.toBeInTheDocument()
+  })
+
+  it('mounts the completeness check once, after the edition lookup for this album', async () => {
+    useAuth.setState({ isAdmin: true })
+    completenessMounts.count = 0
+    // The album arrives after the empty no-album edition lookup has settled, which used to show the check for a moment before the real lookup hid it again.
+    api.allAlbums.mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve([album]), 20)))
+    const slowAlbum = { ...album, id: 'album-slow' }
+    useReleaseMetadata.setState({ overrides: { 'album-slow': { albumId: 'album-slow', releaseType: 'album', source: 'musicbrainz' } } } as never)
+    api.album.mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve(slowAlbum), 20)))
+    renderAlbum('album-slow')
+    expect(await screen.findByText('completeness check', undefined, { timeout: 5000 })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('completeness check')).toBeInTheDocument())
+    expect(completenessMounts.count).toBe(1)
   })
 
   it('hides metadata editing, the completeness check and artwork replacement from other users', async () => {
