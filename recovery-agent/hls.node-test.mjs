@@ -115,7 +115,7 @@ async function packager(options = {}) {
   const navidrome = options.navidrome ?? fakeNavidrome()
   const ffmpeg = options.ffmpeg ?? fakeSpawn()
   const probeDuration = options.probeDuration ?? (async () => options.duration ?? 15)
-  const hls = createHlsPackager({ config: { enabled: true, navidromeUrl: options.navidromeUrl ?? 'http://navidrome', cacheDir, maxCacheBytes: options.maxCacheBytes ?? 1e9 }, probeDuration, fetch: navidrome.fetch, spawn: ffmpeg.spawn })
+  const hls = createHlsPackager({ config: { enabled: true, navidromeUrl: options.navidromeUrl ?? 'http://navidrome', cacheDir, maxCacheBytes: options.maxCacheBytes ?? 1e9 }, probeDuration, fetch: navidrome.fetch, spawn: ffmpeg.spawn, now: options.now })
   return { hls, cacheDir, navidrome, ffmpeg }
 }
 
@@ -197,7 +197,8 @@ test('a track Navidrome doesn’t know is reported, not packaged', async () => {
 
 test('skipping through tracks stops the encoders of tracks nobody is listening to', async () => {
   const ffmpeg = fakeSpawn({ chunks: 1000, delayMs: 20 })
-  const { hls, cacheDir } = await packager({ ffmpeg })
+  // A frozen clock: tracks requested within the same millisecond still stop oldest first.
+  const { hls, cacheDir } = await packager({ ffmpeg, now: () => 1000 })
   for (const id of ['a', 'b', 'c']) await hls.handle(parseHlsPath(`/v1/hls/${id}/master.m3u8`), credentials)
   const killed = ffmpeg.calls.filter((call) => call.child.killed).map((call) => new URL(call.input).searchParams.get('id'))
   assert.deepEqual(killed, ['a'])
