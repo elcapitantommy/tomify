@@ -1,6 +1,7 @@
 import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
 import { isNavidromeConfigurationError } from '../lib/navidrome.ts'
+import { seal, unseal } from '../lib/seal.ts'
 import { diffCataloguePlaylist, mapSpotifyPlaylist, occurrenceKeys, parseSpotifyPlaylistId, reusableRecoveryId, shouldCreateRecovery } from '../../scripts/catalogue-import.mjs'
 import { playlistShareFor } from './playlist-share.ts'
 import type { D1Database, D1PreparedStatement } from '@cloudflare/workers-types'
@@ -25,34 +26,19 @@ function spotifyRedirectUri(env: Env, request: Request) {
   return String(env.SPOTIFY_REDIRECT_URI || new URL('/api/catalogue-auth/spotify/callback', request.url))
 }
 
-function bytesToBase64(bytes: Uint8Array) {
-  let value = ''
-  for (const byte of bytes) value += String.fromCharCode(byte)
-  return btoa(value)
-}
-
-function base64ToBytes(value: string) {
-  const decoded = atob(value)
-  return Uint8Array.from(decoded, (character) => character.charCodeAt(0))
-}
-
-async function catalogueTokenKey(env: Env) {
+function catalogueTokenSecret(env: Env) {
   if (!env.SPOTIFY_TOKEN_ENCRYPTION_KEY) throw new Error('Spotify token encryption is not configured.')
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(env.SPOTIFY_TOKEN_ENCRYPTION_KEY)))
-  return crypto.subtle.importKey('raw', digest, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
+  return String(env.SPOTIFY_TOKEN_ENCRYPTION_KEY)
 }
 
 async function encryptCatalogueToken(env: Env, value: unknown) {
-  const iv = crypto.getRandomValues(new Uint8Array(12))
-  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await catalogueTokenKey(env), new TextEncoder().encode(JSON.stringify(value)))
-  return bytesToBase64(iv) + '.' + bytesToBase64(new Uint8Array(encrypted))
+  return seal(catalogueTokenSecret(env), JSON.stringify(value))
 }
 
 async function decryptCatalogueToken(env: Env, value: unknown): Promise<StoredSpotifyToken> {
   const [iv, encrypted] = String(value || '').split('.')
   if (!iv || !encrypted) throw new Error('Stored Spotify authorization is invalid.')
-  const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(iv) }, await catalogueTokenKey(env), base64ToBytes(encrypted))
-  return JSON.parse(new TextDecoder().decode(decrypted))
+  return JSON.parse(await unseal(catalogueTokenSecret(env), String(value)))
 }
 
 

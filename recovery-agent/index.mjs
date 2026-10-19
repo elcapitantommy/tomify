@@ -30,6 +30,7 @@ import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobS
 import { agentStatusResponse, healthResponse, recoveryAgentPackageVersion } from './health.mjs'
 import { createHlsPackager, credentialsFromHeaders, hlsConfig, HlsError, parseHlsPath } from './hls.mjs'
 import { createImportRecovery, importStatePaths, prepareImportStaging, removeImportStaging, runManifestImport } from './manifest.mjs'
+import { createLanHandler, lanConfig, startLanServer } from './lan.mjs'
 
 let authConfiguration
 try { authConfiguration = validateRecoveryAuthConfig() }
@@ -826,5 +827,14 @@ createServer(async (request, response) => {
     return send(response, 400, { error: 'recovery-agent-error', message })
   }
 }).listen(port, host, () => process.stdout.write(`Tomify recovery agent listening on http://${host}:${port}\n`))
+
+// LAN-direct streaming: a second, HTTPS listener for players on the home network (off until configured).
+const lanSettings = lanConfig(process.env)
+if (lanSettings.problem) process.stderr.write(`LAN-direct streaming is off: ${lanSettings.problem}\n`)
+if (lanSettings.enabled) {
+  const log = (message) => process.stderr.write(`${message}\n`)
+  await startLanServer(lanSettings, createLanHandler({ config: lanSettings, hls, navidromeUrl: hlsSettings.navidromeUrl, log }), { log })
+    .catch((error) => log(`LAN-direct streaming is off: ${error instanceof Error ? error.message : String(error)}`))
+}
 
 await jobRunner.start()

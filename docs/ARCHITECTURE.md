@@ -39,7 +39,7 @@ Navidrome stays the source of truth for accounts, the library, playlists, favour
 - `src/lib/navidrome.ts` is the single typed OpenSubsonic client. Signing in creates a salted token (`createAuthSession`); the password is never stored. When the server is the default (`https://tomify.tomdixon.uk`), requests go through the Worker's same-origin `/navidrome` proxy, which avoids CORS.
 - Calls to Tomify's own API (`src/lib/recovery-api.ts`, `catalogue-api.ts`, `completeness-api.ts`, `playlist-shares.ts` and the stores) send the Navidrome username, token and salt as `x-tomify-user`, `x-tomify-token` and `x-tomify-salt` headers.
 - State lives in Zustand stores under `src/stores/`: auth, the player and queue, live playback, album artwork overrides and release metadata.
-- `src/components/PlayerRuntime.tsx` owns one long-lived `<audio>` element. `src/lib/mediaSession.ts` sets lock-screen metadata and controls. `src/lib/sourceResolver.ts` is the seam for offline audio; today it always streams from Navidrome.
+- `src/components/PlayerRuntime.tsx` owns one long-lived `<audio>` element. `src/lib/mediaSession.ts` sets lock-screen metadata and controls. `src/lib/sourceResolver.ts` is the seam for offline audio; today it always streams from Navidrome. `src/lib/mediaRoute.ts` decides where a stream URL points (the Worker, or the box on the home network) and which credential it carries; see [Media sessions and LAN-direct streaming](#media-sessions-and-lan-direct-streaming).
 - `src/components/LivePlaybackSync.tsx` publishes this device's playback state to the Worker and picks up commands from the user's other devices.
 - The service worker (Workbox via `vite-plugin-pwa`, configured in `vite.config.ts`) precaches the app shell and caches artwork. Its navigation fallback excludes `/api/` and `/navidrome/`. Audio is not cached.
 - Back and Forward return to where you were on a page: `src/hooks/useScrollRestoration.ts` (used by `AppShell`) saves the scroll position per history entry and, on Back, waits for the page's data to load before scrolling back (it gives up after 5 seconds or as soon as the user scrolls). New pages start at the top. The Artists, artist and Albums lists cache their data per user (`useLoad` cache key) so they draw immediately, and the Albums and artist release tabs and sort order live in the URL (`?type=`, `?sort=`) so Back shows the same tab.
@@ -67,6 +67,7 @@ Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/
 | `worker/routes/listening.ts`, `worker/routes/smart-playlists.ts` | `/api/listening`, `/api/listening/stats`, `/api/smart-playlists*` | Listening history and stats, saved smart-playlist rules |
 | `worker/routes/inventory.ts`, `worker/routes/system-settings.ts` | `/api/inventory*`, `/api/library-health*`, `/api/system*`, quality, scan and preflight routes | Administrative library and server operations |
 | `worker/routes/navidrome.ts`, `worker/routes/version.ts` | `/navidrome/*`, `/api/version` | Navidrome proxy and deployed version information |
+| `worker/routes/hls.ts`, `worker/routes/media-session.ts` (+ `worker/features/media-session.ts`) | `/api/hls/*`, `/api/media-session` | Adaptive streaming through the agent; short-lived media tokens and the LAN address |
 | `scripts/recovery-metadata.mjs`, `scripts/recovery-artwork.mjs` | (helpers) | MusicBrainz metadata review and artwork resolution for Recovery |
 
 Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configuration falls back to `index.html` for client-side routes.
@@ -84,6 +85,16 @@ Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configura
 
   Everyone else gets `403`.
 - `/api/album-artwork/image/<id>` serves uploaded covers without sign-in, because `<img>` tags cannot send the headers; the id is random.
+
+### Media sessions and LAN-direct streaming
+
+Audio elements cannot send headers either, so stream URLs used to carry the Navidrome login (`u`, `t`, `s`) in the query, where it lasts until the password changes. With `TOMIFY_MEDIA_KEY` set:
+
+- `POST /api/media-session` (normal `x-tomify-*` login) returns `{ token, expiresAt, lanOrigin }`. The token is the login sealed with AES-GCM under `TOMIFY_MEDIA_KEY` (`worker/lib/seal.ts`) with a 4-hour expiry. A token cannot mint another token.
+- The player (`src/lib/mediaRoute.ts`) refreshes it at half-life and builds stream and HLS URLs with `mt=<token>` instead of the login (`NavidromeClient.streamUrl` / `hlsUrl`).
+- The Worker accepts `mt` on `/navidrome/rest/stream.view` and `/api/hls/*` only, opens it and passes the login on exactly as before. Any other `/navidrome` path with `mt`, or a forged or expired token, gets `401`.
+- When `TOMIFY_LAN_ORIGIN` is also set, the player probes `<lanOrigin>/lan/ping` with a 1.5-second timeout (again on network changes, every 5 minutes while it fails, and at each token refresh). If the box answers, the same paths are fetched from the box's LAN listener instead of the Worker, so audio stays on the home network. A LAN stream that fails is retried through the Worker straight away, without counting as an adaptive-streaming failure.
+- Without `TOMIFY_MEDIA_KEY` the route answers `404`, and the player keeps the old URLs. Cover-art URLs still carry the login, so the service worker's artwork cache keeps working.
 
 ### The Navidrome proxy
 
@@ -113,6 +124,8 @@ Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configura
 | `TOMIFY_MIXES_MODEL` | Dashboard var | Optional | `claude-sonnet-5-5` | `worker/features/mix-curator.ts` (mixes and the DJ) | Mixes and the DJ use Claude Sonnet 5.5. |
 | `AI` | Workers AI binding (`wrangler.toml`) | Optional | Workers AI | `worker/features/dj.ts` (the DJ's voice, Deepgram Aura-2) | The DJ still plays its sets but doesn't speak; `/api/dj/voice` returns `503`. |
 | `TOMIFY_DJ_VOICE` | Dashboard var | Optional | `pandora` | `worker/features/dj.ts` | The Aura-2 voice, used when `TOMIFY_DJ_VOICE_MODEL` is `aura`. |
+| `TOMIFY_MEDIA_KEY` | Dashboard secret | Optional | None | `worker/features/media-session.ts` (seals and opens short-lived media tokens); the agent's `TOMIFY_MEDIA_KEY` must be the same value | `/api/media-session` returns `404` and stream URLs keep the Navidrome login, as before. |
+| `TOMIFY_LAN_ORIGIN` | Dashboard var | Optional | None | `worker/routes/media-session.ts` (the box's `https://` address on the home network, for example `https://lan.tomify.tomdixon.uk:8789`) | Players always stream through the Worker. |
 | `TOMIFY_DJ_VOICE_MODEL` | `wrangler.toml` var | Optional | `melotts` (set to `aura`) | `worker/features/dj.ts` | The DJ reads links with MeloTTS, which costs about 8 free neurons a link. Set `aura` to use Aura-2 (about 1,100 a link) first, with MeloTTS as backup. |
 | `TOMIFY_VERSION` | Build-time constant | Required, generated | Current Git short SHA; then `CF_PAGES_COMMIT_SHA`; then `WORKERS_CI_COMMIT_SHA`; then `unknown` | `/api/version` | Reports `unknown` only when Git and both CI fallbacks are unavailable. |
 | `TOMIFY_AGENT_CONTRACT` | Build-time constant | Required, generated | `2` | `/api/version` and the recovery-agent compatibility gate | Build generation supplies it; a missing generated module fails the build. |
@@ -153,6 +166,7 @@ Spotify OAuth tokens are stored encrypted with `SPOTIFY_TOKEN_ENCRYPTION_KEY`. N
 
 `recovery-agent/` is a small Node.js HTTP service that runs on the Debian box as the `tomify-recovery` systemd unit (`tomify-recovery.service.example`). It is deployed separately from the Worker with `scripts/deploy-agent.ps1`, which installs an immutable release under `/opt/tomify/releases` and switches `/opt/tomify/current` to it. See [DEPLOYMENT.md](DEPLOYMENT.md#updating-the-recovery-agent).
 
+- With `TOMIFY_LAN_PORT`, `TOMIFY_LAN_TLS_CERT`, `TOMIFY_LAN_TLS_KEY` and `TOMIFY_MEDIA_KEY` set, `lan.mjs` also runs an HTTPS listener for players on the home network (LAN-direct streaming): `/lan/ping`, `/navidrome/rest/stream.view` (proxied to Navidrome on the box) and `/api/hls/*` (the same packager as `/v1/hls`). It accepts only media tokens, answers CORS and Private Network Access preflights for `TOMIFY_LAN_ALLOWED_ORIGINS`, and reloads its certificate twice a day. See [DEPLOYMENT.md](DEPLOYMENT.md#lan-direct-streaming).
 - It listens on `127.0.0.1:8788`. A Cloudflare Tunnel run by the `tomify-recovery-cloudflared` Docker container exposes it at `RECOVERY_AGENT_URL`; the Worker never connects to the box directly.
 - `GET /health` is unauthenticated. Every `/v1/*` endpoint requires `Authorization: Bearer $TOMIFY_RECOVERY_TOKEN`, and the agent refuses to start without a token of at least 32 characters (`config.mjs`).
 - Endpoints: `/v1/status`, `/v1/search`, `/v1/acquire`, `/v1/jobs/status`, `/v1/jobs/cancel`, `/v1/jobs/import-remaining`, `/v1/delete`, `/v1/system/vpn/status`, `/v1/system/vpn`, `/v1/system/reboot`. The full contract is in [RECOVERY.md](RECOVERY.md#backend-contract).

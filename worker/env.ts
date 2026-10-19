@@ -23,6 +23,10 @@ export interface Env {
   // Optional: the DJ's Deepgram Aura-2 voice (default pandora, a British female voice).
   TOMIFY_DJ_VOICE?: string
   TOMIFY_DJ_VOICE_MODEL?: string
+  // Optional: seals short-lived media tokens (/api/media-session); the box's agent needs the same value.
+  TOMIFY_MEDIA_KEY?: string
+  // Optional: the box's HTTPS address on the home network, for LAN-direct streaming.
+  TOMIFY_LAN_ORIGIN?: string
 }
 
 export type RouteHandler = (request: Request, env: Env, url: URL) => Promise<Response | null>

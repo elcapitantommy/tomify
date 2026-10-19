@@ -6,6 +6,7 @@ import { createServer } from 'node:net'
 import { build } from 'vite'
 import { encryptCatalogueToken } from '../worker/features/catalogue.ts'
 import { parseLiveCommands } from '../worker/features/live-playback.ts'
+import { openMediaToken } from '../recovery-agent/lan.mjs'
 
 function mockDatabase() {
   return {
@@ -1959,4 +1960,56 @@ test('smart playlists are saved per account, and listening stats total the recor
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('media sessions seal the login into a short-lived token that streams, HLS and the box accept instead of the login', async () => {
+  const originalFetch = globalThis.fetch
+  const outbound = []
+  const login = { user: 'media-listener', token: '0123456789abcdef0123456789abcdef', salt: 'salt7' }
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: url.searchParams.get('u') === login.user && url.searchParams.get('t') === login.token ? 'ok' : 'failed' } })
+    if (url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: false } } })
+    outbound.push({ url, headers: init.headers })
+    if (url.pathname.endsWith('/master.m3u8')) return new Response('#EXTM3U\nv0/index.m3u8\n')
+    return new Response('audio', { status: 200 })
+  }
+  const env = { TOMIFY_MEDIA_KEY: 'm'.repeat(40), TOMIFY_LAN_ORIGIN: 'https://lan.tomify.test:8789', RECOVERY_AGENT_URL: 'https://agent-media.tomify.test' }
+  const headers = { 'x-tomify-user': login.user, 'x-tomify-token': login.token, 'x-tomify-salt': login.salt }
+  const session = (init, extra = env) => worker.fetch(new Request('https://app.tomify.test/api/media-session', init), extra)
+  try {
+    assert.equal((await session({ method: 'POST', headers }, {})).status, 404)
+    assert.equal((await session({ method: 'GET', headers })).status, 405)
+    assert.equal((await session({ method: 'POST', headers: { ...headers, 'x-tomify-token': 'f'.repeat(32) } })).status, 401)
+    const before = Date.now()
+    const granted = await session({ method: 'POST', headers })
+    assert.equal(granted.status, 200)
+    const body = await granted.json()
+    assert.equal(body.lanOrigin, env.TOMIFY_LAN_ORIGIN)
+    assert.ok(body.expiresAt >= before + 4 * 3600_000 - 1000 && body.expiresAt <= Date.now() + 4 * 3600_000)
+    assert.equal(body.token.includes(login.token), false)
+    // The box's LAN listener opens the same token with the same key.
+    assert.deepEqual(openMediaToken(env.TOMIFY_MEDIA_KEY, body.token), { user: login.user, token: login.token, salt: login.salt })
+    assert.equal(openMediaToken('x'.repeat(40), body.token), null)
+    assert.equal(openMediaToken(env.TOMIFY_MEDIA_KEY, body.token, body.expiresAt + 1), null)
+
+    const mt = encodeURIComponent(body.token)
+    const stream = await worker.fetch(new Request(`https://app.tomify.test/navidrome/rest/stream.view?id=tr1&v=1.16.1&c=Tomify&mt=${mt}`), env)
+    assert.equal(stream.status, 200)
+    assert.equal(outbound[0].url.origin + outbound[0].url.pathname, TEST_NAVIDROME_ORIGIN + '/rest/stream.view')
+    assert.deepEqual(Object.fromEntries(outbound[0].url.searchParams), { id: 'tr1', v: '1.16.1', c: 'Tomify', u: login.user, t: login.token, s: login.salt })
+    // Only streams take a token, and only a token the Worker sealed.
+    for (const path of [`/navidrome/rest/getUser.view?username=x&mt=${mt}`, '/navidrome/rest/stream.view?id=tr1&mt=forged.token', `/navidrome/rest/stream.view?id=tr1&mt=${mt}x`]) {
+      assert.equal((await worker.fetch(new Request(`https://app.tomify.test${path}`), env)).status, 401, path)
+    }
+    assert.equal((await worker.fetch(new Request(`https://app.tomify.test/navidrome/rest/stream.view?id=tr1&mt=${mt}`), { ...env, TOMIFY_MEDIA_KEY: undefined })).status, 401)
+    assert.equal(outbound.length, 1)
+
+    const master = await worker.fetch(new Request(`https://app.tomify.test/api/hls/tr1/master.m3u8?mt=${mt}`), env)
+    assert.equal(master.status, 200)
+    assert.equal(await master.text(), `#EXTM3U\nv0/index.m3u8?${new URLSearchParams({ mt: body.token })}\n`)
+    assert.equal(outbound[1].headers['x-tomify-navidrome-user'], login.user)
+    assert.equal(outbound[1].headers['x-tomify-navidrome-token'], login.token)
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/hls/tr1/master.m3u8?mt=forged.token'), env)).status, 401)
+  } finally { globalThis.fetch = originalFetch }
 })

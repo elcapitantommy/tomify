@@ -1,4 +1,5 @@
 import type { RouteHandler } from '../env.ts'
+import { openMediaToken } from '../features/media-session.ts'
 import { authenticateCredentials } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
 import { navidromeOrigin } from '../lib/navidrome.ts'
@@ -6,7 +7,8 @@ import { navidromeOrigin } from '../lib/navidrome.ts'
 // Adaptive streaming: GET /api/hls/<trackId>/<file>?u=&t=&s= is passed to the recovery agent, which
 // cuts the track into chunks at several bitrates. Audio elements and Safari's own HLS player can't
 // add headers, so the Navidrome login travels in the query, and every playlist line pointing at
-// another playlist or chunk gets the same query so those requests are signed in too.
+// another playlist or chunk gets the same query so those requests are signed in too. A media
+// token (`?mt=`, see features/media-session.ts) can stand in for the login.
 // `/api/hls/<trackId>/<track|album>/<file>` asks for a loudness-normalised stream; its playlists
 // name their files relatively, so every later request stays under the same mode.
 const HLS_PATH = /^\/api\/hls\/([A-Za-z0-9_-]{1,64})\/((?:(?:track|album)\/)?(?:master\.m3u8|v[0-9]\/index\.m3u8|v[0-9]\/seg\d{5}\.ts))$/
@@ -25,9 +27,8 @@ export const hlsRoute: RouteHandler = async (request, env, url) => {
   if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: 'method-not-allowed' }, 405)
   const match = HLS_PATH.exec(url.pathname)
   if (!match) return json({ error: 'not-found' }, 404)
-  const user = url.searchParams.get('u')
-  const token = url.searchParams.get('t')
-  const salt = url.searchParams.get('s')
+  const mt = url.searchParams.get('mt')
+  const [user, token, salt] = mt ? await openMediaToken(env, mt) ?? [] : ['u', 't', 's'].map((key) => url.searchParams.get(key))
   if (!await authenticateCredentials(env, user, token, salt)) return json({ error: 'unauthorized' }, 401)
   if (!env.RECOVERY_AGENT_URL) return json({ error: 'hls-unavailable', message: 'The recovery agent is not configured.' }, 503)
 
@@ -53,7 +54,7 @@ export const hlsRoute: RouteHandler = async (request, env, url) => {
     return json({ error: body.error || 'hls-failed', message: body.message || 'Adaptive streaming failed.' }, upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502)
   }
   if (match[2].endsWith('.m3u8')) {
-    const query = new URLSearchParams({ u: user!, t: token!, s: salt! }).toString()
+    const query = new URLSearchParams(mt ? { mt } : { u: user!, t: token!, s: salt! }).toString()
     return new Response(request.method === 'HEAD' ? null : signPlaylist(await upstream.text(), query), {
       headers: { 'content-type': 'application/vnd.apple.mpegurl', 'cache-control': 'no-store' },
     })

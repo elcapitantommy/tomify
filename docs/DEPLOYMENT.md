@@ -5,6 +5,7 @@ Tomify has two deployable parts: the **site** (the PWA and the Cloudflare Worker
 - [The site](#the-site)
 - [D1 migrations](#d1-migrations)
 - [Updating the recovery agent](#updating-the-recovery-agent)
+- [Short-lived media tokens and LAN-direct streaming](#short-lived-media-tokens-and-lan-direct-streaming)
 - [Box dependencies](#box-dependencies)
 - [Secrets and bindings](#secrets-and-bindings)
 - [Backups and uptime checks](#backups-and-uptime-checks)
@@ -117,6 +118,59 @@ ssh -t tom@tomify "sudo cp /tmp/*.mjs /opt/tomify/recovery-agent/ && sudo mkdir 
 
 The agent imports `../shared/quality.mjs`, so the two legacy directories must remain siblings. After migration, use the release installer or its rollback command rather than modifying a release in place.
 
+## Short-lived media tokens and LAN-direct streaming
+
+Both are off until configured, and turn on in two stages. How they work is in [Media sessions and LAN-direct streaming](ARCHITECTURE.md#media-sessions-and-lan-direct-streaming).
+
+**Stage 1: short-lived media tokens (Worker only).** Stream and HLS URLs then carry a 4-hour token instead of the Navidrome login. This needs no change on the box.
+
+1. Generate one random key and keep it somewhere safe; the box needs the same value in stage 2: `openssl rand -base64 48`.
+2. In the Cloudflare dashboard, tomify Worker → Settings → Variables and Secrets, add the **secret** `TOMIFY_MEDIA_KEY` with that value and deploy.
+3. Check: reload the app, play a track, and in the browser's network panel the `stream.view` or `master.m3u8` request has `mt=` and no `t=` or `s=`.
+
+**Stage 2: LAN-direct streaming.** At home, players stream straight from the box instead of through Cloudflare. The app is served over HTTPS, so the box must answer on an HTTPS name with a certificate browsers trust; a plain `http://192.168.…` address would be blocked as mixed content. The names below are examples; use the same ones in every step.
+
+1. **A fixed LAN address.** Give the box a DHCP reservation on the router (for example `192.168.1.20`).
+2. **A DNS name.** In Cloudflare DNS for `tomdixon.uk`, add an `A` record `lan.tomify` → `192.168.1.20` with proxy status **DNS only** (grey cloud). It is public, but the address only answers at home; elsewhere the player's 1.5-second probe fails and it uses the Worker. Some routers block public names that answer with private addresses (DNS rebinding protection, for example in dnsmasq, Pi-hole or OpenWrt): allow `lan.tomify.tomdixon.uk` there, or add the same name as a local DNS entry on the router. Check from a laptop or phone at home: `nslookup lan.tomify.tomdixon.uk` returns `192.168.1.20`.
+3. **A certificate**, from Let's Encrypt with the DNS challenge, so no port is opened to the internet:
+   1. Create a Cloudflare API token (My Profile → API Tokens → Create Token → *Edit zone DNS* template, Zone Resources: *Specific zone* `tomdixon.uk`).
+   2. On the box:
+
+      ```bash
+      sudo apt install certbot python3-certbot-dns-cloudflare
+      sudo sh -c 'umask 077; echo "dns_cloudflare_api_token = <token>" > /etc/letsencrypt/cloudflare.ini'
+      sudo certbot certonly --dns-cloudflare --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+        --dns-cloudflare-propagation-seconds 30 -d lan.tomify.tomdixon.uk
+      ```
+
+   3. The agent runs as `tom` and cannot read `/etc/letsencrypt/live`, so a deploy hook copies the files into `/opt/tomify/secrets/lan` on every renewal. Create `/etc/letsencrypt/renewal-hooks/deploy/tomify-lan.sh`:
+
+      ```sh
+      #!/bin/sh
+      set -e
+      install -d -o root -g tom -m 750 /opt/tomify/secrets/lan
+      install -o root -g tom -m 640 /etc/letsencrypt/live/lan.tomify.tomdixon.uk/fullchain.pem /opt/tomify/secrets/lan/fullchain.pem
+      install -o root -g tom -m 640 /etc/letsencrypt/live/lan.tomify.tomdixon.uk/privkey.pem /opt/tomify/secrets/lan/privkey.pem
+      ```
+
+      then `sudo chmod 755 /etc/letsencrypt/renewal-hooks/deploy/tomify-lan.sh`, run it once by hand with `sudo`, and check renewal with `sudo certbot renew --dry-run` (Debian's `certbot.timer` renews automatically). The agent re-reads the files twice a day, so a renewal needs no restart.
+4. **The agent's settings.** Add to `/etc/tomify/recovery-agent.env`:
+
+   ```bash
+   TOMIFY_LAN_PORT=8789
+   TOMIFY_LAN_TLS_CERT=/opt/tomify/secrets/lan/fullchain.pem
+   TOMIFY_LAN_TLS_KEY=/opt/tomify/secrets/lan/privkey.pem
+   TOMIFY_MEDIA_KEY=<the same value as the Worker secret>
+   ```
+
+   Optional: `TOMIFY_LAN_HOST` (default `0.0.0.0`, every interface) and `TOMIFY_LAN_ALLOWED_ORIGINS` (default `https://app.tomify.tomdixon.uk`, comma-separated). Streams are read from Navidrome on the box at `TOMIFY_NAVIDROME_URL` (default `http://127.0.0.1:4533`), as adaptive streaming already does. The unit needs no change: `/opt/tomify/secrets` is already readable, and port 8789 needs no privileges.
+5. **Deploy and restart.** Deploy this release of the agent (`.\scripts\deploy-agent.ps1`), or `sudo systemctl restart tomify-recovery` after changing only the env file. `journalctl -u tomify-recovery -n 20` shows `Tomify LAN streaming listening on https://0.0.0.0:8789`; a line starting `LAN-direct streaming is off:` names the missing setting or unreadable file.
+6. **Let the LAN in, and only the LAN.** Do not forward port 8789 on the router. With NordVPN connected on the box, allow the port the way SSH is allowed ([Allowlist the LAN, SSH and the tunnel](RECOVERY.md#allowlist-the-lan-ssh-and-the-tunnel)): `nordvpn allowlist add port 8789 protocol TCP`, with `lan-discovery` on. If the box runs `ufw`, also `sudo ufw allow from 192.168.1.0/24 to any port 8789 proto tcp`.
+7. **Check from a laptop at home:** `curl -i -H 'Origin: https://app.tomify.tomdixon.uk' https://lan.tomify.tomdixon.uk:8789/lan/ping` returns `200` with `access-control-allow-origin: https://app.tomify.tomdixon.uk`, and no certificate warning.
+8. **Tell the Worker.** Add the dashboard **variable** `TOMIFY_LAN_ORIGIN` = `https://lan.tomify.tomdixon.uk:8789` and deploy. Reload the app at home and play a track: its requests go to `lan.tomify.tomdixon.uk:8789`. Chrome and Edge ask once whether the site may access devices on the local network; allow it. If it is refused, or the box does not answer, playback goes through the Worker as before.
+
+To turn LAN streaming off, delete `TOMIFY_LAN_ORIGIN`; players stop using the box at their next token refresh or reload. Deleting `TOMIFY_MEDIA_KEY` goes back to login URLs; a player that is open fails one stream, asks again and carries on with the login. To change the key, change it on the Worker and the box together; open players pick up a new token after their next failed stream.
+
 ## Box dependencies
 
 The agent runs on Debian with Node.js 20. Paths are set in `/etc/tomify/recovery-agent.env` (see `recovery-agent/recovery-agent.env.example`); leaving an optional one blank turns that feature off.
@@ -138,7 +192,7 @@ Wrangler 4.87 and later need Node.js 22, so the box stays on 4.86.0 while it run
 
 `wrangler.toml` holds the D1 (`TOMIFY_DB`), Workers AI (`AI`) and static assets (`ASSETS`) bindings and the non-secret `NAVIDROME_ORIGIN`. Every other Worker variable and every secret, including `RECOVERY_AGENT_URL` and `RECOVERY_AGENT_TOKEN`, is set in the Cloudflare dashboard and never committed. [The architecture configuration table](ARCHITECTURE.md#configuration) lists each one with what it is for and what happens when it is missing.
 
-On the box, `/etc/tomify/recovery-agent.env` holds the agent's settings and its `TOMIFY_RECOVERY_TOKEN` (at least 32 characters, matching the Worker's `RECOVERY_AGENT_TOKEN`), and `/etc/tomify/backup.env` holds the Cloudflare API token used by the backup. Both are owner-only.
+On the box, `/etc/tomify/recovery-agent.env` holds the agent's settings and its `TOMIFY_RECOVERY_TOKEN` (at least 32 characters, matching the Worker's `RECOVERY_AGENT_TOKEN`) and, for LAN-direct streaming, `TOMIFY_MEDIA_KEY` (matching the Worker's secret of the same name), and `/etc/tomify/backup.env` holds the Cloudflare API token used by the backup. Both are owner-only.
 
 ## Backups and uptime checks
 
