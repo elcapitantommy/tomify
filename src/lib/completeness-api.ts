@@ -2,6 +2,7 @@ import type { AlbumTracklist, RecoveryLink, ReleaseEdition } from './album-compl
 import { useAuth } from '../stores/auth'
 
 export interface TracklistResponse { tracklist: AlbumTracklist; editions: ReleaseEdition[]; recovery: Record<string, RecoveryLink> }
+export interface IncompleteAlbum { albumId: string; title: string; artist: string | null; total: number; present: number; queued: number; checkedAt: string }
 export interface TracklistRequest { albumId: string; name: string; artist: string; year?: number; musicBrainzId?: string; localTrackCount: number; releaseId?: string; force?: boolean }
 
 function headers(): HeadersInit {
@@ -19,5 +20,6 @@ async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promi
 
 export const completenessApi = {
   tracklist: (input: TracklistRequest, signal?: AbortSignal) => post<TracklistResponse>('/api/album-completeness/tracklist', input, signal),
-  addMissing: (albumId: string, trackKeys: string[]) => post<{ created: number; existing: number; recovery: Record<string, RecoveryLink> }>('/api/album-completeness/recovery', { albumId, trackKeys }),
+  addMissing: (albumId: string, trackKeys: string[], release = false) => post<{ created: number; existing: number; recovery: Record<string, RecoveryLink> }>('/api/album-completeness/recovery', { albumId, trackKeys, release }),
+  overview: (signal?: AbortSignal) => post<{ albums: IncompleteAlbum[] }>('/api/album-completeness/overview', {}, signal),
 }

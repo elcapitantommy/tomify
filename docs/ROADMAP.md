@@ -46,7 +46,7 @@ All 20 are done. Each row names the PR that finished it.
 | 1.11 | Replace the stale `ARCHITECTURE.md` and `ROADMAP.md`; add `DEPLOYMENT.md` | Done | Both documents are rewritten, and `DEPLOYMENT.md` gathers the site, agent, box, secrets and backup steps. |
 | 2.9 | Mobile Library tab, Albums paging, recovery source badges, star/unstar, plainer language | Partly done | See task 20. |
 | 3.1 | Offline downloads v1 | Not started | The Downloads page is a placeholder, and `src/lib/sourceResolver.ts` always streams. |
-| 3.2 | Album completeness view and bulk "recover missing tracks" | Partly done | Administrators can check an album against MusicBrainz and add the missing tracks to Recovery, as one item per track rather than one release job. |
+| 3.2 | Album completeness view and bulk "recover missing tracks" | Done (#128) | Administrators can check an album against MusicBrainz and add the missing tracks to Recovery, one item per track or as one release item mapped to the tracklist. Library health lists the checked albums that came up short. |
 | 3.3 | Supervised promotion and duplicate merge | Not started | |
 | 3.4 | Smart playlists, listening statistics, "Anna is playing…" | Not started | Live playback syncs one user's own devices, not other people's. |
 | 3.5 | LAN-direct streaming; short-lived Worker sessions | Not started | |

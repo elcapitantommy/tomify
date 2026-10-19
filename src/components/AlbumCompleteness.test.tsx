@@ -44,7 +44,19 @@ describe('AlbumCompleteness', () => {
     renderCompleteness()
     fireEvent.click(await screen.findByRole('button', { name: 'Add 1 missing to Recovery' }))
     expect(await screen.findByText('1 track added to Recovery.')).toBeInTheDocument()
-    expect(completenessApi.addMissing).toHaveBeenCalledWith('album-1', ['1-1'])
+    expect(completenessApi.addMissing).toHaveBeenCalledWith('album-1', ['1-1'], false)
+    expect(screen.getByRole('button', { name: 'All missing tracks are in Recovery' })).toBeDisabled()
+  })
+
+  it('offers to recover several missing tracks as one album search', async () => {
+    vi.mocked(completenessApi.tracklist).mockResolvedValue({ ...response, recovery: {} })
+    vi.mocked(completenessApi.addMissing).mockResolvedValue({ created: 1, existing: 0, recovery: { '1-1': { id: 'release-1', status: 'missing' }, '1-3': { id: 'release-1', status: 'missing' } } })
+    renderCompleteness()
+    expect(await screen.findByRole('button', { name: 'Add each track separately' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Recover 2 missing as one album' }))
+    expect(await screen.findByText('Added to Recovery as one album search.')).toBeInTheDocument()
+    expect(completenessApi.addMissing).toHaveBeenCalledWith('album-1', ['1-1', '1-3'], true)
+    expect(screen.getAllByRole('link', { name: 'In Recovery · Missing' })).toHaveLength(2)
     expect(screen.getByRole('button', { name: 'All missing tracks are in Recovery' })).toBeDisabled()
   })
 

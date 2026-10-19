@@ -1843,3 +1843,41 @@ test('the daily refresh saves Spotify changes, and opening the playlist queues w
     globalThis.fetch = originalFetch
   }
 })
+
+test('album completeness can queue the missing tracks as one release item, and lists incomplete albums', async () => {
+  const db = await sqliteDatabase()
+  const env = { TOMIFY_DB: db }
+  const tracklist = { albumId: 'album-1', releaseId: 'rel-1', releaseGroupId: 'group-1', title: 'Flood', artist: 'They Might Be Giants', date: '1990-01-15', source: 'auto', localTrackCount: 1,
+    tracks: ['Theme From Flood', 'Birdhouse in Your Soul', 'Lucky Ball and Chain'].map((title, index) => ({ key: `1-${index + 1}`, disc: 1, number: index + 1, title, artist: 'They Might Be Giants', length: 60, recordingId: null })) }
+  db.sqlite.prepare("INSERT INTO release_tracklists (album_id, release_id, source, tracklist_json, fetched_at) VALUES ('album-1', 'rel-1', 'auto', ?, '2026-10-19 10:00:00')").run(JSON.stringify(tracklist))
+  db.sqlite.prepare("INSERT INTO release_tracklists (album_id, release_id, source, tracklist_json) VALUES ('album-2', 'rel-2', 'auto', ?)").run(JSON.stringify({ ...tracklist, albumId: 'album-2', title: 'Lincoln', localTrackCount: 3 }))
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+    return new Response('{}', { status: 404 })
+  }
+  const call = (path, body) => worker.fetch(new Request(`https://app.tomify.test/api/album-completeness/${path}`, { method: 'POST', headers: recoveryHeaders, body: JSON.stringify(body) }), env)
+  try {
+    const added = await call('recovery', { albumId: 'album-1', trackKeys: ['1-1', '1-3'], release: true })
+    assert.equal(added.status, 201)
+    const rows = db.sqlite.prepare('SELECT id, artist, title, album, status, source_json AS source FROM recovery_items').all().map((row) => ({ ...row, source: JSON.parse(row.source) }))
+    assert.deepEqual(rows.map(({ artist, title, album, status, source }) => ({ artist, title, album, status, albumId: source.albumId, releaseId: source.releaseId, trackKeys: source.trackKeys })), [{ artist: 'They Might Be Giants', title: '', album: 'Flood', status: 'missing', albumId: 'album-1', releaseId: 'rel-1', trackKeys: ['1-1', '1-3'] }])
+    assert.deepEqual((await added.json()).recovery['1-3'], { id: rows[0].id, status: 'missing' }, 'the release item stands in for each missing track')
+
+    const repeated = await call('recovery', { albumId: 'album-1', trackKeys: ['1-1', '1-3'], release: true })
+    assert.equal(repeated.status, 200)
+    assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM recovery_items').get().count, 1)
+
+    const overview = await call('overview', {})
+    assert.equal(overview.status, 200)
+    assert.deepEqual((await overview.json()).albums, [{ albumId: 'album-1', title: 'Flood', artist: 'They Might Be Giants', total: 3, present: 1, queued: 2, checkedAt: '2026-10-19 10:00:00' }])
+
+    // Once the release has imported, tracks it lacked show as missing again.
+    db.sqlite.prepare("UPDATE recovery_items SET status = 'recovered'").run()
+    const after = await call('recovery', { albumId: 'album-1', trackKeys: ['1-3'] })
+    assert.equal(after.status, 201)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
