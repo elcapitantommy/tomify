@@ -36,6 +36,8 @@ describe('AppShell navigation', () => {
     expect(within(sheet).getByText('guest')).toBeInTheDocument()
     expect(within(sheet).queryByRole('link', { name: 'Recovery' })).not.toBeInTheDocument()
     expect(within(sheet).getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings')
+    // Offline downloads work, so phones reach them from the account sheet.
+    expect(within(sheet).getByRole('link', { name: 'Downloads' })).toHaveAttribute('href', '/downloads')
     fireEvent.click(within(sheet).getByRole('button', { name: 'Sign out' }))
     expect(useAuth.getState().session).toBeNull()
   })

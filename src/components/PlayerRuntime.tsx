@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useApi } from '../lib/api-context'
-import { StreamFirstSourceResolver } from '../lib/sourceResolver'
+import { LocalFirstSourceResolver } from '../lib/sourceResolver'
+import { cachedLocalAudioUrl, localAudioUrl } from '../lib/offline-db'
 import { bindPlayerRuntime, usePlayer } from '../stores/player'
 import { setMediaMetadata } from '../lib/mediaSession'
 import { ListeningTracker, sendListeningEvent } from '../lib/listening-log'
@@ -122,6 +123,9 @@ export function PlayerRuntime() {
   }
 
   function sourceFor(element: HTMLAudioElement, wanted: Track): StreamSource {
+    // A downloaded copy the resolver has already opened plays from the device, on every load (see lib/offline-db.ts).
+    const local = cachedLocalAudioUrl(api.session, wanted.id)
+    if (local) return { kind: 'direct', url: local }
     return chooseSource(element, { direct: api.streamUrl(wanted.id), hls: api.hlsUrl(wanted.id, streamGainMode(wanted, gainModeFor(wanted))) }, useStreamQuality.getState().quality)
   }
 
@@ -325,12 +329,16 @@ export function PlayerRuntime() {
     let cancelled = false
     let release: (() => void) | undefined
 
-    new StreamFirstSourceResolver(api).resolve(track).then((source) => {
+    new LocalFirstSourceResolver(api).resolve(track).then((source) => {
       if (cancelled) { source.revoke?.(); return }
       release = source.revoke
       if (activeSlot.current !== slot || loadedTrackIds.current[slot] !== track.id) return
       const wanted: StreamSource = source.kind === 'local' ? { kind: 'direct', url: source.url } : sourceFor(element, track)
-      if (!sources.current.matches(element, wanted)) loadInto(slot, track, preloadFor(usePlayer.getState().playing), wanted)
+      if (!sources.current.matches(element, wanted)) {
+        // Switching a playing stream to its downloaded copy carries on from the same spot.
+        if (source.kind === 'local' && element.currentTime > 0) resumeAt.current = { slot, trackId: track.id, position: element.currentTime }
+        loadInto(slot, track, preloadFor(usePlayer.getState().playing), wanted)
+      }
       if (usePlayer.getState().playing && element.paused) playElement(element, slot)
     })
 
@@ -361,6 +369,19 @@ export function PlayerRuntime() {
     if (!element.paused) element.pause()
     loadInto(slot, nextTrack, 'auto')
   }, [api, currentIndex, muted, playing, queue, repeat, track?.id, volume]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Downloaded songs coming up are opened early, so a next track pre-loaded as a stream switches to the copy on the device.
+  useEffect(() => {
+    let cancelled = false
+    queue.slice(currentIndex + 1, currentIndex + 3).forEach((upcoming) => void localAudioUrl(api.session, upcoming.id).then((url) => {
+      const slot = (activeSlot.current === 0 ? 1 : 0) as AudioSlot
+      const element = getAudio(slot)
+      if (!url || cancelled || !element || loadedTrackIds.current[slot] !== upcoming.id) return
+      const local: StreamSource = { kind: 'direct', url }
+      if (!sources.current.matches(element, local)) loadInto(slot, upcoming, 'auto', local)
+    }))
+    return () => { cancelled = true }
+  }, [api, queue, currentIndex]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const element = currentAudio()

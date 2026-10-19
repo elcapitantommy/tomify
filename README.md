@@ -109,20 +109,14 @@ The PWA should eventually provide:
 
 ## Offline playback
 
-A user should be able to tap **Download** on a track, album or playlist.
+Tap **Download** on an album or playlist page, or the download button on any track row, and Tomify saves the song to the phone or computer for listening with no connection. The **Downloads** page (in the desktop sidebar, and behind the account button on mobile) lists what is saved with its status (queued, downloading with a percentage, available offline, or failed with the reason), plays it, retries failures and removes it. It shows how much music is stored, the space the browser says is left (`navigator.storage.estimate()`), and whether the browser agreed to keep the downloads (`navigator.storage.persist()`, asked on the first download); without that, the browser may clear them when the device runs low on space.
 
-The PWA will request either the original file or a transcoded copy from the server, store the audio plus required metadata/artwork locally, and make it available from an **Offline / Downloads** section with no network connection.
+- **What is saved.** The original file (`stream.view` with `format=raw`, never HLS chunks or a transcode), the song's metadata and its artwork, in IndexedDB (one database per account, `src/lib/offline-db.ts`). Songs download one at a time in the background while Tomify is open, carry on after a reload, and wait while the device is offline. A song in more than one download (a single track and its album, or two playlists) is stored once and kept until nothing includes it.
+- **Playing.** Tomify always plays a valid saved copy (its record says it finished and the stored file is the size that was downloaded) instead of streaming, online or not (`LocalFirstSourceResolver` in `src/lib/sourceResolver.ts`). The next song in the queue is pre-loaded from the device too. Anything not downloaded streams as before.
+- **Playlists that change.** A playlist edited or reordered after it was downloaded shows **Update download**, which fetches the new songs and lets go of the ones taken out.
+- **Running out of space.** If the browser refuses a write for lack of space (iPhone and iPad Safari give a web app far less room than Chrome), or the space left is smaller than the next song, that song and the rest of the queue are marked failed with "Not enough storage space on this device" and nothing half-written is kept. Remove some downloads, then **Retry all**.
 
-Planned qualities:
-
-- Original / FLAC
-- High quality
-- Normal quality
-- Space saver
-
-Exact codecs/bitrates will be chosen during implementation based on browser support.
-
-A later **Keep downloaded** mode should keep selected playlists or albums synchronised when the device next has a suitable connection.
+There is one quality for now: the original file, so a FLAC album takes its full size. A later **Keep downloaded** mode should keep selected playlists or albums synchronised when the device next has a suitable connection.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how Tomify is built today and [docs/ROADMAP.md](docs/ROADMAP.md) for the roadmap and what is done.
 
@@ -192,14 +186,14 @@ GitHub Actions runs the frozen-lockfile install, lint, typecheck, production bui
 ### Implemented
 
 - Navidrome token authentication, persisted without storing the password, with logout and useful failure states.
-- Home, artists, artist detail, albums, multi-disc album detail, debounced search, playlists, favourites, downloads placeholder and settings.
+- Home, artists, artist detail, albums, multi-disc album detail, debounced search, playlists, favourites, offline downloads and settings.
 - A heart on every track row and album card stars or unstars it in Navidrome. The heart changes at once and flips back if the server refuses, and the Favourites page updates without a reload.
 - Navidrome playlists can be created and edited in Tomify: **New playlist** on the Playlists page, the **+** button on any track row or **Add to playlist** on an album to add music, and **Edit** on your own playlist to rename it, move tracks up or down, remove tracks or delete it (deleting also removes its Tomify shares). Edits save straight away through the Subsonic `createPlaylist`, `updatePlaylist` and `deletePlaylist` calls; reordering rewrites the whole track list with `createPlaylist` and sends long song lists as a POST form (OpenSubsonic `formPost`). Only the owner sees the editing controls.
 - Playlists are private to the account that made them, with a **Share** button for sharing one with other Tomify accounts (read-only; recipients see it under **Shared with you**). Navidrome itself would hand admins every user's playlists and everyone other users' public ones, so Tomify lists only your own plus those shared with you. Navidrome has no per-user sharing, so sharing a Navidrome playlist also marks it public in Navidrome (other Subsonic clients can then see it) and unsharing it from everyone makes it private again. An account appears in the Share list once it has signed in to Tomify. Shares live in the D1 `playlist_shares` table (`drizzle/0007_playlist_shares.sql`).
 - Persistent HTML5 player with queue, seek, volume, mute, shuffle (reorders the upcoming songs once, so nothing repeats; turning it off restores the original order), repeat, previous/next and full-screen mobile now playing.
 - Media Session metadata (absolute artwork in six sizes, or only the album's Tomify replacement cover when it has one, refreshed as soon as replacements load or change), transport controls and position updates.
 - Installable manifest, app icons, standalone mode, cached app shell and cached artwork.
-- A playback source resolver boundary ready to prefer IndexedDB audio before the network in the next phase.
+- Offline downloads of tracks, albums and playlists, played from the device in preference to streaming (see [Offline playback](#offline-playback)).
 - A source-aware Recovery queue with MusicBrainz metadata review, provider-ranked cover art, D1 provenance, safe recovery-copy deletion and an optional media-server acquisition agent.
 - OAuth-backed Spotify playlist import as catalogue metadata only, with Navidrome matching, ambiguous-match review, ordered pending Recovery entries, duplicate preservation, and manual refresh diffs. Matching ignores reissue labels on titles (` - 2010 Remaster`, `(Remastered 2009)`, `(Deluxe Edition)`, ` - Mono`, ` - Single Version`, `feat.` credits) but still treats live, remix, acoustic and similar versions as different recordings. It searches the library by the first credited artist and the bare title, then by the title alone. Opening an imported playlist re-checks every ready entry with Navidrome `getSong`; an entry whose track has moved is matched again, and one with no match left goes back to missing. The matcher lives in `src/lib/catalogue-match.mjs`, shared by the app and the Worker build.
 - Album completeness against the MusicBrainz tracklist (administrators only, run with **Check completeness** on the album page rather than on every visit), with edition choice, duplicate-copy and extra-track notes, one-click "add missing to Recovery" (per track, or as one album search), and an incomplete-albums list in Library health.
@@ -232,7 +226,7 @@ The recovery agent is deployed separately from the site. After any change under 
 
 ### PWA and iOS notes
 
-The service worker precaches the application shell and uses a bounded cache for artwork; audio is deliberately not cached yet. On compatible iOS Safari/Home Screen PWA versions, the active track sets title, artist, album and HTTPS artwork immediately, and registers play, pause, previous, next and seek handlers. Playback uses two long-lived audio elements (the playing track and the next one, pre-loaded while playing), so navigation does not interrupt it.
+The service worker precaches the application shell and uses a bounded cache for artwork; audio is not cached by the service worker (downloaded songs live in IndexedDB, see [Offline playback](#offline-playback)). On compatible iOS Safari/Home Screen PWA versions, the active track sets title, artist, album and HTTPS artwork immediately, and registers play, pause, previous, next and seek handlers. Playback uses two long-lived audio elements (the playing track and the next one, pre-loaded while playing), so navigation does not interrupt it.
 
 On a patchy connection (for example mobile data in a car) a stream that drops or hangs is reloaded from where it stopped: Tomify retries after 1, 3, 6 and 10 seconds, retries straight away when the phone comes back online, and treats 15 seconds of buffering while playing as a dropped stream. A next track whose pre-load failed is loaded fresh rather than handed over. Only after every retry fails does the player show as paused. While a stream is buffering, Tomify tells the lock screen and car that playback is paused at the current position, so their progress bar doesn't keep moving over silence; it switches back to playing as soon as sound resumes.
 
@@ -292,7 +286,8 @@ The Worker code is `worker/features/dj.ts` (`POST /api/dj/segment` and `POST /ap
 
 ### Known limitations
 
-- Offline audio downloads and drag-to-reorder (playlists reorder with up/down buttons) are not included yet.
+- Drag-to-reorder is not included yet (playlists reorder with up/down buttons).
+- Offline downloads store only the original file (no smaller phone copies yet), download only while Tomify is open, and are not refreshed automatically when an album or playlist changes on the server. Signing out leaves an account's downloads on the device.
 - Authentication tokens live in browser local storage. This is appropriate for trusted household devices; a shared device should be signed out after use.
 - A cross-origin deployment requires correct Navidrome CORS configuration. A same-origin proxy avoids that operational edge.
 
@@ -309,4 +304,4 @@ That split is explicit and independently deployable. Navidrome should allow the 
 
 ### Recommended next task
 
-Implement a versioned IndexedDB download repository for track metadata, artwork and audio blobs, then add a local-first source resolver (`valid local copy → object URL; otherwise Navidrome stream`). Start with one-track download/remove/retry and airplane-mode tests before album or playlist orchestration.
+Offline downloads v1 (roadmap 3.1) is in. Next for offline listening: smaller download qualities for phones (an agent-made AAC copy), and **Keep downloaded** so edited playlists update themselves on Wi-Fi.
