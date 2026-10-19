@@ -64,6 +64,7 @@ Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/
 | `worker/routes/album-artwork.ts` | `/api/album-artwork*` | Apple, Deezer and Spotify artwork lookup, overrides and uploads |
 | `worker/routes/playlists.ts` | `/api/playlist-shares*` | Sharing playlists between Tomify accounts |
 | `worker/routes/live-playback.ts` | `/api/live-playback*` | Cross-device playback state and commands |
+| `worker/routes/listening.ts`, `worker/routes/smart-playlists.ts` | `/api/listening`, `/api/listening/stats`, `/api/smart-playlists*` | Listening history and stats, saved smart-playlist rules |
 | `worker/routes/inventory.ts`, `worker/routes/system-settings.ts` | `/api/inventory*`, `/api/library-health*`, `/api/system*`, quality, scan and preflight routes | Administrative library and server operations |
 | `worker/routes/navidrome.ts`, `worker/routes/version.ts` | `/navidrome/*`, `/api/version` | Navidrome proxy and deployed version information |
 | `scripts/recovery-metadata.mjs`, `scripts/recovery-artwork.mjs` | (helpers) | MusicBrainz metadata review and artwork resolution for Recovery |
@@ -142,6 +143,7 @@ Migrations live in `drizzle/`:
 | `0012_schema_catch_up.sql` | `release_metadata`; every other table again with `IF NOT EXISTS`; indexes for the Recovery list, uploads, shares and OAuth state expiry |
 | `0013_library_health_dismissals.sql` | `library_health_dismissals` (Library health findings marked as fine) |
 | `0014_listening_and_mixes.sql` | `listening_events` (Tomify's own play history, kept 400 days), `made_for_you` (each account's current mixes) |
+| `0015_smart_playlists.sql` | `smart_playlists` (each account's saved smart-playlist rules) |
 
 The migrations are the only source of the schema: `pnpm run deploy` applies new ones before deploying the Worker, and the Worker runs no DDL. A query against a table no migration has created gets a 503 `schema-out-of-date`. Production was baselined with `scripts/d1-baseline.sh`; see [D1 migrations](RECOVERY.md#d1-migrations).
 

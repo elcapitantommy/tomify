@@ -1881,3 +1881,44 @@ test('album completeness can queue the missing tracks as one release item, and l
     globalThis.fetch = originalFetch
   }
 })
+
+test('smart playlists are saved per account, and listening stats total the recorded plays', async () => {
+  const db = await sqliteDatabase()
+  const env = { TOMIFY_DB: db }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    return new Response('{}', { status: 404 })
+  }
+  const call = (path, init = {}, user = 'tom') => worker.fetch(new Request(`https://app.tomify.test${path}`, { ...init, headers: { ...recoveryHeaders, 'x-tomify-user': user } }), env)
+  try {
+    const created = await call('/api/smart-playlists', { method: 'POST', body: JSON.stringify({ name: 'Jazz', rules: { genres: ['Jazz'], sort: 'random' } }) })
+    assert.equal(created.status, 201)
+    const { id } = await created.json()
+    assert.equal((await call('/api/smart-playlists', { method: 'POST', body: JSON.stringify({ name: '', rules: {} }) })).status, 400)
+    const updated = await call(`/api/smart-playlists/${id}`, { method: 'PUT', body: JSON.stringify({ name: 'Late jazz', rules: { genres: ['Jazz'], yearFrom: 1960 } }) })
+    assert.deepEqual(await updated.json().then(({ name, rules }) => ({ name, rules })), { name: 'Late jazz', rules: { genres: ['Jazz'], yearFrom: 1960 } })
+    assert.deepEqual((await (await call('/api/smart-playlists')).json()).playlists.map((playlist) => playlist.name), ['Late jazz'])
+    assert.deepEqual((await (await call('/api/smart-playlists', {}, 'anna')).json()).playlists, [], 'other accounts do not see them')
+    assert.equal((await call(`/api/smart-playlists/${id}`, { method: 'PUT', body: JSON.stringify({ name: 'x', rules: {} }) }, 'anna')).status, 404)
+    assert.equal((await call(`/api/smart-playlists/${id}`, { method: 'DELETE' })).status, 200)
+    assert.equal((await call(`/api/smart-playlists/${id}`)).status, 404)
+
+    const now = Date.now()
+    const play = (track, artist, album, seconds, skipped = 0, ago = 0) => db.sqlite.prepare('INSERT INTO listening_events (username, track_id, album_id, artist_id, title, artist, album, listened_seconds, completed, skipped, played_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('tom', track, album + '-id', artist + '-id', track, artist, album, seconds, skipped ? 0 : 1, skipped, now - ago)
+    play('So What', 'Miles Davis', 'Kind of Blue', 540)
+    play('So What', 'Miles Davis', 'Kind of Blue', 540)
+    play('Blue in Green', 'Miles Davis', 'Kind of Blue', 330)
+    play('Teen Spirit', 'Nirvana', 'Nevermind', 10, 1)
+    play('Old', 'Someone', 'Gone', 200, 0, 40 * 86_400_000)
+    const stats = await (await call('/api/listening/stats?days=30')).json()
+    assert.deepEqual({ plays: stats.plays, skips: stats.skips, seconds: stats.seconds }, { plays: 4, skips: 1, seconds: 1420 })
+    assert.deepEqual(stats.artists.map(({ artist, plays }) => ({ artist, plays })), [{ artist: 'Miles Davis', plays: 3 }], 'skips are left out of the top lists')
+    assert.deepEqual(stats.tracks.map(({ trackId, plays }) => ({ trackId, plays })), [{ trackId: 'So What', plays: 2 }, { trackId: 'Blue in Green', plays: 1 }])
+    assert.equal(stats.albums[0].album, 'Kind of Blue')
+    assert.equal((await (await call('/api/listening/stats?days=365')).json()).plays, 5)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
