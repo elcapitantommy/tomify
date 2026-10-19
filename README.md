@@ -267,6 +267,13 @@ Home's **Made for you** shelf holds five or six mixes built from your own librar
 
 The Worker code is `worker/features/mixes.ts` (gathering, simple mixes, storage), `worker/features/mix-curator.ts` (the Claude call) and `worker/features/listening.ts`; the tables are created by `drizzle/0014_listening_and_mixes.sql`.
 
+### Song radio
+
+**Start radio** (the radio-tower button on any track row on desktop, and beside the title in Now Playing) plays that song and follows it with similar songs from your library, topping the queue up with another 15 whenever four or fewer are left, so it never runs out. The queue is headed **Radio · <song>**. Starting anything else, or turning shuffle or repeat on, ends the radio.
+
+- **Similar.** Every song in the library (read once and cached for 30 minutes, as for smart playlists) is scored against the first song: songs by similar artists from Navidrome's `getSimilarSongs2` (Last.fm, ListenBrainz or Deezer agents), shared genres and moods, a close tempo (half and double time count), the same artist and a similar year, plus a little randomness so no two radios are alike. The BPM, genre and mood tags come from the agent's style tagging. The scoring is in `src/lib/song-radio.ts`, the queue handling in `src/stores/radio.ts`.
+- **Variety.** As in the DJ, an artist never plays twice in a row and has at most three songs in the last 60 (the cap only gives way when nothing else is left). A song never repeats, counting other editions of it, until a small library has all been played.
+
 ### Smart playlists, listening stats and who's listening
 
 - **Smart playlists.** **New smart playlist** on Playlists saves a set of rules: genres, artist, year range, favourites only, minimum rating or play count, last played (never, within or not within N days), added in the last N days, an order (random, most or least played, recently added or played, newest or oldest) and a length. Only the rules are stored (D1 `smart_playlists`); each time the playlist opens, the browser reads the whole library from Navidrome once (cached for 30 minutes) and picks the matching songs, so it always reflects what is in the library and what you have played. **Save as playlist** keeps a dated copy in Navidrome. Play counts, last played and ratings are Navidrome's own.
