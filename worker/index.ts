@@ -17,6 +17,7 @@ import { navidromeRoute } from './routes/navidrome.ts'
 import { playlistsRoute } from './routes/playlists.ts'
 import { releaseMetadataRoute } from './routes/release-metadata.ts'
 import { handleRecoveryRequest } from './routes/recovery.ts'
+import { smartPlaylistsRoute } from './routes/smart-playlists.ts'
 import { systemSettingsRoute } from './routes/system-settings.ts'
 import { versionRoute } from './routes/version.ts'
 
@@ -27,6 +28,7 @@ const routes: RouteHandler[] = [
   playlistsRoute,
   livePlaybackRoute,
   listeningRoute,
+  smartPlaylistsRoute,
   mixesRoute,
   djRoute,
   systemSettingsRoute,

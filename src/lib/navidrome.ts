@@ -2,6 +2,7 @@ import SparkMD5 from 'spark-md5'
 import type { Album, Artist, Playlist, SearchResults, Track } from '../types'
 import type { ReplayGainMode } from '../../shared/replaygain.mjs'
 
+export type NowPlaying = Track & { username: string; minutesAgo: number; playerName?: string }
 export interface ScanStatus { scanning: boolean; count?: number; folderCount?: number; lastScan?: string }
 export interface AuthSession { serverUrl: string; username: string; salt: string; token: string }
 interface SubsonicEnvelope { 'subsonic-response': Record<string, unknown> & { status: 'ok' | 'failed'; error?: { code: number; message: string } } }
@@ -106,6 +107,11 @@ export class NavidromeClient {
   async replacePlaylistTracks(id: string, songIds: string[]) { await this.get('createPlaylist', { playlistId: id }, undefined, { songId: songIds }) }
   async deletePlaylist(id: string) { await this.get('deletePlaylist', { id }) }
   ownsPlaylist(playlist: Pick<Playlist, 'owner'>) { return sameAccount(playlist.owner, this.session.username) }
+  // Every song in the library, a page at a time (Navidrome returns everything for an empty search).
+  async allSongs(signal?: AbortSignal, onPage?: (loaded: number) => void): Promise<Track[]> { const songs: Track[] = []; for (let offset = 0; ; offset += 500) { const r = await this.get<{ searchResult3?: { song?: Track[] } }>('search3', { query: '', artistCount: 0, albumCount: 0, songCount: 500, songOffset: offset }, signal); const page = r.searchResult3?.song ?? []; songs.push(...page); onPage?.(songs.length); if (page.length < 500) return songs } }
+  async genres(signal?: AbortSignal): Promise<string[]> { const r = await this.get<{ genres?: { genre?: { value: string }[] } }>('getGenres', {}, signal); return (r.genres?.genre ?? []).map((genre) => genre.value).filter(Boolean).sort((a, b) => a.localeCompare(b)) }
+  // What every account is playing now: Navidrome records it from the "now playing" scrobble each player sends.
+  async nowPlaying(signal?: AbortSignal): Promise<NowPlaying[]> { const r = await this.get<{ nowPlaying?: { entry?: NowPlaying[] } }>('getNowPlaying', {}, signal); return r.nowPlaying?.entry ?? [] }
   async starred(signal?: AbortSignal): Promise<SearchResults> { const r = await this.get<{ starred2?: { artist?: Artist[]; album?: Album[]; song?: Track[] } }>('getStarred2', {}, signal); const s = r.starred2; return { artists: s?.artist ?? [], albums: s?.album ?? [], tracks: s?.song ?? [] } }
   // Subsonic stars songs by `id`, albums by `albumId` and artists by `artistId`.
   async star(id: string, kind: StarKind = 'song') { await this.get('star', { [STAR_PARAM[kind]]: id }) }

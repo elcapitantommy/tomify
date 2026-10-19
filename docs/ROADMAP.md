@@ -48,7 +48,7 @@ All 20 are done. Each row names the PR that finished it.
 | 3.1 | Offline downloads v1 | Not started | The Downloads page is a placeholder, and `src/lib/sourceResolver.ts` always streams. |
 | 3.2 | Album completeness view and bulk "recover missing tracks" | Done (#128) | Administrators can check an album against MusicBrainz and add the missing tracks to Recovery, one item per track or as one release item mapped to the tracklist. Library health lists the checked albums that came up short. |
 | 3.3 | Supervised promotion and duplicate merge | Not started | |
-| 3.4 | Smart playlists, listening statistics, "Anna is playing…" | Not started | Live playback syncs one user's own devices, not other people's. |
+| 3.4 | Smart playlists, listening statistics, "Anna is playing…" | Done (#130) | Rule-based smart playlists evaluated in the browser, a Listening stats page from Tomify's history, and "Listening now" on Home from Navidrome's now-playing list. |
 | 3.5 | LAN-direct streaming; short-lived Worker sessions | Not started | |
 | 3.6 | Scheduled Spotify playlist refresh | Not started | Imported playlists refresh only by hand. |
 | 3.7 | Adaptive streaming (HLS) | Done | The agent packages tracks as 64/128/256 kbps HLS; the player follows the signal and falls back to original files. Per-device Streaming quality setting (issue #83). |
