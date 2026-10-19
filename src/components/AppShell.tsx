@@ -8,6 +8,7 @@ import { DjRuntime } from './DjPanel'
 import { usePlayer } from '../stores/player'
 import { useRemoteSession } from '../stores/livePlayback'
 import { useAuth } from '../stores/auth'
+import { useDownloads } from '../stores/downloads'
 import { useScrollRestoration } from '../hooks/useScrollRestoration'
 
 const primary = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }]
@@ -31,10 +32,14 @@ export function AppShell() {
   const isAdmin = useAuth((state) => state.isAdmin) === true
   const logout = useAuth((state) => state.logout)
   const username = useAuth((state) => state.session?.username)
+  const session = useAuth((state) => state.session)
   const [accountOpen, setAccountOpen] = useState(false)
   // Set when Back leaves a page opened from the account sheet, so the sheet comes back instead of the page underneath.
   const reopenAccount = useRef(false)
   useScrollRestoration()
+
+  // Offline downloads belong to the signed-in account; their queue carries on from any page.
+  useEffect(() => { void useDownloads.getState().bind(session) }, [session])
 
   useEffect(() => {
     document.title = titleTrack
@@ -90,6 +95,7 @@ function AccountSheet({ isAdmin, onClose, onLogout }: { isAdmin: boolean; onClos
     <div className="account-sheet" role="dialog" aria-modal="true" aria-label="Account" onClick={(event) => event.stopPropagation()}>
       <header><CircleUserRound/><span><strong>{username}</strong><small>{isAdmin ? 'Navidrome administrator' : 'Your Navidrome account'}</small></span><button type="button" className="account-sheet-close" onClick={onClose} aria-label="Close"><X/></button></header>
       {isAdmin && <NavLink to="/recovery" state={{ fromAccount: true }}><LifeBuoy/>Recovery</NavLink>}
+      <NavLink to="/downloads" state={{ fromAccount: true }}><Download/>Downloads</NavLink>
       <NavLink to="/stats" state={{ fromAccount: true }}><BarChart3/>Listening stats</NavLink>
       <NavLink to="/settings" state={{ fromAccount: true }}><Settings/>Settings</NavLink>
       <button type="button" onClick={onLogout}><LogOut/>Sign out</button>

@@ -31,7 +31,7 @@ All 20 are done. Each row names the PR that finished it.
 | 17 | Read-only library inventory in the agent | Done (#61) | `recovery-agent/inventory.mjs`. |
 | 18 | Library health dashboard | Done (#62, #64-#66) | Settings → Library health, with "Mark as fine". |
 | 19 | Release import mapped to the MusicBrainz tracklist | Done (#60) | Release imports map files onto the MusicBrainz tracklist. |
-| 20 | Mobile navigation, Albums paging and favourites | Done (#38, #67) | Mobile tab bar with Playlists and Favourites, star/unstar, and Albums loads every album. Downloads stays desktop-only until offline downloads (3.1) exist. |
+| 20 | Mobile navigation, Albums paging and favourites | Done (#38, #67) | Mobile tab bar with Playlists and Favourites, star/unstar, and Albums loads every album. Downloads joined the mobile account sheet with offline downloads (3.1). |
 
 ## Phase items without a numbered task
 
@@ -45,7 +45,7 @@ All 20 are done. Each row names the PR that finished it.
 | 1.10 | Nightly D1 export and agent state backup; uptime check | Done (#39) | `scripts/backup.sh` with a systemd timer; see docs/RECOVERY.md "Backups and uptime checks". |
 | 1.11 | Replace the stale `ARCHITECTURE.md` and `ROADMAP.md`; add `DEPLOYMENT.md` | Done | Both documents are rewritten, and `DEPLOYMENT.md` gathers the site, agent, box, secrets and backup steps. |
 | 2.9 | Mobile Library tab, Albums paging, recovery source badges, star/unstar, plainer language | Partly done | See task 20. |
-| 3.1 | Offline downloads v1 | Not started | The Downloads page is a placeholder, and `src/lib/sourceResolver.ts` always streams. |
+| 3.1 | Offline downloads v1 | Done (#79) | Tracks, albums and playlists download as original files to IndexedDB with artwork and metadata (`src/lib/offline-db.ts`, `src/stores/downloads.ts`); `LocalFirstSourceResolver` plays a valid local copy before streaming. The Downloads page shows real storage figures with per-item status, retry and remove, and is in the mobile account sheet. One quality (original) so far. |
 | 3.2 | Album completeness view and bulk "recover missing tracks" | Done (#128) | Administrators can check an album against MusicBrainz and add the missing tracks to Recovery, one item per track or as one release item mapped to the tracklist. Library health lists the checked albums that came up short. |
 | 3.3 | Supervised promotion and duplicate merge | Done (#129) | Library health plans each merge or promotion, moves copies to `_Duplicates` instead of deleting them, journals every change for undo and relinks matched songs in playlists. Needs write access to `/srv/music` for the agent (docs/RECOVERY.md). |
 | 3.4 | Smart playlists, listening statistics, "Anna is playing…" | Done (#130) | Rule-based smart playlists evaluated in the browser, a Listening stats page from Tomify's history, and "Listening now" on Home from Navidrome's now-playing list. |

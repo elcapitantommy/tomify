@@ -1,3 +1,4 @@
 export function formatDuration(seconds = 0) { if (!Number.isFinite(seconds)) return '0:00'; const whole = Math.max(0, Math.floor(seconds)); return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}` }
 export function formatHours(seconds = 0) { const minutes = Math.round(seconds / 60); return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} hr ${minutes % 60} min` }
 export function initials(value: string) { return value.split(/\s+/).slice(0, 2).map((word) => word[0]).join('').toUpperCase() }
+export function formatBytes(bytes = 0) { if (!Number.isFinite(bytes) || bytes <= 0) return '0 bytes'; const units = ['bytes', 'KB', 'MB', 'GB', 'TB']; const power = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024))); const value = bytes / 1024 ** power; return `${power === 0 ? value : value.toFixed(value < 10 ? 1 : 0)} ${units[power]}` }

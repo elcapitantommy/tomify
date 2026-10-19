@@ -13,6 +13,8 @@ import { useEqualiser } from '../stores/equaliser'
 import { FakeAudioContext } from '../test/fakeAudioContext'
 import { useNormalisation } from '../stores/normalisation'
 import { useDj } from '../stores/dj'
+import { FakeIndexedDb } from '../test/fakeIndexedDb'
+import { offlineAccount, resetOfflineDbForTests, storeDownload } from '../lib/offline-db'
 
 const hlsPlayers: { source?: string; media?: HTMLMediaElement; destroyed: boolean; emit(event: string, data: unknown): void }[] = []
 vi.mock('hls.js/light', () => {
@@ -470,5 +472,33 @@ describe('PlayerRuntime', () => {
     } finally {
       delete (navigator as { mediaSession?: unknown }).mediaSession
     }
+  })
+
+  describe('downloaded tracks', () => {
+    beforeEach(async () => {
+      vi.stubGlobal('indexedDB', new FakeIndexedDb())
+      resetOfflineDbForTests()
+      let made = 0
+      URL.createObjectURL = vi.fn(() => `blob:tomify/${++made}`)
+      URL.revokeObjectURL = vi.fn()
+      for (const track of tracks.slice(0, 2)) {
+        const audioFile = new Blob([`audio-${track.id}`])
+        await storeDownload(offlineAccount(session), { id: track.id, track, status: 'available-offline', owners: ['track'], bytes: audioFile.size, addedAt: 1, updatedAt: 1 }, audioFile)
+      }
+    })
+    afterEach(() => resetOfflineDbForTests())
+
+    it('plays the copy on the device instead of streaming, and pre-loads the next downloaded song from it too', async () => {
+      const [current, standby] = await startPlaying()
+      await vi.waitFor(() => expect(current.src).toBe('blob:tomify/1'))
+      await vi.waitFor(() => expect(standby.src).toBe('blob:tomify/2'))
+      expect(standby.preload).toBe('auto')
+    })
+
+    it('streams a song that is not on the device', async () => {
+      usePlayer.setState({ queue: [tracks[2]], currentIndex: 0 })
+      const [current] = await startPlaying()
+      expect(streamed(current)).toBe('c')
+    })
   })
 })
