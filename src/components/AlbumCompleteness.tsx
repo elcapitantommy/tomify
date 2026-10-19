@@ -48,13 +48,13 @@ export function AlbumCompleteness({ album, tracks }: { album: Album; tracks: Tra
   const { tracklist, editions, recovery } = data
   const multiDisc = tracklist.discCount > 1
   const notQueued = result.missing.filter((track) => !recovery[track.key])
-  const addMissing = async () => {
+  const addMissing = async (release: boolean) => {
     setAdding(true)
     setNotice(null)
     try {
-      const response = await completenessApi.addMissing(tracklist.albumId, notQueued.map((track) => track.key))
+      const response = await completenessApi.addMissing(tracklist.albumId, notQueued.map((track) => track.key), release)
       setState({ status: 'ready', data: { ...data, recovery: response.recovery } })
-      setNotice(`${response.created} ${response.created === 1 ? 'track' : 'tracks'} added to Recovery${response.existing ? ` · ${response.existing} already queued` : ''}.`)
+      setNotice(release ? 'Added to Recovery as one album search.' : `${response.created} ${response.created === 1 ? 'track' : 'tracks'} added to Recovery${response.existing ? ` · ${response.existing} already queued` : ''}.`)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Could not add the missing tracks to Recovery.')
     } finally {
@@ -87,7 +87,9 @@ export function AlbumCompleteness({ album, tracks }: { album: Album; tracks: Tra
         </li>)}
       </ol>
       <div className="album-completeness-actions">
-        <button className="button primary" disabled={adding || notQueued.length === 0} onClick={() => void addMissing()}>{adding ? <LoaderCircle className="spin"/> : <LifeBuoy/>}{notQueued.length ? `Add ${notQueued.length} missing to Recovery` : 'All missing tracks are in Recovery'}</button>
+        {notQueued.length > 1 && <button className="button primary" disabled={adding} onClick={() => void addMissing(true)}>{adding ? <LoaderCircle className="spin"/> : <LifeBuoy/>}Recover {notQueued.length} missing as one album</button>}
+        {notQueued.length > 1 ? <button className="button secondary" disabled={adding} onClick={() => void addMissing(false)}>Add each track separately</button>
+          : <button className="button primary" disabled={adding || notQueued.length === 0} onClick={() => void addMissing(false)}>{adding ? <LoaderCircle className="spin"/> : <LifeBuoy/>}{notQueued.length ? 'Add 1 missing to Recovery' : 'All missing tracks are in Recovery'}</button>}
         {notice && <span role="status">{notice}</span>}
       </div>
     </>}

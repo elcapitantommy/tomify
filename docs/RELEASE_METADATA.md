@@ -125,4 +125,10 @@ The tracklist and the list of editions are cached in the D1 table `release_track
 
 Recovery's MusicBrainz review searches by that recording ID first, then by ISRC, before falling back to a text search.
 
+When two or more tracks are missing, **Recover N missing as one album** creates a single release item instead: the album's artist and title with no track title, and provenance holding the album ID, release ID and the missing track keys. Searching it on Usenet or a torrent indexer looks for the whole release, and the import is mapped to the album's cached tracklist (`recoveryReleaseTracklist` finds it by the album ID), so with **Skip tracks I already have** only the missing tracks are added. Until that item is recovered, the completeness panel shows it against every missing track; afterwards each imported track has its own Recovery item, and any track the release lacked shows as missing again.
+
+### Incomplete albums
+
+Library health lists every checked album whose last check found fewer local tracks than its tracklist, most missing first, with how many of the missing tracks are in Recovery (`POST /api/album-completeness/overview`). The counts are from the last check of each album, so the album page has the live answer. Albums nobody has checked are not listed, because each check asks MusicBrainz.
+
 Completeness only reads the library and creates Recovery queue items. It never writes or moves audio files.

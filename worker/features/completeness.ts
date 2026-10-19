@@ -92,16 +92,23 @@ export function mapReleaseTracklist(release, albumId, source, releaseGroupId = n
   }
 }
 
-export function matchRecoveryItems(tracks, rows) {
+// An unfinished release item (no title) queued for this album stands in for every track not queued on its own.
+// Once it has imported, its tracks have their own items and anything it lacked shows as missing again.
+export function matchRecoveryItems(tracks, rows, albumId = null) {
   const matches = {}
+  const release = albumId && (Array.isArray(rows) ? rows : []).find((value) => !value.title && !['recovered', 'needs-upgrade'].includes(value.status) && releaseAlbumId(value) === albumId)
   for (const track of Array.isArray(tracks) ? tracks : []) {
     const title = completenessText(track.title)
     const artist = completenessText(track.artist)
     const row = (Array.isArray(rows) ? rows : []).find((value) => track.recordingId && value.musicBrainzId === track.recordingId)
       || (Array.isArray(rows) ? rows : []).find((value) => completenessText(value.title) === title && completenessText(value.artist) === artist)
-    if (row) matches[track.key] = { id: row.id, status: row.status }
+    if (row || release) matches[track.key] = { id: (row || release).id, status: (row || release).status }
   }
   return matches
+}
+
+function releaseAlbumId(row) {
+  try { return JSON.parse(row.sourceJson || 'null')?.albumId || null } catch { return null }
 }
 
 
@@ -163,7 +170,7 @@ export async function resolveAlbumTracklist(db, album, requestedReleaseId) {
 }
 
 async function completenessRecoveryRows(db, username) {
-  const rows = await db.prepare('SELECT id, artist, title, musicbrainz_id AS musicBrainzId, status FROM recovery_items WHERE username = ?').bind(username).all()
+  const rows = await db.prepare('SELECT id, artist, title, musicbrainz_id AS musicBrainzId, status, source_json AS sourceJson FROM recovery_items WHERE username = ?').bind(username).all()
   return rows.results || []
 }
 
@@ -176,9 +183,27 @@ export async function handleCompletenessRequest(request, env, url) {
   // The MusicBrainz completeness check and its Recovery hand-off are administrator tools.
   if (!(await isNavidromeAdmin(request, username, env))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can check album completeness.' }, 403)
   const body = await request.json().catch(() => null)
+  const db = env.TOMIFY_DB
+
+  // Albums whose last check found fewer local tracks than MusicBrainz lists, most missing first.
+  if (url.pathname === '/api/album-completeness/overview') {
+    const rows = await db.prepare("SELECT album_id AS albumId, tracklist_json AS tracklistJson, fetched_at AS fetchedAt FROM release_tracklists WHERE album_id NOT LIKE 'recovery:%'").all()
+    const recoveries = await completenessRecoveryRows(db, username)
+    const albums = []
+    for (const row of rows.results || []) {
+      let tracklist
+      try { tracklist = JSON.parse(row.tracklistJson) } catch { continue }
+      const total = Array.isArray(tracklist?.tracks) ? tracklist.tracks.length : 0
+      const present = Math.min(total, Number(tracklist.localTrackCount) || 0)
+      if (present >= total) continue
+      albums.push({ albumId: row.albumId, title: tracklist.title, artist: tracklist.artist, total, present, queued: Math.min(total - present, Object.keys(matchRecoveryItems(tracklist.tracks, recoveries, row.albumId)).length), checkedAt: row.fetchedAt })
+    }
+    albums.sort((a, b) => (b.total - b.present) - (a.total - a.present) || String(a.artist).localeCompare(String(b.artist)))
+    return json({ albums: albums.slice(0, 200) })
+  }
+
   const albumId = typeof body?.albumId === 'string' ? body.albumId.trim().slice(0, 200) : ''
   if (!albumId) return json({ error: 'invalid-album' }, 400)
-  const db = env.TOMIFY_DB
 
   if (url.pathname === '/api/album-completeness/tracklist') {
     let cached = await selectTracklist(db, albumId)
@@ -196,7 +221,7 @@ export async function handleCompletenessRequest(request, env, url) {
         .bind(albumId, resolved.tracklist.releaseId, resolved.tracklist.releaseGroupId, resolved.tracklist.source, JSON.stringify(resolved.tracklist), JSON.stringify(resolved.editions), username).run()
       cached = resolved
     }
-    return json({ ...cached, recovery: matchRecoveryItems(cached.tracklist.tracks, await completenessRecoveryRows(db, username)) })
+    return json({ ...cached, recovery: matchRecoveryItems(cached.tracklist.tracks, await completenessRecoveryRows(db, username), albumId) })
   }
 
   if (url.pathname === '/api/album-completeness/recovery') {
@@ -205,7 +230,18 @@ export async function handleCompletenessRequest(request, env, url) {
     const keys = new Set((Array.isArray(body.trackKeys) ? body.trackKeys : []).filter((key) => typeof key === 'string').slice(0, 500))
     const wanted = cached.tracklist.tracks.filter((track) => keys.has(track.key))
     if (!wanted.length) return json({ error: 'invalid-tracks' }, 400)
-    const existing = matchRecoveryItems(wanted, await completenessRecoveryRows(db, username))
+    const recoveries = await completenessRecoveryRows(db, username)
+    const existing = matchRecoveryItems(wanted, recoveries, albumId)
+    // One release item: a single Usenet or torrent search for the album, imported against this tracklist.
+    if (body.release === true) {
+      const created = wanted.some((track) => !existing[track.key])
+      if (created) {
+        const source = { catalogueSource: 'musicbrainz', origin: 'album-completeness', albumId, releaseId: cached.tracklist.releaseId, releaseGroupId: cached.tracklist.releaseGroupId, releaseDate: cached.tracklist.date, trackKeys: wanted.map((track) => track.key) }
+        await db.prepare("INSERT INTO recovery_items (id, username, artist, title, album, source_json, status) VALUES (?, ?, ?, '', ?, ?, 'missing')")
+          .bind(crypto.randomUUID(), username, String(cached.tracklist.artist || 'Unknown Artist').slice(0, 240), cached.tracklist.title.slice(0, 240), JSON.stringify(source)).run()
+      }
+      return json({ created: created ? 1 : 0, existing: created ? 0 : wanted.length, recovery: matchRecoveryItems(cached.tracklist.tracks, await completenessRecoveryRows(db, username), albumId) }, created ? 201 : 200)
+    }
     const rows = wanted.filter((track) => !existing[track.key]).map((track) => {
       const source = { catalogueSource: 'musicbrainz', origin: 'album-completeness', albumId, releaseId: cached.tracklist.releaseId, releaseGroupId: cached.tracklist.releaseGroupId, trackKey: track.key, recordingId: track.recordingId, isrc: track.isrc, releaseDate: cached.tracklist.date }
       return [crypto.randomUUID(), username, String(track.artist || cached.tracklist.artist || 'Unknown Artist').slice(0, 240), track.title.slice(0, 240), cached.tracklist.title.slice(0, 240) || null, track.length, track.number, track.disc, track.recordingId, JSON.stringify(source)]
@@ -217,7 +253,7 @@ export async function handleCompletenessRequest(request, env, url) {
       statements.push(db.prepare("INSERT INTO recovery_items (id, username, artist, title, album, duration, track_number, disc_number, musicbrainz_id, source_json, status) VALUES " + values.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'missing')").join(', ')).bind(...values.flat()))
     }
     if (statements.length) await db.batch(statements)
-    return json({ created: rows.length, existing: wanted.length - rows.length, recovery: matchRecoveryItems(cached.tracklist.tracks, await completenessRecoveryRows(db, username)) }, rows.length ? 201 : 200)
+    return json({ created: rows.length, existing: wanted.length - rows.length, recovery: matchRecoveryItems(cached.tracklist.tracks, await completenessRecoveryRows(db, username), albumId) }, rows.length ? 201 : 200)
   }
 
   return json({ error: 'not-found' }, 404)

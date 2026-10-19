@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, Check, ExternalLink, FolderSearch, LoaderCircle, LockKeyhole, RefreshCw, Undo2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { IncompleteAlbums } from '../components/IncompleteAlbums'
 import { InventoryUnavailableError, loadInventoryReport, loadInventoryStatus, setInventoryDismissal, startInventoryScan, type DismissedInventoryEntry, type InventoryCategory, type InventoryEntry, type InventoryReport, type InventoryStatus } from '../lib/inventory-api'
 import { usePoll } from '../lib/usePoll'
 import { useAuth } from '../stores/auth'
@@ -84,5 +85,6 @@ export function LibraryHealth() {
       action={category.key === 'missingD1Files' ? undefined : { label: 'Mark as fine', icon: Check, run: (entry) => void mark(category.key, entry, false) }}/>)}
     {report?.dismissed && report.dismissed.length > 0 && <ReportCategory title="Marked as fine" empty="" entries={report.dismissed} busy={busy} open={false}
       action={{ label: 'Report again', icon: Undo2, run: (entry) => void mark((entry as DismissedInventoryEntry).category, entry, true) }}/>}
+    <IncompleteAlbums/>
   </div>
 }
