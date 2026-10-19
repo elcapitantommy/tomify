@@ -1,4 +1,3 @@
-// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 // Quality tiers in the Worker: the preferred-target setting (D1, admin-only), the status a completed
 // recovery import gets, and the one-off "Re-check quality labels" run. The classifier itself lives in
 // shared/quality.mjs. handleQualityRequest relies on Worker globals (authenticate, isNavidromeAdmin,
@@ -6,34 +5,41 @@
 //
 // The job and acquire routes in worker/routes/recovery.ts call recoveryImportStatus(quality) synchronously, so
 // handleQualityRequest loads the saved target into qualityTargetState before any /api/recovery route runs.
-import { classifyQuality, defaultQualityTarget, qualityMeetsTarget, qualityTargets, qualityTierDescription } from '../../shared/quality.mjs'
+import type { D1Database } from '@cloudflare/workers-types'
+import { classifyQuality, defaultQualityTarget, qualityMeetsTarget, qualityTargets, qualityTierDescription, type QualityProbe, type QualityTarget, type QualityTier } from '../../shared/quality.mjs'
+import type { Env } from '../env.ts'
 import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
 
-export const qualityTargetState = { target: 'transparent-lossy' }
+export type RecoveryQualityStatus = 'recovered' | 'needs-upgrade'
+
+// A recovery item joined to its selected candidate, as the re-check query returns it.
+export interface QualityRecheckRow { id?: string | null; status?: string | null; codec?: string | null; container?: string | null; bitrate?: number | string | null; provenanceJson?: string | null }
+
+export const qualityTargetState: { target: QualityTarget } = { target: 'transparent-lossy' }
 
 /** `recovered` when the tier meets the target, otherwise `needs-upgrade`. */
-export function recoveryStatusForTier(tier, target) {
+export function recoveryStatusForTier(tier: QualityTier, target: QualityTarget | string | null | undefined): RecoveryQualityStatus {
   return qualityMeetsTarget(tier, target) ? 'recovered' : 'needs-upgrade'
 }
-export function recoveryStatusForQuality(quality, target) {
+export function recoveryStatusForQuality(quality: QualityProbe | null | undefined, target: QualityTarget | string | null | undefined): RecoveryQualityStatus {
   return recoveryStatusForTier(classifyQuality(quality).tier, target)
 }
 
 /** Status for a completed recovery import, against the saved preferred target. */
-export function recoveryImportStatus(quality) {
+export function recoveryImportStatus(quality: QualityProbe | null | undefined): RecoveryQualityStatus {
   return recoveryStatusForQuality(quality, qualityTargetState.target)
 }
 
 export function qualityTargetOptions() {
-  const labels = { lossless: 'Lossless only', 'transparent-lossy': 'Transparent or better', lossy: 'Any copy' }
+  const labels: Record<QualityTarget, string> = { lossless: 'Lossless only', 'transparent-lossy': 'Transparent or better', lossy: 'Any copy' }
   return qualityTargets().map((id) => ({ id, label: labels[id], description: id === 'lossy' ? 'Any lossy copy with a measured bitrate is good enough' : qualityTierDescription(id) }))
 }
 
 // The quality a recovered item was judged on: the preserved source as probed at import, else the
 // figures stored on the candidate row.
-export function storedSourceQuality(row) {
-  let provenance = null
+export function storedSourceQuality(row: QualityRecheckRow | null | undefined): QualityProbe {
+  let provenance: { sourceAudio?: { quality?: QualityProbe } } | null = null
   try { provenance = row?.provenanceJson ? JSON.parse(row.provenanceJson) : null } catch { provenance = null }
   const source = provenance?.sourceAudio?.quality
   if (source && (source.codec || source.container)) return source
@@ -41,9 +47,9 @@ export function storedSourceQuality(row) {
 }
 
 /** The items whose status a re-check would change: [{ id, status }]. */
-export function qualityRecheckChanges(rows, target) {
-  const seen = new Set()
-  const changes = []
+export function qualityRecheckChanges(rows: QualityRecheckRow[] | null | undefined, target: QualityTarget | string | null | undefined): Array<{ id: string; status: RecoveryQualityStatus }> {
+  const seen = new Set<string>()
+  const changes: Array<{ id: string; status: RecoveryQualityStatus }> = []
   for (const row of Array.isArray(rows) ? rows : []) {
     if (!row?.id || seen.has(row.id)) continue
     seen.add(row.id)
@@ -55,14 +61,16 @@ export function qualityRecheckChanges(rows, target) {
 }
 
 
-async function loadQualityTarget(db) {
-  const row = await db.prepare("SELECT value FROM tomify_settings WHERE key = 'quality_target'").first()
-  const target = qualityTargets().includes(row?.value) ? row.value : defaultQualityTarget()
+async function loadQualityTarget(db: D1Database): Promise<QualityTarget> {
+  const row = await db.prepare("SELECT value FROM tomify_settings WHERE key = 'quality_target'").first<{ value: string }>()
+  const target = isQualityTarget(row?.value) ? row.value : defaultQualityTarget()
   qualityTargetState.target = target
   return target
 }
 
-export async function handleQualityRequest(request, env, url) {
+const isQualityTarget = (value: unknown): value is QualityTarget => (qualityTargets() as unknown[]).includes(value)
+
+export async function handleQualityRequest(request: Request, env: Env, url: URL): Promise<Response | null> {
   const pathname = url.pathname
   const db = env && env.TOMIFY_DB
   if (pathname === '/api/recovery' || pathname.startsWith('/api/recovery/')) {
@@ -80,15 +88,15 @@ export async function handleQualityRequest(request, env, url) {
     return json({ target: await loadQualityTarget(db), targets: qualityTargetOptions() })
   }
   if (pathname === '/api/settings/quality' && request.method === 'PUT') {
-    const body = await request.json().catch(() => ({}))
-    if (!qualityTargets().includes(body?.target)) return json({ error: 'invalid-target', message: 'Choose lossless, transparent-lossy or lossy.' }, 400)
+    const body = await request.json<{ target?: unknown }>().catch(() => ({ target: undefined }))
+    if (!isQualityTarget(body?.target)) return json({ error: 'invalid-target', message: 'Choose lossless, transparent-lossy or lossy.' }, 400)
     await db.prepare("INSERT INTO tomify_settings (key, value, updated_at, updated_by) VALUES ('quality_target', ?, CURRENT_TIMESTAMP, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by").bind(body.target, username).run()
     qualityTargetState.target = body.target
     return json({ target: body.target, targets: qualityTargetOptions() })
   }
   if (pathname === '/api/settings/quality/recheck' && request.method === 'POST') {
     const target = await loadQualityTarget(db)
-    const rows = await db.prepare("SELECT i.id AS id, i.status AS status, c.codec AS codec, c.container AS container, c.bitrate AS bitrate, c.provenance_json AS provenanceJson FROM recovery_items i LEFT JOIN recovery_candidates c ON c.recovery_id = i.id AND c.selected = 1 WHERE i.status IN ('recovered', 'needs-upgrade') ORDER BY c.imported_path IS NULL, c.updated_at DESC").all()
+    const rows = await db.prepare("SELECT i.id AS id, i.status AS status, c.codec AS codec, c.container AS container, c.bitrate AS bitrate, c.provenance_json AS provenanceJson FROM recovery_items i LEFT JOIN recovery_candidates c ON c.recovery_id = i.id AND c.selected = 1 WHERE i.status IN ('recovered', 'needs-upgrade') ORDER BY c.imported_path IS NULL, c.updated_at DESC").all<QualityRecheckRow>()
     const results = rows.results || []
     const changes = qualityRecheckChanges(results, target)
     // D1 caps queries per request, so write the changes in batches.
