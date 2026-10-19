@@ -36,8 +36,8 @@ describe('loudness normalisation', () => {
   })
 
   it('turns original files down by their gain but never up', () => {
-    expect(originalVolumeScale(track('a', 'x', { trackGain: -6.0206, trackPeak: 0.5 }), 'track')).toBeCloseTo(0.5)
-    expect(originalVolumeScale(track('a', 'x', { trackGain: -20, albumGain: -10 }), 'album')).toBeCloseTo(0.316, 3)
+    expect(originalVolumeScale(track('a', 'x', { trackGain: -10.0206, trackPeak: 0.5 }), 'track')).toBeCloseTo(0.5)
+    expect(originalVolumeScale(track('a', 'x', { trackGain: -20, albumGain: -14 }), 'album')).toBeCloseTo(0.316, 3)
     expect(originalVolumeScale(track('a', 'x', { trackGain: 5, trackPeak: 0.3 }), 'track')).toBe(1)
     expect(originalVolumeScale(track('a'), 'track')).toBe(1)
     expect(originalVolumeScale(track('a', 'x', { trackGain: -6 }), null)).toBe(1)

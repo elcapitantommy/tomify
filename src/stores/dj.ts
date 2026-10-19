@@ -101,7 +101,7 @@ export function djVoiceElement() {
 // the music. The voice's loudness is measured and matched to the song it leads into, as that song will
 // play (normalised or not), plus DJ_VOICE_LIFT_DB, then scaled by the volume setting. A limiter stops clipping.
 export const DJ_VOICE_LIFT_DB = 1
-// ReplayGain 2.0's reference loudness: what a tagged song plays at with its gain applied.
+// ReplayGain 2.0's reference loudness: tags say how far each song is from it (replayGainDb adds the pre-amp).
 const REFERENCE_LUFS = -18
 // An untagged song is taken to be as loud as the library's average (measured 2026-10-18).
 export const DJ_UNTAGGED_LUFS = -11.5

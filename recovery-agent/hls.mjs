@@ -14,7 +14,7 @@
 import { spawn as nodeSpawn } from 'node:child_process'
 import { mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { isReplayGainMode, replayGainDb } from '../shared/replaygain.mjs'
+import { isReplayGainMode, REPLAYGAIN_PREAMP_DB, replayGainDb } from '../shared/replaygain.mjs'
 
 export const HLS_SEGMENT_SECONDS = 6
 export const HLS_VARIANTS = Object.freeze([
@@ -71,9 +71,10 @@ export function parseHlsPath(pathname) {
   return { trackId, gain, kind: 'segment', variant: variant.id, index: Number(file[3]) }
 }
 
-// Where a stream is cached: the untouched one under the track id, a normalised one beside it.
+// Where a stream is cached: the untouched one under the track id, a normalised one beside it, named
+// for the pre-amp so chunks baked at an older level are packaged again.
 export function hlsCacheKey(trackId, gain = null) {
-  return isReplayGainMode(gain) ? `${trackId}.${gain}` : trackId
+  return isReplayGainMode(gain) ? `${trackId}.${gain}.p${REPLAYGAIN_PREAMP_DB}` : trackId
 }
 
 export function segmentName(index) { return `seg${String(index).padStart(5, '0')}.ts` }

@@ -53,7 +53,7 @@ test('a normalised stream bakes its gain into every bitrate and is cached apart 
   assert.ok(!ffmpegHlsArguments('/s', '/c', null).includes('-af'))
   assert.ok(!ffmpegHlsArguments('/s', '/c', 0).includes('-af'))
   assert.equal(hlsCacheKey('t1'), 't1')
-  assert.equal(hlsCacheKey('t1', 'album'), 't1.album')
+  assert.equal(hlsCacheKey('t1', 'album'), 't1.album.p4')
   assert.equal(hlsCacheKey('t1', 'loud'), 't1')
 })
 
@@ -157,11 +157,11 @@ test('each gain mode is packaged once with the track’s ReplayGain, beside the 
   const { hls, cacheDir, ffmpeg } = await packager({ navidrome })
   for (const path of ['/v1/hls/t1/master.m3u8', '/v1/hls/t1/album/master.m3u8', '/v1/hls/t1/track/master.m3u8', '/v1/hls/t1/album/v1/index.m3u8']) await hls.handle(parseHlsPath(path), credentials)
   const chunk = await hls.handle(parseHlsPath('/v1/hls/t1/album/v0/seg00000.ts'), credentials)
-  assert.equal(chunk.filePath, join(cacheDir, 't1.album', 'v0', 'seg00000.ts'))
+  assert.equal(chunk.filePath, join(cacheDir, 't1.album.p4', 'v0', 'seg00000.ts'))
   await settle(hls)
-  assert.deepEqual(ffmpeg.calls.map((call) => call.args.filter((_, index) => call.args[index - 1] === '-af')[0] ?? null), [null, 'volume=-8.4dB', 'volume=-9.1dB'])
-  assert.deepEqual((await readdir(cacheDir)).sort(), ['t1', 't1.album', 't1.track'])
-  assert.equal(JSON.parse(await readFile(join(cacheDir, 't1.album', 'info.json'), 'utf8')).gainDb, -8.4)
+  assert.deepEqual(ffmpeg.calls.map((call) => call.args.filter((_, index) => call.args[index - 1] === '-af')[0] ?? null), [null, 'volume=-4.4dB', 'volume=-5.1dB'])
+  assert.deepEqual((await readdir(cacheDir)).sort(), ['t1', 't1.album.p4', 't1.track.p4'])
+  assert.equal(JSON.parse(await readFile(join(cacheDir, 't1.album.p4', 'info.json'), 'utf8')).gainDb, -4.4)
   await rm(cacheDir, { recursive: true, force: true })
 })
 
@@ -308,7 +308,7 @@ test('real ffmpeg lowers a normalised stream by the track’s ReplayGain', { ski
     const normalised = await hls.handle(parseHlsPath('/v1/hls/tone/track/v2/seg00000.ts'), credentials)
     await settle(hls)
     const difference = (await meanVolume(plain.filePath)) - (await meanVolume(normalised.filePath))
-    assert.ok(Math.abs(difference - 12) < 0.5, `${difference} dB quieter`)
+    assert.ok(Math.abs(difference - 8) < 0.5, `${difference} dB quieter`)
   } finally {
     server.close()
     await rm(work, { recursive: true, force: true })
