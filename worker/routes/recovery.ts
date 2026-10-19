@@ -1,4 +1,3 @@
-// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 import { applyRecoveryMetadataChoices, metadataTextSimilarity, normaliseMetadataText, resolveRecoveryMetadata } from '../../scripts/recovery-metadata.mjs'
 import { appleArtworkUrl, rankArtworkCandidates } from '../../scripts/recovery-artwork.mjs'
 import { completenessText, isMusicBrainzId, releaseGroupTypeFit, resolveAlbumTracklist, selectTracklist } from '../features/completeness.ts'
@@ -9,9 +8,39 @@ import { json } from '../lib/http.ts'
 import { isNavidromeConfigurationError } from '../lib/navidrome.ts'
 import { callRecoveryAgent, RecoveryAgentOutdated, recoveryAgentStatus } from '../lib/agent.ts'
 import { TOMIFY_AGENT_CONTRACT } from '../generated/build-info.ts'
+import type { D1Database, D1PreparedStatement } from '@cloudflare/workers-types'
+import type { Env } from '../env.ts'
 
-function recoveryCandidateRow(row) {
-  let provenance = null
+// Agent, MusicBrainz and catalogue payloads, and the provenance and resolution JSON stored from them, are open-ended
+// and read field by field.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type OpenJson = any
+
+interface RecoveryCandidateRow {
+  id: string; backend: string; externalId: string; url: string; title: string; channel: string; channelId?: string | null; duration?: number | null
+  official?: number | null; matchScore?: number | null; thumbnail?: string | null; codec?: string | null; container?: string | null; bitrate?: number | null
+  sampleRate?: number | null; channels?: number | null; importedPath?: string | null; provenanceJson?: string | null; selected?: number | null
+}
+interface RecoveryItemRow {
+  id: string; artist: string; title: string; album: string | null; duration: number | null; trackNumber: number | null; discNumber: number | null
+  musicBrainzId: string | null; metadataResolutionJson: string | null; artworkResolutionJson: string | null; sourceJson: string | null; playbackJson: string | null
+  status: string; notes: string | null; error: string | null; createdAt: string; updatedAt: string
+}
+type StoredJsonColumn = 'metadataResolutionJson' | 'artworkResolutionJson' | 'sourceJson' | 'playbackJson'
+export type RecoveryCandidate = ReturnType<typeof recoveryCandidateRow>
+export type RecoveryItem = NonNullable<Awaited<ReturnType<typeof recoveryItem>>>
+export interface ReleaseMetadataRow { albumId: string; releaseType: string; releaseDate?: string | null; updatedAt: string; source?: string | null; musicBrainzId?: string | null; matchScore?: number | null }
+export interface MusicBrainzReleaseGroup {
+  id?: string; title?: string; score?: number | string; 'primary-type'?: string | null; 'secondary-types'?: string[]; 'first-release-date'?: string
+  'artist-credit'?: Array<{ name?: string; artist?: { name?: string } } | null>
+}
+// The fields used to resolve artwork for a recovery item.
+interface ArtworkMetadata { artist: string; title: string; album: string | null; releaseDate: string | null; releaseId: string | null; matchConfidence: number }
+interface RecoveryLinkRow { id: string; artist: string; title: string; album: string | null; musicBrainzId: string | null }
+interface RecoveryBackendState { id: string; label: string; available: boolean; search?: boolean; authentication: string; reason: string | null }
+
+function recoveryCandidateRow(row: RecoveryCandidateRow) {
+  let provenance: OpenJson = null
   try { provenance = row.provenanceJson ? JSON.parse(row.provenanceJson) : null } catch { provenance = null }
   return {
     id: row.id, backend: row.backend, externalId: row.externalId, url: row.url, title: row.title, channel: row.channel,
@@ -22,17 +51,17 @@ function recoveryCandidateRow(row) {
   }
 }
 
-export async function recoveryItem(db, username, id) {
-  const row = await db.prepare('SELECT id, artist, title, album, duration, track_number AS trackNumber, disc_number AS discNumber, musicbrainz_id AS musicBrainzId, metadata_resolution_json AS metadataResolutionJson, artwork_resolution_json AS artworkResolutionJson, source_json AS sourceJson, playback_json AS playbackJson, status, notes, error, created_at AS createdAt, updated_at AS updatedAt FROM recovery_items WHERE username = ? AND id = ?').bind(username, id).first()
+export async function recoveryItem(db: D1Database, username: string, id: string) {
+  const row = await db.prepare('SELECT id, artist, title, album, duration, track_number AS trackNumber, disc_number AS discNumber, musicbrainz_id AS musicBrainzId, metadata_resolution_json AS metadataResolutionJson, artwork_resolution_json AS artworkResolutionJson, source_json AS sourceJson, playback_json AS playbackJson, status, notes, error, created_at AS createdAt, updated_at AS updatedAt FROM recovery_items WHERE username = ? AND id = ?').bind(username, id).first<RecoveryItemRow>()
   if (!row) return null
-  const candidates = await db.prepare('SELECT id, backend, external_id AS externalId, url, title, channel, channel_id AS channelId, duration, official, match_score AS matchScore, thumbnail, codec, container, bitrate, sample_rate AS sampleRate, channels, imported_path AS importedPath, provenance_json AS provenanceJson, selected FROM recovery_candidates WHERE recovery_id = ? ORDER BY selected DESC, match_score DESC, created_at DESC').bind(id).all()
-  let metadataResolution = null
-  let artworkResolution = null
-  let catalogueSource = null
+  const candidates = await db.prepare('SELECT id, backend, external_id AS externalId, url, title, channel, channel_id AS channelId, duration, official, match_score AS matchScore, thumbnail, codec, container, bitrate, sample_rate AS sampleRate, channels, imported_path AS importedPath, provenance_json AS provenanceJson, selected FROM recovery_candidates WHERE recovery_id = ? ORDER BY selected DESC, match_score DESC, created_at DESC').bind(id).all<RecoveryCandidateRow>()
+  let metadataResolution: OpenJson = null
+  let artworkResolution: OpenJson = null
+  let catalogueSource: OpenJson = null
   try { metadataResolution = row.metadataResolutionJson ? JSON.parse(row.metadataResolutionJson) : null } catch { metadataResolution = null }
   try { artworkResolution = row.artworkResolutionJson ? JSON.parse(row.artworkResolutionJson) : null } catch { artworkResolution = null }
   try { catalogueSource = row.sourceJson ? JSON.parse(row.sourceJson) : null } catch { catalogueSource = null }
-  const item = { ...row }
+  const item: Omit<RecoveryItemRow, StoredJsonColumn> & Partial<Pick<RecoveryItemRow, StoredJsonColumn>> = { ...row }
   delete item.metadataResolutionJson
   delete item.artworkResolutionJson
   delete item.sourceJson
@@ -40,11 +69,11 @@ export async function recoveryItem(db, username, id) {
   return { ...item, metadataResolution, artworkResolution, catalogueSource, playback: parseRecoveryPlayback(row.playbackJson), duration: row.duration == null ? null : Number(row.duration), trackNumber: row.trackNumber == null ? null : Number(row.trackNumber), discNumber: row.discNumber == null ? null : Number(row.discNumber), candidates: (candidates.results || []).map(recoveryCandidateRow) }
 }
 
-function isReleaseRecoveryCandidate(candidate) {
+function isReleaseRecoveryCandidate(candidate: RecoveryCandidate | null | undefined) {
   return (candidate?.backend === 'usenet' || candidate?.backend === 'torrent') && (candidate?.provenance?.searchMode === 'release' || candidate?.provenance?.raw?.searchMode === 'release')
 }
 
-async function recoveryReleaseTracklist(db, item, candidate, resolvedMetadata, username) {
+async function recoveryReleaseTracklist(db: D1Database, item: RecoveryItem, candidate: RecoveryCandidate, resolvedMetadata: OpenJson, username: string) {
   if (!isReleaseRecoveryCandidate(candidate)) return null
   const source = item.catalogueSource || {}
   const albumId = typeof source.albumId === 'string' && source.albumId ? source.albumId : 'recovery:' + item.id
@@ -60,7 +89,7 @@ async function recoveryReleaseTracklist(db, item, candidate, resolvedMetadata, u
   return cached?.tracklist || null
 }
 
-function importedTrackMetadata(track, result) {
+function importedTrackMetadata(track: OpenJson, result: OpenJson) {
   const resolved = track?.provenance?.resolvedMetadata || {}
   return {
     path: track?.path || null, originalPath: track?.originalPath || null,
@@ -72,16 +101,16 @@ function importedTrackMetadata(track, result) {
   }
 }
 
-async function linkReleaseImport(db, username, parentItem, parentCandidate, result) {
-  const tracks = (Array.isArray(result?.importedTracks) ? result.importedTracks : []).map((track) => importedTrackMetadata(track, result)).filter((track) => track.path && track.title)
+async function linkReleaseImport(db: D1Database, username: string, parentItem: RecoveryItem, parentCandidate: RecoveryCandidate, result: OpenJson) {
+  const tracks = (Array.isArray(result?.importedTracks) ? result.importedTracks : []).map((track: OpenJson) => importedTrackMetadata(track, result)).filter((track: ReturnType<typeof importedTrackMetadata>) => track.path && track.title)
   if (!result?.completeness || !tracks.length) return
-  const rows = await db.prepare('SELECT id, artist, title, album, musicbrainz_id AS musicBrainzId FROM recovery_items WHERE username = ?').bind(username).all()
+  const rows = await db.prepare('SELECT id, artist, title, album, musicbrainz_id AS musicBrainzId FROM recovery_items WHERE username = ?').bind(username).all<RecoveryLinkRow>()
   const recoveries = rows.results || []
-  const linked = []
+  const linked: Array<{ track: ReturnType<typeof importedTrackMetadata>; recoveryId: string }> = []
   for (const track of tracks) {
     const artist = track.artist || track.albumArtist || result.artist || 'Unknown Artist'
     const album = track.album || result.album || null
-    const sameRelease = (row) => completenessText(row.artist) === completenessText(artist) && completenessText(row.album) === completenessText(album)
+    const sameRelease = (row: RecoveryLinkRow) => completenessText(row.artist) === completenessText(artist) && completenessText(row.album) === completenessText(album)
     let recovery = recoveries.find((row) => sameRelease(row) && track.recordingId && row.musicBrainzId === track.recordingId)
       || recoveries.find((row) => sameRelease(row) && completenessText(row.title) === completenessText(track.title))
     if (!recovery) {
@@ -107,22 +136,22 @@ async function linkReleaseImport(db, username, parentItem, parentCandidate, resu
     linked.push({ track, recoveryId: recovery.id })
   }
 
-  const catalogueRows = await db.prepare("SELECT i.id, i.metadata_json AS metadataJson FROM catalogue_playlist_items i JOIN catalogue_playlists p ON p.id = i.playlist_id WHERE p.username = ? AND p.provider = 'spotify' AND i.status != 'unavailable'").bind(username).all()
-  const statements = []
+  const catalogueRows = await db.prepare("SELECT i.id, i.metadata_json AS metadataJson FROM catalogue_playlist_items i JOIN catalogue_playlists p ON p.id = i.playlist_id WHERE p.username = ? AND p.provider = 'spotify' AND i.status != 'unavailable'").bind(username).all<{ id: string; metadataJson: string }>()
+  const statements: D1PreparedStatement[] = []
   for (const row of catalogueRows.results || []) {
-    let metadata = null
+    let metadata: OpenJson = null
     try { metadata = JSON.parse(row.metadataJson) } catch { continue }
-    const match = linked.find(({ track }) => (track.isrc && metadata?.isrc && completenessText(track.isrc) === completenessText(metadata.isrc)) || (completenessText(track.title) === completenessText(metadata?.title) && completenessText(track.album) === completenessText(metadata?.album) && (Array.isArray(metadata?.artists) ? metadata.artists : []).some((artist) => completenessText(artist) === completenessText(track.artist || track.albumArtist))))
+    const match = linked.find(({ track }) => (track.isrc && metadata?.isrc && completenessText(track.isrc) === completenessText(metadata.isrc)) || (completenessText(track.title) === completenessText(metadata?.title) && completenessText(track.album) === completenessText(metadata?.album) && (Array.isArray(metadata?.artists) ? metadata.artists : []).some((artist: unknown) => completenessText(artist) === completenessText(track.artist || track.albumArtist))))
     if (match) statements.push(db.prepare("UPDATE catalogue_playlist_items SET status = 'missing', local_track_id = NULL, local_track_json = NULL, recovery_id = ?, match_confidence = 0, user_confirmed = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(match.recoveryId, row.id))
   }
   if (statements.length) await db.batch(statements)
 }
 
-function recoveryTokens(value) {
+function recoveryTokens(value: unknown) {
   return new Set(String(value || '').toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean))
 }
 
-function recoveryTokenScore(expected, actual) {
+function recoveryTokenScore(expected: unknown, actual: unknown) {
   const wanted = recoveryTokens(expected)
   const found = recoveryTokens(actual)
   if (!wanted.size) return 0
@@ -131,7 +160,7 @@ function recoveryTokenScore(expected, actual) {
   return matches / wanted.size
 }
 
-function scoreRecoveryCandidate(item, candidate) {
+function scoreRecoveryCandidate(item: RecoveryItem, candidate: OpenJson) {
   const title = recoveryTokenScore(item.title || item.album, candidate.title)
   const artist = Math.max(recoveryTokenScore(item.artist, candidate.title), recoveryTokenScore(item.artist, candidate.channel))
   const difference = item.duration && candidate.duration ? Math.abs(Number(item.duration) - Number(candidate.duration)) : null
@@ -142,13 +171,13 @@ function scoreRecoveryCandidate(item, candidate) {
   return { official: looksOfficial, score: Math.max(0, Math.min(100, Math.round(title * 48 + artist * 28 + duration * 18 + (looksOfficial ? 6 : 0) - (unwanted ? 24 : 0)))) }
 }
 
-async function requireRecoveryAgentContract(env) {
+async function requireRecoveryAgentContract(env: Env) {
   const status = await recoveryAgentStatus(env)
   if (!Number.isInteger(status?.contract) || status.contract < TOMIFY_AGENT_CONTRACT) throw new RecoveryAgentOutdated()
   return status
 }
 
-export function rowToItem(row) {
+export function rowToItem(row: ReleaseMetadataRow | null | undefined) {
   if (!row) return null
   return {
     albumId: row.albumId,
@@ -161,22 +190,22 @@ export function rowToItem(row) {
   }
 }
 
-function normalise(value) {
+function normalise(value: unknown) {
   return String(value || '').toLocaleLowerCase('en').replace(/[^a-z0-9]+/g, ' ').trim()
 }
 
-function releaseTitleHint(title) {
+function releaseTitleHint(title: unknown) {
   const value = String(title || '').trim()
   if (/\((?:cd|disc)?\s*\d*\s*single(?:\s*version)?\)\s*$/i.test(value) || /\b(?:cd|disc)?\s*\d*\s*single\b/i.test(value)) return 'single'
   if (/\((?:cd|disc)?\s*\d*\s*e\.?p\.?\)\s*$/i.test(value) || /\be\.?p\.?\b/i.test(value)) return 'ep'
   return null
 }
 
-export function cleanReleaseTitle(title) {
+export function cleanReleaseTitle(title: unknown) {
   return String(title || '').replace(/\s*\((?:cd|disc)?\s*\d*\s*(?:single(?:\s*version)?|e\.?p\.?)\)\s*$/i, '').trim()
 }
 
-export function musicBrainzType(group) {
+export function musicBrainzType(group: MusicBrainzReleaseGroup) {
   const secondary = (group['secondary-types'] || []).map((value) => String(value).toLowerCase())
   if (secondary.includes('compilation')) return 'compilation'
   const primary = String(group['primary-type'] || '').toLowerCase()
@@ -186,15 +215,15 @@ export function musicBrainzType(group) {
   return 'other'
 }
 
-function artistCredit(group) {
+function artistCredit(group: MusicBrainzReleaseGroup) {
   return (group['artist-credit'] || []).map((credit) => credit?.name || credit?.artist?.name || '').filter(Boolean).join(' ')
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-let musicBrainzQueue = Promise.resolve()
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+let musicBrainzQueue: Promise<unknown> = Promise.resolve()
 let lastMusicBrainzRequestAt = 0
 
-export async function musicBrainzJson(url) {
+export async function musicBrainzJson(url: string | URL): Promise<OpenJson> {
   const operation = musicBrainzQueue.then(async () => {
     const wait = Math.max(0, 1100 - (Date.now() - lastMusicBrainzRequestAt))
     if (wait) await sleep(wait)
@@ -207,7 +236,7 @@ export async function musicBrainzJson(url) {
   return operation
 }
 
-async function resolveMusicBrainzRecovery(item, candidateId) {
+async function resolveMusicBrainzRecovery(item: RecoveryItem, candidateId: string) {
   const title = normaliseMetadataText(item.title)
   const artist = normaliseMetadataText(item.artist)
   const isrc = String(item.catalogueSource?.spotifyISRC || item.catalogueSource?.isrc || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase()
@@ -226,7 +255,7 @@ async function resolveMusicBrainzRecovery(item, candidateId) {
   return { authority: 'musicbrainz', ...resolveRecoveryMetadata({ artist: item.artist, title: item.title, album: item.album, duration: item.duration || item.candidates.find((value) => value.id === candidateId)?.duration || null, isrc: isrc || null }, result.recordings), candidateId, resolvedAt: new Date().toISOString() }
 }
 
-export function artworkYearScore(expectedDate, actualDate) {
+export function artworkYearScore(expectedDate: unknown, actualDate: unknown) {
   const expected = String(expectedDate || '').slice(0, 4)
   const actual = String(actualDate || '').slice(0, 4)
   if (!expected || !actual) return 0.5
@@ -234,7 +263,7 @@ export function artworkYearScore(expectedDate, actualDate) {
   return difference === 0 ? 1 : difference === 1 ? 0.6 : 0
 }
 
-async function appleArtworkCandidates(env, metadata) {
+async function appleArtworkCandidates(env: Env, metadata: ArtworkMetadata) {
   const url = new URL('https://itunes.apple.com/search')
   url.searchParams.set('term', [metadata.artist, metadata.album || metadata.title].filter(Boolean).join(' '))
   url.searchParams.set('media', 'music')
@@ -243,10 +272,10 @@ async function appleArtworkCandidates(env, metadata) {
   url.searchParams.set('country', String(env.APPLE_CATALOGUE_COUNTRY || 'GB').slice(0, 2).toUpperCase())
   const response = await fetch(url, { headers: { accept: 'application/json' } })
   if (!response.ok) return []
-  const body = await response.json()
+  const body: OpenJson = await response.json()
   const enabled = String(env.APPLE_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true'
   const results = Array.isArray(body.results) ? body.results : []
-  return results.map((result) => {
+  return results.map((result: OpenJson) => {
     const artistSimilarity = metadataTextSimilarity(metadata.artist, result.artistName)
     const albumSimilarity = metadata.album ? metadataTextSimilarity(metadata.album, result.collectionName) : 1
     const titleSimilarity = metadata.album ? 1 : metadataTextSimilarity(metadata.title, result.trackName)
@@ -257,20 +286,20 @@ async function appleArtworkCandidates(env, metadata) {
   }).filter(Boolean)
 }
 
-let spotifyTokenCache = null
+let spotifyTokenCache: { token: string; expiresAt: number } | null = null
 export function resetSpotifyTokenCache() { spotifyTokenCache = null }
-export async function spotifyAccessToken(env) {
+export async function spotifyAccessToken(env: Env): Promise<string | null> {
   if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) return null
   if (spotifyTokenCache && spotifyTokenCache.expiresAt > Date.now() + 60_000) return spotifyTokenCache.token
   const response = await fetch('https://accounts.spotify.com/api/token', { method: 'POST', headers: { authorization: 'Basic ' + btoa(String(env.SPOTIFY_CLIENT_ID) + ':' + String(env.SPOTIFY_CLIENT_SECRET)), 'content-type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials' })
   if (!response.ok) return null
-  const body = await response.json()
+  const body: OpenJson = await response.json()
   if (!body.access_token) return null
   spotifyTokenCache = { token: body.access_token, expiresAt: Date.now() + Number(body.expires_in || 3600) * 1000 }
   return spotifyTokenCache.token
 }
 
-async function spotifyArtworkCandidates(env, metadata) {
+async function spotifyArtworkCandidates(env: Env, metadata: ArtworkMetadata) {
   const token = await spotifyAccessToken(env)
   if (!token) return []
   const url = new URL('https://api.spotify.com/v1/search')
@@ -280,27 +309,27 @@ async function spotifyArtworkCandidates(env, metadata) {
   url.searchParams.set('market', String(env.SPOTIFY_MARKET || 'GB').slice(0, 2).toUpperCase())
   const response = await fetch(url, { headers: { authorization: 'Bearer ' + token, accept: 'application/json' } })
   if (!response.ok) return []
-  const body = await response.json()
+  const body: OpenJson = await response.json()
   const enabled = String(env.SPOTIFY_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true'
-  const raw = metadata.album ? body.albums?.items : (body.tracks?.items || []).map((track) => track.album)
+  const raw = metadata.album ? body.albums?.items : (body.tracks?.items || []).map((track: OpenJson) => track.album)
   return (Array.isArray(raw) ? raw : []).map((album) => {
-    const artistName = (album.artists || []).map((artist) => artist.name).join(' ')
+    const artistName = (album.artists || []).map((artist: OpenJson) => artist.name).join(' ')
     const artistSimilarity = metadataTextSimilarity(metadata.artist, artistName)
     const albumSimilarity = metadata.album ? metadataTextSimilarity(metadata.album, album.name) : 1
     if (artistSimilarity < 0.82 || (metadata.album && albumSimilarity < 0.72)) return null
-    const image = (album.images || []).slice().sort((left, right) => Number(right.width || 0) - Number(left.width || 0))[0]
+    const image = (album.images || []).slice().sort((left: OpenJson, right: OpenJson) => Number(right.width || 0) - Number(left.width || 0))[0]
     if (!image?.url) return null
     const confidence = Math.round(artistSimilarity * 50 + albumSimilarity * 40 + artworkYearScore(metadata.releaseDate, album.release_date) * 10)
     return { id: 'spotify:' + album.id, provider: 'spotify', providerLabel: 'Spotify', providerId: album.id, url: image.url, previewUrl: image.url, width: image.width || null, height: image.height || null, confidence, artist: artistName || null, album: album.name || null, releaseDate: album.release_date || null, storeUrl: album.external_urls?.spotify || null, selectable: enabled, unavailableReason: enabled ? null : 'Spotify artwork acquisition requires explicit server-side enablement after confirming applicable usage rights.' }
   }).filter(Boolean)
 }
 
-async function coverArtArchiveCandidates(metadata) {
+async function coverArtArchiveCandidates(metadata: ArtworkMetadata) {
   if (!metadata.releaseId) return []
   const response = await fetch('https://coverartarchive.org/release/' + encodeURIComponent(metadata.releaseId), { headers: { accept: 'application/json', 'user-agent': 'Tomify/0.1 (https://app.tomify.tomdixon.uk)' } })
   if (!response.ok) return []
-  const body = await response.json()
-  return (Array.isArray(body.images) ? body.images : []).filter((image) => image?.front === true || (image?.types || []).includes('Front')).slice(0, 4).map((image) => {
+  const body: OpenJson = await response.json()
+  return (Array.isArray(body.images) ? body.images : []).filter((image: OpenJson) => image?.front === true || (image?.types || []).includes('Front')).slice(0, 4).map((image: OpenJson) => {
     const url = image.thumbnails?.['1200'] || image.thumbnails?.['500'] || image.image
     const size = image.thumbnails?.['1200'] ? 1200 : image.thumbnails?.['500'] ? 500 : null
     const physicalHint = /booklet|case|tray|disc|vinyl|spine|scan/i.test(String(image.comment || ''))
@@ -308,20 +337,20 @@ async function coverArtArchiveCandidates(metadata) {
   })
 }
 
-function youtubeArtworkCandidates(sourceCandidate) {
+function youtubeArtworkCandidates(sourceCandidate: RecoveryCandidate | null | undefined) {
   if (sourceCandidate?.backend !== 'youtube' || !sourceCandidate?.thumbnail) return []
   return [{ id: 'youtube:' + sourceCandidate.externalId, provider: 'youtube', providerLabel: 'YouTube thumbnail', providerId: sourceCandidate.externalId, url: sourceCandidate.thumbnail, previewUrl: sourceCandidate.thumbnail, width: null, height: null, confidence: Math.min(50, Number(sourceCandidate.matchScore || 0)), artist: null, album: null, releaseDate: null, selectable: true, unavailableReason: null }]
 }
 
-function catalogueArtworkCandidates(env, item) {
+function catalogueArtworkCandidates(env: Env, item: RecoveryItem) {
   if (item.catalogueSource?.catalogueSource !== 'spotify' || !Array.isArray(item.catalogueSource.artwork)) return []
-  const image = item.catalogueSource.artwork.slice().sort((left, right) => Number(right.width || 0) - Number(left.width || 0))[0]
+  const image = item.catalogueSource.artwork.slice().sort((left: OpenJson, right: OpenJson) => Number(right.width || 0) - Number(left.width || 0))[0]
   if (!image?.url) return []
   const enabled = String(env.SPOTIFY_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true'
   return [{ id: 'spotify-track:' + item.catalogueSource.spotifyTrackId, provider: 'spotify', providerLabel: 'Spotify', providerId: item.catalogueSource.spotifyAlbumId || item.catalogueSource.spotifyTrackId, url: image.url, previewUrl: image.url, width: image.width || null, height: image.height || null, confidence: 100, artist: item.artist, album: item.album || null, releaseDate: item.catalogueSource.releaseDate || null, storeUrl: item.catalogueSource.spotifyTrackUrl || item.catalogueSource.sourcePlaylistUrl || null, selectable: enabled, unavailableReason: enabled ? null : 'Spotify artwork acquisition requires explicit server-side enablement after confirming applicable usage rights.' }]
 }
 
-function artworkConfigurationKey(env) {
+function artworkConfigurationKey(env: Env) {
   return [
     String(env.APPLE_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true',
     String(env.APPLE_CATALOGUE_COUNTRY || 'GB').toUpperCase(),
@@ -331,15 +360,15 @@ function artworkConfigurationKey(env) {
   ].join(':')
 }
 
-async function resolveRecoveryArtwork(env, metadataResolution, item, sourceCandidate) {
+async function resolveRecoveryArtwork(env: Env, metadataResolution: OpenJson, item: RecoveryItem, sourceCandidate: RecoveryCandidate) {
   const matched = metadataResolution?.strong ? metadataResolution.metadata : null
-  const metadata = { artist: matched?.artist || item.artist, title: matched?.title || item.title, album: matched?.album || item.album || null, releaseDate: matched?.releaseDate || null, releaseId: matched?.releaseId || null, matchConfidence: metadataResolution?.confidence || 0 }
+  const metadata: ArtworkMetadata = { artist: matched?.artist || item.artist, title: matched?.title || item.title, album: matched?.album || item.album || null, releaseDate: matched?.releaseDate || null, releaseId: matched?.releaseId || null, matchConfidence: metadataResolution?.confidence || 0 }
   const results = await Promise.allSettled([appleArtworkCandidates(env, metadata), spotifyArtworkCandidates(env, metadata), coverArtArchiveCandidates(metadata)])
   const candidates = rankArtworkCandidates([...results.flatMap((result) => result.status === 'fulfilled' ? result.value : []), ...catalogueArtworkCandidates(env, item), ...youtubeArtworkCandidates(sourceCandidate)]).slice(0, 10)
   return { candidates, selectedCandidateId: candidates.find((candidate) => candidate.selectable)?.id || null, resolvedAt: new Date().toISOString(), candidateId: sourceCandidate.id, configurationKey: artworkConfigurationKey(env), providers: { apple: { available: true, acquisitionEnabled: String(env.APPLE_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true' }, spotify: { available: Boolean(env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET), acquisitionEnabled: String(env.SPOTIFY_ARTWORK_EMBEDDING_ENABLED || '').toLowerCase() === 'true' }, coverArtArchive: { available: Boolean(metadata.releaseId) }, youtube: { available: sourceCandidate.backend === 'youtube' && Boolean(sourceCandidate.thumbnail) } } }
 }
 
-export async function lookupMusicBrainzReleaseGroup(album) {
+export async function lookupMusicBrainzReleaseGroup(album: { name?: string | null; artist?: string | null; year?: number | string | null; musicBrainzId?: unknown; trackCount?: number | null }): Promise<{ group: MusicBrainzReleaseGroup; score: number } | null> {
   const mbid = typeof album.musicBrainzId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(album.musicBrainzId) ? album.musicBrainzId : null
 
   if (mbid) {
@@ -390,12 +419,12 @@ export async function lookupMusicBrainzReleaseGroup(album) {
   return candidates[0] ? { group: candidates[0].group, score: Math.min(100, candidates[0].rawScore) } : null
 }
 
-export async function selectRelease(db, albumId) {
-  const row = await db.prepare('SELECT album_id AS albumId, release_type AS releaseType, release_date AS releaseDate, updated_at AS updatedAt, source, musicbrainz_id AS musicBrainzId, match_score AS matchScore FROM release_metadata WHERE album_id = ?').bind(albumId).first()
+export async function selectRelease(db: D1Database, albumId: string) {
+  const row = await db.prepare('SELECT album_id AS albumId, release_type AS releaseType, release_date AS releaseDate, updated_at AS updatedAt, source, musicbrainz_id AS musicBrainzId, match_score AS matchScore FROM release_metadata WHERE album_id = ?').bind(albumId).first<ReleaseMetadataRow>()
   return rowToItem(row)
 }
 
-export async function handleRecoveryRequest(request, env, url) {
+export async function handleRecoveryRequest(request: Request, env: Env, url: URL) {
     const pathname = decodeURIComponent(url.pathname)
     if (pathname !== '/api/recovery' && !pathname.startsWith('/api/recovery/')) return null
 
@@ -411,11 +440,11 @@ export async function handleRecoveryRequest(request, env, url) {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request, env)
       if (!username) return json({ error: 'unauthorized' }, 401)
-      const rows = await env.TOMIFY_DB.prepare('SELECT id FROM recovery_items WHERE username = ? ORDER BY updated_at DESC, created_at DESC').bind(username).all()
-      const items = []
+      const rows = await env.TOMIFY_DB.prepare('SELECT id FROM recovery_items WHERE username = ? ORDER BY updated_at DESC, created_at DESC').bind(username).all<{ id: string }>()
+      const items: Array<RecoveryItem | null> = []
       for (const row of rows.results || []) items.push(await recoveryItem(env.TOMIFY_DB, username, row.id))
       const configured = Boolean(env.RECOVERY_AGENT_URL)
-      const backendState = [
+      const backendState: RecoveryBackendState[] = [
         { id: 'youtube', label: 'YouTube', available: configured, authentication: configured ? 'unavailable' : 'not-configured', reason: configured ? null : 'The media-server recovery agent has not been connected yet.' },
         { id: 'internet-archive', label: 'Internet Archive', available: configured, authentication: 'not-required', reason: configured ? null : 'The media-server recovery agent has not been connected yet.' },
         { id: 'usenet', label: 'Usenet / NZB', available: false, authentication: 'not-configured', reason: configured ? 'Configure SABnzbd or NZBGet and its download directory on the recovery agent.' : 'The media-server recovery agent has not been connected yet.' },
@@ -425,7 +454,7 @@ export async function handleRecoveryRequest(request, env, url) {
         try {
           const status = await recoveryAgentStatus(env)
           for (const backend of backendState) {
-            const remote = Array.isArray(status.backends) ? status.backends.find((value) => value?.id === backend.id) : null
+            const remote = Array.isArray(status.backends) ? status.backends.find((value: OpenJson) => value?.id === backend.id) : null
             backend.available = Boolean(remote && remote.available !== false)
             backend.authentication = remote?.authentication || backend.authentication
             // Agents older than torrent search only accept pasted links.
@@ -440,8 +469,8 @@ export async function handleRecoveryRequest(request, env, url) {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request, env)
       if (!username) return json({ error: 'unauthorized' }, 401)
-      const body = await request.json()
-      const wantedText = (value) => typeof value === 'string' ? value.trim().slice(0, 240) : ''
+      const body: OpenJson = await request.json()
+      const wantedText = (value: unknown) => typeof value === 'string' ? value.trim().slice(0, 240) : ''
       // Wanted music can be any mix of artist, album and track; artist and title stay NOT NULL, so blanks are stored as ''.
       const wanted = { artist: wantedText(body?.artist), title: wantedText(body?.title), album: wantedText(body?.album) }
       if (!body || (!wanted.artist && !wanted.title && !wanted.album)) return json({ error: 'invalid-wanted-music', message: 'Enter at least one of artist, album or track.' }, 400)
@@ -463,7 +492,7 @@ export async function handleRecoveryRequest(request, env, url) {
       if (!['queued', 'downloading', 'importing'].includes(item.status)) return json({ error: 'recovery-job-not-active', message: 'This recovery job is no longer active.' }, 409)
       try {
         const cancelled = await callRecoveryAgent(env, '/v1/jobs/cancel', { jobId: candidate.provenance.job.id })
-        const importedPaths = [...new Set((Array.isArray(cancelled?.importedPaths) ? cancelled.importedPaths : []).filter((path) => typeof path === 'string' && path))]
+        const importedPaths = [...new Set((Array.isArray(cancelled?.importedPaths) ? cancelled.importedPaths : []).filter((path: unknown) => typeof path === 'string' && path))]
         if (importedPaths.length) await callRecoveryAgent(env, '/v1/delete', { importedPaths })
         const provenance = { ...candidate.provenance }
         for (const key of ['job', 'importedAt', 'importedCount', 'importedTracks', 'importedRelease', 'remainingImportedAt', 'sourceAudio', 'derivative']) delete provenance[key]
@@ -487,7 +516,7 @@ export async function handleRecoveryRequest(request, env, url) {
       const torrentJobIds = [...new Set(item.candidates.filter((candidate) => candidate.backend === 'torrent' && candidate.provenance?.job?.id).map((candidate) => candidate.provenance.job.id))]
       const activeCandidate = item.candidates.find((candidate) => candidate.selected && candidate.provenance?.job?.id)
       if (item.status === 'importing' || ((item.status === 'queued' || item.status === 'downloading') && activeCandidate?.backend !== 'torrent')) return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before deleting this item.' }, 409)
-      const importedPaths = [...new Set(item.candidates.flatMap((candidate) => [candidate.importedPath, ...(Array.isArray(candidate.provenance?.importedTracks) ? candidate.provenance.importedTracks.map((track) => track?.path) : [])]).filter((path) => typeof path === 'string' && path.length > 0))]
+      const importedPaths = [...new Set(item.candidates.flatMap((candidate) => [candidate.importedPath, ...(Array.isArray(candidate.provenance?.importedTracks) ? candidate.provenance.importedTracks.map((track: OpenJson) => track?.path) : [])]).filter((path) => typeof path === 'string' && path.length > 0))]
       for (const jobId of torrentJobIds) {
         try {
           const cancelled = await callRecoveryAgent(env, '/v1/jobs/cancel', { jobId })
@@ -517,7 +546,7 @@ export async function handleRecoveryRequest(request, env, url) {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request, env)
       if (!username) return json({ error: 'unauthorized' }, 401)
-      const body = await request.json()
+      const body: OpenJson = await request.json()
       const allowed = ['missing', 'candidate-found', 'recovered', 'needs-upgrade', 'failed']
       if (!body || !allowed.includes(body.status)) return json({ error: 'invalid-recovery-status' }, 400)
       await env.TOMIFY_DB.prepare('UPDATE recovery_items SET status = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?').bind(body.status, recoveryMatch[1], username).run()
@@ -532,7 +561,7 @@ export async function handleRecoveryRequest(request, env, url) {
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       if (!item) return json({ error: 'recovery-item-not-found' }, 404)
       if (item.status === 'queued' || item.status === 'downloading') return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before searching again.' }, 409)
-      const body = await request.json().catch(() => ({}))
+      const body: OpenJson = await request.json().catch(() => ({}))
       const backend = ['internet-archive', 'youtube', 'usenet', 'torrent'].includes(body?.backend) ? body.backend : null
       if (!backend) return json({ error: 'unsupported-recovery-backend' }, 400)
       // A torrent search either sends a pasted magnet or .torrent link, which the agent validates and returns as one
@@ -549,7 +578,7 @@ export async function handleRecoveryRequest(request, env, url) {
         const result = await callRecoveryAgent(env, '/v1/search', { backend, searchMode, ...(searchFields ? { searchFields } : {}), ...(backend === 'torrent' && link ? { link } : {}), track: { artist: item.artist, title: item.title, album: item.album, duration: item.duration } })
         const candidates = Array.isArray(result.candidates) ? result.candidates.slice(0, 12) : []
         await env.TOMIFY_DB.prepare('DELETE FROM recovery_candidates WHERE recovery_id = ? AND backend = ? AND imported_path IS NULL').bind(item.id, backend).run()
-        const inserts = candidates.filter((candidate) => candidate && typeof candidate.url === 'string' && typeof candidate.externalId === 'string').map((candidate) => {
+        const inserts = candidates.filter((candidate: OpenJson) => candidate && typeof candidate.url === 'string' && typeof candidate.externalId === 'string').map((candidate: OpenJson) => {
           const scored = scoreRecoveryCandidate(item, candidate)
           return env.TOMIFY_DB.prepare('INSERT INTO recovery_candidates (id, recovery_id, backend, external_id, url, title, channel, channel_id, duration, official, match_score, thumbnail, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
             .bind(crypto.randomUUID(), item.id, backend, candidate.externalId.slice(0, 120), candidate.url.slice(0, 1000), String(candidate.title || '').slice(0, 500), String(candidate.channel || (backend === 'youtube' ? 'Unknown channel' : backend === 'usenet' ? 'Newznab indexer' : backend === 'torrent' ? (link ? 'Torrent link' : 'Torrent search') : 'Internet Archive')).slice(0, 240), typeof candidate.channelId === 'string' ? candidate.channelId.slice(0, 120) : null, Number.isFinite(candidate.duration) ? candidate.duration : null, scored.official ? 1 : 0, scored.score, typeof candidate.thumbnail === 'string' ? candidate.thumbnail.slice(0, 1000) : null, JSON.stringify({ discoveredAt: new Date().toISOString(), backend, searchMode: candidate.provenance?.searchMode || searchMode, searchFields: candidate.provenance?.searchFields || searchFields, raw: candidate.provenance || null }))
@@ -572,11 +601,11 @@ export async function handleRecoveryRequest(request, env, url) {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request, env)
       if (!username) return json({ error: 'unauthorized' }, 401)
-      const body = await request.json()
+      const body: OpenJson = await request.json()
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
       if (item?.status === 'queued' || item?.status === 'downloading') return json({ error: 'recovery-job-active', message: 'Wait for the active recovery job to finish before changing candidates.' }, 409)
       const candidate = body && typeof body.candidateId === 'string' ? item?.candidates.find((value) => value.id === body.candidateId) : null
-      if (!candidate) return json({ error: 'recovery-candidate-not-found' }, 404)
+      if (!item || !candidate) return json({ error: 'recovery-candidate-not-found' }, 404)
       let metadataResolution
       const cachedResolution = item.metadataResolution?.candidateId === candidate.id && Date.now() - Date.parse(item.metadataResolution.resolvedAt || '') < 30 * 24 * 60 * 60 * 1000 && item.metadataResolution.status !== 'unavailable' ? item.metadataResolution : null
       try { metadataResolution = cachedResolution || await resolveMusicBrainzRecovery(item, candidate.id) }
@@ -603,7 +632,7 @@ export async function handleRecoveryRequest(request, env, url) {
         const provenance = { ...candidate.provenance, job: { ...candidate.provenance.job, id: candidate.provenance.job.id, status: job.status || 'queued', progress: Number.isFinite(job.progress) ? job.progress : 0, message: job.message || null, error: job.error || null, details: job.details && typeof job.details === 'object' ? job.details : null } }
         if (job.status === 'completed' && job.result) {
           const quality = job.result.quality || {}
-          const importedTracks = Array.isArray(job.result.importedTracks) ? job.result.importedTracks.map((track) => importedTrackMetadata(track, job.result)) : []
+          const importedTracks = Array.isArray(job.result.importedTracks) ? job.result.importedTracks.map((track: OpenJson) => importedTrackMetadata(track, job.result)) : []
           const importedCount = Number.isInteger(job.result.importedCount) ? job.result.importedCount : importedTracks.length || 1
           const finalProvenance = { ...provenance, ...(job.result.provenance || {}), source: job.result.provenance?.source || candidate.backend, job: provenance.job, importedAt: new Date().toISOString(), importedCount, importedTracks, importedRelease: importedCount > 1 ? { artist: job.result.artist || null, album: job.result.album || null } : null, ...(job.result.completeness ? { completeness: job.result.completeness, extraFiles: job.result.extraFiles || [] } : {}) }
           await env.TOMIFY_DB.batch([
@@ -642,7 +671,7 @@ export async function handleRecoveryRequest(request, env, url) {
       try {
         await requireRecoveryAgentContract(env)
         const { result } = await callRecoveryAgent(env, '/v1/jobs/import-remaining', { jobId: candidate.provenance.job.id })
-        const added = Array.isArray(result?.importedTracks) ? result.importedTracks.map((track) => ({ path: track?.path || null, originalPath: track?.originalPath || null, artist: track?.artist || null, albumArtist: track?.albumArtist || null, album: track?.album || null, title: track?.title || null, trackNumber: track?.trackNumber || null, discNumber: track?.discNumber || null, quality: track?.quality || null, derivative: track?.derivative || null })) : []
+        const added = Array.isArray(result?.importedTracks) ? result.importedTracks.map((track: OpenJson) => ({ path: track?.path || null, originalPath: track?.originalPath || null, artist: track?.artist || null, albumArtist: track?.albumArtist || null, album: track?.album || null, title: track?.title || null, trackNumber: track?.trackNumber || null, discNumber: track?.discNumber || null, quality: track?.quality || null, derivative: track?.derivative || null })) : []
         // Keep the added tracks on the candidate so deleting the item also removes them.
         const importedTracks = [...(Array.isArray(candidate.provenance.importedTracks) ? candidate.provenance.importedTracks : []), ...added]
         const provenance = { ...candidate.provenance, importedTracks, importedCount: Math.max(importedTracks.length, Number(candidate.provenance.importedCount) || 1), importedRelease: { artist: result?.artist || null, album: result?.album || null }, remainingImportedAt: new Date().toISOString() }
@@ -659,7 +688,7 @@ export async function handleRecoveryRequest(request, env, url) {
       if (!env || !env.TOMIFY_DB) return json({ error: 'recovery-store-unavailable' }, 503)
       const username = await authenticate(request, env)
       if (!username) return json({ error: 'unauthorized' }, 401)
-      const body = await request.json()
+      const body: OpenJson = await request.json()
       const rights = ['uploader-authorised', 'creative-commons', 'public-domain', 'other-authorisation']
       if (!body || body.confirmedAuthorised !== true || !rights.includes(body.rightsBasis) || typeof body.candidateId !== 'string') return json({ error: 'source-authorisation-required' }, 400)
       const item = await recoveryItem(env.TOMIFY_DB, username, recoveryMatch[1])
@@ -670,7 +699,7 @@ export async function handleRecoveryRequest(request, env, url) {
       const metadataChoices = body.metadataChoices && typeof body.metadataChoices === 'object' ? body.metadataChoices : {}
       const wantedMetadata = { artist: item.artist, title: item.title, album: item.album || null, releaseDate: null, trackNumber: item.trackNumber || null, discNumber: item.discNumber || null, duration: item.duration || null, recordingId: item.musicBrainzId || null }
       const resolvedMetadata = applyRecoveryMetadataChoices(wantedMetadata, item.metadataResolution, metadataChoices)
-      const artwork = body.artworkCandidateId == null ? null : item.artworkResolution.candidates.find((value) => value.id === body.artworkCandidateId && value.selectable === true)
+      const artwork = body.artworkCandidateId == null ? null : item.artworkResolution.candidates.find((value: OpenJson) => value.id === body.artworkCandidateId && value.selectable === true)
       if (body.artworkCandidateId != null && !artwork) return json({ error: 'invalid-recovery-artwork', message: 'The selected artwork is unavailable or is not approved for acquisition.' }, 400)
       try { await requireRecoveryAgentContract(env) }
       catch (error) {

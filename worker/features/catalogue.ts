@@ -1,38 +1,54 @@
-// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
 import { isNavidromeConfigurationError } from '../lib/navidrome.ts'
 import { diffCataloguePlaylist, mapSpotifyPlaylist, occurrenceKeys, parseSpotifyPlaylistId, reusableRecoveryId, shouldCreateRecovery } from '../../scripts/catalogue-import.mjs'
 import { playlistShareFor } from './playlist-share.ts'
+import type { D1Database, D1PreparedStatement } from '@cloudflare/workers-types'
+import type { Env } from '../env.ts'
+import type { OpenJson } from '../routes/recovery.ts'
 
-function spotifyRedirectUri(env, request) {
+interface StoredSpotifyToken { accessToken: string; refreshToken: string | null; expiresAt: number; scope: string }
+interface CataloguePlaylistRow {
+  id: string; name: string; provider: string; providerPlaylistId: string; sourceUrl: string; snapshotId: string | null; artworkUrl: string | null; provenanceJson: string | null
+  createdAt: string; updatedAt: string; total: number | null; available: number | null; missing: number | null; review: number | null; unavailable: number | null
+}
+interface CatalogueItemRow {
+  id: string; position: number; providerTrackId: string | null; metadataJson: string; status: string; localTrackId: string | null; localTrackJson: string | null
+  recoveryId: string | null; matchConfidence: number | null; userConfirmed: number | null
+}
+interface KnownRecovery { id: string; artist: string; title: string; catalogueSource: OpenJson }
+// The playlist a new Recovery item records as its source.
+interface CatalogueSourcePlaylist { providerPlaylistId: string; name: string; sourceUrl: string }
+interface CatalogueSaveInput { mode?: string; playlistId?: string; createRecovery?: unknown; autoRecovery?: unknown }
+
+function spotifyRedirectUri(env: Env, request: Request) {
   return String(env.SPOTIFY_REDIRECT_URI || new URL('/api/catalogue-auth/spotify/callback', request.url))
 }
 
-function bytesToBase64(bytes) {
+function bytesToBase64(bytes: Uint8Array) {
   let value = ''
   for (const byte of bytes) value += String.fromCharCode(byte)
   return btoa(value)
 }
 
-function base64ToBytes(value) {
+function base64ToBytes(value: string) {
   const decoded = atob(value)
   return Uint8Array.from(decoded, (character) => character.charCodeAt(0))
 }
 
-async function catalogueTokenKey(env) {
+async function catalogueTokenKey(env: Env) {
   if (!env.SPOTIFY_TOKEN_ENCRYPTION_KEY) throw new Error('Spotify token encryption is not configured.')
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(env.SPOTIFY_TOKEN_ENCRYPTION_KEY)))
   return crypto.subtle.importKey('raw', digest, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
 }
 
-async function encryptCatalogueToken(env, value) {
+async function encryptCatalogueToken(env: Env, value: unknown) {
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await catalogueTokenKey(env), new TextEncoder().encode(JSON.stringify(value)))
   return bytesToBase64(iv) + '.' + bytesToBase64(new Uint8Array(encrypted))
 }
 
-async function decryptCatalogueToken(env, value) {
+async function decryptCatalogueToken(env: Env, value: unknown): Promise<StoredSpotifyToken> {
   const [iv, encrypted] = String(value || '').split('.')
   if (!iv || !encrypted) throw new Error('Stored Spotify authorization is invalid.')
   const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(iv) }, await catalogueTokenKey(env), base64ToBytes(encrypted))
@@ -40,15 +56,15 @@ async function decryptCatalogueToken(env, value) {
 }
 
 
-async function spotifyTokenRequest(env, parameters) {
+async function spotifyTokenRequest(env: Env, parameters: Record<string, string>): Promise<OpenJson> {
   const response = await fetch('https://accounts.spotify.com/api/token', { method: 'POST', headers: { authorization: 'Basic ' + btoa(String(env.SPOTIFY_CLIENT_ID) + ':' + String(env.SPOTIFY_CLIENT_SECRET)), 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: new URLSearchParams(parameters) })
-  const body = await response.json().catch(() => ({}))
+  const body: OpenJson = await response.json().catch(() => ({}))
   if (!response.ok || !body.access_token) throw new Error(body.error_description || body.error || 'Spotify authorization failed.')
   return body
 }
 
-export async function spotifyUserToken(env, db, username, forceRefresh = false) {
-  const row = await db.prepare("SELECT encrypted_token AS encryptedToken FROM catalogue_provider_tokens WHERE username = ? AND provider = 'spotify'").bind(username).first()
+export async function spotifyUserToken(env: Env, db: D1Database, username: string, forceRefresh = false): Promise<string> {
+  const row = await db.prepare("SELECT encrypted_token AS encryptedToken FROM catalogue_provider_tokens WHERE username = ? AND provider = 'spotify'").bind(username).first<{ encryptedToken: string | null }>()
   if (!row?.encryptedToken) throw new Error('Connect Spotify before importing a playlist.')
   const stored = await decryptCatalogueToken(env, row.encryptedToken)
   if (!forceRefresh && Number(stored.expiresAt || 0) > Date.now() + 60_000) return stored.accessToken
@@ -59,7 +75,7 @@ export async function spotifyUserToken(env, db, username, forceRefresh = false) 
   return next.accessToken
 }
 
-async function spotifyApiJson(env, db, username, url, refreshed = false, rateRetried = false) {
+async function spotifyApiJson(env: Env, db: D1Database, username: string, url: string, refreshed = false, rateRetried = false): Promise<OpenJson> {
   const response = await fetch(url, { headers: { authorization: 'Bearer ' + await spotifyUserToken(env, db, username, refreshed), accept: 'application/json' } })
   if (response.status === 401 && !refreshed) return spotifyApiJson(env, db, username, url, true, rateRetried)
   if (response.status === 429) {
@@ -67,15 +83,15 @@ async function spotifyApiJson(env, db, username, url, refreshed = false, rateRet
     if (!rateRetried && retryAfter > 0 && retryAfter <= 3) { await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000)); return spotifyApiJson(env, db, username, url, refreshed, true) }
     throw new Error('Spotify is rate limiting playlist access. Try again shortly.')
   }
-  const body = await response.json().catch(() => ({}))
+  const body: OpenJson = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(response.status === 403 ? 'Spotify only permits access to playlists owned by or shared collaboratively with the connected account.' : body.error?.message || 'Spotify playlist request failed.')
   return body
 }
 
-async function fetchSpotifyPlaylist(env, db, username, playlistId, sourceUrl) {
+async function fetchSpotifyPlaylist(env: Env, db: D1Database, username: string, playlistId: string, sourceUrl: string) {
   const market = String(env.SPOTIFY_MARKET || 'GB').slice(0, 2).toUpperCase()
   const playlist = await spotifyApiJson(env, db, username, 'https://api.spotify.com/v1/playlists/' + encodeURIComponent(playlistId) + '?market=' + encodeURIComponent(market))
-  const entries = []
+  const entries: OpenJson[] = []
   let next = 'https://api.spotify.com/v1/playlists/' + encodeURIComponent(playlistId) + '/items?limit=50&market=' + encodeURIComponent(market)
   while (next && entries.length < 10_000) {
     const nextUrl = new URL(next)
@@ -87,27 +103,28 @@ async function fetchSpotifyPlaylist(env, db, username, playlistId, sourceUrl) {
   return mapSpotifyPlaylist(playlist, entries, sourceUrl)
 }
 
-function cataloguePlaylistRow(row) {
-  let provenance = null
+// The scheduled refresh reads only the id and provenance columns.
+function cataloguePlaylistRow(row: Partial<CataloguePlaylistRow>) {
+  let provenance: OpenJson = null
   try { provenance = row.provenanceJson ? JSON.parse(row.provenanceJson) : null } catch { provenance = null }
   return { id: row.id, name: row.name, provider: row.provider, providerPlaylistId: row.providerPlaylistId, sourceUrl: row.sourceUrl, snapshotId: row.snapshotId || null, artworkUrl: row.artworkUrl || null, createdAt: row.createdAt, updatedAt: row.updatedAt, counts: { total: Number(row.total || 0), available: Number(row.available || 0), missing: Number(row.missing || 0), review: Number(row.review || 0), unavailable: Number(row.unavailable || 0) }, provenance }
 }
 
-async function cataloguePlaylistDetail(db, username, id) {
-  const row = await db.prepare("SELECT p.id, p.name, p.provider, p.provider_playlist_id AS providerPlaylistId, p.source_url AS sourceUrl, p.snapshot_id AS snapshotId, p.artwork_url AS artworkUrl, p.provenance_json AS provenanceJson, p.created_at AS createdAt, p.updated_at AS updatedAt, COUNT(i.id) AS total, SUM(CASE WHEN i.status = 'available' THEN 1 ELSE 0 END) AS available, SUM(CASE WHEN i.status = 'missing' THEN 1 ELSE 0 END) AS missing, SUM(CASE WHEN i.status = 'review' THEN 1 ELSE 0 END) AS review, SUM(CASE WHEN i.status = 'unavailable' THEN 1 ELSE 0 END) AS unavailable FROM catalogue_playlists p LEFT JOIN catalogue_playlist_items i ON i.playlist_id = p.id WHERE p.id = ? AND p.username = ? GROUP BY p.id").bind(id, username).first()
+async function cataloguePlaylistDetail(db: D1Database, username: string, id: string) {
+  const row = await db.prepare("SELECT p.id, p.name, p.provider, p.provider_playlist_id AS providerPlaylistId, p.source_url AS sourceUrl, p.snapshot_id AS snapshotId, p.artwork_url AS artworkUrl, p.provenance_json AS provenanceJson, p.created_at AS createdAt, p.updated_at AS updatedAt, COUNT(i.id) AS total, SUM(CASE WHEN i.status = 'available' THEN 1 ELSE 0 END) AS available, SUM(CASE WHEN i.status = 'missing' THEN 1 ELSE 0 END) AS missing, SUM(CASE WHEN i.status = 'review' THEN 1 ELSE 0 END) AS review, SUM(CASE WHEN i.status = 'unavailable' THEN 1 ELSE 0 END) AS unavailable FROM catalogue_playlists p LEFT JOIN catalogue_playlist_items i ON i.playlist_id = p.id WHERE p.id = ? AND p.username = ? GROUP BY p.id").bind(id, username).first<CataloguePlaylistRow>()
   if (!row) return null
-  const itemRows = await db.prepare('SELECT id, position, provider_track_id AS providerTrackId, metadata_json AS metadataJson, status, local_track_id AS localTrackId, local_track_json AS localTrackJson, recovery_id AS recoveryId, match_confidence AS matchConfidence, user_confirmed AS userConfirmed FROM catalogue_playlist_items WHERE playlist_id = ? ORDER BY position').bind(id).all()
-  const items = (itemRows.results || []).map((item) => { let metadata = {}; let localTrack = null; try { metadata = JSON.parse(item.metadataJson) } catch { /* ignore corrupt cached metadata */ } try { localTrack = item.localTrackJson ? JSON.parse(item.localTrackJson) : null } catch { /* ignore a corrupt cached match */ } return { id: item.id, position: Number(item.position), providerTrackId: item.providerTrackId || null, ...metadata, status: item.status, localTrackId: item.localTrackId || null, localTrack, recoveryId: item.recoveryId || null, matchConfidence: Number(item.matchConfidence || 0), userConfirmed: Boolean(item.userConfirmed) } })
+  const itemRows = await db.prepare('SELECT id, position, provider_track_id AS providerTrackId, metadata_json AS metadataJson, status, local_track_id AS localTrackId, local_track_json AS localTrackJson, recovery_id AS recoveryId, match_confidence AS matchConfidence, user_confirmed AS userConfirmed FROM catalogue_playlist_items WHERE playlist_id = ? ORDER BY position').bind(id).all<CatalogueItemRow>()
+  const items = (itemRows.results || []).map((item) => { let metadata: OpenJson = {}; let localTrack: OpenJson = null; try { metadata = JSON.parse(item.metadataJson) } catch { /* ignore corrupt cached metadata */ } try { localTrack = item.localTrackJson ? JSON.parse(item.localTrackJson) : null } catch { /* ignore a corrupt cached match */ } return { id: item.id, position: Number(item.position), providerTrackId: item.providerTrackId || null, ...metadata, status: item.status, localTrackId: item.localTrackId || null, localTrack, recoveryId: item.recoveryId || null, matchConfidence: Number(item.matchConfidence || 0), userConfirmed: Boolean(item.userConfirmed) } })
   return { ...cataloguePlaylistRow(row), items }
 }
 
-async function knownCatalogueRecoveries(db, username) {
-  const rows = await db.prepare('SELECT id, artist, title, source_json AS sourceJson FROM recovery_items WHERE username = ?').bind(username).all()
-  return (rows.results || []).map((row) => { let catalogueSource = null; try { catalogueSource = row.sourceJson ? JSON.parse(row.sourceJson) : null } catch { /* ignore corrupt source metadata */ } return { id: row.id, artist: row.artist, title: row.title, catalogueSource } })
+async function knownCatalogueRecoveries(db: D1Database, username: string): Promise<KnownRecovery[]> {
+  const rows = await db.prepare('SELECT id, artist, title, source_json AS sourceJson FROM recovery_items WHERE username = ?').bind(username).all<{ id: string; artist: string; title: string; sourceJson: string | null }>()
+  return (rows.results || []).map((row) => { let catalogueSource: OpenJson = null; try { catalogueSource = row.sourceJson ? JSON.parse(row.sourceJson) : null } catch { /* ignore corrupt source metadata */ } return { id: row.id, artist: row.artist, title: row.title, catalogueSource } })
 }
 
 // The Recovery item for a missing playlist entry: an existing one for the same track, else a new row added to `created`.
-function catalogueRecoveryId(username, item, playlist, known, created) {
+function catalogueRecoveryId(username: string, item: OpenJson, playlist: CatalogueSourcePlaylist, known: KnownRecovery[], created: unknown[][]) {
   const reused = reusableRecoveryId(item, known)
   if (reused) return reused
   const recoveryId = crypto.randomUUID()
@@ -117,8 +134,8 @@ function catalogueRecoveryId(username, item, playlist, known, created) {
   return recoveryId
 }
 
-function catalogueRecoveryInserts(db, created) {
-  const statements = []
+function catalogueRecoveryInserts(db: D1Database, created: unknown[][]) {
+  const statements: D1PreparedStatement[] = []
   for (let offset = 0; offset < created.length; offset += 10) {
     const values = created.slice(offset, offset + 10)
     statements.push(db.prepare("INSERT INTO recovery_items (id, username, artist, title, album, duration, track_number, disc_number, source_json, status) VALUES " + values.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, 'missing')").join(', ')).bind(...values.flat()))
@@ -126,22 +143,22 @@ function catalogueRecoveryInserts(db, created) {
   return statements
 }
 
-async function saveCataloguePlaylist(db, username, draft, input) {
+async function saveCataloguePlaylist(db: D1Database, username: string, draft: OpenJson, input: CatalogueSaveInput) {
   if (!draft || draft.provider !== 'spotify' || !draft.providerPlaylistId || !Array.isArray(draft.items) || draft.items.length > 10_000) throw new Error('Invalid catalogue playlist payload.')
   const updating = input.mode === 'update' && typeof input.playlistId === 'string'
-  const id = updating ? input.playlistId : crypto.randomUUID()
-  let existingItems = []
+  const id = updating ? input.playlistId as string : crypto.randomUUID()
+  let existingItems: OpenJson[] = []
   if (updating) {
     const existing = await cataloguePlaylistDetail(db, username, id)
     if (!existing || existing.provider !== draft.provider || existing.providerPlaylistId !== draft.providerPlaylistId) throw new Error('The playlist selected for update does not match this Spotify source.')
     existingItems = existing.items
   }
   const oldKeys = occurrenceKeys(existingItems)
-  const retained = new Map<string, Record<string, unknown>>(oldKeys.map((key, index) => [key, existingItems[index]]))
+  const retained = new Map<string, Record<string, unknown>>(oldKeys.map((key: string, index: number) => [key, existingItems[index]]))
   const newKeys = occurrenceKeys(draft.items)
   const knownRecoveries = input.createRecovery ? await knownCatalogueRecoveries(db, username) : []
-  const newRecoveries = []
-  const itemValues = []
+  const newRecoveries: unknown[][] = []
+  const itemValues: unknown[][] = []
   for (let index = 0; index < draft.items.length; index += 1) {
     const item = { ...draft.items[index], position: index }
     const previous = retained.get(newKeys[index])
@@ -164,17 +181,17 @@ async function saveCataloguePlaylist(db, username, draft, input) {
   return cataloguePlaylistDetail(db, username, id)
 }
 
-async function queueMissingForRecovery(db, username, id) {
-  const playlist = await db.prepare('SELECT provider_playlist_id AS providerPlaylistId, name, source_url AS sourceUrl FROM catalogue_playlists WHERE id = ?').bind(id).first()
-  const rows = await db.prepare("SELECT id, position, provider_track_id AS providerTrackId, metadata_json AS metadataJson FROM catalogue_playlist_items WHERE playlist_id = ? AND status = 'missing' AND recovery_id IS NULL").bind(id).all()
+async function queueMissingForRecovery(db: D1Database, username: string, id: string) {
+  const playlist = await db.prepare('SELECT provider_playlist_id AS providerPlaylistId, name, source_url AS sourceUrl FROM catalogue_playlists WHERE id = ?').bind(id).first<CatalogueSourcePlaylist>()
+  const rows = await db.prepare("SELECT id, position, provider_track_id AS providerTrackId, metadata_json AS metadataJson FROM catalogue_playlist_items WHERE playlist_id = ? AND status = 'missing' AND recovery_id IS NULL").bind(id).all<{ id: string; position: number; providerTrackId: string | null; metadataJson: string }>()
   const known = await knownCatalogueRecoveries(db, username)
-  const created = []
-  const links = []
+  const created: unknown[][] = []
+  const links: D1PreparedStatement[] = []
   for (const row of rows.results || []) {
     let metadata = {}
     try { metadata = JSON.parse(row.metadataJson) } catch { /* ignore corrupt cached metadata */ }
     const item = { ...metadata, status: 'missing', position: row.position, providerTrackId: row.providerTrackId }
-    if (shouldCreateRecovery(item, true)) links.push(db.prepare('UPDATE catalogue_playlist_items SET recovery_id = ? WHERE id = ?').bind(catalogueRecoveryId(username, item, playlist, known, created), row.id))
+    if (shouldCreateRecovery(item, true)) links.push(db.prepare('UPDATE catalogue_playlist_items SET recovery_id = ? WHERE id = ?').bind(catalogueRecoveryId(username, item, playlist!, known, created), row.id))
   }
   const statements = [...catalogueRecoveryInserts(db, created), ...links]
   for (let index = 0; index < statements.length; index += 75) await db.batch(statements.slice(index, index + 75))
@@ -182,10 +199,10 @@ async function queueMissingForRecovery(db, username, id) {
 
 // Daily cron: re-reads every imported Spotify playlist and saves what changed. Matching needs a signed-in Navidrome user,
 // so new entries are saved as missing; opening the playlist matches them and queues the rest for Recovery.
-export async function refreshCataloguePlaylists(env) {
+export async function refreshCataloguePlaylists(env: Env) {
   const db = env.TOMIFY_DB
   if (!db || !env.SPOTIFY_TOKEN_ENCRYPTION_KEY) return
-  const rows = await db.prepare("SELECT id, username, provider_playlist_id AS playlistId, source_url AS sourceUrl, snapshot_id AS snapshotId, provenance_json AS provenanceJson FROM catalogue_playlists WHERE provider = 'spotify' ORDER BY updated_at LIMIT 50").all()
+  const rows = await db.prepare("SELECT id, username, provider_playlist_id AS playlistId, source_url AS sourceUrl, snapshot_id AS snapshotId, provenance_json AS provenanceJson FROM catalogue_playlists WHERE provider = 'spotify' ORDER BY updated_at LIMIT 50").all<{ id: string; username: string; playlistId: string; sourceUrl: string; snapshotId: string | null; provenanceJson: string | null }>()
   for (const row of rows.results || []) {
     try {
       const head = await spotifyApiJson(env, db, row.username, 'https://api.spotify.com/v1/playlists/' + encodeURIComponent(row.playlistId) + '?fields=snapshot_id')
@@ -199,14 +216,14 @@ export async function refreshCataloguePlaylists(env) {
 // Adding missing tracks to Recovery is for Navidrome administrators; anyone can import the playlist itself.
 function recoveryForbidden() { return json({ error: 'forbidden', message: 'Only a Navidrome administrator can add tracks to Recovery. Import the playlist without Recovery instead.' }, 403) }
 
-export async function handleCatalogueRequest(request, env, url) {
+export async function handleCatalogueRequest(request: Request, env: Env, url: URL) {
   if (!url.pathname.startsWith('/api/catalogue-')) return null
   if (!env?.TOMIFY_DB) return json({ error: 'catalogue-store-unavailable' }, 503)
 
   if (url.pathname === '/api/catalogue-auth/spotify/callback' && request.method === 'GET') {
     const state = url.searchParams.get('state')
     const code = url.searchParams.get('code')
-    const row = state ? await env.TOMIFY_DB.prepare('SELECT username, expires_at AS expiresAt FROM catalogue_oauth_states WHERE state = ?').bind(state).first() : null
+    const row = state ? await env.TOMIFY_DB.prepare('SELECT username, expires_at AS expiresAt FROM catalogue_oauth_states WHERE state = ?').bind(state).first<{ username: string; expiresAt: number }>() : null
     if (state) await env.TOMIFY_DB.prepare('DELETE FROM catalogue_oauth_states WHERE state = ?').bind(state).run()
     const redirect = new URL('/playlists/import/spotify', request.url)
     if (!row || Number(row.expiresAt) < Date.now() || !code || url.searchParams.get('error')) { redirect.searchParams.set('spotify', 'error'); return Response.redirect(redirect.toString(), 302) }
@@ -223,7 +240,7 @@ export async function handleCatalogueRequest(request, env, url) {
   if (!username) return json({ error: 'unauthorized' }, 401)
   const configured = Boolean(env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET && env.SPOTIFY_TOKEN_ENCRYPTION_KEY)
   if (url.pathname === '/api/catalogue-auth/spotify/status' && request.method === 'GET') {
-    const token = configured ? await env.TOMIFY_DB.prepare("SELECT updated_at AS updatedAt FROM catalogue_provider_tokens WHERE username = ? AND provider = 'spotify'").bind(username).first() : null
+    const token = configured ? await env.TOMIFY_DB.prepare("SELECT updated_at AS updatedAt FROM catalogue_provider_tokens WHERE username = ? AND provider = 'spotify'").bind(username).first<{ updatedAt: string }>() : null
     return json({ configured, connected: Boolean(token), updatedAt: token?.updatedAt || null })
   }
   if (url.pathname === '/api/catalogue-auth/spotify/start' && request.method === 'POST') {
@@ -232,7 +249,7 @@ export async function handleCatalogueRequest(request, env, url) {
     await env.TOMIFY_DB.prepare('DELETE FROM catalogue_oauth_states WHERE expires_at < ?').bind(Date.now()).run()
     await env.TOMIFY_DB.prepare('INSERT INTO catalogue_oauth_states (state, username, expires_at) VALUES (?, ?, ?)').bind(state, username, Date.now() + 10 * 60_000).run()
     const authorize = new URL('https://accounts.spotify.com/authorize')
-    authorize.searchParams.set('client_id', env.SPOTIFY_CLIENT_ID); authorize.searchParams.set('response_type', 'code'); authorize.searchParams.set('redirect_uri', spotifyRedirectUri(env, request)); authorize.searchParams.set('state', state); authorize.searchParams.set('scope', 'playlist-read-private playlist-read-collaborative')
+    authorize.searchParams.set('client_id', env.SPOTIFY_CLIENT_ID as string); authorize.searchParams.set('response_type', 'code'); authorize.searchParams.set('redirect_uri', spotifyRedirectUri(env, request)); authorize.searchParams.set('state', state); authorize.searchParams.set('scope', 'playlist-read-private playlist-read-collaborative')
     return json({ authorizationUrl: authorize.toString() })
   }
   if (url.pathname === '/api/catalogue-auth/spotify' && request.method === 'DELETE') {
@@ -240,10 +257,10 @@ export async function handleCatalogueRequest(request, env, url) {
   }
   if (url.pathname === '/api/catalogue-imports/spotify/analyse' && request.method === 'POST') {
     try {
-      const input = await request.json(); const playlistId = parseSpotifyPlaylistId(input.url)
+      const input: OpenJson = await request.json(); const playlistId = parseSpotifyPlaylistId(input.url)
       if (!playlistId) return json({ error: 'invalid-spotify-playlist-url', message: 'Paste a complete Spotify playlist URL.' }, 400)
       const playlist = await fetchSpotifyPlaylist(env, env.TOMIFY_DB, username, playlistId, 'https://open.spotify.com/playlist/' + playlistId)
-      const rows = await env.TOMIFY_DB.prepare("SELECT id FROM catalogue_playlists WHERE username = ? AND provider = 'spotify' AND provider_playlist_id = ? ORDER BY updated_at DESC").bind(username, playlistId).all()
+      const rows = await env.TOMIFY_DB.prepare("SELECT id FROM catalogue_playlists WHERE username = ? AND provider = 'spotify' AND provider_playlist_id = ? ORDER BY updated_at DESC").bind(username, playlistId).all<{ id: string }>()
       const existingPlaylists = []
       for (const row of rows.results || []) { const detail = await cataloguePlaylistDetail(env.TOMIFY_DB, username, row.id); if (detail) existingPlaylists.push(detail) }
       return json({ playlist, existingPlaylists, diff: existingPlaylists[0] ? diffCataloguePlaylist(existingPlaylists[0].items, playlist.items) : null })
@@ -254,7 +271,7 @@ export async function handleCatalogueRequest(request, env, url) {
     return json({ playlists: (rows.results || []).map(cataloguePlaylistRow) })
   }
   if (url.pathname === '/api/catalogue-playlists' && request.method === 'POST') {
-    try { const input = await request.json(); if (input?.createRecovery && !(await isNavidromeAdmin(request, username, env))) return recoveryForbidden(); return json({ playlist: await saveCataloguePlaylist(env.TOMIFY_DB, username, input.playlist, input) }, 201) } catch (error) { if (isNavidromeConfigurationError(error)) throw error; return json({ error: 'catalogue-playlist-import-failed', message: error instanceof Error ? error.message : 'Playlist import failed.' }, 400) }
+    try { const input: OpenJson = await request.json(); if (input?.createRecovery && !(await isNavidromeAdmin(request, username, env))) return recoveryForbidden(); return json({ playlist: await saveCataloguePlaylist(env.TOMIFY_DB, username, input.playlist, input) }, 201) } catch (error) { if (isNavidromeConfigurationError(error)) throw error; return json({ error: 'catalogue-playlist-import-failed', message: error instanceof Error ? error.message : 'Playlist import failed.' }, 400) }
   }
   const match = url.pathname.match(/^\/api\/catalogue-playlists\/([^/]+)(?:\/(resolve))?$/)
   if (match && request.method === 'GET' && !match[2]) {
@@ -262,20 +279,20 @@ export async function handleCatalogueRequest(request, env, url) {
     if (own) return json({ playlist: { ...own, owner: username, sharedWithMe: false } })
     // Another account's playlist is readable only when its owner shared it with this account.
     const share = await playlistShareFor(env.TOMIFY_DB, 'imported', match[1], username)
-    const ownerRow = share ? await env.TOMIFY_DB.prepare('SELECT username FROM catalogue_playlists WHERE id = ?').bind(match[1]).first() : null
+    const ownerRow = share ? await env.TOMIFY_DB.prepare('SELECT username FROM catalogue_playlists WHERE id = ?').bind(match[1]).first<{ username: string }>() : null
     const shared = ownerRow ? await cataloguePlaylistDetail(env.TOMIFY_DB, ownerRow.username, match[1]) : null
-    return shared ? json({ playlist: { ...shared, owner: ownerRow.username, sharedWithMe: true } }) : json({ error: 'playlist-not-found' }, 404)
+    return shared ? json({ playlist: { ...shared, owner: ownerRow!.username, sharedWithMe: true } }) : json({ error: 'playlist-not-found' }, 404)
   }
   if (match && request.method === 'PUT' && !match[2]) {
-    try { const input = await request.json(); if (input?.createRecovery && !(await isNavidromeAdmin(request, username, env))) return recoveryForbidden(); return json({ playlist: await saveCataloguePlaylist(env.TOMIFY_DB, username, input.playlist, { ...input, mode: 'update', playlistId: match[1] }) }) } catch (error) { if (isNavidromeConfigurationError(error)) throw error; return json({ error: 'catalogue-playlist-update-failed', message: error instanceof Error ? error.message : 'Playlist update failed.' }, 400) }
+    try { const input: OpenJson = await request.json(); if (input?.createRecovery && !(await isNavidromeAdmin(request, username, env))) return recoveryForbidden(); return json({ playlist: await saveCataloguePlaylist(env.TOMIFY_DB, username, input.playlist, { ...input, mode: 'update', playlistId: match[1] }) }) } catch (error) { if (isNavidromeConfigurationError(error)) throw error; return json({ error: 'catalogue-playlist-update-failed', message: error instanceof Error ? error.message : 'Playlist update failed.' }, 400) }
   }
   if (match && match[2] === 'resolve' && request.method === 'PATCH') {
     const owner = await env.TOMIFY_DB.prepare('SELECT id FROM catalogue_playlists WHERE id = ? AND username = ?').bind(match[1], username).first()
     if (!owner) return json({ error: 'playlist-not-found' }, 404)
-    const input = await request.json(); const updates = Array.isArray(input.items) ? input.items.slice(0, 500) : []
-    const statements = updates.filter((item) => item?.id && item?.localTrack?.id).map((item) => env.TOMIFY_DB.prepare("UPDATE catalogue_playlist_items SET status = 'available', local_track_id = ?, local_track_json = ?, match_confidence = ?, user_confirmed = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND playlist_id = ?").bind(item.localTrack.id, JSON.stringify(item.localTrack), Number(item.matchConfidence || 0), item.userConfirmed ? 1 : 0, item.id, match[1]))
+    const input: OpenJson = await request.json(); const updates = Array.isArray(input.items) ? input.items.slice(0, 500) : []
+    const statements = updates.filter((item: OpenJson) => item?.id && item?.localTrack?.id).map((item: OpenJson) => env.TOMIFY_DB.prepare("UPDATE catalogue_playlist_items SET status = 'available', local_track_id = ?, local_track_json = ?, match_confidence = ?, user_confirmed = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND playlist_id = ?").bind(item.localTrack.id, JSON.stringify(item.localTrack), Number(item.matchConfidence || 0), item.userConfirmed ? 1 : 0, item.id, match[1]))
     // A matched track that no longer exists in the library goes back to missing.
-    statements.push(...updates.filter((item) => item?.id && item.missing === true && !item.localTrack).map((item) => env.TOMIFY_DB.prepare("UPDATE catalogue_playlist_items SET status = 'missing', local_track_id = NULL, local_track_json = NULL, match_confidence = 0, user_confirmed = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND playlist_id = ? AND status = 'available'").bind(item.id, match[1])))
+    statements.push(...updates.filter((item: OpenJson) => item?.id && item.missing === true && !item.localTrack).map((item: OpenJson) => env.TOMIFY_DB.prepare("UPDATE catalogue_playlist_items SET status = 'missing', local_track_id = NULL, local_track_json = NULL, match_confidence = 0, user_confirmed = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND playlist_id = ? AND status = 'available'").bind(item.id, match[1])))
     for (let index = 0; index < statements.length; index += 75) await env.TOMIFY_DB.batch(statements.slice(index, index + 75))
     // After a scheduled refresh, entries still missing once matched go to Recovery when the import asked for that.
     if (input.queueMissing === true && await isNavidromeAdmin(request, username, env)) await queueMissingForRecovery(env.TOMIFY_DB, username, match[1])
