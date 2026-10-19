@@ -17,6 +17,7 @@ import { livePlaybackRoute } from './routes/live-playback.ts'
 import { mediaSessionRoute } from './routes/media-session.ts'
 import { mixesRoute } from './routes/mixes.ts'
 import { navidromeRoute } from './routes/navidrome.ts'
+import { partyRoute } from './routes/party.ts'
 import { playlistsRoute } from './routes/playlists.ts'
 import { releaseMetadataRoute } from './routes/release-metadata.ts'
 import { handleRecoveryRequest } from './routes/recovery.ts'
@@ -33,6 +34,7 @@ const routes: RouteHandler[] = [
   listeningRoute,
   lyricsRoute,
   smartPlaylistsRoute,
+  partyRoute,
   mixesRoute,
   djRoute,
   systemSettingsRoute,

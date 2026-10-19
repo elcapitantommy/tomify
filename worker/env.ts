@@ -27,6 +27,9 @@ export interface Env {
   TOMIFY_MEDIA_KEY?: string
   // Optional: the box's HTTPS address on the home network, for LAN-direct streaming.
   TOMIFY_LAN_ORIGIN?: string
+  // Optional: a Navidrome account party guests search with. Without it they search as the host (needs TOMIFY_MEDIA_KEY).
+  TOMIFY_PARTY_USERNAME?: string
+  TOMIFY_PARTY_PASSWORD?: string
 }
 
 export type RouteHandler = (request: Request, env: Env, url: URL) => Promise<Response | null>
