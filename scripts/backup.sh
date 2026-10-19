@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Nightly Tomify backup for the Debian media server: a remote D1 export plus a tar.gz of
 # the recovery agent's state directory, keeping the newest BACKUP_KEEP of each.
-# Setup and restore steps: docs/RECOVERY.md#backups-and-uptime-checks
+# Setup and restore steps: docs/DEPLOYMENT.md#backups-and-uptime-checks
 set -euo pipefail
 
 usage() {

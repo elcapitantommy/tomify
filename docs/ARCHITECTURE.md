@@ -149,7 +149,7 @@ Spotify OAuth tokens are stored encrypted with `SPOTIFY_TOKEN_ENCRYPTION_KEY`. N
 
 ## 5. The recovery agent
 
-`recovery-agent/` is a small Node.js HTTP service that runs on the Debian box as the `tomify-recovery` systemd unit (`tomify-recovery.service.example`). It is deployed by copying the files to `/opt/tomify/recovery-agent`, separately from the Worker. See [RECOVERY.md](RECOVERY.md#updating-the-recovery-agent).
+`recovery-agent/` is a small Node.js HTTP service that runs on the Debian box as the `tomify-recovery` systemd unit (`tomify-recovery.service.example`). It is deployed separately from the Worker with `scripts/deploy-agent.ps1`, which installs an immutable release under `/opt/tomify/releases` and switches `/opt/tomify/current` to it. See [DEPLOYMENT.md](DEPLOYMENT.md#updating-the-recovery-agent).
 
 - It listens on `127.0.0.1:8788`. A Cloudflare Tunnel run by the `tomify-recovery-cloudflared` Docker container exposes it at `RECOVERY_AGENT_URL`; the Worker never connects to the box directly.
 - `GET /health` is unauthenticated. Every `/v1/*` endpoint requires `Authorization: Bearer $TOMIFY_RECOVERY_TOKEN`, and the agent refuses to start without a token of at least 32 characters (`config.mjs`).
@@ -200,4 +200,4 @@ See [RECOVERY.md](RECOVERY.md#recovery-files-on-the-library-ssd) for the `fstab`
   - `node --test` for `recovery-agent/*.node-test.mjs` and `scripts/*.node-test.mjs`;
   - Worker routes are tested against Wrangler's unminified bundle in `scripts/build-routing.node-test.mjs`; the D1 migration test scans that same real bundle so every SQL literal is checked against the migrated schema.
 - Cloudflare's unchanged `pnpm build` command produces `dist/client/` and `dist/server/index.js`. The unchanged `npx pnpm run deploy` command applies D1 migrations, uploads the static assets and deploys the Worker according to `wrangler.toml`.
-- The recovery agent is copied to the box by hand after any change under `recovery-agent/` ([RECOVERY.md](RECOVERY.md#updating-the-recovery-agent)).
+- The recovery agent is deployed with `scripts/deploy-agent.ps1` after any change under `recovery-agent/` or `shared/`. Every deploy step is in [DEPLOYMENT.md](DEPLOYMENT.md).

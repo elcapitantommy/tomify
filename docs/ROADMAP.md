@@ -43,7 +43,7 @@ All 20 are done. Each row names the PR that finished it.
 | 1.8 | Quieter live-playback sync | Done | `LivePlaybackSync.tsx` publishes in short bursts after a change, then only a 30-second keepalive. |
 | 1.9 | Atomic final commits; never overwrite `cover.jpg`; clean up SAB downloads | Done (#52) | Imports commit atomically and keep an existing `cover.jpg`; SABnzbd download clean-up is opt-in with `TOMIFY_SABNZBD_CLEANUP=true`. |
 | 1.10 | Nightly D1 export and agent state backup; uptime check | Done (#39) | `scripts/backup.sh` with a systemd timer; see docs/RECOVERY.md "Backups and uptime checks". |
-| 1.11 | Replace the stale `ARCHITECTURE.md` and `ROADMAP.md`; add `DEPLOYMENT.md` | Partly done | Both documents are rewritten. There is no `DEPLOYMENT.md`. |
+| 1.11 | Replace the stale `ARCHITECTURE.md` and `ROADMAP.md`; add `DEPLOYMENT.md` | Done | Both documents are rewritten, and `DEPLOYMENT.md` gathers the site, agent, box, secrets and backup steps. |
 | 2.9 | Mobile Library tab, Albums paging, recovery source badges, star/unstar, plainer language | Partly done | See task 20. |
 | 3.1 | Offline downloads v1 | Not started | The Downloads page is a placeholder, and `src/lib/sourceResolver.ts` always streams. |
 | 3.2 | Album completeness view and bulk "recover missing tracks" | Partly done | Administrators can check an album against MusicBrainz and add the missing tracks to Recovery, as one item per track rather than one release job. |

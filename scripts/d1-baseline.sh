@@ -2,7 +2,7 @@
 # One-off: tells wrangler that the D1 database built by the Worker's old request-time DDL already has
 # the schema of drizzle/0001-0011, so `wrangler d1 migrations apply` only runs 0012 and later.
 # It backs the database up first (scripts/backup.sh), creates d1_migrations exactly as wrangler does
-# and records 0001-0011 in it. Running it again changes nothing. Deploy order: docs/RECOVERY.md#d1-migrations
+# and records 0001-0011 in it. Running it again changes nothing. Deploy order: docs/DEPLOYMENT.md#d1-migrations
 set -euo pipefail
 
 usage() {
