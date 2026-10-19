@@ -213,7 +213,7 @@ Requirements: Node.js 20+, `yt-dlp`, `ffprobe` and `ffmpeg`, plus qBittorrent-no
 1. Copy `recovery-agent/recovery-agent.env.example` to `/etc/tomify/recovery-agent.env` and set a random `TOMIFY_RECOVERY_TOKEN` containing at least 32 characters.
 2. Keep `TOMIFY_RECOVERY_DIR=/srv/music-recovery` separate from `TOMIFY_MASTER_DIR=/srv/music`.
    On the current box, recovered files physically live on the library SSD at `/srv/music/_Recovery` (so Navidrome sees them under the library), and `/srv/music-recovery` is a bind mount of that folder. The agent still only writes through `/srv/music-recovery`, never anywhere else under the master tree. See [Recovery files on the library SSD](#recovery-files-on-the-library-ssd).
-3. Deploy the recovery-agent runtime from the primary Windows checkout at `C:\Users\TomDixon\Documents\tomify` with `scripts\deploy-agent.ps1`. Releases live under `/opt/tomify/releases`, with `/opt/tomify/current` pointing at the active one. The Debian box does not need a Git checkout and does not use `/srv/tomify/app`.
+3. Deploy the recovery-agent runtime from the primary Windows checkout at `C:\Users\TomDixon\Documents\tomify` with `scripts\deploy-agent.ps1` ([Updating the recovery agent](DEPLOYMENT.md#updating-the-recovery-agent)). Releases live under `/opt/tomify/releases`, with `/opt/tomify/current` pointing at the active one. The Debian box does not need a Git checkout and does not use `/srv/tomify/app`.
 4. Put the agent behind an authenticated HTTPS reverse proxy that the hosted Tomify Worker can reach. The current deployment uses a Cloudflare Tunnel, run by the `tomify-recovery-cloudflared` Docker container on the box, which forwards `RECOVERY_AGENT_URL` to `127.0.0.1:8788`. Do not expose the unauthenticated loopback service directly. To run downloads over a VPN without breaking the tunnel or SSH, see [Running recovery downloads over NordVPN](#running-recovery-downloads-over-nordvpn).
 5. Set hosted secrets `RECOVERY_AGENT_URL` and `RECOVERY_AGENT_TOKEN` for the Tomify Site, plus any optional artwork-provider configuration above, then redeploy.
 
@@ -241,74 +241,7 @@ Earlier deployments did it the other way round: the files sat on the NVMe at `/s
 
 ### Updating the recovery agent
 
-The agent is not deployed with the site. Deploying the Worker updates the Recovery page and API only, so every merged change under `recovery-agent/` or `shared/` must also be deployed to the media server. The server deliberately has no Git checkout.
-
-From an up-to-date, validated Windows checkout, run:
-
-```powershell
-.\scripts\deploy-agent.ps1
-```
-
-On Linux or macOS, use `./scripts/deploy-agent.sh`. Set `TOMIFY_AGENT_HOST` or pass `-HostName user@host` in PowerShell / `--host user@host` in the shell script when the destination is not `tom@tomify`.
-
-Before the first deploy with this version of the scripts, run the one-time setup below. The deploy command refuses uncommitted changes under `recovery-agent/` or `shared/`, packages both directories with `package.json` and copies one archive to `/tmp`. The installer runs as `tom`, not root: it creates the immutable release `/opt/tomify/releases/<short-sha>` and atomically switches `/opt/tomify/current`. It then calls the root helper `/usr/local/sbin/tomify-agent-activate`, which updates only `TOMIFY_VERSION` in `/etc/tomify/recovery-agent.env`, writes the systemd unit from its own built-in template and restarts the service. The installer waits up to 30 seconds for `/health` to report that SHA. If the new agent does not become healthy it restores the earlier symlink and version automatically. Only the newest five releases are retained.
-
-The Worker embeds its own short SHA at build time and exposes it with contract `2` at `GET /api/version`; authenticated agent status exposes the deployed agent version and the same contract. Settings shows both values and warns only when the contracts differ; a different version alone is expected after a site-only deploy and needs no agent redeploy.
-
-Before search, acquisition, or **Import rest of download**, the Worker checks the agent contract and caches the result for about one minute. An agent with no contract or a contract below `2` is rejected with HTTP 409 `recovery-agent-outdated` and a link back to these update instructions. This prevents a newer site from sending a request an older agent may misinterpret, such as the former *Artist and title are required.* failure. Deploy the agent before the site whenever a release changes both.
-
-#### One-time setup for password-free deploys
-
-Run this once from the Windows checkout. It asks for the sudo password one last time:
-
-```powershell
-.\scripts\deploy-agent.ps1 -Setup
-```
-
-The shell equivalent is `./scripts/deploy-agent.sh --setup`. Setup does four things:
-- It installs `scripts/tomify-agent-activate.sh` as `/usr/local/sbin/tomify-agent-activate` (root-owned, 0755).
-- It adds `/etc/sudoers.d/tomify-deploy` so `tom` can run that one helper without a password.
-- It makes `/etc/tomify` and `/etc/systemd/system` root-only.
-- It hands `/opt/tomify` and its releases to `tom`.
-
-The helper takes only `--version <git sha>` or `--clear-version`. It never runs anything from a release archive and always writes a unit that runs the agent as `tom` with the usual sandbox, so the rule grants no other root access. The agent already runs as `tom`, so owning the release files adds nothing.
-
-Re-run `-Setup` after a change to `scripts/tomify-agent-activate.sh` or `recovery-agent/tomify-recovery.service.example`; a test keeps those two units identical. To undo it, run `sudo rm /etc/sudoers.d/tomify-deploy /usr/local/sbin/tomify-agent-activate`.
-
-To roll back deliberately:
-
-```powershell
-.\scripts\deploy-agent.ps1 -Rollback
-```
-
-The matching shell command is `./scripts/deploy-agent.sh --rollback`. It uses the installer from your checkout (an older release's copy may predate the root helper), swaps the current and previous releases, updates `TOMIFY_VERSION`, restarts the service and verifies the older version before accepting the rollback.
-
-#### One-time migration from `/opt/tomify/recovery-agent`
-
-Pull a commit containing these deployment scripts, make sure the existing `/etc/tomify/recovery-agent.env` is intact, then run `.\scripts\deploy-agent.ps1` once. The installer copies the old mutable runtime into `/opt/tomify/releases/legacy` as the first rollback target, creates `/opt/tomify/current`, and replaces the main service unit so it starts `/opt/tomify/current/recovery-agent/index.mjs`. Existing systemd drop-ins and the original `/opt/tomify/recovery-agent` directory remain untouched. Verify on Debian:
-
-```bash
-readlink -f /opt/tomify/current
-curl -s http://127.0.0.1:8788/health; echo
-systemctl status tomify-recovery --no-pager
-```
-
-The health response's `version` must match the final directory name printed by `readlink`. Once a normal deploy and a rollback have both been tested, the unused legacy `/opt/tomify/recovery-agent` and `/opt/tomify/shared` directories may be archived or removed separately; the installer does not delete them.
-
-The live environment remains `/etc/tomify/recovery-agent.env`. Runtime state and cache directories are `/var/lib/tomify-recovery` and `/var/cache/tomify-recovery`. The systemd sandbox sets `HOME=/var/lib/tomify-recovery`, keeps home directories hidden, and grants write access only to the state/cache directories, `/srv/music-recovery`, `/srv/usenet/completed`, and `/srv/torrents`; `/opt/tomify/secrets` remains read-only. Polkit-based VPN control and reboot remain available. If any recovery or download root uses a different host path, add that exact path with a `ReadWritePaths=` line in a systemd drop-in, then run `sudo systemctl daemon-reload` and restart the service.
-
-#### Manual fallback
-
-Before the one-time migration, the legacy layout can still be updated by hand. This has no automatic health rollback and does not set `TOMIFY_VERSION`, so prefer the deploy command:
-
-```powershell
-ssh tom@tomify "mkdir -p /tmp/tomify-shared"
-scp recovery-agent\*.mjs tom@tomify:/tmp/
-scp shared\*.mjs tom@tomify:/tmp/tomify-shared/
-ssh -t tom@tomify "sudo cp /tmp/*.mjs /opt/tomify/recovery-agent/ && sudo mkdir -p /opt/tomify/shared && sudo cp /tmp/tomify-shared/*.mjs /opt/tomify/shared/ && sudo systemctl restart tomify-recovery"
-```
-
-The agent imports `../shared/quality.mjs`, so the two legacy directories must remain siblings. After migration, use the release installer or its rollback command rather than modifying a release in place.
+Moved to [DEPLOYMENT.md](DEPLOYMENT.md#updating-the-recovery-agent).
 
 The recovery directory may be added to Navidrome as a separate library path after review. It should not be merged over `/srv/music` by an automated job.
 
@@ -337,93 +270,11 @@ No contract bump is needed: a site with this change talks to an older agent by f
 
 ## D1 migrations
 
-The D1 schema comes only from the numbered files in `drizzle/` (`migrations_dir` in `wrangler.toml`). The Worker no longer runs `CREATE TABLE` or `ALTER TABLE` on requests; when a query names a table or column that no migration has created, it answers 503 with `{"error": "schema-out-of-date"}` and the missing name.
-
-### Deploy order for the switch to migrations (do this first)
-
-Production D1 was built by the Worker's old request-time DDL, and 0001-0011 were never applied with wrangler, so it has no `d1_migrations` table. Applying 0002, 0003, 0004 or 0011 to it would fail (`duplicate column`). Before merging the change that removes the runtime DDL:
-
-1. **Back up.** `scripts/d1-baseline.sh --remote` runs `scripts/backup.sh` first and stops if it fails, so run it where the nightly backup is set up: on the media server as `tom`, after `set -a; . /etc/tomify/backup.env; set +a` if you use an API token. You can also run `scripts/backup.sh` by hand beforehand.
-2. **Baseline.** From a checkout of the branch on the media server (in the same shell, so wrangler has the same credentials):
-
-   ```bash
-   scripts/d1-baseline.sh --remote --dry-run   # backup dry run, then the SQL it would run and what stays pending
-   scripts/d1-baseline.sh --remote             # backup, then records 0001-0011 as applied
-   wrangler d1 migrations list tomify-metadata --remote   # shows only 0012_schema_catch_up.sql
-   ```
-
-   The script creates `d1_migrations` exactly as wrangler does and inserts one row per file name, `0001_recovery.sql` to `0011_recovery_playback.sql`. It refuses a database with no Tomify tables (apply the migrations normally instead) and a `recovery_items` table missing a column 0002-0011 would have added. Running it again changes nothing. `WRANGLER` and `TOMIFY_D1_DATABASE` work as for `backup.sh`. `--local` does the same against wrangler's local copy, without a backup. The old Worker keeps working after the baseline, because nothing in the schema changes.
-3. **Change the deploy command.** In the Cloudflare dashboard, under the tomify Worker's Settings → Build → Deploy command, replace `npx wrangler deploy` with `npx pnpm run deploy`. Until the merge, any other push to `main` fails at deploy (the script does not exist there yet) and the current Worker keeps running, so merge straight after this step. If the build later fails with an authorisation error from `d1 migrations apply`, give the build's API token the D1 Edit permission.
-4. **Merge.** The build runs `pnpm run deploy`: `wrangler d1 migrations apply tomify-metadata --remote` applies `0012_schema_catch_up.sql`, then `wrangler deploy` publishes the Worker.
-
-`0012_schema_catch_up.sql` creates `release_metadata` (which existed only as runtime DDL), repeats every other table in its current shape in case its route had never been used, and adds indexes for the Recovery list, uploaded covers, shared playlists and expired Spotify sign-in states. Every statement is `IF NOT EXISTS`, so it does nothing to objects the old Worker created.
-
-If something goes wrong: a failed `migrations apply` stops the deploy and leaves the old Worker running; fix the migration and push again. A 503 `schema-out-of-date` after the merge means the baseline or step 3 was skipped: run `scripts/d1-baseline.sh --remote`, then `wrangler d1 migrations apply tomify-metadata --remote`. To undo everything, restore the backup as in [Restoring from a backup](#restoring-from-a-backup).
-
-### Changing the schema later
-
-Add the next numbered file (`0013_<name>.sql`) and merge; the deploy applies it before the new Worker goes live. Never edit a file that has been applied. Test it locally with `npx wrangler d1 migrations apply tomify-metadata --local`; `scripts/d1-migrations.node-test.mjs` checks in CI that every SQL statement in the Worker matches the migrated schema.
+Moved to [DEPLOYMENT.md](DEPLOYMENT.md#d1-migrations).
 
 ## Backups and uptime checks
 
-D1 holds the only copy of playlists, imported Spotify playlists and recovery state, and `/var/lib/tomify-recovery` holds the agent's job state. `scripts/backup.sh` backs both up on the Debian box:
-
-- `wrangler d1 export tomify-metadata --remote` to `tomify-d1-<UTC time>.sql`;
-- a tar.gz of the agent state directory to `tomify-agent-state-<UTC time>.tar.gz`.
-
-Both go to `BACKUP_DIR` (default `/var/backups/tomify`, created with owner-only permissions), and only the newest 14 of each are kept (`BACKUP_KEEP`). A file is only renamed into place once it is complete, so a failed run never counts towards the 14. `TOMIFY_RECOVERY_STATE_DIR`, `TOMIFY_D1_DATABASE` and `WRANGLER` (for example `npx --yes wrangler@4`) override the other defaults. The script prints file names only, never tokens or the Cloudflare account.
-
-### Setting up the nightly backup
-
-1. Install wrangler on the box. Debian's Node.js comes without npm, so `sudo apt install npm` first. Wrangler 4.87 and later need Node.js 22, and the box runs Node.js 20 (which the agent also uses), so pin the last release that supports it: `sudo npm install -g wrangler@4.86.0`. The box has no Git checkout and needs none; wrangler finds the database by name.
-2. Authenticate wrangler as `tom`. On a headless box an API token is simplest: create one in the Cloudflare dashboard with the **Account → D1 → Edit** permission, then create `/etc/tomify/backup.env` with `CLOUDFLARE_API_TOKEN=...` and `CLOUDFLARE_ACCOUNT_ID=...`, owned by `tom` with mode `600`. Running `wrangler login` as `tom` also works.
-3. Create the backup folder: `sudo install -d -o tom -g tom -m 700 /var/backups/tomify`. A different disk from the agent state, or a regular copy off the box, protects against losing the NVMe; set `BACKUP_DIR` in `backup.env` to change it.
-4. Copy the script and units over from the Windows checkout, as for the agent:
-
-   ```powershell
-   scp scripts\backup.sh scripts\tomify-backup.service.example scripts\tomify-backup.timer.example tom@tomify:/tmp/
-   ssh -t tom@tomify "sudo install -m 755 /tmp/backup.sh /opt/tomify/backup.sh && sudo cp /tmp/tomify-backup.service.example /etc/systemd/system/tomify-backup.service && sudo cp /tmp/tomify-backup.timer.example /etc/systemd/system/tomify-backup.timer && sudo systemctl daemon-reload"
-   ```
-
-5. Check it, then enable the timer (nightly at about 03:30, caught up after the box was off):
-
-   ```sh
-   set -a; . /etc/tomify/backup.env; set +a; /opt/tomify/backup.sh --dry-run
-   sudo systemctl start tomify-backup.service && journalctl -u tomify-backup -n 20
-   sudo systemctl enable --now tomify-backup.timer
-   ```
-
-`--dry-run` checks that wrangler is logged in and prints the commands and the old backups it would delete, without changing anything. `systemctl list-timers tomify-backup.timer` shows the last and next run; a failed run shows in `systemctl status tomify-backup`.
-
-### Restoring from a backup
-
-D1 first: for a mistake in the last few days, D1 Time Travel is quicker than an export (`wrangler d1 time-travel restore tomify-metadata --timestamp=<RFC 3339 time>`). To restore an export, load it into a new, empty database so nothing is half-overwritten, then switch the Worker to it:
-
-```sh
-wrangler d1 create tomify-metadata-restored
-wrangler d1 execute tomify-metadata-restored --remote --file /var/backups/tomify/tomify-d1-<time>.sql
-```
-
-Check the data (for example `wrangler d1 execute tomify-metadata-restored --remote --command "SELECT COUNT(*) FROM recovery_items"`), then put the new `database_name` and `database_id` in `wrangler.toml` and redeploy.
-
-Agent state:
-
-```sh
-sudo systemctl stop tomify-recovery
-sudo mv /var/lib/tomify-recovery /var/lib/tomify-recovery.before-restore
-sudo tar -xzf /var/backups/tomify/tomify-agent-state-<time>.tar.gz -C /var/lib
-sudo chown -R tom:tom /var/lib/tomify-recovery
-sudo systemctl start tomify-recovery
-```
-
-Delete `/var/lib/tomify-recovery.before-restore` once the Recovery page looks right.
-
-### External uptime check
-
-Point any external HTTP monitor (a free tier of a hosted monitor, or a cron job on another machine running `curl -fsS`) at two URLs, every few minutes:
-
-- the Tomify site's URL, expecting HTTP 200;
-- `RECOVERY_AGENT_URL` followed by `/health`, expecting HTTP 200 with `"ok":true`. This is the agent through its Cloudflare Tunnel, so it also fails when the box, the agent or the `tomify-recovery-cloudflared` container is down. `/health` needs no token and returns only the list of available backends.
+Moved to [DEPLOYMENT.md](DEPLOYMENT.md#backups-and-uptime-checks).
 
 ## Restarting the media server from Tomify
 

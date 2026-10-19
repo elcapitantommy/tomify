@@ -165,7 +165,7 @@ The first custom client is implemented as a **React 18 + TypeScript + Vite PWA**
 
 Requirements: Node.js 20 or newer and Corepack. The repository pins pnpm 11.28.6 through `packageManager`, so local development and CI use the same package manager.
 
-Production builds embed the current Git short SHA and application/agent contract version. `GET /api/version` exposes the site values, while Settings compares them with the authenticated recovery-agent status. Recovery operations stop with `recovery-agent-outdated` when the deployed agent predates the site's required contract; agent updates are documented in [Updating the recovery agent](docs/RECOVERY.md#updating-the-recovery-agent).
+Production builds embed the current Git short SHA and application/agent contract version. `GET /api/version` exposes the site values, while Settings compares them with the authenticated recovery-agent status. Recovery operations stop with `recovery-agent-outdated` when the deployed agent predates the site's required contract; agent updates are documented in [Updating the recovery agent](docs/DEPLOYMENT.md#updating-the-recovery-agent).
 
 ```bash
 corepack enable
@@ -210,18 +210,9 @@ GitHub Actions runs the frozen-lockfile install, lint, typecheck, production bui
 - Torrent recovery from a torrent search (qBittorrent's search plugins and an optional Prowlarr or Jackett, seeded results only) or a pasted magnet or `.torrent` link, downloaded by qBittorrent-nox over the box's VPN (five at a time by default, `TOMIFY_TORRENT_MAX_ACTIVE`) with live speed, seeds and time left, archives unpacked, audio imported, and the torrent removed afterwards (or when the item is deleted).
 - A read-only Library health dashboard for administrators, backed by the incremental recovery-agent inventory. It reports duplicate recordings and similar directory names, partial albums, orphaned provenance files, recovery copies shadowing masters, and imported D1 rows whose files are missing. Results come from the stored atomic inventory; viewing them does not scan or modify either library, while **Scan now** starts the existing background scan. Findings that are legitimate can be marked as fine so they stop being counted.
 
-### Deploying the site and D1 migrations
+### Deploying
 
-**Before merging the change that makes migrations the only schema source (task 10), do these in order:**
-
-1. **Back up** D1 with `scripts/backup.sh` on the media server. `d1-baseline.sh` also runs it first and stops if it fails.
-2. **Baseline** the production database once, from a checkout of that branch on the media server: `scripts/d1-baseline.sh --remote --dry-run`, check it plans 0001-0011 and leaves only `0012_schema_catch_up.sql` pending, then `scripts/d1-baseline.sh --remote`.
-3. **Change the deploy command** in the Cloudflare dashboard (the tomify Worker's Settings → Build → Deploy command) from `npx wrangler deploy` to `npx pnpm run deploy`.
-4. **Merge.** The next build applies 0012 and then deploys the Worker.
-
-Details and recovery steps: [D1 migrations](docs/RECOVERY.md#d1-migrations).
-
-Cloudflare's Git integration builds and deploys the site on every push to `main`. The build command remains `pnpm build`, and the deploy command remains `npx pnpm run deploy`; no dashboard change is needed. Wrangler uploads `dist/client/` through Workers Static Assets and bundles `dist/server/index.js` separately. `/api*` and `/navidrome*` run through the Worker first, while other requests use the static asset service with SPA fallback. The deploy command applies any new migration in `drizzle/` to the remote D1 database (`wrangler d1 migrations apply tomify-metadata --remote`) and only then runs `wrangler deploy`, so a failed migration leaves the previous Worker running. The migrations are the only source of the schema: the Worker never creates tables or columns, and a request that needs a table no migration has created yet gets a 503 `schema-out-of-date` instead. To change the schema, add the next numbered file to `drizzle/` and never edit one that has been applied. Note `pnpm deploy` without `run` is a different, built-in pnpm command.
+Cloudflare builds and deploys the site on every push to `main`; the recovery agent is deployed separately from the Windows checkout. Both, plus D1 migrations, box dependencies, secrets and backups, are covered in [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ### Recovery imports
 
@@ -235,9 +226,9 @@ Downloads and imports finish on the media server even with no browser open: the 
 
 The agent also runs the library inventory in the background, one scan at a time. It never writes to either music library and only re-probes files whose size or modification time changed; see [Read-only library inventory](docs/RECOVERY.md#read-only-library-inventory).
 
-The recovery agent is deployed separately from the site. After any change under `recovery-agent/` or `shared/` is merged, deploy it from Windows with `.\scripts\deploy-agent.ps1` (or `./scripts/deploy-agent.sh` on Linux/macOS). Run `.\scripts\deploy-agent.ps1 -Setup` once first so deploys need no password. Releases switch atomically, are health-checked, and roll back automatically if startup fails; see [Updating the recovery agent](docs/RECOVERY.md#updating-the-recovery-agent). An out-of-date agent makes newer Recovery features fail.
+The recovery agent is deployed separately from the site. After any change under `recovery-agent/` or `shared/` is merged, deploy it from Windows with `.\scripts\deploy-agent.ps1` (or `./scripts/deploy-agent.sh` on Linux/macOS). Run `.\scripts\deploy-agent.ps1 -Setup` once first so deploys need no password. Releases switch atomically, are health-checked, and roll back automatically if startup fails; see [Updating the recovery agent](docs/DEPLOYMENT.md#updating-the-recovery-agent). An out-of-date agent makes newer Recovery features fail.
 
-`scripts/backup.sh` backs up the D1 database and the agent's state nightly on the media server, and an external uptime check should watch the site and the agent's `/health`; see [Backups and uptime checks](docs/RECOVERY.md#backups-and-uptime-checks).
+`scripts/backup.sh` backs up the D1 database and the agent's state nightly on the media server, and an external uptime check should watch the site and the agent's `/health`; see [Backups and uptime checks](docs/DEPLOYMENT.md#backups-and-uptime-checks).
 
 ### PWA and iOS notes
 
