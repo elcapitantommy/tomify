@@ -3,7 +3,9 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider } from '../lib/api-context'
 import { useAuth } from '../stores/auth'
-import { MadeForYou } from './Home'
+import { Home, MadeForYou } from './Home'
+
+vi.mock('../components/DjPanel', () => ({ DjButton: () => null, DjPanel: () => null }))
 
 const session = { serverUrl: 'https://music.example', username: 'tom', salt: 's', token: 't' }
 const track = (id: string) => ({ id, title: `Song ${id}`, artist: 'Muse', album: 'Absolution', albumId: 'al1', coverArt: 'al1' })
@@ -46,5 +48,20 @@ describe('Made for you', () => {
       : reply({ mixes: [], generatedAt: null, curatedBy: null, refreshing: false, stale: true, aiEnabled: false, lastError: null })))
     renderMixes()
     expect(await screen.findByText(/couldn't build your mixes/)).toBeInTheDocument()
+  })
+})
+
+describe('Home', () => {
+  beforeEach(() => { useAuth.setState({ session, status: 'signed-in', error: null, isAdmin: null }) })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('sends each See all link to the list behind its section', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).includes('getAlbumList2')
+      ? reply({ 'subsonic-response': { status: 'ok', albumList2: { album: [{ id: 'al1', name: 'Absolution', artist: 'Muse' }] } } })
+      : reply({}, 404)))
+    render(<ApiProvider><MemoryRouter><Home/></MemoryRouter></ApiProvider>)
+    expect(await screen.findByRole('link', { name: 'See all recently played' })).toHaveAttribute('href', '/albums?type=all&sort=played')
+    expect(screen.getByRole('link', { name: 'See all fresh from the shelves' })).toHaveAttribute('href', '/albums?type=all&sort=added')
+    expect(screen.getByRole('link', { name: 'See all favourite albums' })).toHaveAttribute('href', '/favourites')
   })
 })

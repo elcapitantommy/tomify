@@ -5,7 +5,7 @@ import { useSearchParamState } from '../hooks/useSearchParamState'
 import { AlbumCard } from '../components/MediaCards'
 import { EmptyState, ErrorState, SkeletonGrid } from '../components/States'
 import { usePlayer } from '../stores/player'
-import { collapseReleaseVariants, releaseBucket, releaseFamilyTitle, releaseYearLabel, resolvedReleaseType, sortReleases, type ReleaseFilter, type ReleaseSort } from '../lib/release-metadata'
+import { collapseReleaseVariants, releaseBucket, releaseFamilyTitle, releaseYearLabel, resolvedReleaseType, sortFamiliesByLatest, sortReleases, type ReleaseFilter, type ReleaseSort } from '../lib/release-metadata'
 import { useReleaseMetadata } from '../stores/releaseMetadata'
 
 const filters: Array<{ value: ReleaseFilter; label: string }> = [
@@ -15,7 +15,7 @@ const filters: Array<{ value: ReleaseFilter; label: string }> = [
   { value: 'all', label: 'All' },
 ]
 const releaseFilterValues = filters.map((item) => item.value)
-const releaseSortValues: ReleaseSort[] = ['newest', 'oldest', 'title']
+const releaseSortValues: ReleaseSort[] = ['newest', 'oldest', 'title', 'added', 'played']
 
 export function Albums() {
   const api = useApi()
@@ -46,6 +46,7 @@ export function Albums() {
   const visible = useMemo(() => {
     const filtered = (data ?? []).filter((album) => filter === 'all' || releaseBucket(resolvedReleaseType(album, overrides[album.id])) === filter)
     const families = collapseReleaseVariants(filtered, overrides)
+    if (sort === 'added' || sort === 'played') return sortFamiliesByLatest(families, sort === 'added' ? 'created' : 'played')
     const representatives = sortReleases(families.map((family) => family.representative), overrides, sort)
     const byId = new Map(families.map((family) => [family.representative.id, family]))
     return representatives.map((album) => byId.get(album.id)!).filter(Boolean)
@@ -57,7 +58,7 @@ export function Albums() {
       <div className="release-tabs" role="tablist" aria-label="Release type">
         {filters.map((item) => <button key={item.value} className={filter === item.value ? 'release-tab active' : 'release-tab'} onClick={() => setFilter(item.value)}>{item.label}<span>{counts[item.value]}</span></button>)}
       </div>
-      <label className="release-sort"><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value as ReleaseSort)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="title">A–Z</option></select></label>
+      <label className="release-sort"><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value as ReleaseSort)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="title">A–Z</option><option value="added">Recently added</option><option value="played">Recently played</option></select></label>
     </div>
     {loading && <SkeletonGrid rows={10}/>} {error && <ErrorState message={error} retry={retry}/>}
     {data && !data.length && <EmptyState title="No albums yet" message="Add music to Navidrome and it will appear here."/>}

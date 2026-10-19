@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { collapseReleaseVariants, inferReleaseType, releaseBucket, releaseDateSortValue, releaseFamilyTitle, releaseTitleHint, resolvedReleaseType, sortReleases } from './release-metadata'
+import { collapseReleaseVariants, inferReleaseType, releaseBucket, releaseDateSortValue, releaseFamilyTitle, releaseTitleHint, resolvedReleaseType, sortFamiliesByLatest, sortReleases } from './release-metadata'
 import type { Album } from '../types'
 
 const album = (id: string, name: string, year?: number): Album => ({ id, name, artist: 'Test Artist', year })
@@ -79,5 +79,18 @@ describe('release variant grouping', () => {
   it('removes edition suffixes from the displayed canonical title', () => {
     expect(releaseFamilyTitle(album('1', 'Absolution (24-bit 96kHz)'))).toBe('Absolution')
     expect(releaseFamilyTitle(album('2', 'Absolution (2009 version)'))).toBe('Absolution')
+  })
+
+  it('sorts families by their most recently added or played version, never-touched ones last', () => {
+    const family = (id: string, ...variants: Album[]) => ({ key: id, representative: variants[0], variants })
+    const families = [
+      family('a', { ...album('a1', 'Alpha'), created: '2026-01-01T00:00:00Z' }, { ...album('a2', 'Alpha (Deluxe)'), created: '2026-03-01T00:00:00Z', played: '2026-10-01T00:00:00Z' }),
+      family('b', { ...album('b1', 'Beta'), created: '2026-02-01T00:00:00Z', played: '2026-09-01T00:00:00Z' }),
+      family('c', album('c1', 'Gamma')),
+    ]
+    expect(sortFamiliesByLatest(families, 'played').map((item) => item.key)).toEqual(['a', 'b', 'c'])
+    expect(sortFamiliesByLatest(families, 'created').map((item) => item.key)).toEqual(['a', 'b', 'c'])
+    families[0].variants[1].created = undefined
+    expect(sortFamiliesByLatest(families, 'created').map((item) => item.key)).toEqual(['b', 'a', 'c'])
   })
 })
