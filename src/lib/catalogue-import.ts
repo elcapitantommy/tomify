@@ -14,7 +14,7 @@ export interface CataloguePlaylistItem {
   matchCandidates?: CatalogueMatch[]
 }
 export interface CataloguePlaylistDraft { provider: 'spotify'; providerPlaylistId: string; name: string; description?: string | null; sourceUrl: string; snapshotId?: string | null; artwork: CatalogueArtwork[]; items: CataloguePlaylistItem[] }
-export interface CataloguePlaylistSummary { id: string; name: string; provider: string; providerPlaylistId: string; sourceUrl: string; snapshotId?: string | null; artworkUrl?: string | null; createdAt: string; updatedAt: string; counts: { total: number; available: number; missing: number; review: number; unavailable: number } }
+export interface CataloguePlaylistSummary { id: string; name: string; provider: string; providerPlaylistId: string; sourceUrl: string; snapshotId?: string | null; artworkUrl?: string | null; createdAt: string; updatedAt: string; counts: { total: number; available: number; missing: number; review: number; unavailable: number }; provenance?: { autoRecovery?: boolean } | null }
 export interface CataloguePlaylist extends CataloguePlaylistSummary { items: CataloguePlaylistItem[]; owner?: string; sharedWithMe?: boolean }
 export interface CataloguePlaylistDiff { added: string[]; removed: string[]; reordered: boolean }
 

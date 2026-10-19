@@ -44,7 +44,9 @@ Opening an imported playlist rechecks pending entries against Navidrome. Newly i
 
 ## Refresh
 
-Refresh is manual in v1. Analysing the same Spotify URL reports additions, removals, and ordering changes and offers:
+Imported Spotify playlists also refresh on their own. A daily Worker cron (`30 4 * * *` in `wrangler.toml`) checks each playlist's `snapshot_id`, refetches only the ones that changed, and saves the new entries as missing while keeping existing local links and Recovery references. The cron has no Navidrome login, so it cannot match: the next time the owner opens the playlist, the browser searches the library for the new entries as usual. If the playlist was imported with Recovery turned on and the owner is an admin, opening it then queues the entries that are still missing for Recovery.
+
+You can still refresh by hand. Analysing the same Spotify URL reports additions, removals, and ordering changes and offers:
 
 - update the existing Tomify playlist;
 - create a separate copy; or

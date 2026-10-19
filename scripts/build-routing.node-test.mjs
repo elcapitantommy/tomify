@@ -1797,3 +1797,49 @@ test('adaptive streaming reports "unavailable" for an agent without it, so the p
     assert.equal(unconfigured.status, 503)
   } finally { globalThis.fetch = originalFetch }
 })
+
+test('the daily refresh saves Spotify changes, and opening the playlist queues what is still missing for Recovery', async () => {
+  const db = await sqliteDatabase()
+  const spotifyEnv = { SPOTIFY_CLIENT_ID: 'id', SPOTIFY_CLIENT_SECRET: 'secret', SPOTIFY_TOKEN_ENCRYPTION_KEY: 'test-key' }
+  const env = { TOMIFY_DB: db, ...spotifyEnv }
+  db.sqlite.prepare("INSERT INTO catalogue_provider_tokens (username, provider, encrypted_token) VALUES ('tom', 'spotify', ?)").run(await encryptCatalogueToken(spotifyEnv, { accessToken: 'user-token', refreshToken: 'refresh', expiresAt: Date.now() + 3_600_000 }))
+  db.sqlite.prepare("INSERT INTO catalogue_playlists (id, username, name, provider, provider_playlist_id, source_url, snapshot_id, provenance_json) VALUES ('imp-1', 'tom', 'Flood', 'spotify', 'sp1', 'https://open.spotify.com/playlist/sp1', 'snap-1', ?)").run(JSON.stringify({ autoRecovery: true }))
+  db.sqlite.prepare("INSERT INTO catalogue_playlist_items (id, playlist_id, position, provider_track_id, metadata_json, status, local_track_id, local_track_json, match_confidence) VALUES ('item-1', 'imp-1', 0, 't1', ?, 'available', 'nav-1', ?, 98)").run(JSON.stringify({ title: 'Birdhouse in Your Soul', artists: ['They Might Be Giants'] }), JSON.stringify({ id: 'nav-1', title: 'Birdhouse in Your Soul' }))
+  const track = (id, name) => ({ type: 'track', id, name, artists: [{ id: 'a1', name: 'They Might Be Giants' }], album: { id: 'al1', name: 'Flood', images: [] }, duration_ms: 180000, external_urls: { spotify: 'https://open.spotify.com/track/' + id } })
+  let snapshot = 'snap-2'
+  const spotify = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.hostname === 'api.spotify.com') {
+      spotify.push(url.pathname + url.search)
+      if (url.searchParams.get('fields') === 'snapshot_id') return Response.json({ snapshot_id: snapshot })
+      if (url.pathname.endsWith('/items')) return Response.json({ items: [{ item: track('t1', 'Birdhouse in Your Soul') }, { item: track('t2', 'Particle Man') }], next: null })
+      return Response.json({ id: 'sp1', name: 'Flood', snapshot_id: snapshot, images: [] })
+    }
+    if (url.pathname === '/rest/ping.view' || url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: true } } })
+    return Response.json({ error: 'unexpected' }, { status: 500 })
+  }
+  const runCron = async () => { const pending = []; await builtWorker.scheduled({}, env, { waitUntil: (promise) => pending.push(promise) }); await Promise.all(pending) }
+  try {
+    await runCron()
+    const items = () => db.sqlite.prepare('SELECT provider_track_id AS track, status, local_track_id AS local, recovery_id AS recovery FROM catalogue_playlist_items ORDER BY position').all().map((row) => ({ ...row }))
+    assert.deepEqual(items(), [{ track: 't1', status: 'available', local: 'nav-1', recovery: null }, { track: 't2', status: 'missing', local: null, recovery: null }])
+    const saved = db.sqlite.prepare("SELECT snapshot_id AS snapshot, provenance_json AS provenance FROM catalogue_playlists WHERE id = 'imp-1'").get()
+    assert.equal(saved.snapshot, 'snap-2')
+    assert.equal(JSON.parse(saved.provenance).autoRecovery, true, 'the refresh keeps the import\'s Recovery choice')
+    assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM recovery_items').get().count, 0, 'nothing goes to Recovery before the library is searched')
+
+    spotify.length = 0
+    await runCron()
+    assert.deepEqual(spotify, ['/v1/playlists/sp1?fields=snapshot_id'], 'an unchanged snapshot is not fetched again')
+
+    const resolved = await worker.fetch(new Request('https://app.tomify.test/api/catalogue-playlists/imp-1/resolve', { method: 'PATCH', headers: recoveryHeaders, body: JSON.stringify({ items: [], queueMissing: true }) }), env)
+    assert.equal(resolved.status, 200)
+    const recovery = db.sqlite.prepare('SELECT id, artist, title, status FROM recovery_items').all().map((row) => ({ ...row }))
+    assert.deepEqual(recovery.map(({ artist, title, status }) => ({ artist, title, status })), [{ artist: 'They Might Be Giants', title: 'Particle Man', status: 'missing' }])
+    assert.equal(items()[1].recovery, recovery[0].id)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

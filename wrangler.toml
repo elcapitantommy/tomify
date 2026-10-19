@@ -2,7 +2,7 @@ name = "tomify"
 main = "worker/index.ts"
 compatibility_date = "2026-10-11"
 minify = true
-# Nothing reads function names, and keeping them costs about 4 KB of the 150 KB Worker budget.
+# Nothing reads function names, and keeping them costs about 4 KB of the 160 KB Worker budget.
 keep_names = false
 workers_dev = true
 
@@ -13,6 +13,10 @@ command = "node scripts/build-worker-info.mjs"
 NAVIDROME_ORIGIN = "https://tomify.tomdixon.uk"
 # The DJ reads links with Deepgram Aura-2 (Workers Paid since 2026-10-18), with MeloTTS as backup.
 TOMIFY_DJ_VOICE_MODEL = "aura"
+
+# Refreshes imported Spotify playlists once a day (UTC).
+[triggers]
+crons = ["30 4 * * *"]
 
 [[d1_databases]]
 binding = "TOMIFY_DB"

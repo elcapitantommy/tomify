@@ -13,5 +13,5 @@ export const catalogueApi = {
   get: (id: string) => request<{ playlist: CataloguePlaylist }>(`/api/catalogue-playlists/${encodeURIComponent(id)}`),
   create: (playlist: CataloguePlaylistDraft, createRecovery: boolean) => request<{ playlist: CataloguePlaylist }>('/api/catalogue-playlists', { method: 'POST', body: JSON.stringify({ playlist, createRecovery, mode: 'copy' }) }),
   update: (id: string, playlist: CataloguePlaylistDraft, createRecovery: boolean) => request<{ playlist: CataloguePlaylist }>(`/api/catalogue-playlists/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ playlist, createRecovery }) }),
-  resolve: (id: string, items: CatalogueResolution[]) => request<{ playlist: CataloguePlaylist }>(`/api/catalogue-playlists/${encodeURIComponent(id)}/resolve`, { method: 'PATCH', body: JSON.stringify({ items }) }),
+  resolve: (id: string, items: CatalogueResolution[], queueMissing = false) => request<{ playlist: CataloguePlaylist }>(`/api/catalogue-playlists/${encodeURIComponent(id)}/resolve`, { method: 'PATCH', body: JSON.stringify({ items, queueMissing }) }),
 }

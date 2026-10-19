@@ -101,6 +101,31 @@ async function cataloguePlaylistDetail(db, username, id) {
   return { ...cataloguePlaylistRow(row), items }
 }
 
+async function knownCatalogueRecoveries(db, username) {
+  const rows = await db.prepare('SELECT id, artist, title, source_json AS sourceJson FROM recovery_items WHERE username = ?').bind(username).all()
+  return (rows.results || []).map((row) => { let catalogueSource = null; try { catalogueSource = row.sourceJson ? JSON.parse(row.sourceJson) : null } catch { /* ignore corrupt source metadata */ } return { id: row.id, artist: row.artist, title: row.title, catalogueSource } })
+}
+
+// The Recovery item for a missing playlist entry: an existing one for the same track, else a new row added to `created`.
+function catalogueRecoveryId(username, item, playlist, known, created) {
+  const reused = reusableRecoveryId(item, known)
+  if (reused) return reused
+  const recoveryId = crypto.randomUUID()
+  const source = { catalogueSource: 'spotify', spotifyTrackId: item.providerTrackId || null, spotifyTrackUrl: item.sourceUrl || null, spotifyAlbumId: item.providerAlbumId || null, spotifyArtistIds: item.providerArtistIds || [], spotifyPlaylistId: playlist.providerPlaylistId, spotifyPlaylistName: playlist.name, spotifyPlaylistPosition: item.position, spotifyISRC: item.isrc || null, sourcePlaylistUrl: playlist.sourceUrl, releaseDate: item.releaseDate || null, explicit: Boolean(item.explicit), artwork: item.artwork || [] }
+  created.push([recoveryId, username, (item.artists || []).join(', '), item.title, item.album || null, item.duration || null, item.trackNumber || null, item.discNumber || null, JSON.stringify(source)])
+  known.push({ id: recoveryId, artist: (item.artists || []).join(', '), title: item.title, catalogueSource: source })
+  return recoveryId
+}
+
+function catalogueRecoveryInserts(db, created) {
+  const statements = []
+  for (let offset = 0; offset < created.length; offset += 10) {
+    const values = created.slice(offset, offset + 10)
+    statements.push(db.prepare("INSERT INTO recovery_items (id, username, artist, title, album, duration, track_number, disc_number, source_json, status) VALUES " + values.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, 'missing')").join(', ')).bind(...values.flat()))
+  }
+  return statements
+}
+
 async function saveCataloguePlaylist(db, username, draft, input) {
   if (!draft || draft.provider !== 'spotify' || !draft.providerPlaylistId || !Array.isArray(draft.items) || draft.items.length > 10_000) throw new Error('Invalid catalogue playlist payload.')
   const updating = input.mode === 'update' && typeof input.playlistId === 'string'
@@ -114,32 +139,22 @@ async function saveCataloguePlaylist(db, username, draft, input) {
   const oldKeys = occurrenceKeys(existingItems)
   const retained = new Map<string, Record<string, unknown>>(oldKeys.map((key, index) => [key, existingItems[index]]))
   const newKeys = occurrenceKeys(draft.items)
-  const recoveryRows = input.createRecovery ? await db.prepare('SELECT id, artist, title, source_json AS sourceJson FROM recovery_items WHERE username = ?').bind(username).all() : { results: [] }
-  const knownRecoveries = (recoveryRows.results || []).map((row) => { let catalogueSource = null; try { catalogueSource = row.sourceJson ? JSON.parse(row.sourceJson) : null } catch { /* ignore corrupt source metadata */ } return { id: row.id, artist: row.artist, title: row.title, catalogueSource } })
+  const knownRecoveries = input.createRecovery ? await knownCatalogueRecoveries(db, username) : []
   const newRecoveries = []
   const itemValues = []
   for (let index = 0; index < draft.items.length; index += 1) {
     const item = { ...draft.items[index], position: index }
     const previous = retained.get(newKeys[index])
     if (!item.localTrack && previous?.localTrack) { item.localTrack = previous.localTrack; item.localTrackId = previous.localTrackId; item.status = 'available'; item.matchConfidence = previous.matchConfidence; item.userConfirmed = previous.userConfirmed }
+    // A scheduled refresh has not matched anything, so an entry already there keeps its review or missing state.
+    else if (item.status === 'unmatched' && previous?.status) item.status = previous.status
     let recoveryId = previous?.recoveryId || null
-    if (!recoveryId && shouldCreateRecovery(item, input.createRecovery)) {
-      recoveryId = reusableRecoveryId(item, knownRecoveries)
-      if (!recoveryId) {
-        recoveryId = crypto.randomUUID()
-        const source = { catalogueSource: 'spotify', spotifyTrackId: item.providerTrackId || null, spotifyTrackUrl: item.sourceUrl || null, spotifyAlbumId: item.providerAlbumId || null, spotifyArtistIds: item.providerArtistIds || [], spotifyPlaylistId: draft.providerPlaylistId, spotifyPlaylistName: draft.name, spotifyPlaylistPosition: item.position, spotifyISRC: item.isrc || null, sourcePlaylistUrl: draft.sourceUrl, releaseDate: item.releaseDate || null, explicit: Boolean(item.explicit), artwork: item.artwork || [] }
-        newRecoveries.push([recoveryId, username, (item.artists || []).join(', '), item.title, item.album || null, item.duration || null, item.trackNumber || null, item.discNumber || null, JSON.stringify(source)])
-        knownRecoveries.push({ id: recoveryId, artist: (item.artists || []).join(', '), title: item.title, catalogueSource: source })
-      }
-    }
+    if (!recoveryId && shouldCreateRecovery(item, input.createRecovery)) recoveryId = catalogueRecoveryId(username, item, draft, knownRecoveries, newRecoveries)
     const metadata = { providerAlbumId: item.providerAlbumId || null, providerArtistIds: item.providerArtistIds || [], title: item.title || 'Unavailable Spotify item', artists: item.artists || [], album: item.album || null, albumType: item.albumType || null, duration: item.duration || null, discNumber: item.discNumber || null, trackNumber: item.trackNumber || null, releaseDate: item.releaseDate || null, isrc: item.isrc || null, musicBrainzRecordingId: item.musicBrainzRecordingId || null, explicit: Boolean(item.explicit), artwork: item.artwork || [], sourceUrl: item.sourceUrl || null, unavailableReason: item.unavailableReason || null }
     itemValues.push([crypto.randomUUID(), id, index, item.providerTrackId || null, JSON.stringify(metadata), ['available', 'review', 'missing', 'unavailable'].includes(item.status) ? item.status : 'missing', item.localTrack?.id || item.localTrackId || null, item.localTrack ? JSON.stringify(item.localTrack) : null, recoveryId, Number(item.matchConfidence || 0), item.userConfirmed ? 1 : 0])
   }
-  const statements = [db.prepare("INSERT INTO catalogue_playlists (id, username, name, provider, provider_playlist_id, source_url, snapshot_id, artwork_url, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, snapshot_id = excluded.snapshot_id, artwork_url = excluded.artwork_url, provenance_json = excluded.provenance_json, updated_at = CURRENT_TIMESTAMP").bind(id, username, String(draft.name || 'Spotify playlist').slice(0, 300), draft.provider, draft.providerPlaylistId, draft.sourceUrl, draft.snapshotId || null, draft.artwork?.[0]?.url || null, JSON.stringify({ importedAt: new Date().toISOString(), provider: draft.provider, sourceUrl: draft.sourceUrl }))]
-  for (let offset = 0; offset < newRecoveries.length; offset += 10) {
-    const values = newRecoveries.slice(offset, offset + 10)
-    statements.push(db.prepare("INSERT INTO recovery_items (id, username, artist, title, album, duration, track_number, disc_number, source_json, status) VALUES " + values.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, 'missing')").join(', ')).bind(...values.flat()))
-  }
+  const statements = [db.prepare("INSERT INTO catalogue_playlists (id, username, name, provider, provider_playlist_id, source_url, snapshot_id, artwork_url, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, snapshot_id = excluded.snapshot_id, artwork_url = excluded.artwork_url, provenance_json = excluded.provenance_json, updated_at = CURRENT_TIMESTAMP").bind(id, username, String(draft.name || 'Spotify playlist').slice(0, 300), draft.provider, draft.providerPlaylistId, draft.sourceUrl, draft.snapshotId || null, draft.artwork?.[0]?.url || null, JSON.stringify({ importedAt: new Date().toISOString(), provider: draft.provider, sourceUrl: draft.sourceUrl, autoRecovery: Boolean(input.createRecovery || input.autoRecovery) }))]
+  statements.push(...catalogueRecoveryInserts(db, newRecoveries))
   if (updating) statements.push(db.prepare('DELETE FROM catalogue_playlist_items WHERE playlist_id = ?').bind(id))
   for (let offset = 0; offset < itemValues.length; offset += 9) {
     const values = itemValues.slice(offset, offset + 9)
@@ -147,6 +162,38 @@ async function saveCataloguePlaylist(db, username, draft, input) {
   }
   await db.batch(statements)
   return cataloguePlaylistDetail(db, username, id)
+}
+
+async function queueMissingForRecovery(db, username, id) {
+  const playlist = await db.prepare('SELECT provider_playlist_id AS providerPlaylistId, name, source_url AS sourceUrl FROM catalogue_playlists WHERE id = ?').bind(id).first()
+  const rows = await db.prepare("SELECT id, position, provider_track_id AS providerTrackId, metadata_json AS metadataJson FROM catalogue_playlist_items WHERE playlist_id = ? AND status = 'missing' AND recovery_id IS NULL").bind(id).all()
+  const known = await knownCatalogueRecoveries(db, username)
+  const created = []
+  const links = []
+  for (const row of rows.results || []) {
+    let metadata = {}
+    try { metadata = JSON.parse(row.metadataJson) } catch { /* ignore corrupt cached metadata */ }
+    const item = { ...metadata, status: 'missing', position: row.position, providerTrackId: row.providerTrackId }
+    if (shouldCreateRecovery(item, true)) links.push(db.prepare('UPDATE catalogue_playlist_items SET recovery_id = ? WHERE id = ?').bind(catalogueRecoveryId(username, item, playlist, known, created), row.id))
+  }
+  const statements = [...catalogueRecoveryInserts(db, created), ...links]
+  for (let index = 0; index < statements.length; index += 75) await db.batch(statements.slice(index, index + 75))
+}
+
+// Daily cron: re-reads every imported Spotify playlist and saves what changed. Matching needs a signed-in Navidrome user,
+// so new entries are saved as missing; opening the playlist matches them and queues the rest for Recovery.
+export async function refreshCataloguePlaylists(env) {
+  const db = env.TOMIFY_DB
+  if (!db || !env.SPOTIFY_TOKEN_ENCRYPTION_KEY) return
+  const rows = await db.prepare("SELECT id, username, provider_playlist_id AS playlistId, source_url AS sourceUrl, snapshot_id AS snapshotId, provenance_json AS provenanceJson FROM catalogue_playlists WHERE provider = 'spotify' ORDER BY updated_at LIMIT 50").all()
+  for (const row of rows.results || []) {
+    try {
+      const head = await spotifyApiJson(env, db, row.username, 'https://api.spotify.com/v1/playlists/' + encodeURIComponent(row.playlistId) + '?fields=snapshot_id')
+      if (head.snapshot_id && head.snapshot_id === row.snapshotId) continue
+      const draft = await fetchSpotifyPlaylist(env, db, row.username, row.playlistId, row.sourceUrl)
+      await saveCataloguePlaylist(db, row.username, draft, { mode: 'update', playlistId: row.id, autoRecovery: cataloguePlaylistRow(row).provenance?.autoRecovery })
+    } catch (error) { console.warn('Playlist refresh failed', row.id, error instanceof Error ? error.message : error) }
+  }
 }
 
 // Adding missing tracks to Recovery is for Navidrome administrators; anyone can import the playlist itself.
@@ -230,6 +277,8 @@ export async function handleCatalogueRequest(request, env, url) {
     // A matched track that no longer exists in the library goes back to missing.
     statements.push(...updates.filter((item) => item?.id && item.missing === true && !item.localTrack).map((item) => env.TOMIFY_DB.prepare("UPDATE catalogue_playlist_items SET status = 'missing', local_track_id = NULL, local_track_json = NULL, match_confidence = 0, user_confirmed = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND playlist_id = ? AND status = 'available'").bind(item.id, match[1])))
     for (let index = 0; index < statements.length; index += 75) await env.TOMIFY_DB.batch(statements.slice(index, index + 75))
+    // After a scheduled refresh, entries still missing once matched go to Recovery when the import asked for that.
+    if (input.queueMissing === true && await isNavidromeAdmin(request, username, env)) await queueMissingForRecovery(env.TOMIFY_DB, username, match[1])
     return json({ playlist: await cataloguePlaylistDetail(env.TOMIFY_DB, username, match[1]) })
   }
   return json({ error: 'not-found' }, 404)

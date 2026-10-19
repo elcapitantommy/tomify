@@ -6,6 +6,7 @@ import { json } from './lib/http.ts'
 import { isNavidromeConfigurationError } from './lib/navidrome.ts'
 import { albumArtworkRoute } from './routes/album-artwork.ts'
 import { catalogueRoute } from './routes/catalogue.ts'
+import { refreshCataloguePlaylists } from './features/catalogue.ts'
 import { hlsRoute } from './routes/hls.ts'
 import { djRoute } from './routes/dj.ts'
 import { inventoryRoute } from './routes/inventory.ts'
@@ -53,6 +54,9 @@ const worker: ExportedHandler<Env> = {
       if (schemaResponse) return schemaResponse
       throw error
     }
+  },
+  scheduled(_controller, env, ctx) {
+    ctx.waitUntil(refreshCataloguePlaylists(env))
   },
 }
 

@@ -18,7 +18,9 @@ export function ImportedPlaylistDetail() {
     // Recipients of a shared playlist can play it but only the owner's session records matches.
     if (loaded.sharedWithMe) return
     const resolved = await revalidateCatalogueItems(loaded.items, api)
-    if (resolved.length && !cancelled) { const updated = await catalogueApi.resolve(id, resolved); if (!cancelled) setPlaylist(updated.playlist) }
+    // The daily refresh adds new entries unmatched; once matched here, the ones still missing go to Recovery if the import asked for that.
+    const queueMissing = useAuth.getState().isAdmin === true && loaded.provenance?.autoRecovery === true && loaded.items.some((item) => item.status === 'missing' && !item.recoveryId)
+    if ((resolved.length || queueMissing) && !cancelled) { const updated = await catalogueApi.resolve(id, resolved, queueMissing); if (!cancelled) setPlaylist(updated.playlist) }
   }).catch((reason) => { if (!cancelled) { setError(reason instanceof Error ? reason.message : 'Playlist could not be loaded.'); setLoading(false) } }); return () => { cancelled = true } }, [api, id])
   if (loading) return <div className="page"><div className="state-card"><LoaderCircle className="spin"/><h2>Loading playlist</h2></div></div>
   if (error || !playlist) return <div className="page"><div className="login-error">{error || 'Playlist not found.'}</div></div>
