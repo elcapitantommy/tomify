@@ -2,7 +2,7 @@ import type { RouteHandler } from '../env.ts'
 import { handleCompletenessRequest } from '../features/completeness.ts'
 import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
-import { lookupMusicBrainzReleaseGroup, musicBrainzType, rowToItem, selectRelease } from './recovery.ts'
+import { lookupMusicBrainzReleaseGroup, musicBrainzType, rowToItem, selectRelease, type ReleaseMetadataRow } from './recovery.ts'
 
 interface ReleaseAlbumInput { albumId?: string, name?: string, artist?: string, force?: boolean, replaceManual?: boolean }
 interface ReleaseUpdateInput { releaseType?: string, releaseDate?: string }
@@ -16,7 +16,7 @@ export const releaseMetadataRoute: RouteHandler = async (request, env, url) => {
     if (!env?.TOMIFY_DB) return json({ error: 'metadata-store-unavailable' }, 503)
     const username = await authenticate(request, env)
     if (!username) return json({ error: 'unauthorized' }, 401)
-    const result = await env.TOMIFY_DB.prepare('SELECT album_id AS albumId, release_type AS releaseType, release_date AS releaseDate, updated_at AS updatedAt, source, musicbrainz_id AS musicBrainzId, match_score AS matchScore FROM release_metadata ORDER BY album_id').all()
+    const result = await env.TOMIFY_DB.prepare('SELECT album_id AS albumId, release_type AS releaseType, release_date AS releaseDate, updated_at AS updatedAt, source, musicbrainz_id AS musicBrainzId, match_score AS matchScore FROM release_metadata ORDER BY album_id').all<ReleaseMetadataRow>()
     return json({ items: (result.results || []).map(rowToItem) })
   }
 

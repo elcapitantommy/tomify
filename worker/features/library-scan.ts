@@ -1,4 +1,3 @@
-// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 // Library scan after a recovery import: an imported file is not playable in Tomify until Navidrome has
 // scanned it. The item keeps its Recovered or Needs-upgrade status and gains a `playback` record (D1
 // column recovery_items.playback_json): `scan-pending` from the import until search3 finds the track,
@@ -11,14 +10,27 @@ import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
 import { isNavidromeConfigurationError, navidromeUrl } from '../lib/navidrome.ts'
 import { recoveryItem } from '../routes/recovery.ts'
+import type { D1Database } from '@cloudflare/workers-types'
+import type { Env } from '../env.ts'
+import type { OpenJson, RecoveryItem } from '../routes/recovery.ts'
+
+interface PlaybackTarget { path: string; title: string; artist: string; recordingId: string | null }
+export interface RecoveryPlayback {
+  state: 'scan-pending' | 'ready' | 'scan-failed'; key: string; target?: PlaybackTarget; since?: string; checkedAt?: string | null; scanRequestedAt?: string | null
+  songId?: string; readyAt?: string | null; failedAt?: string | null; lastError?: string | null
+}
+// The parts of a recovery item the playback target is read from.
+interface PlaybackItem { title?: string | null; artist?: string | null; musicBrainzId?: string | null; candidates?: Array<{ id: string; selected?: boolean; importedPath?: string | null; provenance?: OpenJson }> }
+// The search3 song fields used to recognise the imported copy.
+interface LibrarySong { id: string; title?: string; artist?: string; displayArtist?: string; albumArtist?: string; path?: string; musicBrainzId?: string }
 
 export const PLAYBACK_CHECK_INTERVAL_MS = 15_000
 export const PLAYBACK_TIMEOUT_MS = 10 * 60_000
 
-export function libraryScanText(value) {
+export function libraryScanText(value: unknown) {
   return String(value || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[’']/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
-export function parseRecoveryPlayback(value) {
+export function parseRecoveryPlayback(value: string | null | undefined): RecoveryPlayback | null {
   try {
     const playback = value ? JSON.parse(value) : null
     return playback && ['scan-pending', 'ready', 'scan-failed'].includes(playback.state) ? playback : null
@@ -26,13 +38,13 @@ export function parseRecoveryPlayback(value) {
 }
 
 /** The track to look for in the library after the selected candidate was imported, or null before an import. */
-export function recoveryPlaybackTarget(item) {
+export function recoveryPlaybackTarget(item: PlaybackItem | null | undefined): (PlaybackTarget & { key: string }) | null {
   const candidate = (Array.isArray(item?.candidates) ? item.candidates : []).find((value) => value.selected && value.importedPath)
-  if (!candidate) return null
+  if (!item || !candidate) return null
   const provenance = candidate.provenance || {}
-  const tracks = Array.isArray(provenance.importedTracks) ? provenance.importedTracks.filter((track) => track && (track.path || track.title)) : []
+  const tracks = Array.isArray(provenance.importedTracks) ? provenance.importedTracks.filter((track: OpenJson) => track && (track.path || track.title)) : []
   // A release import plays the track the item asked for when there is one, otherwise its first track.
-  const track = (item.title && tracks.find((value) => libraryScanText(value.title) === libraryScanText(item.title))) || tracks[0] || null
+  const track = (item.title && tracks.find((value: OpenJson) => libraryScanText(value.title) === libraryScanText(item.title))) || tracks[0] || null
   const metadata = provenance.resolvedMetadata || {}
   const title = track?.title || metadata.title || item.title || ''
   const artist = track?.artist || track?.albumArtist || metadata.artist || item.artist || ''
@@ -47,11 +59,11 @@ export function recoveryPlaybackTarget(item) {
   }
 }
 
-export function pendingRecoveryPlayback(target, now = Date.now()) {
+export function pendingRecoveryPlayback(target: PlaybackTarget & { key: string }, now = Date.now()): RecoveryPlayback {
   return { state: 'scan-pending', key: target.key, target: { path: target.path, title: target.title, artist: target.artist, recordingId: target.recordingId }, since: new Date(now).toISOString(), checkedAt: null, scanRequestedAt: null }
 }
 
-function pathsMatch(importedPath, libraryPath) {
+function pathsMatch(importedPath: unknown, libraryPath: unknown) {
   const imported = String(importedPath || '').replace(/\\/g, '/').toLocaleLowerCase('en')
   const library = String(libraryPath || '').replace(/\\/g, '/').replace(/^\/+/, '').toLocaleLowerCase('en')
   if (!imported || !library) return false
@@ -59,8 +71,8 @@ function pathsMatch(importedPath, libraryPath) {
 }
 
 /** The Navidrome song for the target: by MusicBrainz recording id, else title and artist filtered by path when Navidrome reports one. */
-export function matchLibrarySong(songs, target) {
-  const list = (Array.isArray(songs) ? songs : []).filter((song) => song && typeof song.id === 'string' && song.id)
+export function matchLibrarySong(songs: unknown, target: Partial<PlaybackTarget>): LibrarySong | null {
+  const list = (Array.isArray(songs) ? songs : []).filter((song: LibrarySong | null) => song && typeof song.id === 'string' && song.id)
   if (target?.recordingId) {
     const byRecording = list.find((song) => song.musicBrainzId === target.recordingId && (!song.path || !target.path || pathsMatch(target.path, song.path)))
     if (byRecording) return byRecording
@@ -74,38 +86,38 @@ export function matchLibrarySong(songs, target) {
 }
 
 /** A pending record is due for a library check when it was never checked or was last checked 15 s ago. */
-export function playbackCheckDue(playback, now = Date.now()) {
+export function playbackCheckDue(playback: RecoveryPlayback | null | undefined, now = Date.now()): playback is RecoveryPlayback {
   if (playback?.state !== 'scan-pending') return false
   const checkedAt = Date.parse(playback.checkedAt || '')
   return !Number.isFinite(checkedAt) || now - checkedAt >= PLAYBACK_CHECK_INTERVAL_MS
 }
 
-export function playbackTimedOut(playback, now = Date.now()) {
+export function playbackTimedOut(playback: RecoveryPlayback | null | undefined, now = Date.now()) {
   const since = Date.parse(playback?.since || '')
   return Number.isFinite(since) && now - since >= PLAYBACK_TIMEOUT_MS
 }
 
-export async function navidromeCall(request, env, endpoint, params = {}) {
+export async function navidromeCall(request: Request, env: Env, endpoint: string, params: Record<string, unknown> = {}): Promise<OpenJson> {
   const url = navidromeUrl(env, '/rest/' + endpoint + '.view')
   const base = { u: request.headers.get('x-tomify-user') || '', t: request.headers.get('x-tomify-token') || '', s: request.headers.get('x-tomify-salt') || '', v: '1.16.1', c: 'Tomify', f: 'json' }
   for (const [key, value] of Object.entries({ ...base, ...params })) url.searchParams.set(key, String(value))
   const response = await fetch(url, { headers: { accept: 'application/json' } })
   if (!response.ok) throw new Error('Navidrome answered ' + response.status + ' to ' + endpoint + '.')
-  const body = await response.json()
+  const body: OpenJson = await response.json()
   const subsonic = body && body['subsonic-response']
   if (!subsonic || subsonic.status !== 'ok') throw new Error(subsonic?.error?.message || 'Navidrome rejected ' + endpoint + '.')
   return subsonic
 }
 
 /** Starts a quick (not full) library scan unless one is already running. */
-async function requestLibraryScan(request, env) {
+async function requestLibraryScan(request: Request, env: Env) {
   const status = await navidromeCall(request, env, 'getScanStatus')
   if (status.scanStatus?.scanning) return { started: false, running: true }
   await navidromeCall(request, env, 'startScan')
   return { started: true, running: true }
 }
 
-async function findImportedSong(request, env, target) {
+async function findImportedSong(request: Request, env: Env, target: Partial<PlaybackTarget>) {
   const queries = [...new Set([[target.artist, target.title].filter(Boolean).join(' '), target.title].filter(Boolean))]
   for (const query of queries) {
     const result = await navidromeCall(request, env, 'search3', { query, songCount: 20, artistCount: 0, albumCount: 0 })
@@ -115,17 +127,17 @@ async function findImportedSong(request, env, target) {
   return null
 }
 
-async function saveRecoveryPlayback(db, username, id, playback) {
+async function saveRecoveryPlayback(db: D1Database, username: string, id: string, playback: RecoveryPlayback) {
   await db.prepare('UPDATE recovery_items SET playback_json = ? WHERE id = ? AND username = ?').bind(JSON.stringify(playback), id, username).run()
 }
 
 /** Called once an import completes: records `scan-pending` and asks Navidrome for a scan. Only configuration errors escape. */
-export async function markRecoveryScanPending(request, env, username, id) {
+export async function markRecoveryScanPending(request: Request, env: Env, username: string, id: string) {
   try {
     const db = env.TOMIFY_DB
     const item = await recoveryItem(db, username, id)
     const target = recoveryPlaybackTarget(item)
-    if (!target || item.playback?.key === target.key) return
+    if (!item || !target || item.playback?.key === target.key) return
     const playback = pendingRecoveryPlayback(target)
     try { if ((await requestLibraryScan(request, env)).started) playback.scanRequestedAt = new Date().toISOString() }
     catch (error) { if (isNavidromeConfigurationError(error)) throw error /* the first library check asks again */ }
@@ -136,12 +148,12 @@ export async function markRecoveryScanPending(request, env, username, id) {
   }
 }
 
-export async function refreshRecoveryPlayback(request, env, username, item) {
+export async function refreshRecoveryPlayback(request: Request, env: Env, username: string, item: RecoveryItem) {
   const db = env.TOMIFY_DB
   const playback = item.playback
   if (!playbackCheckDue(playback)) return item
   const now = Date.now()
-  const next = { ...playback, checkedAt: new Date(now).toISOString() }
+  const next: RecoveryPlayback = { ...playback, checkedAt: new Date(now).toISOString() }
   let song = null
   try { song = await findImportedSong(request, env, playback.target || {}) }
   catch (error) {
@@ -161,7 +173,7 @@ export async function refreshRecoveryPlayback(request, env, username, item) {
   return recoveryItem(db, username, item.id)
 }
 
-export async function handleLibraryScanRequest(request, env, url) {
+export async function handleLibraryScanRequest(request: Request, env: Env, url: URL) {
   const match = url.pathname.match(/^\/api\/recovery\/([^/]+)\/playback(\/retry)?$/)
   if (!match) return null
   if (request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405)
