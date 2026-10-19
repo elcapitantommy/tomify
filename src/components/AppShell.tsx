@@ -30,6 +30,7 @@ export function AppShell() {
   const titleTrack = remoteTrack ?? localTrack
   const isAdmin = useAuth((state) => state.isAdmin) === true
   const logout = useAuth((state) => state.logout)
+  const username = useAuth((state) => state.session?.username)
   const [accountOpen, setAccountOpen] = useState(false)
   // Set when Back leaves a page opened from the account sheet, so the sheet comes back instead of the page underneath.
   const reopenAccount = useRef(false)
@@ -70,7 +71,7 @@ export function AppShell() {
   }
 
   return <div className="app-shell">
-    <aside className="sidebar"><NavLink className="logo" to="/"><img className="brand-logo small" src="/tomify-logo-192.png" alt=""/><strong>Tomify</strong></NavLink><nav>{primary.map((item) => <NavItem {...item} key={item.to}/>)}</nav><div className="nav-section"><span>Your library</span>{(isAdmin ? [...library, recovery] : library).map((item) => <NavItem {...item} key={item.to}/>)}</div>{isAdmin ? <NavLink className="settings-link" to="/settings"><Settings/>Settings</NavLink> : <button type="button" className="settings-link" onClick={logout}><LogOut/>Sign out</button>}<div className="sidebar-user"><CircleUserRound/><span><strong>Listening as</strong><small>Your Navidrome account</small></span></div></aside>
+    <aside className="sidebar"><NavLink className="logo" to="/"><img className="brand-logo small" src="/tomify-logo-192.png" alt=""/><strong>Tomify</strong></NavLink><nav>{primary.map((item) => <NavItem {...item} key={item.to}/>)}</nav><div className="nav-section"><span>Your library</span>{(isAdmin ? [...library, recovery] : library).map((item) => <NavItem {...item} key={item.to}/>)}</div>{isAdmin ? <NavLink className="settings-link" to="/settings"><Settings/>Settings</NavLink> : <button type="button" className="settings-link" onClick={logout}><LogOut/>Sign out</button>}<div className="sidebar-user"><CircleUserRound/><span><small>Listening as</small><strong>{username}</strong><small>{isAdmin ? 'Navidrome administrator' : 'Your Navidrome account'}</small></span></div></aside>
     <div className={topbarHidden ? "mobile-topbar hidden" : "mobile-topbar"}>{canGoBack ? <button type="button" className="mobile-back" onClick={goBack} aria-label="Go back"><ArrowLeft/></button> : <img className="brand-logo mobile-topbar-logo" src="/tomify-logo-192.png" alt=""/>}<strong>Tomify</strong><button type="button" className="mobile-account" onClick={() => setAccountOpen(true)} aria-label="Account" aria-haspopup="dialog"><CircleUserRound/></button></div>
     {accountOpen && <AccountSheet isAdmin={isAdmin} onClose={() => setAccountOpen(false)} onLogout={logout}/>}
     <main className="content" key={location.pathname}><Outlet/></main>
