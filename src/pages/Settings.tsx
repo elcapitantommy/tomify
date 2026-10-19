@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, Database, GitCommitHorizontal, LockKeyhole, LogOut, Server, ShieldCheck } from 'lucide-react'
 import { useAuth } from '../stores/auth'
 import { useReleaseMetadata } from '../stores/releaseMetadata'
@@ -10,6 +10,28 @@ import { StreamingQuality } from '../components/StreamingQuality'
 import { Equaliser } from '../components/Equaliser'
 import { Normalisation } from '../components/Normalisation'
 import { QualitySettings } from '../components/QualitySettings'
+import { NavidromeClient } from '../lib/navidrome'
+import { usePoll } from '../lib/usePoll'
+
+export const SERVER_PING_MS = 30000
+
+type ServerState = 'checking' | 'connected' | 'unreachable'
+
+// Pings Navidrome on open and every 30 seconds, so the label reflects the server rather than the sign-in.
+function ServerConnection() {
+  const session = useAuth((s) => s.session)
+  const [state, setState] = useState<ServerState>('checking')
+  const check = useCallback(async () => {
+    if (!session) return
+    try { await new NavidromeClient(session).ping(); setState('connected') }
+    catch { setState('unreachable') }
+  }, [session])
+  useEffect(() => { void check() }, [check])
+  usePoll(Boolean(session), check, SERVER_PING_MS)
+  const retry = () => { setState('checking'); void check() }
+  if (state === 'unreachable') return <><i className="connected unreachable" role="status">Unreachable</i><button type="button" className="button secondary" onClick={retry} aria-label="Check the music server again">Retry</button></>
+  return <i className="connected" role="status">{state === 'connected' ? 'Connected' : 'Checking…'}</i>
+}
 
 type VersionInfo = { version: string | null; contract: number | null }
 type VersionState = { app: VersionInfo | null; agent: VersionInfo | null; error: string | null }
@@ -45,5 +67,5 @@ export function Settings() {
 
   // Site-only deploys change the app version without touching the agent, so only a contract difference needs a redeploy.
   const mismatch = Boolean(versions.app && versions.agent && versions.app.contract !== versions.agent.contract)
-  return <div className="page narrow-page"><header className="page-header"><span className="eyebrow">Tomify</span><h1>Settings</h1><p>Your account and playback setup.</p></header><section className="settings-card"><h2>Music server</h2><div className="setting-row"><Server/><span><strong>{session?.serverUrl}</strong><small>Signed in as {session?.username}</small></span><i className="connected">Connected</i></div><div className="setting-row"><ShieldCheck/><span><strong>Navidrome authentication</strong><small>Tomify stores a revocable token, never your password.</small></span></div><LibraryScan/><VpnControl/><ServerRestart/></section><section className="settings-card"><h2>Tomify metadata</h2><div className="setting-row"><Database/><span><strong>{cloudStatus === 'cloud' ? 'Cloud metadata connected' : cloudStatus === 'checking' ? 'Checking metadata store…' : 'Metadata store unavailable'}</strong><small>{cloudStatus === 'cloud' ? 'Release type and date overrides are stored centrally and shared across devices.' : 'Tomify is not saving release overrides locally.'}</small></span>{cloudStatus !== 'cloud' && <button className="button secondary" onClick={() => void loadMetadata()}>Retry</button>}</div><ArtworkUpgrade/></section><section className="settings-card"><h2>Playback</h2><StreamingQuality/><Normalisation/><Equaliser/></section><QualitySettings/><section className="settings-card"><h2>Versions</h2><div className="setting-row"><GitCommitHorizontal/><span><strong>App {versions.app?.version ?? 'Checking…'}</strong><small>Contract {versions.app?.contract ?? '—'}</small></span></div><div className="setting-row"><Server/><span><strong>Recovery agent {versions.agent?.version ?? (versions.error ? 'Unavailable' : 'Checking…')}</strong><small>Contract {versions.agent?.contract ?? '—'}</small></span></div>{mismatch && <div className="login-error" role="alert"><AlertTriangle/>The recovery agent does not match this version of the site. Redeploy the recovery agent before using Recovery.</div>}{versions.error && <p className="login-error" role="alert">{versions.error}</p>}</section><section className="settings-card"><h2>Session</h2><button className="button danger" onClick={logout}><LogOut/>Sign out</button></section></div>
+  return <div className="page narrow-page"><header className="page-header"><span className="eyebrow">Tomify</span><h1>Settings</h1><p>Your account and playback setup.</p></header><section className="settings-card"><h2>Music server</h2><div className="setting-row"><Server/><span><strong>{session?.serverUrl}</strong><small>Signed in as {session?.username}</small></span><ServerConnection/></div><div className="setting-row"><ShieldCheck/><span><strong>Navidrome authentication</strong><small>Tomify stores a revocable token, never your password.</small></span></div><LibraryScan/><VpnControl/><ServerRestart/></section><section className="settings-card"><h2>Tomify metadata</h2><div className="setting-row"><Database/><span><strong>{cloudStatus === 'cloud' ? 'Cloud metadata connected' : cloudStatus === 'checking' ? 'Checking metadata store…' : 'Metadata store unavailable'}</strong><small>{cloudStatus === 'cloud' ? 'Release type and date overrides are stored centrally and shared across devices.' : 'Tomify is not saving release overrides locally.'}</small></span>{cloudStatus !== 'cloud' && <button className="button secondary" onClick={() => void loadMetadata()}>Retry</button>}</div><ArtworkUpgrade/></section><section className="settings-card"><h2>Playback</h2><StreamingQuality/><Normalisation/><Equaliser/></section><QualitySettings/><section className="settings-card"><h2>Versions</h2><div className="setting-row"><GitCommitHorizontal/><span><strong>App {versions.app?.version ?? 'Checking…'}</strong><small>Contract {versions.app?.contract ?? '—'}</small></span></div><div className="setting-row"><Server/><span><strong>Recovery agent {versions.agent?.version ?? (versions.error ? 'Unavailable' : 'Checking…')}</strong><small>Contract {versions.agent?.contract ?? '—'}</small></span></div>{mismatch && <div className="login-error" role="alert"><AlertTriangle/>The recovery agent does not match this version of the site. Redeploy the recovery agent before using Recovery.</div>}{versions.error && <p className="login-error" role="alert">{versions.error}</p>}</section><section className="settings-card"><h2>Session</h2><button className="button danger" onClick={logout}><LogOut/>Sign out</button></section></div>
 }

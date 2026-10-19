@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuth } from '../stores/auth'
@@ -70,5 +70,34 @@ describe('Settings', () => {
     render(<MemoryRouter><Settings/></MemoryRouter>)
     expect(await screen.findByText('Recovery agent agent-sha')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('pings the music server and shows Connected only when it answers', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path.includes('/rest/ping.view')) return Response.json({ 'subsonic-response': { status: 'ok' } })
+      return Response.json({ version: 'abc1234', contract: 2 })
+    }))
+    useAuth.setState({ isAdmin: true })
+    render(<MemoryRouter><Settings/></MemoryRouter>)
+    expect(await screen.findByText('Connected')).toBeInTheDocument()
+  })
+
+  it('shows Unreachable with a retry when the ping fails, and recovers on retry', async () => {
+    let up = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path.includes('/rest/ping.view')) { if (!up) throw new TypeError('Failed to fetch'); return Response.json({ 'subsonic-response': { status: 'ok' } }) }
+      return Response.json({ version: 'abc1234', contract: 2 })
+    }))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    useAuth.setState({ isAdmin: true })
+    render(<MemoryRouter><Settings/></MemoryRouter>)
+    expect(await screen.findByText('Unreachable')).toBeInTheDocument()
+    expect(screen.queryByText('Connected')).not.toBeInTheDocument()
+    up = true
+    fireEvent.click(screen.getByRole('button', { name: 'Check the music server again' }))
+    expect(await screen.findByText('Connected')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Check the music server again' })).not.toBeInTheDocument()
   })
 })
