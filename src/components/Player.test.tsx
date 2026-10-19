@@ -6,6 +6,7 @@ import { useLivePlayback, type LivePlaybackSnapshot } from '../stores/livePlayba
 import { PlayerBar } from './Player'
 
 vi.mock('./Artwork', () => ({ Artwork: () => null }))
+vi.mock('./Lyrics', () => ({ LyricsPanel: ({ track, time, onSeek }: { track: { title: string }; time: number; onSeek: (time: number) => void }) => <button onClick={() => onSeek(12)}>Lyrics of {track.title} at {Math.floor(time)}</button> }))
 
 const session = { serverUrl: 'https://music.example', username: 'tom', salt: 's', token: 't' }
 const tracks = [
@@ -66,5 +67,19 @@ describe('PlayerBar across devices', () => {
     await act(async () => { fireEvent.click(within(menu).getByRole('menuitem', { name: /iPhone app/ })) })
     expect(requests.map((request) => request.url)).toEqual(['/api/live-playback', '/api/live-playback/command'])
     expect(requests[1].body).toMatchObject({ targetDeviceId: 'phone', action: 'transfer' })
+  })
+
+  it('swaps the artwork for lyrics, remembers that, and seeks from a lyric line', () => {
+    usePlayer.setState({ nowPlayingOpen: true, currentTime: 33 })
+    const { unmount } = render(<PlayerBar/>)
+    fireEvent.click(screen.getByRole('button', { name: 'Show lyrics' }))
+    expect(screen.getByRole('button', { name: 'Lyrics of Ana Ng at 33' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Lyrics of Ana Ng at 33' }))
+    expect(usePlayer.getState().currentTime).toBe(12)
+    unmount()
+    render(<PlayerBar/>)
+    expect(screen.getByRole('button', { name: 'Hide lyrics' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Hide lyrics' }))
+    expect(window.localStorage.getItem('tomify-lyrics-open')).toBe('0')
   })
 })
