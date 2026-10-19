@@ -12,6 +12,7 @@ export interface Album {
   songCount?: number
   duration?: number
   created?: string
+  played?: string
   starred?: string
   musicBrainzId?: string
   releaseTypes?: string[]

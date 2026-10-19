@@ -3,7 +3,7 @@ import type { Album, PartialDate } from '../types'
 export type ReleaseType = 'album' | 'single' | 'ep' | 'compilation' | 'other'
 export type ReleaseBucket = 'album' | 'single-ep' | 'compilation'
 export type ReleaseFilter = 'all' | ReleaseBucket
-export type ReleaseSort = 'newest' | 'oldest' | 'title'
+export type ReleaseSort = 'newest' | 'oldest' | 'title' | 'added' | 'played'
 
 export interface ReleaseOverride {
   releaseType?: ReleaseType
@@ -147,6 +147,13 @@ export interface ReleaseFamily {
   key: string
   representative: Album
   variants: Album[]
+}
+
+// Recently added and recently played go by the latest of a family's versions, so playing a deluxe edition lifts the family.
+// Families never added or played (no timestamp) sort last, A–Z.
+export function sortFamiliesByLatest(families: ReleaseFamily[], field: 'created' | 'played'): ReleaseFamily[] {
+  const latest = (family: ReleaseFamily) => Math.max(0, ...family.variants.map((album) => Date.parse(album[field] ?? '') || 0))
+  return families.map((family) => ({ family, at: latest(family) })).sort((a, b) => b.at - a.at || a.family.representative.name.localeCompare(b.family.representative.name, undefined, { sensitivity: 'base' })).map((item) => item.family)
 }
 
 export function collapseReleaseVariants(albums: Album[], overrides: Record<string, ReleaseOverride>): ReleaseFamily[] {
