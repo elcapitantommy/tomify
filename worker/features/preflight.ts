@@ -1,4 +1,3 @@
-// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 // Duplicate preflight (task 13): before Recovery downloads something, what Tom already has of it, in the recovery
 // library (the agent's read-only POST /v1/preflight) and in the master library (Navidrome search3).
 // `GET /api/recovery/:id/preflight?mode=release|track` returns `{ recovery, library }`; either is null when that
@@ -7,6 +6,7 @@
 // The pure helpers are exported for tests. handlePreflightRequest relies on Worker globals (json, authenticate,
 // isNavidromeAdmin, recoveryItem, callRecoveryAgent, and navidromeCall from library-scan-worker.mjs).
 
+import type { Env } from '../env.ts'
 import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
 import { callRecoveryAgent } from '../lib/agent.ts'
 import { json } from '../lib/http.ts'
@@ -14,48 +14,56 @@ import { isNavidromeConfigurationError } from '../lib/navidrome.ts'
 import { recoveryItem } from '../routes/recovery.ts'
 import { navidromeCall } from './library-scan.ts'
 
-export function preflightText(value) {
+export type PreflightMode = 'release' | 'track'
+export interface PreflightTarget { artist: string; album: string; title: string; mode: PreflightMode }
+type PreflightItem = { artist?: string | null; album?: string | null; title?: string | null; metadataResolution?: { metadata?: Record<string, unknown> | null } | null }
+// A track the agent found in the recovery library, as /v1/preflight returns it.
+type AgentTrack = { title?: string | null; trackNumber?: number | null; discNumber?: number | null; recordingId?: string | null; tier?: string | null; path?: string | null }
+// The search3 album and song fields preflight reads.
+type SearchEntry = { id?: string; name?: string; title?: string; artist?: string; displayArtist?: string; albumArtist?: string; album?: string; path?: string; songCount?: number }
+
+export function preflightText(value: unknown): string {
   return String(value || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[’']/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
 /** What to check for: the wanted item, with blanks filled from its MusicBrainz match. A whole-album item checks the release. */
-export function preflightTarget(item, requestedMode) {
+export function preflightTarget(item: PreflightItem | null | undefined, requestedMode: string | null | undefined): PreflightTarget {
   const matched = item?.metadataResolution?.metadata || {}
-  const pick = (field) => String(item?.[field] || matched[field] || '').trim().slice(0, 240)
+  const pick = (field: 'artist' | 'album' | 'title') => String(item?.[field] || matched[field] || '').trim().slice(0, 240)
   const title = pick('title')
   const mode = requestedMode === 'release' || requestedMode === 'track' ? requestedMode : title ? 'track' : 'release'
   return { artist: pick('artist'), album: pick('album'), title, mode }
 }
 
-function artistMatches(target, ...names) {
+function artistMatches(target: PreflightTarget, ...names: Array<string | undefined>) {
   const artist = preflightText(target.artist)
   return !artist || names.some((name) => preflightText(name) === artist)
 }
 
 /** Recovery tracks that count as already there: the whole directory for a release, the same title for a track. */
-export function recoveryPreflightMatches(existing, target) {
-  const tracks = Array.isArray(existing) ? existing : []
+export function recoveryPreflightMatches(existing: unknown, target: PreflightTarget) {
+  const tracks: AgentTrack[] = Array.isArray(existing) ? existing : []
   const wanted = preflightText(target.title)
   const matches = target.mode === 'release' || !wanted ? tracks : tracks.filter((track) => preflightText(track.title) === wanted)
   return matches.map((track) => ({ title: String(track.title || ''), trackNumber: track.trackNumber ?? null, discNumber: track.discNumber ?? null, recordingId: track.recordingId || null, tier: track.tier || 'unknown', path: track.path || null }))
 }
 
 /** Navidrome albums (release mode) or songs (track mode) by the same artist with the same title. */
-export function libraryPreflightMatches(searchResult, target) {
+export function libraryPreflightMatches(searchResult: { album?: SearchEntry[]; song?: SearchEntry[] } | null | undefined, target: PreflightTarget) {
   if (target.mode === 'release') {
     const album = preflightText(target.album)
     if (!album) return []
-    return (Array.isArray(searchResult?.album) ? searchResult.album : [])
+    return (Array.isArray(searchResult?.album) ? searchResult.album : [] as SearchEntry[])
       .filter((value) => value?.id && preflightText(value.name || value.title) === album && artistMatches(target, value.artist, value.displayArtist))
       .map((value) => ({ kind: 'album', id: value.id, title: String(value.name || value.title || ''), artist: value.artist || null, songCount: Number.isFinite(value.songCount) ? value.songCount : null }))
   }
   const title = preflightText(target.title)
   if (!title) return []
-  return (Array.isArray(searchResult?.song) ? searchResult.song : [])
+  return (Array.isArray(searchResult?.song) ? searchResult.song : [] as SearchEntry[])
     .filter((value) => value?.id && preflightText(value.title) === title && artistMatches(target, value.artist, value.displayArtist, value.albumArtist))
     .map((value) => ({ kind: 'song', id: value.id, title: String(value.title || ''), artist: value.artist || null, album: value.album || null, path: value.path || null }))
 }
 
-export async function handlePreflightRequest(request, env, url) {
+export async function handlePreflightRequest(request: Request, env: Env, url: URL): Promise<Response | null> {
   const match = url.pathname.match(/^\/api\/recovery\/([^/]+)\/preflight$/)
   if (!match) return null
   if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405)
@@ -67,15 +75,15 @@ export async function handlePreflightRequest(request, env, url) {
   if (!item) return json({ error: 'recovery-item-not-found' }, 404)
   const target = preflightTarget(item, url.searchParams.get('mode'))
 
-  let recovery = null
-  let directory = null
+  let recovery: ReturnType<typeof recoveryPreflightMatches> | null = null
+  let directory: string | null = null
   try {
     const result = await callRecoveryAgent(env, '/v1/preflight', target)
     directory = result.directory || null
     recovery = recoveryPreflightMatches(result.existing, target)
   } catch { /* an older agent (404), or none configured: the recovery side is unknown */ }
 
-  let library = null
+  let library: ReturnType<typeof libraryPreflightMatches> | null = null
   const query = target.mode === 'release' ? target.album : target.title
   if (query) {
     try {
