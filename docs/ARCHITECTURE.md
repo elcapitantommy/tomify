@@ -65,6 +65,7 @@ Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/
 | `worker/routes/playlists.ts` | `/api/playlist-shares*` | Sharing playlists between Tomify accounts |
 | `worker/routes/live-playback.ts` | `/api/live-playback*` | Cross-device playback state and commands |
 | `worker/routes/listening.ts`, `worker/routes/smart-playlists.ts` | `/api/listening`, `/api/listening/stats`, `/api/smart-playlists*` | Listening history and stats, saved smart-playlist rules |
+| `worker/routes/lyrics.ts` (+ `worker/features/lyrics.ts`) | `/api/lyrics` | LRCLIB lyrics for songs Navidrome has none for, saved in D1 |
 | `worker/routes/inventory.ts`, `worker/routes/system-settings.ts` | `/api/inventory*`, `/api/library-health*`, `/api/system*`, quality, scan and preflight routes | Administrative library and server operations |
 | `worker/routes/navidrome.ts`, `worker/routes/version.ts` | `/navidrome/*`, `/api/version` | Navidrome proxy and deployed version information |
 | `worker/routes/hls.ts`, `worker/routes/media-session.ts` (+ `worker/features/media-session.ts`) | `/api/hls/*`, `/api/media-session` | Adaptive streaming through the agent; short-lived media tokens and the LAN address |
@@ -157,6 +158,7 @@ Migrations live in `drizzle/`:
 | `0013_library_health_dismissals.sql` | `library_health_dismissals` (Library health findings marked as fine) |
 | `0014_listening_and_mixes.sql` | `listening_events` (Tomify's own play history, kept 400 days), `made_for_you` (each account's current mixes) |
 | `0015_smart_playlists.sql` | `smart_playlists` (each account's saved smart-playlist rules) |
+| `0016_lyrics.sql` | `lyrics` (LRCLIB lyrics per song, misses included) |
 
 The migrations are the only source of the schema: `pnpm run deploy` applies new ones before deploying the Worker, and the Worker runs no DDL. A query against a table no migration has created gets a 503 `schema-out-of-date`. Production was baselined with `scripts/d1-baseline.sh`; see [D1 migrations](RECOVERY.md#d1-migrations).
 

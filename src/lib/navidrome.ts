@@ -2,6 +2,7 @@ import SparkMD5 from 'spark-md5'
 import type { Album, Artist, Playlist, SearchResults, Track } from '../types'
 import type { ReplayGainMode } from '../../shared/replaygain.mjs'
 import { mediaRoute, startMediaRoute } from './mediaRoute'
+import type { Lyrics } from './lyrics'
 
 export type NowPlaying = Track & { username: string; minutesAgo: number; playerName?: string }
 export interface ScanStatus { scanning: boolean; count?: number; folderCount?: number; lastScan?: string }
@@ -110,6 +111,15 @@ export class NavidromeClient {
   ownsPlaylist(playlist: Pick<Playlist, 'owner'>) { return sameAccount(playlist.owner, this.session.username) }
   // Every song in the library, a page at a time (Navidrome returns everything for an empty search).
   async allSongs(signal?: AbortSignal, onPage?: (loaded: number) => void): Promise<Track[]> { const songs: Track[] = []; for (let offset = 0; ; offset += 500) { const r = await this.get<{ searchResult3?: { song?: Track[] } }>('search3', { query: '', artistCount: 0, albumCount: 0, songCount: 500, songOffset: offset }, signal); const page = r.searchResult3?.song ?? []; songs.push(...page); onPage?.(songs.length); if (page.length < 500) return songs } }
+  // OpenSubsonic: lyrics from the file's tags or an .lrc file beside it; synced ones are preferred. Times are in ms.
+  async lyrics(id: string, signal?: AbortSignal): Promise<Lyrics | null> {
+    const r = await this.get<{ lyricsList?: { structuredLyrics?: { synced?: boolean; offset?: number; line?: { start?: number; value?: string }[] }[] } }>('getLyricsBySongId', { id }, signal)
+    const all = (r.lyricsList?.structuredLyrics ?? []).filter((item) => item.line?.length)
+    const best = all.find((item) => item.synced) ?? all[0]
+    if (!best) return null
+    const synced = best.synced === true
+    return { synced, lines: best.line!.map((line) => ({ time: synced ? Math.max(0, ((line.start ?? 0) - (best.offset ?? 0)) / 1000) : -1, text: (line.value ?? '').trim() })) }
+  }
   async genres(signal?: AbortSignal): Promise<string[]> { const r = await this.get<{ genres?: { genre?: { value: string }[] } }>('getGenres', {}, signal); return (r.genres?.genre ?? []).map((genre) => genre.value).filter(Boolean).sort((a, b) => a.localeCompare(b)) }
   // What every account is playing now: Navidrome records it from the "now playing" scrobble each player sends.
   async nowPlaying(signal?: AbortSignal): Promise<NowPlaying[]> { const r = await this.get<{ nowPlaying?: { entry?: NowPlaying[] } }>('getNowPlaying', {}, signal); return r.nowPlaying?.entry ?? [] }
