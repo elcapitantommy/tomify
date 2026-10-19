@@ -1962,6 +1962,47 @@ test('smart playlists are saved per account, and listening stats total the recor
   }
 })
 
+test('lyrics come from LRCLIB once per song, misses are saved, and an LRCLIB outage is not', async () => {
+  const db = await sqliteDatabase()
+  const env = { TOMIFY_DB: db }
+  const originalFetch = globalThis.fetch
+  const searched = []
+  let lrclib = (url) => Response.json(url.searchParams.get('track_name') === 'Karma Police'
+    ? [{ duration: 400, syncedLyrics: '[00:01.00]other edit' }, { duration: 263, plainLyrics: 'plain only' }, { duration: 265, syncedLyrics: '[00:10.00]Karma police' }]
+    : [])
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.hostname === 'lrclib.net') { searched.push(url); return lrclib(url) }
+    return new Response('{}', { status: 404 })
+  }
+  const call = (query) => worker.fetch(new Request(`https://app.tomify.test/api/lyrics?${new URLSearchParams(query)}`, { headers: recoveryHeaders }), env)
+  try {
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/lyrics?id=1&artist=a&title=b'), env)).status, 401)
+    assert.equal((await call({ id: 's1', artist: 'Radiohead' })).status, 400)
+    const song = { id: 's1', artist: 'Radiohead', title: 'Karma Police', duration: '264' }
+    assert.deepEqual(await (await call(song)).json(), { synced: '[00:10.00]Karma police', plain: null }, 'synced lyrics within 3 s of the song win')
+    assert.equal(searched[0].pathname, '/api/search')
+    assert.equal(searched[0].searchParams.get('artist_name'), 'Radiohead')
+    assert.deepEqual(await (await call(song)).json(), { synced: '[00:10.00]Karma police', plain: null })
+    assert.equal(searched.length, 1, 'the saved lyrics answer the second time')
+
+    const missing = { id: 's2', artist: 'Nobody', title: 'Unknown', duration: '100' }
+    assert.deepEqual(await (await call(missing)).json(), { synced: null, plain: null })
+    await call(missing)
+    assert.equal(searched.length, 2, 'a miss is saved too')
+    db.sqlite.prepare('UPDATE lyrics SET checked_at = ? WHERE song_id = ?').run(Date.now() - 31 * 86_400_000, 's2')
+    await call(missing)
+    assert.equal(searched.length, 3, 'and looked up again after a month')
+
+    lrclib = () => new Response('busy', { status: 503 })
+    assert.equal((await call({ id: 's3', artist: 'A', title: 'B' })).status, 502)
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS count FROM lyrics WHERE song_id = 's3'").get().count, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('media sessions seal the login into a short-lived token that streams, HLS and the box accept instead of the login', async () => {
   const originalFetch = globalThis.fetch
   const outbound = []

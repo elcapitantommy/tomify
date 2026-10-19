@@ -11,6 +11,7 @@ import { hlsRoute } from './routes/hls.ts'
 import { djRoute } from './routes/dj.ts'
 import { inventoryRoute } from './routes/inventory.ts'
 import { libraryMovesRoute } from './routes/library-moves.ts'
+import { lyricsRoute } from './routes/lyrics.ts'
 import { listeningRoute } from './routes/listening.ts'
 import { livePlaybackRoute } from './routes/live-playback.ts'
 import { mediaSessionRoute } from './routes/media-session.ts'
@@ -30,6 +31,7 @@ const routes: RouteHandler[] = [
   playlistsRoute,
   livePlaybackRoute,
   listeningRoute,
+  lyricsRoute,
   smartPlaylistsRoute,
   mixesRoute,
   djRoute,
