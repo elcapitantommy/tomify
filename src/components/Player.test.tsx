@@ -4,6 +4,7 @@ import { useAuth } from '../stores/auth'
 import { usePlayer } from '../stores/player'
 import { useLivePlayback, type LivePlaybackSnapshot } from '../stores/livePlayback'
 import { PlayerBar } from './Player'
+import { useRadio } from '../stores/radio'
 
 vi.mock('./Artwork', () => ({ Artwork: () => null }))
 vi.mock('./Lyrics', () => ({ LyricsPanel: ({ track, time, onSeek }: { track: { title: string }; time: number; onSeek: (time: number) => void }) => <button onClick={() => onSeek(12)}>Lyrics of {track.title} at {Math.floor(time)}</button> }))
@@ -67,6 +68,17 @@ describe('PlayerBar across devices', () => {
     await act(async () => { fireEvent.click(within(menu).getByRole('menuitem', { name: /iPhone app/ })) })
     expect(requests.map((request) => request.url)).toEqual(['/api/live-playback', '/api/live-playback/command'])
     expect(requests[1].body).toMatchObject({ targetDeviceId: 'phone', action: 'transfer' })
+  })
+
+  it('starts song radio from Now Playing and names it above the queue', async () => {
+    usePlayer.setState({ nowPlayingOpen: true })
+    render(<PlayerBar/>)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start radio from Ana Ng' })) })
+    expect(useRadio.getState().seed?.id).toBe('a')
+    expect(screen.getByRole('button', { name: 'Start radio from Ana Ng' })).toHaveClass('active')
+    await act(async () => { usePlayer.setState({ nowPlayingOpen: false, queueOpen: true }) })
+    expect(screen.getByText('Radio · Ana Ng')).toBeInTheDocument()
+    useRadio.setState({ seed: null })
   })
 
   it('swaps the artwork for lyrics, remembers that, and seeks from a lyric line', () => {
