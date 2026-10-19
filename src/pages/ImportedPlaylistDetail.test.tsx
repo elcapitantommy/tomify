@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CataloguePlaylist } from '../lib/catalogue-import'
 import { NavidromeError } from '../lib/navidrome'
 import type { Track } from '../types'
+import { useAuth } from '../stores/auth'
 import { ImportedPlaylistDetail } from './ImportedPlaylistDetail'
 
 const moved: Track = { id: 'new-id', title: 'Birdhouse In Your Soul', artist: 'They Might Be Giants', album: 'Flood', duration: 200 }
@@ -24,7 +25,19 @@ describe('ImportedPlaylistDetail', () => {
     catalogue.resolve.mockImplementation(async () => ({ playlist: { ...playlist, items: [{ ...playlist.items[0], localTrackId: 'new-id', localTrack: moved }] } }))
     render(<MemoryRouter initialEntries={['/playlists/imported/imp-1']}><Routes><Route path="/playlists/imported/:id" element={<ImportedPlaylistDetail/>}/></Routes></MemoryRouter>)
     expect(await screen.findByRole('heading', { name: 'Spotify mix' })).toBeInTheDocument()
-    await waitFor(() => expect(catalogue.resolve).toHaveBeenCalledWith('imp-1', [{ id: 'item-1', localTrack: moved, matchConfidence: 98 }]))
+    await waitFor(() => expect(catalogue.resolve).toHaveBeenCalledWith('imp-1', [{ id: 'item-1', localTrack: moved, matchConfidence: 98 }], false))
     expect(api.song).toHaveBeenCalledWith('old-id')
+  })
+
+  it('asks an administrator\'s session to queue entries still missing after a scheduled refresh', async () => {
+    useAuth.setState({ isAdmin: true })
+    const refreshed: CataloguePlaylist = { ...playlist, provenance: { autoRecovery: true }, items: [{ id: 'item-2', position: 0, status: 'missing', title: 'Particle Man', artists: ['They Might Be Giants'], album: 'Flood', recoveryId: null }] }
+    api.search.mockResolvedValueOnce({ artists: [], albums: [], tracks: [] })
+    catalogue.resolve.mockReset()
+    catalogue.get.mockResolvedValue({ playlist: refreshed })
+    catalogue.resolve.mockResolvedValue({ playlist: refreshed })
+    render(<MemoryRouter initialEntries={['/playlists/imported/imp-1']}><Routes><Route path="/playlists/imported/:id" element={<ImportedPlaylistDetail/>}/></Routes></MemoryRouter>)
+    await waitFor(() => expect(catalogue.resolve).toHaveBeenCalledWith('imp-1', [], true))
+    useAuth.setState({ isAdmin: null })
   })
 })

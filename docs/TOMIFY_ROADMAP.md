@@ -62,7 +62,7 @@ Tasks are prioritised by impact, then effort, risk and dependencies.
 | 3.3 | Supervised promotion of a recovery copy to master, and supervised merge of duplicate directories, with playlist relinking. | M |
 | 3.4 | Smart playlists, listening statistics (from Navidrome scrobbles), and "Anna is playing…". | M |
 | 3.5 | LAN-direct streaming fallback; Worker-issued short-lived sessions instead of permanent Subsonic tokens. | M |
-| 3.6 | Scheduled Spotify playlist refresh with a diff inbox. | M |
+| 3.6 | Scheduled Spotify playlist refresh with a diff inbox. Daily refresh done (#132); diff inbox still open. | M |
 
 ---
 
