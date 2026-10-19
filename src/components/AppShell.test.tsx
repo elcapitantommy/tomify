@@ -40,6 +40,20 @@ describe('AppShell navigation', () => {
     expect(useAuth.getState().session).toBeNull()
   })
 
+  it('shows who is signed in at the foot of the sidebar', () => {
+    renderShell()
+    const footer = sidebar().querySelector('.sidebar-user') as HTMLElement
+    expect(within(footer).getByText('guest')).toBeInTheDocument()
+    expect(within(footer).getByText('Your Navidrome account')).toBeInTheDocument()
+  })
+
+  it('labels an administrator in the sidebar footer', () => {
+    useAuth.setState({ isAdmin: true })
+    renderShell()
+    const footer = sidebar().querySelector('.sidebar-user') as HTMLElement
+    expect(within(footer).getByText('Navidrome administrator')).toBeInTheDocument()
+  })
+
   it('treats an unfinished role check as not an administrator', () => {
     renderShell()
     expect(within(sidebar()).queryByRole('link', { name: 'Recovery' })).not.toBeInTheDocument()
