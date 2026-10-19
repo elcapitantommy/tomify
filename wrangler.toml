@@ -13,6 +13,8 @@ command = "node scripts/build-worker-info.mjs"
 NAVIDROME_ORIGIN = "https://tomify.tomdixon.uk"
 # The DJ reads links with Deepgram Aura-2 (Workers Paid since 2026-10-18), with MeloTTS as backup.
 TOMIFY_DJ_VOICE_MODEL = "aura"
+# Players at home stream straight from the box here (docs/DEPLOYMENT.md). Plain dashboard variables are replaced on deploy, so it lives here.
+TOMIFY_LAN_ORIGIN = "https://lan.tomify.tomdixon.uk:8789"
 
 # Refreshes imported Spotify playlists once a day (UTC).
 [triggers]
