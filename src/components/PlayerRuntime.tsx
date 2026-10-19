@@ -9,6 +9,7 @@ import { localPlaybackDeviceName } from '../stores/livePlayback'
 import { albumArtworkUrl, useAlbumArtwork } from '../stores/albumArtwork'
 import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import { AdaptiveSources, chooseSource, loadHlsLibrary, markAdaptiveUnavailable, wantsAdaptive, type StreamSource } from '../lib/adaptiveStream'
+import { isLanUrl, mediaStreamFailed } from '../lib/mediaRoute'
 import { useStreamQuality } from '../stores/streamQuality'
 import { useEqualiser } from '../stores/equaliser'
 import { EqualiserGraph, equaliserSupported } from '../lib/equaliser'
@@ -103,6 +104,9 @@ export function PlayerRuntime() {
     for (const slot of [0, 1] as const) { const element = getAudio(slot); if (element) sources.current.detach(element) }
   }, [])
 
+  // Short-lived media tokens and LAN-direct streaming, when the Worker offers them (lib/mediaRoute.ts).
+  useEffect(() => api.startMediaSessions(), [api])
+
   // Fetch the HLS player before the first track needs it, unless this device always streams originals.
   useEffect(() => { if (api.hlsUrl('warm-up') && wantsAdaptive(useStreamQuality.getState().quality)) void loadHlsLibrary() }, [api])
 
@@ -148,7 +152,11 @@ export function PlayerRuntime() {
   function loadInto(slot: AudioSlot, wanted: Track, preload: 'auto' | 'metadata', source?: StreamSource) {
     const element = getAudio(slot)
     if (!element) return
-    sources.current.attach(element, source ?? sourceFor(element, wanted), { preload, onFatal: (unavailable) => adaptiveFailed(slot, wanted.id, unavailable) })
+    const chosen = source ?? sourceFor(element, wanted)
+    // The box on the home network is another origin; CORS keeps its audio readable by the equaliser.
+    const cors = isLanUrl(chosen.url) ? 'anonymous' : null
+    if (element.crossOrigin !== cors) element.crossOrigin = cors
+    sources.current.attach(element, chosen, { preload, onFatal: (unavailable) => adaptiveFailed(slot, wanted.id, unavailable) })
     loadedTrackIds.current[slot] = wanted.id
     refreshVolumeScale(slot, wanted)
   }
@@ -157,8 +165,10 @@ export function PlayerRuntime() {
   // dropped, go through the normal reload-and-resume recovery.
   function adaptiveFailed(slot: AudioSlot, trackId: string, unavailable: boolean) {
     if (loadedTrackIds.current[slot] !== trackId) return
-    if (unavailable) markAdaptiveUnavailable()
     const element = getAudio(slot)
+    // On the home network a failure says nothing about adaptive streaming: retry it through the Worker.
+    if (element && leftLan(element)) unavailable = false
+    if (unavailable) markAdaptiveUnavailable()
     if (activeSlot.current === slot && usePlayer.getState().playing) {
       if (unavailable) { clearRetry(); retries.current = 0 }
       recover(slot)
@@ -167,6 +177,9 @@ export function PlayerRuntime() {
     if (element) sources.current.detach(element)
     loadedTrackIds.current[slot] = undefined
   }
+
+  // A stream straight from the box failed (left home, box restarting): later loads go through the Worker.
+  function leftLan(element: HTMLAudioElement) { return mediaStreamFailed(sources.current.url(element)) }
 
   function pauseAll() {
     for (const slot of [0, 1] as const) {
@@ -200,7 +213,7 @@ export function PlayerRuntime() {
     clearStall()
     // A broken or stuck adaptive stream retries as the original file. hls.js already rides out
     // a weak signal on its own, so reaching this point means HLS itself isn't working here.
-    if (sources.current.kind(element) === 'hls') markAdaptiveUnavailable()
+    if (!leftLan(element) && sources.current.kind(element) === 'hls') markAdaptiveUnavailable()
     if (retries.current >= RETRY_DELAYS_MS.length) {
       retries.current = 0
       state.setPlaying(false)

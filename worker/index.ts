@@ -13,6 +13,7 @@ import { inventoryRoute } from './routes/inventory.ts'
 import { libraryMovesRoute } from './routes/library-moves.ts'
 import { listeningRoute } from './routes/listening.ts'
 import { livePlaybackRoute } from './routes/live-playback.ts'
+import { mediaSessionRoute } from './routes/media-session.ts'
 import { mixesRoute } from './routes/mixes.ts'
 import { navidromeRoute } from './routes/navidrome.ts'
 import { playlistsRoute } from './routes/playlists.ts'
@@ -37,6 +38,7 @@ const routes: RouteHandler[] = [
   libraryMovesRoute,
   versionRoute,
   hlsRoute,
+  mediaSessionRoute,
   handleRecoveryRequest,
   navidromeRoute,
 ]

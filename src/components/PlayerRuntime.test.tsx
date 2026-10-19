@@ -386,6 +386,38 @@ describe('PlayerRuntime', () => {
       expect(usePlayer.getState().playing).toBe(true)
     })
 
+    it('streams straight from the box at home and goes back through the Worker when that fails', async () => {
+      const lan = 'https://lan.tomify.example:8789'
+      vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+        requests.push(String(url))
+        if (String(url) === '/api/media-session') return Response.json({ token: 'sealed', expiresAt: Date.now() + 4 * 3600_000, lanOrigin: lan })
+        if (String(url) === `${lan}/lan/ping`) return Response.json({ ok: true })
+        return Response.json({ 'subsonic-response': { status: 'ok' } })
+      }))
+      usePlayer.setState({ currentIndex: 0, playing: false })
+      await act(async () => { render(<ApiProvider><PlayerRuntime/></ApiProvider>) })
+      await vi.waitFor(() => expect(requests).toContain(`${lan}/lan/ping`))
+      await act(async () => { await Promise.resolve() })
+      vi.useFakeTimers()
+      // Track c was not pre-loaded, so it loads now, with the box known to be reachable.
+      await act(async () => { usePlayer.setState({ currentIndex: 2 }); usePlayer.getState().setPlaying(true) })
+      const current = audio().find((element) => playerFor(element) && new URL(playerFor(element)!.source!).pathname === '/api/hls/c/master.m3u8')!
+      const atHome = new URL(playerFor(current)!.source!)
+      expect(atHome.origin).toBe(lan)
+      expect(Object.fromEntries(atHome.searchParams)).toEqual({ mt: 'sealed' })
+      expect(current.crossOrigin).toBe('anonymous')
+
+      await act(async () => { playerFor(current)!.emit('error', { fatal: true, type: 'networkError', details: 'manifestLoadError', response: { code: 0 } }) })
+      await act(async () => { vi.advanceTimersByTime(RETRY_DELAYS_MS[0]) })
+      // Still adaptive, now through the Worker with the same short-lived token.
+      const viaWorker = new URL(playerFor(current)!.source!)
+      expect(viaWorker.origin).toBe(window.location.origin)
+      expect(viaWorker.searchParams.get('mt')).toBe('sealed')
+      expect(viaWorker.searchParams.get('t')).toBeNull()
+      expect(current.crossOrigin).toBeNull()
+      expect(usePlayer.getState().playing).toBe(true)
+    })
+
     it('switches to the original file when an adaptive stream errors or hangs', async () => {
       vi.useFakeTimers()
       const [current] = await startPlaying()

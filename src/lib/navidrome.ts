@@ -1,6 +1,7 @@
 import SparkMD5 from 'spark-md5'
 import type { Album, Artist, Playlist, SearchResults, Track } from '../types'
 import type { ReplayGainMode } from '../../shared/replaygain.mjs'
+import { mediaRoute, startMediaRoute } from './mediaRoute'
 
 export type NowPlaying = Track & { username: string; minutesAgo: number; playerName?: string }
 export interface ScanStatus { scanning: boolean; count?: number; folderCount?: number; lastScan?: string }
@@ -118,13 +119,31 @@ export class NavidromeClient {
   async unstar(id: string, kind: StarKind = 'song') { await this.get('unstar', { [STAR_PARAM[kind]]: id }) }
   async scrobble(id: string, submission = true) { await this.get('scrobble', { id, submission: submission ? 'true' : 'false' }); return true }
   coverArtUrl(id?: string, size = 600) { return id ? this.url('getCoverArt', { id, size }).toString() : '' }
-  streamUrl(id: string) { return this.url('stream', { id, estimateContentLength: 'true' }).toString() }
+  streamUrl(id: string) {
+    const params = { id, estimateContentLength: 'true' }
+    return (this.mediaUrl('/navidrome/rest/stream.view', { ...params, v: '1.16.1', c: 'Tomify' }) ?? this.url('stream', params)).toString()
+  }
   streamsSameOrigin() { return streamsFromThisOrigin(this.session.serverUrl) }
+  // The Tomify music server sits behind the Tomify Worker, which adds adaptive streaming and media sessions.
+  private viaTomify() { return typeof window !== 'undefined' && normaliseServerUrl(this.session.serverUrl) === DEFAULT_NAVIDROME_SERVER }
+  // With a media session (lib/mediaRoute.ts) a stream URL carries a short-lived token instead of the
+  // login, and points at the box itself when it answers on the home network.
+  private mediaUrl(path: string, params: Record<string, string> = {}) {
+    const route = this.viaTomify() ? mediaRoute(this.session.username) : null
+    if (!route) return null
+    const url = new URL(path, route.origin ?? window.location.origin)
+    Object.entries({ ...params, mt: route.token }).forEach(([key, value]) => url.searchParams.set(key, value))
+    return url
+  }
+  startMediaSessions() { return this.viaTomify() ? startMediaRoute(this.session, this.fetcher) : () => {} }
   // Adaptive streaming goes through the Tomify Worker, so it only exists for the Tomify music server.
   // `gain` asks for the stream with that ReplayGain baked in.
   hlsUrl(id: string, gain: ReplayGainMode | null = null) {
-    if (typeof window === 'undefined' || normaliseServerUrl(this.session.serverUrl) !== DEFAULT_NAVIDROME_SERVER) return null
-    const url = new URL(`/api/hls/${encodeURIComponent(id)}/${gain ? `${gain}/` : ''}master.m3u8`, window.location.origin)
+    if (!this.viaTomify()) return null
+    const path = `/api/hls/${encodeURIComponent(id)}/${gain ? `${gain}/` : ''}master.m3u8`
+    const media = this.mediaUrl(path)
+    if (media) return media.toString()
+    const url = new URL(path, window.location.origin)
     url.searchParams.set('u', this.session.username)
     url.searchParams.set('t', this.session.token)
     url.searchParams.set('s', this.session.salt)

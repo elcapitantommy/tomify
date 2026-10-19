@@ -85,6 +85,7 @@ export class AdaptiveSources {
   }
 
   kind(element: HTMLMediaElement) { return this.attached.get(element)?.source.kind }
+  url(element: HTMLMediaElement) { return this.attached.get(element)?.source.url }
 
   attach(element: HTMLMediaElement, source: StreamSource, options: AttachOptions) {
     this.detach(element)
