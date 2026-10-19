@@ -1,6 +1,6 @@
 import { useAuth } from '../stores/auth'
 
-export type InventoryEntry = { kind: string; label: string; paths: string[]; missingPath?: string | null; albumId?: string | null; recoveryId?: string | null; expectedTracks?: number | null; actualTracks?: number | null }
+export type InventoryEntry = { kind: string; label: string; paths: string[]; masterPaths?: string[]; recoveryPaths?: string[]; missingPath?: string | null; albumId?: string | null; recoveryId?: string | null; expectedTracks?: number | null; actualTracks?: number | null }
 export type InventoryCategory = 'duplicates' | 'partialAlbums' | 'orphanedSources' | 'shadowedRecovery' | 'missingD1Files'
 export type DismissedInventoryEntry = InventoryEntry & { category: InventoryCategory; dismissedBy?: string | null; dismissedAt?: string | null }
 export type InventoryReport = { completedAt: string | null; duplicates: InventoryEntry[]; partialAlbums: InventoryEntry[]; orphanedSources: InventoryEntry[]; shadowedRecovery: InventoryEntry[]; missingD1Files: InventoryEntry[]; dismissed?: DismissedInventoryEntry[] }
@@ -8,7 +8,7 @@ export type InventoryStatus = { state: 'idle' | 'running' | 'completed' | 'faile
 
 export class InventoryUnavailableError extends Error {}
 
-function headers(): HeadersInit {
+export function headers(): HeadersInit {
   const session = useAuth.getState().session
   if (!session) throw new Error('Sign in to inspect library health.')
   return { 'x-tomify-user': session.username, 'x-tomify-token': session.token, 'x-tomify-salt': session.salt, 'content-type': 'application/json' }

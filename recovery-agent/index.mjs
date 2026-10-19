@@ -20,6 +20,7 @@ import { assertNzbIndexCandidateComplete, cancelAgentJob, cancelDownloader, down
 import { importRemainingUsenetFiles, importUsenetCompletion, planDestination } from './usenet-import.mjs'
 import { preflightRelease } from './preflight.mjs'
 import { createInventoryController } from './inventory.mjs'
+import { createLibraryMoves } from './library-moves.mjs'
 import { validateRecoveryAuthConfig } from './config.mjs'
 import { createUsenetJobPoller } from './usenet-job.mjs'
 import { createJobRunner, jobPollIntervalMs } from './jobs.mjs'
@@ -733,6 +734,7 @@ const nordvpnHome = join(usenetStateRoot, 'nordvpn-cli')
 await mkdir(nordvpnHome, { recursive: true, mode: 0o700 })
 const vpn = createVpnController({ config: vpnSettings, run: (command, args) => run(command, args, 60_000, nordvpnEnvironment(process.env, nordvpnHome), nordvpnFailureMessage) })
 const inventory = createInventoryController({ masterRoot, recoveryRoot, stateRoot: usenetStateRoot, probe, log: (message) => process.stderr.write(`${message}\n`) })
+const libraryMoves = createLibraryMoves({ masterRoot, recoveryRoot, stateRoot: usenetStateRoot })
 
 await mkdir(recoveryRoot, { recursive: true })
 await mkdir(usenetStateRoot, { recursive: true })
@@ -807,6 +809,9 @@ createServer(async (request, response) => {
     if (request.url === '/v1/inventory/status') return send(response, 200, { status: await inventory.status() })
     if (request.url === '/v1/inventory/summary') return send(response, 200, { summary: await inventory.summary() })
     if (request.url === '/v1/inventory/report') return send(response, 200, { report: await inventory.report(body) })
+    // Supervised merges and promotions: plan is read-only; apply and undo rename files and keep a journal.
+    const libraryMove = request.url.match(/^\/v1\/library\/moves\/(plan|apply|undo|list)$/)
+    if (libraryMove) return send(response, 200, await libraryMoves[libraryMove[1]](body))
     // Read-only: the job runner advances jobs, so asking for status never starts a download step or an import.
     if (request.url === '/v1/jobs/status') return send(response, 200, await pollUsenetJob.read(body.jobId))
     if (request.url === '/v1/jobs/cancel') return send(response, 200, await cancelRecoveryJob(body))

@@ -47,7 +47,7 @@ All 20 are done. Each row names the PR that finished it.
 | 2.9 | Mobile Library tab, Albums paging, recovery source badges, star/unstar, plainer language | Partly done | See task 20. |
 | 3.1 | Offline downloads v1 | Not started | The Downloads page is a placeholder, and `src/lib/sourceResolver.ts` always streams. |
 | 3.2 | Album completeness view and bulk "recover missing tracks" | Done (#128) | Administrators can check an album against MusicBrainz and add the missing tracks to Recovery, one item per track or as one release item mapped to the tracklist. Library health lists the checked albums that came up short. |
-| 3.3 | Supervised promotion and duplicate merge | Not started | |
+| 3.3 | Supervised promotion and duplicate merge | Done (#129) | Library health plans each merge or promotion, moves copies to `_Duplicates` instead of deleting them, journals every change for undo and relinks matched songs in playlists. Needs write access to `/srv/music` for the agent (docs/RECOVERY.md). |
 | 3.4 | Smart playlists, listening statistics, "Anna is playing…" | Not started | Live playback syncs one user's own devices, not other people's. |
 | 3.5 | LAN-direct streaming; short-lived Worker sessions | Not started | |
 | 3.6 | Scheduled Spotify playlist refresh | Not started | Imported playlists refresh only by hand. |

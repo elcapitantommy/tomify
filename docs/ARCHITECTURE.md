@@ -171,7 +171,7 @@ Every import:
 3. writes a tagged `ffmpeg` stream-copy derivative and a `.tomify.json` provenance sidecar;
 4. writes `cover.jpg` when artwork was chosen.
 
-`metadata.mjs`, `derivative.mjs` and `artwork.mjs` hold that logic. `deletion.mjs` removes only files inside the recovery directory. `system.mjs` and `vpn.mjs` back the reboot and NordVPN controls, which are off unless `TOMIFY_RECOVERY_ALLOW_REBOOT` / `TOMIFY_RECOVERY_ALLOW_VPN_CONTROL` are `true`.
+`metadata.mjs`, `derivative.mjs` and `artwork.mjs` hold that logic. `deletion.mjs` removes only files inside the recovery directory. `library-moves.mjs` performs the supervised merges and promotions from Library health: journalled renames into `TOMIFY_MASTER_DIR/_Duplicates` that can be undone. `system.mjs` and `vpn.mjs` back the reboot and NordVPN controls, which are off unless `TOMIFY_RECOVERY_ALLOW_REBOOT` / `TOMIFY_RECOVERY_ALLOW_VPN_CONTROL` are `true`.
 
 Configuration comes from `/etc/tomify/recovery-agent.env` (see `recovery-agent.env.example`).
 
@@ -179,7 +179,7 @@ Configuration comes from `/etc/tomify/recovery-agent.env` (see `recovery-agent.e
 
 | Path | What it holds |
 | --- | --- |
-| `/srv/music` | The library SSD and Navidrome's music folder (`TOMIFY_MASTER_DIR`). The agent never writes here directly. |
+| `/srv/music` | The library SSD and Navidrome's music folder (`TOMIFY_MASTER_DIR`). The agent only writes here for a confirmed merge or promotion from Library health, and only with a `ReadWritePaths=/srv/music` drop-in. |
 | `/srv/music/_Recovery` | Recovered files, on the same SSD, so Navidrome shows them alongside the masters |
 | `/srv/music-recovery` | Bind mount of `/srv/music/_Recovery`; the only place the agent writes audio (`TOMIFY_RECOVERY_DIR`) |
 | `/srv/usenet/completed` | Finished SABnzbd downloads, read-only to the agent |
