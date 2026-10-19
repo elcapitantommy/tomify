@@ -12,6 +12,7 @@ import { useStreamQuality } from '../stores/streamQuality'
 import { useEqualiser } from '../stores/equaliser'
 import { FakeAudioContext } from '../test/fakeAudioContext'
 import { useNormalisation } from '../stores/normalisation'
+import { useDj } from '../stores/dj'
 
 const hlsPlayers: { source?: string; media?: HTMLMediaElement; destroyed: boolean; emit(event: string, data: unknown): void }[] = []
 vi.mock('hls.js/light', () => {
@@ -236,6 +237,38 @@ describe('PlayerRuntime', () => {
     expect(pausedElements()).toContain(standby)
     expect(pausedElements()).not.toContain(current)
     expect(usePlayer.getState().playing).toBe(true)
+  })
+
+  it('stays paused when the phone resumes playback by itself after headphones or a car disconnect', async () => {
+    Object.defineProperty(navigator, 'mediaSession', { configurable: true, value: { metadata: null, playbackState: 'none', setActionHandler: () => {}, setPositionState: () => {} } })
+    try {
+      const [current] = await startPlaying()
+      // The phone pauses the music as the headphones go...
+      await act(async () => { current.dispatchEvent(new Event('pause')) })
+      expect(usePlayer.getState().playing).toBe(false)
+      vi.mocked(HTMLMediaElement.prototype.pause).mockClear()
+      // ...and later starts it again on its own, out of the speaker.
+      await act(async () => { current.dispatchEvent(new Event('play')) })
+      expect(usePlayer.getState().playing).toBe(false)
+      expect(pausedElements()).toContain(current)
+    } finally {
+      delete (navigator as { mediaSession?: unknown }).mediaSession
+    }
+  })
+
+  it('stops the DJ\'s link and keeps the music paused when pause is pressed on the headphones or lock screen', async () => {
+    const handlers = new Map<string, MediaSessionActionHandler | null>()
+    Object.defineProperty(navigator, 'mediaSession', { configurable: true, value: { metadata: null, playbackState: 'none', setActionHandler: (action: string, handler: MediaSessionActionHandler | null) => handlers.set(action, handler), setPositionState: () => {} } })
+    try {
+      await startPlaying()
+      await act(async () => { usePlayer.setState({ playing: false }); useDj.setState({ active: true, speaking: true }) })
+      await act(async () => { handlers.get('pause')?.({ action: 'pause' }) })
+      expect(useDj.getState()).toEqual(expect.objectContaining({ active: true, speaking: false }))
+      expect(usePlayer.getState().playing).toBe(false)
+    } finally {
+      useDj.setState({ active: false, speaking: false })
+      delete (navigator as { mediaSession?: unknown }).mediaSession
+    }
   })
 
   it('pauses both audio elements when playback is paused', async () => {

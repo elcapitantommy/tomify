@@ -12,6 +12,7 @@ import { useStreamQuality } from '../stores/streamQuality'
 import { useEqualiser } from '../stores/equaliser'
 import { EqualiserGraph, equaliserSupported } from '../lib/equaliser'
 import { useNormalisation } from '../stores/normalisation'
+import { useDj } from '../stores/dj'
 import { gainModeAt, originalVolumeScale, queueIndexOf, streamGainMode } from '../lib/loudness'
 import type { Track } from '../types'
 
@@ -402,7 +403,7 @@ export function PlayerRuntime() {
     if (!track || !('mediaSession' in navigator)) return
     const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
       ['play', () => usePlayer.getState().setPlaying(true)],
-      ['pause', () => usePlayer.getState().setPlaying(false)],
+      ['pause', () => { useDj.getState().hush(); usePlayer.getState().setPlaying(false) }],
       ['previoustrack', () => usePlayer.getState().previous()],
       ['nexttrack', () => usePlayer.getState().next()],
       ['seekbackward', (d) => usePlayer.getState().seekTo(Math.max(0, (currentAudio()?.currentTime ?? 0) - (d.seekOffset ?? 10)))],
@@ -512,6 +513,14 @@ export function PlayerRuntime() {
       // The pre-loaded next track must stay silent until it is handed over. If
       // anything (the OS resuming audio, a stale play request) starts it, stop it.
       if (activeSlot.current !== slot) {
+        event.currentTarget.pause()
+        return
+      }
+      // A play the player didn't ask for comes from the browser or the phone, typically resuming on its own
+      // after headphones or a car disconnected and it paused. That would start the music out of the speaker
+      // minutes later, so it is stopped. The listener's own play buttons (lock screen, headphones, car) go
+      // through the media session handlers below, which set the player playing first.
+      if (!usePlayer.getState().playing && 'mediaSession' in navigator) {
         event.currentTarget.pause()
         return
       }

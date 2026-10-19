@@ -209,11 +209,12 @@ describe('Tomify DJ', () => {
 
   describe('playing the recorded voice through Web Audio', () => {
     type FakeSource = { onended: (() => void) | null; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }
-    let context: { state: string; gains: number[]; sources: FakeSource[] }
+    let context: { state: string; gains: number[]; sources: FakeSource[]; statechange?: (() => void) | null }
     // The DJ keeps one audio context for the session, so the fake reads whichever test's record is current.
     const node = () => ({ connect: vi.fn((next: unknown) => next) })
     class FakeContext {
       get state() { return context.state }
+      set onstatechange(handler: (() => void) | null) { context.statechange = handler }
       destination = {}
       async resume() { return undefined }
       createBuffer() { return {} }
@@ -257,6 +258,50 @@ describe('Tomify DJ', () => {
       expect(context.sources).toHaveLength(1)
       djVoiceElement()?.onended?.(new Event('ended'))
       expect(usePlayer.getState().playing).toBe(true)
+    })
+
+    it('leaves the music paused when the phone suspends the voice (headphones or the car disconnecting)', async () => {
+      vi.useFakeTimers()
+      try {
+        vi.stubGlobal('fetch', fetcher())
+        await useDj.getState().start()
+        await vi.waitFor(() => expect(context.sources).toHaveLength(2))
+        context.state = 'interrupted'
+        context.statechange?.()
+        expect(useDj.getState()).toEqual(expect.objectContaining({ active: true, speaking: false }))
+        expect(context.sources[1].stop).toHaveBeenCalled()
+        vi.advanceTimersByTime(DJ_SPEECH_TIMEOUT_MS)
+        expect(usePlayer.getState().playing).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('leaves the music paused when the phone pauses the voice element', async () => {
+      vi.useFakeTimers()
+      try {
+        context.state = 'suspended'
+        vi.stubGlobal('fetch', fetcher())
+        await useDj.getState().start()
+        await vi.waitFor(() => expect(djVoiceElement()?.src).toBe('blob:voice'))
+        djVoiceElement()?.onpause?.(new Event('pause'))
+        expect(useDj.getState().speaking).toBe(false)
+        vi.advanceTimersByTime(DJ_SPEECH_TIMEOUT_MS)
+        expect(usePlayer.getState().playing).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('leaves the music paused when the listener pauses during the link', async () => {
+      vi.stubGlobal('fetch', fetcher())
+      await useDj.getState().start()
+      await vi.waitFor(() => expect(context.sources).toHaveLength(2))
+      useDj.getState().hush()
+      expect(context.sources[1].stop).toHaveBeenCalled()
+      context.sources[1].onended?.()
+      expect(useDj.getState()).toEqual(expect.objectContaining({ active: true, speaking: false }))
+      expect(usePlayer.getState().playing).toBe(false)
     })
 
     it('stops the voice when the DJ is stopped', async () => {

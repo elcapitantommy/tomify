@@ -28,6 +28,9 @@ export interface DjState {
   // Replaces the songs after this one with a set for the request. With now, that set starts straight
   // away (the DJ answers first); resolves whether it worked.
   steer(request: string, options?: { now?: boolean }): Promise<boolean>
+  // The link was cut off by a pause (the listener's, or the phone's when headphones or a car
+  // disconnect): stop talking and leave the music paused rather than bringing it back afterwards.
+  hush(): void
 }
 
 // Sets are fetched when this many songs or fewer are left after the current one.
@@ -167,7 +170,7 @@ function playbackSession() {
   const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession
   if (session) try { session.type = 'playback' } catch { /* older Safari */ }
 }
-async function playThroughContext(url: string, onEnded: () => void, music: { lufs: number; volume: number }): Promise<boolean> {
+async function playThroughContext(url: string, onEnded: () => void, onInterrupted: () => void, music: { lufs: number; volume: number }): Promise<boolean> {
   const context = djVoiceContext()
   if (!context) return false
   try {
@@ -185,6 +188,8 @@ async function playThroughContext(url: string, onEnded: () => void, music: { luf
     source.connect(gain).connect(compressor).connect(context.destination)
     source.onended = () => { if (voiceSource === source) voiceSource = null; onEnded() }
     voiceSource = source
+    // An iPhone suspends the context when the audio route goes away; the voice then never ends.
+    context.onstatechange = () => { if (voiceSource === source && context.state !== 'running') onInterrupted() }
     source.start()
     return true
   } catch {
@@ -270,6 +275,12 @@ export const useDj = create<DjState>((set, get) => ({
     set({ active: false, loading: false, speaking: false, pending: null, request: null })
   },
 
+  hush: () => {
+    if (!get().speaking) return
+    set({ speaking: false })
+    silenceVoice()
+  },
+
   // Asks for something different: the songs after the current one are replaced by a new set.
   steer: async (request, options = {}) => {
     if (!get().active) return false
@@ -312,7 +323,7 @@ function speakLink(link: PendingLink) {
     if (done) return
     done = true
     clearTimeout(timer)
-    if (element) { element.onended = null; element.onerror = null }
+    if (element) { element.onended = null; element.onerror = null; element.onpause = null }
     if (link.audioUrl) URL.revokeObjectURL(link.audioUrl)
     if (!useDj.getState().speaking) return
     useDj.setState({ speaking: false })
@@ -338,13 +349,15 @@ function speakLink(link: PendingLink) {
   const playElement = (url: string) => {
     if (!stillSpeaking()) return
     const refused = (reason: unknown) => {
-      if (element) { element.onended = null; element.onerror = null }
+      if (element) { element.onended = null; element.onerror = null; element.onpause = null }
       const name = reason && typeof reason === 'object' && 'name' in reason ? String((reason as { name: unknown }).name) : ''
       browserSpeech(name === 'NotAllowedError' ? 'The browser wouldn\'t let the DJ voice start.' : 'The DJ voice wouldn\'t play.')
     }
     if (!element) { refused(null); return }
     element.onended = finish
     element.onerror = refused
+    // 'pause' also comes just before 'ended'; any other pause means the phone stopped the voice.
+    element.onpause = () => { if (!element.ended) useDj.getState().hush() }
     element.src = url
     void element.play()?.catch(refused)
   }
@@ -353,7 +366,7 @@ function speakLink(link: PendingLink) {
     link.audioUrl = url
     useDj.setState({ voiceNote: backupNotes.get(url) ?? null })
     backupNotes.delete(url)
-    void playThroughContext(url, finish, musicLevel()).then((playing) => {
+    void playThroughContext(url, finish, () => useDj.getState().hush(), musicLevel()).then((playing) => {
       if (!playing) playElement(url)
       else if (!stillSpeaking()) silenceVoice()
     })
