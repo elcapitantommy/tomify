@@ -7,6 +7,7 @@ import { build } from 'vite'
 import { encryptCatalogueToken } from '../worker/features/catalogue.ts'
 import { parseLiveCommands } from '../worker/features/live-playback.ts'
 import { openMediaToken } from '../recovery-agent/lan.mjs'
+import { orderPartyQueue } from '../worker/features/party.ts'
 
 function mockDatabase() {
   return {
@@ -2053,4 +2054,96 @@ test('media sessions seal the login into a short-lived token that streams, HLS a
     assert.equal(outbound[1].headers['x-tomify-navidrome-token'], login.token)
     assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/hls/tr1/master.m3u8?mt=forged.token'), env)).status, 401)
   } finally { globalThis.fetch = originalFetch }
+})
+
+test('party mode: guests join with a code, search as the host, and add tracks within the limits', async () => {
+  const db = await sqliteDatabase()
+  const env = { TOMIFY_DB: db, TOMIFY_MEDIA_KEY: 'party-test-key' }
+  const searches = []
+  const originalFetch = globalThis.fetch
+  const song = (id) => ({ id, title: `Song ${id}`, artist: 'Pulp', album: 'Different Class', coverArt: `al-${id}`, duration: 200, path: '/srv/music/secret.flac' })
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/search3.view') { searches.push(Object.fromEntries(url.searchParams)); return Response.json({ 'subsonic-response': { status: 'ok', searchResult3: { song: [song('s1'), song('s2')] } } }) }
+    if (url.pathname === '/rest/getSong.view') return Response.json({ 'subsonic-response': url.searchParams.get('id') === 'missing' ? { status: 'failed', error: { code: 70 } } : { status: 'ok', song: song(url.searchParams.get('id')) } })
+    return new Response('{}', { status: 404 })
+  }
+  const host = (path = '', method = 'GET', body) => worker.fetch(new Request(`https://app.tomify.test/api/party${path}`, { method, headers: recoveryHeaders, ...(body ? { body: JSON.stringify(body) } : {}) }), env)
+  const guest = (token, path = '', method = 'GET', body) => worker.fetch(new Request(`https://app.tomify.test/api/party/guest${path}`, { method, headers: { 'x-tomify-party': token, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }), env)
+  const join = (code, name) => worker.fetch(new Request('https://app.tomify.test/api/party/join', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code, name }) }), env)
+  try {
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/party', { method: 'POST', headers: recoveryHeaders, body: '{}' }), { TOMIFY_DB: db })).status, 503, 'needs a key to seal the host login')
+    assert.deepEqual(await (await host()).json(), { party: null })
+    const started = await host('', 'POST', { name: 'Tomify Rocks!', cooldownSeconds: 0, maxPerGuest: 2, voting: true })
+    assert.equal(started.status, 201)
+    const { party } = await started.json()
+    assert.equal(party.name, 'Tomify Rocks!')
+    assert.match(party.code, /^[A-Z2-9]{6}$/)
+    assert.equal(db.sqlite.prepare('SELECT credential FROM parties').get().credential.includes('token'), false, 'the host login is sealed')
+
+    assert.equal((await join('NOPE00', 'Anna')).status, 404)
+    assert.equal((await join(party.code, '')).status, 400)
+    const anna = (await (await join(party.code.toLowerCase(), 'Anna')).json()).token
+    const ben = (await (await join(party.code, 'Ben')).json()).token
+    assert.equal((await guest('wrong')).status, 401)
+
+    const results = await (await guest(anna, '/search?q=pulp')).json()
+    assert.deepEqual(results.tracks.map((track) => track.id), ['s1', 's2'])
+    assert.equal(results.tracks[0].path, undefined, 'file paths are not shown to guests')
+    assert.deepEqual([searches[0].u, searches[0].t, searches[0].s], ['tom', 'token', 'salt'], 'guests search as the host')
+
+    assert.equal((await guest(anna, '/queue', 'POST', { trackId: 's1' })).status, 201)
+    assert.equal((await guest(ben, '/queue', 'POST', { trackId: 's1' })).status, 409, 'no duplicates')
+    assert.equal((await guest(anna, '/queue', 'POST', { trackId: 'missing' })).status, 404)
+    assert.equal((await guest(anna, '/queue', 'POST', { trackId: 's2' })).status, 201)
+    const limited = await guest(anna, '/queue', 'POST', { trackId: 's3' })
+    assert.equal(limited.status, 409, 'two waiting per guest')
+    assert.match((await limited.json()).message, /2 waiting/)
+    const benAdded = await (await guest(ben, '/queue', 'POST', { trackId: 's4' })).json()
+    assert.deepEqual(benAdded.queue.map((item) => [item.track.id, item.mine]), [['s1', false], ['s4', true], ['s2', false]], 'guests take turns')
+
+    const s2 = benAdded.queue.find((item) => item.track.id === 's2')
+    const voted = await (await guest(ben, `/vote/${s2.id}`, 'POST')).json()
+    assert.deepEqual(voted.queue.map((item) => [item.track.id, item.votes, item.voted]), [['s2', 1, true], ['s1', 0, false], ['s4', 0, false]])
+
+    let hosted = await (await host()).json()
+    assert.deepEqual(hosted.queue.map((item) => item.track.id), ['s2', 's1', 's4'])
+    assert.deepEqual(hosted.guests.map((value) => value.name), ['Anna', 'Ben'])
+    await host(`/items/${hosted.queue[0].id}`, 'POST', { state: 'queued' })
+    await host('', 'PATCH', { nowPlaying: song('s9'), cooldownSeconds: 120 })
+    const view = await (await guest(anna)).json()
+    assert.equal(view.nowPlaying.title, 'Song s9')
+    assert.equal(view.nowPlaying.path, undefined)
+    assert.equal(view.queue[0].state, 'queued')
+    assert.equal((await guest(anna, `/vote/${view.queue[0].id}`, 'POST')).status, 404, 'no voting once it is up next')
+    await host(`/items/${hosted.queue[0].id}`, 'POST', { state: 'played' })
+    const cooled = await guest(anna, '/queue', 'POST', { trackId: 's5' })
+    assert.equal(cooled.status, 429, 'cooldown after the last add')
+    assert.match((await cooled.json()).message, /seconds/)
+    await host('', 'PATCH', { cooldownSeconds: 0 })
+    assert.equal((await guest(anna, '/queue', 'POST', { trackId: 's2' })).status, 409, 'played in the last hour')
+
+    hosted = await (await host()).json()
+    const benId = hosted.guests.find((value) => value.name === 'Ben').id
+    hosted = await (await host(`/guests/${benId}`, 'DELETE')).json()
+    assert.deepEqual(hosted.queue.map((item) => item.track.id), ['s1'], "a removed guest's waiting tracks go too")
+    assert.equal((await guest(ben)).status, 401)
+
+    assert.equal((await host('', 'DELETE')).status, 200)
+    assert.equal((await guest(anna)).status, 401)
+    assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM parties').get().count, 0)
+    assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM party_queue').get().count, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('the party queue lets guests take turns, and votes go first when voting is on', () => {
+  const entry = (id, guestId, addedAt, votes = 0, state = 'pending') => ({ id, guestId, addedAt, votes, state })
+  const turns = [entry('a1', 'anna', 1), entry('a2', 'anna', 2), entry('a3', 'anna', 3), entry('b1', 'ben', 4), entry('c1', 'cara', 5), entry('b2', 'ben', 6)]
+  assert.deepEqual(orderPartyQueue(turns, false).map((value) => value.id), ['a1', 'b1', 'c1', 'a2', 'b2', 'a3'])
+  const votes = [entry('a1', 'anna', 1), entry('b1', 'ben', 2, 3), entry('c1', 'cara', 3, 1), entry('q', 'dan', 0, 0, 'queued')]
+  assert.deepEqual(orderPartyQueue(votes, true).map((value) => value.id), ['q', 'b1', 'c1', 'a1'], 'the up-next track stays at the top')
+  assert.deepEqual(orderPartyQueue(votes, false).map((value) => value.id), ['q', 'a1', 'b1', 'c1'])
 })

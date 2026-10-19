@@ -126,6 +126,8 @@ Audio elements cannot send headers either, so stream URLs used to carry the Navi
 | `AI` | Workers AI binding (`wrangler.toml`) | Optional | Workers AI | `worker/features/dj.ts` (the DJ's voice, Deepgram Aura-2) | The DJ still plays its sets but doesn't speak; `/api/dj/voice` returns `503`. |
 | `TOMIFY_DJ_VOICE` | Dashboard var | Optional | `pandora` | `worker/features/dj.ts` | The Aura-2 voice, used when `TOMIFY_DJ_VOICE_MODEL` is `aura`. |
 | `TOMIFY_MEDIA_KEY` | Dashboard secret | Optional | None | `worker/features/media-session.ts` (seals and opens short-lived media tokens); the agent's `TOMIFY_MEDIA_KEY` must be the same value | `/api/media-session` returns `404` and stream URLs keep the Navidrome login, as before. |
+| `TOMIFY_PARTY_USERNAME` | Dashboard var | Optional | None | `worker/features/party.ts` (a Navidrome account party guests search and see covers with) | Guests search as the host, whose login is stored sealed with `TOMIFY_MEDIA_KEY` while the party runs. Without either, starting a party returns `503`. |
+| `TOMIFY_PARTY_PASSWORD` | Dashboard secret | Optional | None | `worker/features/party.ts` (the party account's password; used only with `TOMIFY_PARTY_USERNAME`) | As above. |
 | `TOMIFY_LAN_ORIGIN` | `wrangler.toml` var | Optional | None | `worker/routes/media-session.ts` (the box's `https://` address on the home network, for example `https://lan.tomify.tomdixon.uk:8789`) | Players always stream through the Worker. |
 | `TOMIFY_DJ_VOICE_MODEL` | `wrangler.toml` var | Optional | `melotts` (set to `aura`) | `worker/features/dj.ts` | The DJ reads links with MeloTTS, which costs about 8 free neurons a link. Set `aura` to use Aura-2 (about 1,100 a link) first, with MeloTTS as backup. |
 | `TOMIFY_VERSION` | Build-time constant | Required, generated | Current Git short SHA; then `CF_PAGES_COMMIT_SHA`; then `WORKERS_CI_COMMIT_SHA`; then `unknown` | `/api/version` | Reports `unknown` only when Git and both CI fallbacks are unavailable. |
@@ -159,6 +161,7 @@ Migrations live in `drizzle/`:
 | `0014_listening_and_mixes.sql` | `listening_events` (Tomify's own play history, kept 400 days), `made_for_you` (each account's current mixes) |
 | `0015_smart_playlists.sql` | `smart_playlists` (each account's saved smart-playlist rules) |
 | `0016_lyrics.sql` | `lyrics` (LRCLIB lyrics per song, misses included) |
+| `0017_parties.sql` | `parties`, `party_guests`, `party_queue`, `party_votes` (party mode; deleted when a party ends) |
 
 The migrations are the only source of the schema: `pnpm run deploy` applies new ones before deploying the Worker, and the Worker runs no DDL. A query against a table no migration has created gets a 503 `schema-out-of-date`. Production was baselined with `scripts/d1-baseline.sh`; see [D1 migrations](RECOVERY.md#d1-migrations).
 
