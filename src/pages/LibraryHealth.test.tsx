@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuth } from '../stores/auth'
@@ -24,7 +24,7 @@ describe('Library health', () => {
     renderPage()
     expect(await screen.findByText('No duplicate recordings or similar directory names found.')).toBeInTheDocument()
     expect(screen.getByText('Every imported Recovery record points to an inventoried file.')).toBeInTheDocument()
-    expect(screen.getByText(/Nothing here deletes, moves or merges files/)).toBeInTheDocument()
+    expect(screen.getByText(/Files only move when you confirm a merge or promotion/)).toBeInTheDocument()
   })
 
   it('renders populated categories with album and Recovery links and starts a scan', async () => {
@@ -89,5 +89,82 @@ describe('Library health', () => {
     renderPage()
     expect(await screen.findByText('Recovery agent update needed')).toBeInTheDocument()
     expect(screen.getByText(/Redeploy the recovery agent/)).toBeInTheDocument()
+  })
+
+  it('plans a merge, applies the chosen copy and relinks the administrator\'s playlists', async () => {
+    const entry = { kind: 'recording', label: 'The Kinks — Waterloo Sunset', paths: ['/master/Kinks/a.flac', '/master/Kinks (2)/a.flac'] }
+    const plans: unknown[] = []
+    let applied: Record<string, unknown> | null = null
+    let replaced: string | null = null
+    const journal = { id: '6f1c1f9e-4d1a-4c84-9a8e-111111111111', createdAt: '2026-10-19T10:00:00.000Z', kind: 'merge', label: entry.label, moves: [{ from: '/master/Kinks/a.flac', to: '/master/_Duplicates/Kinks/a.flac' }], status: 'applied' }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'https://app.test')
+      const body = init?.body && typeof init.body === 'string' ? JSON.parse(init.body) : {}
+      const subsonic = (data: object) => Response.json({ 'subsonic-response': { status: 'ok', ...data } })
+      if (url.pathname.endsWith('/report')) return Response.json({ report: { ...emptyReport, duplicates: [entry] } })
+      if (url.pathname.endsWith('/library-moves/list')) return Response.json({ moves: applied ? [journal] : [] })
+      if (url.pathname.endsWith('/library-moves/plan')) {
+        plans.push(body)
+        const moved = body.paths.find((path: string) => path !== body.keep)
+        return Response.json({ kind: 'merge', label: entry.label, moves: [{ from: moved, to: `/master/_Duplicates${moved.slice(7)}` }], conflicts: [], sizes: { '/master/Kinks/a.flac': 100, '/master/Kinks (2)/a.flac': 200 } })
+      }
+      if (url.pathname.endsWith('/library-moves/apply')) { applied = body; return Response.json({ journal, relinked: 1 }) }
+      if (url.pathname.endsWith('/search3.view')) return subsonic({ searchResult3: { song: [{ id: 'song-a', title: 'Waterloo Sunset', size: 100, suffix: 'flac' }, { id: 'song-b', title: 'Waterloo Sunset', size: 200, suffix: 'flac' }] } })
+      if (url.pathname.endsWith('/getPlaylists.view')) return subsonic({ playlists: { playlist: [{ id: 'pl-1', name: 'Sixties', owner: 'tom' }] } })
+      if (url.pathname.endsWith('/getPlaylist.view')) return subsonic({ playlist: { id: 'pl-1', name: 'Sixties', owner: 'tom', entry: [{ id: 'song-x' }, { id: 'song-a' }] } })
+      if (url.pathname.endsWith('/createPlaylist.view')) { replaced = String(init?.body); return subsonic({}) }
+      if (url.pathname.endsWith('/startScan.view')) return subsonic({ scanStatus: { scanning: true } })
+      return Response.json({ status: idleStatus })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Merge…: The Kinks — Waterloo Sunset' }))
+    expect(await screen.findByText('/master/_Duplicates/Kinks (2)/a.flac')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('radio', { name: '/master/Kinks (2)/a.flac' }))
+    expect(await screen.findByText('/master/_Duplicates/Kinks/a.flac')).toBeInTheDocument()
+    expect(plans.at(-1)).toEqual({ kind: 'merge', keep: '/master/Kinks (2)/a.flac', paths: entry.paths, label: entry.label })
+    fireEvent.click(screen.getByRole('button', { name: 'Merge' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Moved 1 item. Pointed 1 song at the kept copy in imported playlists and 1 of your Navidrome playlists.')
+    expect(applied).toEqual({ kind: 'merge', keep: '/master/Kinks (2)/a.flac', paths: entry.paths, label: entry.label, relink: { 'song-a': 'song-b' } })
+    expect(new URLSearchParams(replaced ?? '').getAll('songId')).toEqual(['song-x', 'song-b'])
+    expect(screen.getByText('No duplicate recordings or similar directory names found.')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Undo: The Kinks — Waterloo Sunset' })).toBeInTheDocument()
+  })
+
+  it('promotes a Recovery copy, refuses a plan with conflicts, and undoes a recent move', async () => {
+    const entry = { kind: 'shadowed-recovery', label: 'ELO — Mr. Blue Sky', paths: ['/master/ELO/05.mp3', '/recovery/ELO/05.flac'], masterPaths: ['/master/ELO/05.mp3'], recoveryPaths: ['/recovery/ELO/05.flac'] }
+    const journal = { id: '6f1c1f9e-4d1a-4c84-9a8e-222222222222', createdAt: '2026-10-19T10:00:00.000Z', kind: 'merge', label: 'Rammstein — Rammstein', moves: [{ from: '/master/R/a.flac', to: '/master/_Duplicates/R/a.flac' }], status: 'applied' }
+    let undone: unknown = null
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      if (path.endsWith('/report')) return Response.json({ report: { ...emptyReport, shadowedRecovery: [entry] } })
+      if (path.endsWith('/library-moves/list')) return Response.json({ moves: [undone ? { ...journal, status: 'undone' } : journal] })
+      if (path.endsWith('/library-moves/plan')) return Response.json({ kind: 'promote', label: entry.label, moves: [{ from: '/master/ELO/05.mp3', to: '/master/_Duplicates/ELO/05.mp3' }, { from: '/recovery/ELO/05.flac', to: '/master/ELO/05.flac' }], conflicts: ['/master/ELO/05.flac'], sizes: {} })
+      if (path.endsWith('/library-moves/undo')) { undone = JSON.parse(String(init?.body)); return Response.json({ journal: { ...journal, status: 'undone' } }) }
+      if (path.includes('/rest/')) return Response.json({ 'subsonic-response': { status: 'ok' } })
+      return Response.json({ status: idleStatus })
+    }))
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Promote…: ELO — Mr. Blue Sky' }))
+    expect(await screen.findByText(/Something already exists at \/master\/ELO\/05.flac/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Promote' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Undo: Rammstein — Rammstein' }))
+    expect(await screen.findByText(/Moved everything back/)).toBeInTheDocument()
+    expect(undone).toEqual({ id: journal.id })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo: Rammstein — Rammstein' })).not.toBeInTheDocument())
+  })
+
+  it('hides merging and promotion when the recovery agent has no library moves', async () => {
+    const entry = { kind: 'recording', label: 'NOFX — Lower', paths: ['/master/a.mp3', '/master/b.mp3'] }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path.endsWith('/report')) return Response.json({ report: { ...emptyReport, duplicates: [entry] } })
+      if (path.includes('/library-moves/')) return Response.json({ error: 'library-moves-not-available' }, { status: 404 })
+      return Response.json({ status: idleStatus })
+    }))
+    renderPage()
+    expect(await screen.findByText('NOFX — Lower')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Merge…/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Recent moves')).not.toBeInTheDocument()
   })
 })

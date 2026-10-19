@@ -10,6 +10,7 @@ import { refreshCataloguePlaylists } from './features/catalogue.ts'
 import { hlsRoute } from './routes/hls.ts'
 import { djRoute } from './routes/dj.ts'
 import { inventoryRoute } from './routes/inventory.ts'
+import { libraryMovesRoute } from './routes/library-moves.ts'
 import { listeningRoute } from './routes/listening.ts'
 import { livePlaybackRoute } from './routes/live-playback.ts'
 import { mixesRoute } from './routes/mixes.ts'
@@ -33,6 +34,7 @@ const routes: RouteHandler[] = [
   djRoute,
   systemSettingsRoute,
   inventoryRoute,
+  libraryMovesRoute,
   versionRoute,
   hlsRoute,
   handleRecoveryRequest,

@@ -1011,6 +1011,44 @@ test('library inventory routes require an administrator and pass all three actio
   })
 })
 
+test('library move routes require an administrator, proxy to the agent and relink songs in D1 after an apply', async () => {
+  const statements = []
+  const db = {
+    prepare(sql) { return { sql, args: [], bind(...args) { this.args = args; return this } } },
+    async batch(list) { statements.push(...list.map((statement) => [statement.sql.split(' ').slice(0, 2).join(' '), ...statement.args])); return [] },
+  }
+  const env = { ...rebootEnv, TOMIFY_DB: db }
+  const post = (action, body) => worker.fetch(new Request(`https://app.tomify.test/api/library-moves/${action}`, { method: 'POST', headers: recoveryHeaders, body: JSON.stringify(body) }), env)
+  const journal = { id: '6f1c1f9e-4d1a-4c84-9a8e-111111111111', status: 'applied', moves: [{ from: '/srv/music/B/a.flac', to: '/srv/music/_Duplicates/B/a.flac' }] }
+  await withRebootFetch({ admin: false, agent: () => Response.json({}) }, async (agentRequests) => {
+    assert.equal((await post('plan', { kind: 'merge' })).status, 403)
+    assert.equal(agentRequests.length, 0)
+  })
+  await withRebootFetch({ admin: true, agent: () => Response.json({ journal, moves: [journal] }) }, async (agentRequests) => {
+    const merge = { kind: 'merge', keep: '/srv/music/A/a.flac', paths: ['/srv/music/A/a.flac', '/srv/music/B/a.flac'] }
+    for (const action of ['plan', 'list', 'undo']) assert.equal((await post(action, action === 'undo' ? { id: journal.id } : merge)).status, 200)
+    assert.deepEqual(statements, [])
+    const response = await post('apply', { ...merge, relink: { 'song-b': 'song-a', bad: 7, same: 'same' } })
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).relinked, 1)
+    assert.deepEqual(agentRequests.map((request) => new URL(request.url).pathname), ['/v1/library/moves/plan', '/v1/library/moves/list', '/v1/library/moves/undo', '/v1/library/moves/apply'])
+    // The relink map stays in the Worker; the agent only sees the move.
+    assert.deepEqual(agentRequests[3].body, merge)
+    assert.deepEqual(statements, [['UPDATE catalogue_playlist_items', 'song-a', 'song-a', 'song-b'], ['UPDATE recovery_items', 'song-a', 'song-b']])
+  })
+  await withRebootFetch({ admin: true, agent: () => Response.json({ error: 'recovery-agent-error', message: 'Refusing to move over existing files: /x' }, { status: 400 }) }, async () => {
+    const response = await post('apply', { kind: 'merge' })
+    assert.equal(response.status, 502)
+    assert.match((await response.json()).message, /Refusing to move over existing files/)
+    assert.equal(statements.length, 2)
+  })
+  await withRebootFetch({ admin: true, agent: () => Response.json({ error: 'not-found' }, { status: 404 }) }, async () => {
+    const response = await post('list', {})
+    assert.equal(response.status, 404)
+    assert.equal((await response.json()).error, 'library-moves-not-available')
+  })
+})
+
 test('Workers Static Assets serves SPA deep links with the intended cache rules while API paths reach the Worker', { timeout: 30000 }, async () => {
   const config = await readFile(new URL('../wrangler.toml', import.meta.url), 'utf8')
   const headerRules = await readFile(new URL('../dist/client/_headers', import.meta.url), 'utf8')

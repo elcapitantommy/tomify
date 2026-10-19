@@ -20,7 +20,7 @@ export interface Album {
   releaseDate?: PartialDate
   originalReleaseDate?: PartialDate
 }
-export interface Track { id: string; title: string; artist: string; artistId?: string; album: string; albumId?: string; coverArt?: string; duration?: number; track?: number; discNumber?: number; starred?: string; suffix?: string; contentType?: string; musicBrainzId?: string; isrc?: string; replayGain?: ReplayGain; year?: number; genre?: string; playCount?: number; played?: string; created?: string; userRating?: number }
+export interface Track { id: string; title: string; artist: string; artistId?: string; album: string; albumId?: string; coverArt?: string; duration?: number; track?: number; discNumber?: number; starred?: string; suffix?: string; size?: number; contentType?: string; musicBrainzId?: string; isrc?: string; replayGain?: ReplayGain; year?: number; genre?: string; playCount?: number; played?: string; created?: string; userRating?: number }
 export interface Playlist { id: string; name: string; owner?: string; songCount?: number; duration?: number; coverArt?: string; entry?: Track[] }
 export interface SearchResults { artists: Artist[]; albums: Album[]; tracks: Track[] }
 export type RepeatMode = 'off' | 'all' | 'one'
