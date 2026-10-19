@@ -258,6 +258,13 @@ Tomify works like Spotify Connect between the tabs and apps signed in to the sam
 
 The state lives in the D1 tables `live_playback` and `live_playback_devices` (`drizzle/0009_live_playback.sql`). The Worker code is in `worker/features/live-playback.ts`, routed by `worker/routes/live-playback.ts`.
 
+### Lyrics
+
+The microphone button in Now Playing swaps the artwork for the song's lyrics, and Tomify remembers which you had open. Synced lyrics follow the song, lighting up the line being sung and scrolling with it (scroll yourself and they stop following for a few seconds); tap a line to jump there. Unsynced lyrics show as plain text. They follow playback on another device too.
+
+- **Where they come from.** Lyrics Navidrome already has come first: tags in the file or an `.lrc` file beside it, read with OpenSubsonic `getLyricsBySongId`. Otherwise the Worker searches [LRCLIB](https://lrclib.net) by artist and title (`GET /api/lyrics`), preferring synced lyrics within 3 seconds of the song's length.
+- **Saved once.** The Worker saves each answer in D1 (`lyrics`, `drizzle/0016_lyrics.sql`), so a song is looked up on LRCLIB once for every device. A miss is saved too and tried again after a month; LRCLIB being down is not saved as a miss. The browser keeps answers for the session.
+
 ### Made for you mixes
 
 Home's **Made for you** shelf holds five or six mixes built from your own library and listening, such as what you have on repeat, a mix around an artist you love with similar music, old favourites you haven't played in a while, unplayed songs from new albums, and deep cuts. Open a mix to play or shuffle it, or **Save as playlist** to keep it in Navidrome. Your favourite albums are still on Home under **Favourite albums**.

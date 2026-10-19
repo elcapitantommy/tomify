@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, ListMusic, Maximize2, MonitorSpeaker, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react'
+import { Check, ChevronDown, ListMusic, Maximize2, MicVocal, MonitorSpeaker, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react'
 import { Artwork } from './Artwork'
+import { LyricsPanel } from './Lyrics'
 import { formatDuration } from '../lib/format'
 import { usePlayer } from '../stores/player'
 import { controlRemote, isDeviceOnline, livePosition, localPlaybackDeviceId, localPlaybackDeviceName, useLivePlayback, useRemoteSession, type LivePlaybackCommandAction } from '../stores/livePlayback'
@@ -139,11 +140,21 @@ function QueueDrawer() {
   return <div className="drawer-backdrop" onMouseDown={() => player.setQueueOpen(false)}><aside className="queue-drawer" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="eyebrow">{remoteLabel(view) ?? 'Up next'}</span><h2>Queue</h2></div><button onClick={() => player.setQueueOpen(false)} aria-label="Close queue"><X/></button></header><div className="queue-list">{view.queue.map((track, index) => <div className={index === view.currentIndex ? 'queue-item active' : 'queue-item'} key={`${track.id}-${index}`}><button onClick={() => playIndex(index)}><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={100}/><span><strong>{track.title}</strong><small>{track.artist}</small></span></button><button onClick={() => removeIndex(index)} aria-label={`Remove ${track.title}`}><X/></button></div>)}</div><button className="button secondary clear" onClick={clear}>Clear queue</button></aside></div>
 }
 
+const LYRICS_KEY = 'tomify-lyrics-open'
+const lyricsWereOpen = () => { try { return window.localStorage.getItem(LYRICS_KEY) === '1' } catch { return false } }
+
 function NowPlaying() {
   const player = usePlayer()
   const view = usePlaybackView()
+  const [lyricsOpen, setLyricsOpen] = useState(lyricsWereOpen)
   const track = view.queue[view.currentIndex]
   if (!player.nowPlayingOpen || !track) return null
 
-  return <section className="now-playing"><header><button onClick={() => player.setNowPlayingOpen(false)} aria-label="Close now playing"><ChevronDown/></button><span>{remoteLabel(view) ?? 'Now playing'}</span><span className="now-playing-actions"><DevicePicker placement="down"/><button onClick={() => { player.setNowPlayingOpen(false); player.setQueueOpen(true) }} aria-label="Open queue"><ListMusic/></button></span></header><div className="now-art"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={1000}/></div><div className="now-meta"><span><h1>{track.title}</h1><p>{track.artist}</p></span></div><SeekBar/><Transport large/>{view.remote && <button type="button" className="button secondary play-here" onClick={view.playHere}><MonitorSpeaker/>Play on this device</button>}</section>
+  const toggleLyrics = () => {
+    setLyricsOpen(!lyricsOpen)
+    try { window.localStorage.setItem(LYRICS_KEY, lyricsOpen ? '0' : '1') } catch { /* storage unavailable */ }
+  }
+  const seek = (value: number) => view.remote ? view.command('seek', value) : player.seekTo(value)
+
+  return <section className="now-playing"><header><button onClick={() => player.setNowPlayingOpen(false)} aria-label="Close now playing"><ChevronDown/></button><span>{remoteLabel(view) ?? 'Now playing'}</span><span className="now-playing-actions"><button className={lyricsOpen ? 'active' : ''} onClick={toggleLyrics} aria-label={lyricsOpen ? 'Hide lyrics' : 'Show lyrics'} aria-pressed={lyricsOpen}><MicVocal/></button><DevicePicker placement="down"/><button onClick={() => { player.setNowPlayingOpen(false); player.setQueueOpen(true) }} aria-label="Open queue"><ListMusic/></button></span></header>{lyricsOpen ? <LyricsPanel track={track} time={view.currentTime} onSeek={seek}/> : <div className="now-art"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={1000}/></div>}<div className="now-meta"><span><h1>{track.title}</h1><p>{track.artist}</p></span></div><SeekBar/><Transport large/>{view.remote && <button type="button" className="button secondary play-here" onClick={view.playHere}><MonitorSpeaker/>Play on this device</button>}</section>
 }
