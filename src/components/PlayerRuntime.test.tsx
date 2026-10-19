@@ -13,6 +13,7 @@ import { useEqualiser } from '../stores/equaliser'
 import { FakeAudioContext } from '../test/fakeAudioContext'
 import { useNormalisation } from '../stores/normalisation'
 import { useDj } from '../stores/dj'
+import { useCrossfade } from '../stores/crossfade'
 import { FakeIndexedDb } from '../test/fakeIndexedDb'
 import { offlineAccount, resetOfflineDbForTests, storeDownload } from '../lib/offline-db'
 
@@ -531,6 +532,111 @@ describe('PlayerRuntime', () => {
       usePlayer.setState({ queue: [tracks[2]], currentIndex: 0 })
       const [current] = await startPlaying()
       expect(streamed(current)).toBe('c')
+    })
+  })
+  describe('gapless and crossfade', () => {
+    const playingAt = (element: HTMLAudioElement, time: number, duration = 200) => {
+      setPaused(element, false)
+      Object.defineProperty(element, 'duration', { configurable: true, get: () => duration })
+      setTime(element, time)
+    }
+    const ready = (element: HTMLAudioElement, state: number = HTMLMediaElement.HAVE_ENOUGH_DATA) => { Object.defineProperty(element, 'readyState', { configurable: true, get: () => state }) }
+    const played = () => vi.mocked(HTMLMediaElement.prototype.play).mock.contexts
+    const tick = (ms: number) => act(async () => { vi.advanceTimersByTime(ms) })
+
+    beforeEach(() => { useCrossfade.setState({ seconds: 0 }); useDj.setState({ active: false }) })
+
+    it('starts the pre-loaded next song just before this one ends and lets this one play out', async () => {
+      vi.useFakeTimers()
+      const [first, second] = await startPlaying()
+      ready(second)
+      vi.mocked(HTMLMediaElement.prototype.pause).mockClear()
+      vi.mocked(HTMLMediaElement.prototype.play).mockClear()
+      playingAt(first, 199.5)
+      await act(async () => { first.dispatchEvent(new Event('timeupdate')) })
+      expect(usePlayer.getState().currentIndex).toBe(0)
+      await tick(400)
+      expect(usePlayer.getState().currentIndex).toBe(1)
+      expect(played()).toContain(second)
+      expect(pausedElements()).not.toContain(first)
+      expect(requests.some((url) => url.includes('/rest/scrobble.view') && url.includes('id=a') && url.includes('submission=true'))).toBe(true)
+      await tick(600)
+      expect(pausedElements()).toContain(first)
+      // The element handed over from is free again and loads the song after next.
+      expect(streamed(first)).toBe('c')
+    })
+
+    it('fades one song into the next over the crossfade length', async () => {
+      vi.useFakeTimers()
+      useCrossfade.setState({ seconds: 6 })
+      usePlayer.setState({ volume: 0.8, muted: false })
+      const [first, second] = await startPlaying()
+      ready(second)
+      playingAt(first, 195)
+      await act(async () => { first.dispatchEvent(new Event('timeupdate')) })
+      await tick(0)
+      expect(usePlayer.getState().currentIndex).toBe(1)
+      expect(second.volume).toBeCloseTo(0, 1)
+      expect(first.volume).toBeCloseTo(0.8, 1)
+      await tick(3000)
+      expect(second.volume).toBeCloseTo(0.8 * Math.SQRT1_2, 1)
+      expect(first.volume).toBeCloseTo(0.8 * Math.SQRT1_2, 1)
+      await act(async () => { usePlayer.getState().setVolume(0.5) })
+      expect(second.volume).toBeLessThan(0.5)
+      await tick(3100)
+      expect(pausedElements()).toContain(first)
+      expect(second.volume).toBeCloseTo(0.5)
+      expect(first.volume).toBeCloseTo(0.5)
+    })
+
+    it('keeps songs that run into each other on an album gapless, even with crossfade on', async () => {
+      vi.useFakeTimers()
+      useCrossfade.setState({ seconds: 6 })
+      usePlayer.setState({ queue: tracks.map((track) => ({ ...track, albumId: 'lincoln' })) })
+      const [first, second] = await startPlaying()
+      ready(second)
+      playingAt(first, 195)
+      await act(async () => { first.dispatchEvent(new Event('timeupdate')) })
+      await tick(4000)
+      expect(usePlayer.getState().currentIndex).toBe(0)
+      playingAt(first, 199.6)
+      await act(async () => { first.dispatchEvent(new Event('timeupdate')) })
+      await tick(400)
+      expect(usePlayer.getState().currentIndex).toBe(1)
+      expect(second.volume).toBeCloseTo(usePlayer.getState().volume)
+    })
+
+    it('waits for the end as before when the next song is not ready, and on repeat one', async () => {
+      vi.useFakeTimers()
+      const [first, second] = await startPlaying()
+      ready(second, HTMLMediaElement.HAVE_METADATA)
+      playingAt(first, 199.5)
+      await act(async () => { first.dispatchEvent(new Event('timeupdate')) })
+      await tick(1000)
+      expect(usePlayer.getState().currentIndex).toBe(0)
+      ready(second)
+      await act(async () => { usePlayer.setState({ repeat: 'one' }) })
+      playingAt(first, 199.6)
+      await act(async () => { first.dispatchEvent(new Event('timeupdate')) })
+      await tick(1000)
+      expect(usePlayer.getState().currentIndex).toBe(0)
+    })
+
+    it('stops both songs and the fade when paused during a crossfade', async () => {
+      vi.useFakeTimers()
+      useCrossfade.setState({ seconds: 6 })
+      usePlayer.setState({ volume: 0.8 })
+      const [first, second] = await startPlaying()
+      ready(second)
+      playingAt(first, 195)
+      await act(async () => { first.dispatchEvent(new Event('timeupdate')) })
+      await tick(2000)
+      setPaused(second, false)
+      vi.mocked(HTMLMediaElement.prototype.pause).mockClear()
+      await act(async () => { usePlayer.getState().setPlaying(false) })
+      expect(pausedElements()).toContain(first)
+      expect(pausedElements()).toContain(second)
+      expect(second.volume).toBeCloseTo(0.8)
     })
   })
 })
