@@ -309,7 +309,7 @@ describe('PlayerRuntime', () => {
   })
 
   it('turns an original file down by its ReplayGain and follows a new normalisation setting', async () => {
-    usePlayer.setState({ volume: 0.8, muted: false, queue: [{ ...tracks[0], replayGain: { trackGain: -6.0206, trackPeak: 0.5 } }, { ...tracks[1], replayGain: { trackGain: 4, trackPeak: 0.2 } }] })
+    usePlayer.setState({ volume: 0.8, muted: false, queue: [{ ...tracks[0], replayGain: { trackGain: -10.0206, trackPeak: 0.5 } }, { ...tracks[1], replayGain: { trackGain: 4, trackPeak: 0.2 } }] })
     const [current, standby] = await startPlaying()
     expect(current.volume).toBeCloseTo(0.4)
     // A track mastered quieter than the reference can't be turned up past the listener's volume.

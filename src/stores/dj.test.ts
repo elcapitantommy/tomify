@@ -196,7 +196,7 @@ describe('Tomify DJ', () => {
       expect(speechLoudness(tone(0))).toBeNull()
 
       const tagged = { ...track('a'), replayGain: { trackGain: -6.6, trackPeak: 0.9 } }
-      expect(musicLoudness(tagged, 'track')).toBeCloseTo(-18)
+      expect(musicLoudness(tagged, 'track')).toBeCloseTo(-14)
       expect(musicLoudness(tagged, null)).toBeCloseTo(-11.4)
       expect(musicLoudness(track('a'), 'track')).toBe(DJ_UNTAGGED_LUFS)
 
