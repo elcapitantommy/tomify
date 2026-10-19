@@ -27,7 +27,7 @@ All 20 are done. Each row names the PR that finished it.
 | 13 | Duplicate preflight before acquisition | Done (#58) | `recovery-agent/preflight.mjs` checks the library before a download starts. |
 | 14 | Separate pipeline states through to "playable" | Done (#55) | Recovery items track scan-pending, ready and scan-failed after a Navidrome scan. |
 | 15 | Spotify matching fixes | Done (#43) | One matcher in `src/lib/catalogue-match.mjs`, with edition-suffix stripping. |
-| 16 | Make the Worker a real TypeScript module | Done (#63, #71, #72) | Workers Static Assets, TypeScript modules under `worker/`, `NAVIDROME_ORIGIN` and the binding reference. Only `worker/features/completeness.ts` still carries `@ts-nocheck` (#134). |
+| 16 | Make the Worker a real TypeScript module | Done (#63, #71, #72) | Workers Static Assets, TypeScript modules under `worker/`, `NAVIDROME_ORIGIN` and the binding reference. No Worker module carries `@ts-nocheck` any more (#134). |
 | 17 | Read-only library inventory in the agent | Done (#61) | `recovery-agent/inventory.mjs`. |
 | 18 | Library health dashboard | Done (#62, #64-#66) | Settings → Library health, with "Mark as fine". |
 | 19 | Release import mapped to the MusicBrainz tracklist | Done (#60) | Release imports map files onto the MusicBrainz tracklist. |

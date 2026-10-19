@@ -1,4 +1,3 @@
-// @ts-nocheck -- TODO(Task 16 follow-up): type this legacy Worker module without changing its behaviour.
 // Album completeness: resolves a MusicBrainz release tracklist for a Navidrome album,
 // caches it in D1 and turns missing tracks into Recovery items. The pure helpers are
 // exported for tests; handleCompletenessRequest relies on Worker globals (authenticate,
@@ -6,22 +5,30 @@
 
 import { authenticate, isNavidromeAdmin } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
-import { lookupMusicBrainzReleaseGroup, musicBrainzJson, selectRelease } from '../routes/recovery.ts'
+import type { Env } from '../env.ts'
+import { lookupMusicBrainzReleaseGroup, musicBrainzJson, selectRelease, type OpenJson } from '../routes/recovery.ts'
 
-export function completenessText(value) {
+export interface ReleaseEdition { id: string; title: string; date: string | null; country: string | null; status: string | null; disambiguation: string | null; format: string | null; trackCount: number; discCount: number }
+export interface TracklistTrack { key: string; disc: number; number: number; title: string; artist: string | null; length: number | null; recordingId: string | null; isrc: string | null }
+export interface AlbumTracklist { albumId: string; releaseId: string; releaseGroupId: string | null; title: string; artist: string | null; date: string | null; country: string | null; format: string | null; status: string | null; disambiguation: string | null; discCount: number; source: string; fetchedAt: string; tracks: TracklistTrack[]; localTrackCount?: number }
+export interface CachedTracklist { tracklist: AlbumTracklist; editions: ReleaseEdition[] }
+interface CompletenessRecoveryRow { id: string; artist: string; title: string; musicBrainzId: string | null; status: string; sourceJson?: string | null }
+interface CompletenessAlbum { albumId: string; name: string; artist: string; year: number | null; musicBrainzId?: unknown; localTrackCount: number }
+
+export function completenessText(value: unknown) {
   return String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').normalize('NFC').toLocaleLowerCase('en').replace(/&/g, ' and ').replace(/[\u2019']/g, '').replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ').trim()
 }
-export function isMusicBrainzId(value) {
+export function isMusicBrainzId(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
 }
 
-export function completenessCredit(credits) {
-  return (Array.isArray(credits) ? credits : []).map((credit) => `${credit?.name || credit?.artist?.name || ''}${credit?.joinphrase || ''}`).join('').trim()
+export function completenessCredit(credits: OpenJson) {
+  return (Array.isArray(credits) ? credits : []).map((credit: OpenJson) => `${credit?.name || credit?.artist?.name || ''}${credit?.joinphrase || ''}`).join('').trim()
 }
 
-export function summariseReleaseEditions(releases) {
-  return (Array.isArray(releases) ? releases : []).filter((release) => isMusicBrainzId(release?.id) && !['bootleg', 'pseudo-release'].includes(String(release?.status || '').toLowerCase())).map((release) => {
-    const media = Array.isArray(release.media) ? release.media : []
+export function summariseReleaseEditions(releases: OpenJson): ReleaseEdition[] {
+  return (Array.isArray(releases) ? releases : []).filter((release: OpenJson) => isMusicBrainzId(release?.id) && !['bootleg', 'pseudo-release'].includes(String(release?.status || '').toLowerCase())).map((release: OpenJson) => {
+    const media: OpenJson[] = Array.isArray(release.media) ? release.media : []
     const formats = [...new Set(media.map((medium) => String(medium?.format || '').trim()).filter(Boolean))]
     return {
       id: release.id, title: String(release.title || ''), date: release.date || null, country: release.country || null,
@@ -31,31 +38,31 @@ export function summariseReleaseEditions(releases) {
   }).sort((left, right) => String(left.date || '9999').localeCompare(String(right.date || '9999')) || left.title.localeCompare(right.title)).slice(0, 100)
 }
 
-export function chooseReleaseEdition(editions, localTrackCount) {
+export function chooseReleaseEdition(editions: ReleaseEdition[], localTrackCount: unknown) {
   const usable = (Array.isArray(editions) ? editions : []).filter((edition) => edition.trackCount > 0)
   if (!usable.length) return null
   const official = usable.filter((edition) => String(edition.status || '').toLowerCase() === 'official')
   const pool = official.length ? official : usable
-  const counts = new Map()
+  const counts = new Map<number, number>()
   for (const edition of pool) counts.set(edition.trackCount, (counts.get(edition.trackCount) || 0) + 1)
   const modal = [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0] - right[0])[0][0]
   // A partial album should be compared with the standard edition, not the release closest to what survived.
   const local = Number(localTrackCount) || 0
   const target = local >= modal * 0.8 ? local : modal
-  const formatRank = (edition) => /\b(cd|digital)\b/i.test(String(edition.format || '')) ? 0 : 1
+  const formatRank = (edition: ReleaseEdition) => /\b(cd|digital)\b/i.test(String(edition.format || '')) ? 0 : 1
   return [...pool].sort((left, right) => Math.abs(left.trackCount - target) - Math.abs(right.trackCount - target) || formatRank(left) - formatRank(right) || String(left.date || '9999').localeCompare(String(right.date || '9999')))[0]
 }
 
 // An edition far smaller than the local album (a one-track promo single sharing the album's title)
 // cannot be the edition the files came from. Small local albums are left alone: they may be partial.
-export function editionFitsLocal(trackCount, localTrackCount) {
+export function editionFitsLocal(trackCount: unknown, localTrackCount: unknown) {
   const local = Number(localTrackCount) || 0
   return local < 4 || (Number(trackCount) || 0) >= local * 0.5
 }
 
 // Bonus for a MusicBrainz release group whose primary type suits the number of local tracks, so a
 // twelve-track album does not match the same-titled single and a two-track single does not match the album.
-export function releaseGroupTypeFit(group, trackCount) {
+export function releaseGroupTypeFit(group: OpenJson, trackCount: unknown) {
   const local = Number(trackCount) || 0
   const type = String(group?.['primary-type'] || '').toLowerCase()
   if (!local || !type) return 0
@@ -64,14 +71,14 @@ export function releaseGroupTypeFit(group, trackCount) {
   return 0
 }
 
-export function releaseTrackCount(release) {
-  return (Array.isArray(release?.media) ? release.media : []).reduce((sum, medium) => sum + (Number(medium?.['track-count']) || (Array.isArray(medium?.tracks) ? medium.tracks.length : 0)), 0)
+export function releaseTrackCount(release: OpenJson): number {
+  return (Array.isArray(release?.media) ? release.media : []).reduce((sum: number, medium: OpenJson) => sum + (Number(medium?.['track-count']) || (Array.isArray(medium?.tracks) ? medium.tracks.length : 0)), 0)
 }
 
-export function mapReleaseTracklist(release, albumId, source, releaseGroupId = null) {
-  const media = Array.isArray(release?.media) ? release.media : []
+export function mapReleaseTracklist(release: OpenJson, albumId: string, source: string, releaseGroupId: string | null = null): AlbumTracklist {
+  const media: OpenJson[] = Array.isArray(release?.media) ? release.media : []
   const releaseArtist = completenessCredit(release?.['artist-credit'])
-  const tracks = media.flatMap((medium, mediumIndex) => (Array.isArray(medium?.tracks) ? medium.tracks : []).map((track, trackIndex) => {
+  const tracks = media.flatMap((medium, mediumIndex) => (Array.isArray(medium?.tracks) ? medium.tracks : []).map((track: OpenJson, trackIndex: number) => {
     const disc = Number(medium.position) || mediumIndex + 1
     const number = Number(track.position) || Number.parseInt(String(track.number || ''), 10) || trackIndex + 1
     const length = Number(track.length || track.recording?.length)
@@ -82,7 +89,7 @@ export function mapReleaseTracklist(release, albumId, source, releaseGroupId = n
       recordingId: isMusicBrainzId(track.recording?.id) ? track.recording.id : null,
       isrc: Array.isArray(track.recording?.isrcs) && track.recording.isrcs[0] ? String(track.recording.isrcs[0]) : null,
     }
-  })).filter((track) => track.title).slice(0, 500)
+  })).filter((track: TracklistTrack) => track.title).slice(0, 500)
   const formats = [...new Set(media.map((medium) => String(medium?.format || '').trim()).filter(Boolean))]
   return {
     albumId, releaseId: release.id, releaseGroupId: release?.['release-group']?.id || releaseGroupId || null,
@@ -94,31 +101,32 @@ export function mapReleaseTracklist(release, albumId, source, releaseGroupId = n
 
 // An unfinished release item (no title) queued for this album stands in for every track not queued on its own.
 // Once it has imported, its tracks have their own items and anything it lacked shows as missing again.
-export function matchRecoveryItems(tracks, rows, albumId = null) {
-  const matches = {}
+export function matchRecoveryItems(tracks: TracklistTrack[], rows: CompletenessRecoveryRow[], albumId: string | null = null) {
+  const matches: Record<string, { id: string; status: string }> = {}
   const release = albumId && (Array.isArray(rows) ? rows : []).find((value) => !value.title && !['recovered', 'needs-upgrade'].includes(value.status) && releaseAlbumId(value) === albumId)
   for (const track of Array.isArray(tracks) ? tracks : []) {
     const title = completenessText(track.title)
     const artist = completenessText(track.artist)
     const row = (Array.isArray(rows) ? rows : []).find((value) => track.recordingId && value.musicBrainzId === track.recordingId)
       || (Array.isArray(rows) ? rows : []).find((value) => completenessText(value.title) === title && completenessText(value.artist) === artist)
-    if (row || release) matches[track.key] = { id: (row || release).id, status: (row || release).status }
+    const match = row || release
+    if (match) matches[track.key] = { id: match.id, status: match.status }
   }
   return matches
 }
 
-function releaseAlbumId(row) {
+function releaseAlbumId(row: CompletenessRecoveryRow) {
   try { return JSON.parse(row.sourceJson || 'null')?.albumId || null } catch { return null }
 }
 
 
-export async function selectTracklist(db, albumId) {
-  const row = await db.prepare('SELECT tracklist_json AS tracklistJson, editions_json AS editionsJson FROM release_tracklists WHERE album_id = ?').bind(albumId).first()
+export async function selectTracklist(db: D1Database, albumId: string): Promise<CachedTracklist | null> {
+  const row = await db.prepare('SELECT tracklist_json AS tracklistJson, editions_json AS editionsJson FROM release_tracklists WHERE album_id = ?').bind(albumId).first<{ tracklistJson: string; editionsJson: string | null }>()
   if (!row) return null
   try { return { tracklist: JSON.parse(row.tracklistJson), editions: row.editionsJson ? JSON.parse(row.editionsJson) : [] } } catch { return null }
 }
 
-async function fetchMusicBrainzRelease(id) {
+async function fetchMusicBrainzRelease(id: unknown): Promise<OpenJson> {
   if (!isMusicBrainzId(id)) return null
   const url = new URL('https://musicbrainz.org/ws/2/release/' + id)
   url.searchParams.set('inc', 'recordings artist-credits isrcs release-groups')
@@ -127,7 +135,7 @@ async function fetchMusicBrainzRelease(id) {
   return release?.id ? release : null
 }
 
-async function releaseGroupEditions(releaseGroupId) {
+async function releaseGroupEditions(releaseGroupId: unknown) {
   if (!isMusicBrainzId(releaseGroupId)) return []
   const browse = new URL('https://musicbrainz.org/ws/2/release')
   browse.searchParams.set('release-group', releaseGroupId)
@@ -137,12 +145,12 @@ async function releaseGroupEditions(releaseGroupId) {
   return summariseReleaseEditions((await musicBrainzJson(browse))?.releases)
 }
 
-export async function resolveAlbumTracklist(db, album, requestedReleaseId) {
+export async function resolveAlbumTracklist(db: D1Database, album: CompletenessAlbum, requestedReleaseId: string | null): Promise<CachedTracklist | null> {
   const local = album.localTrackCount
-  let release = null
+  let release: OpenJson = null
   let source = 'auto'
   if (requestedReleaseId) { release = await fetchMusicBrainzRelease(requestedReleaseId); source = 'manual' }
-  let tagged = null
+  let tagged: OpenJson = null
   if (!release && isMusicBrainzId(album.musicBrainzId)) {
     tagged = await fetchMusicBrainzRelease(album.musicBrainzId)
     if (tagged && editionFitsLocal(releaseTrackCount(tagged), local)) { release = tagged; source = 'tagged' }
@@ -169,12 +177,12 @@ export async function resolveAlbumTracklist(db, album, requestedReleaseId) {
   return tracklist.tracks.length ? { tracklist, editions } : null
 }
 
-async function completenessRecoveryRows(db, username) {
-  const rows = await db.prepare('SELECT id, artist, title, musicbrainz_id AS musicBrainzId, status, source_json AS sourceJson FROM recovery_items WHERE username = ?').bind(username).all()
+async function completenessRecoveryRows(db: D1Database, username: string) {
+  const rows = await db.prepare('SELECT id, artist, title, musicbrainz_id AS musicBrainzId, status, source_json AS sourceJson FROM recovery_items WHERE username = ?').bind(username).all<CompletenessRecoveryRow>()
   return rows.results || []
 }
 
-export async function handleCompletenessRequest(request, env, url) {
+export async function handleCompletenessRequest(request: Request, env: Env, url: URL) {
   if (!url.pathname.startsWith('/api/album-completeness/')) return null
   if (!env?.TOMIFY_DB) return json({ error: 'completeness-store-unavailable' }, 503)
   const username = await authenticate(request, env)
@@ -182,16 +190,16 @@ export async function handleCompletenessRequest(request, env, url) {
   if (request.method !== 'POST') return json({ error: 'not-found' }, 404)
   // The MusicBrainz completeness check and its Recovery hand-off are administrator tools.
   if (!(await isNavidromeAdmin(request, username, env))) return json({ error: 'forbidden', message: 'Only a Navidrome administrator can check album completeness.' }, 403)
-  const body = await request.json().catch(() => null)
+  const body: OpenJson = await request.json().catch(() => null)
   const db = env.TOMIFY_DB
 
   // Albums whose last check found fewer local tracks than MusicBrainz lists, most missing first.
   if (url.pathname === '/api/album-completeness/overview') {
-    const rows = await db.prepare("SELECT album_id AS albumId, tracklist_json AS tracklistJson, fetched_at AS fetchedAt FROM release_tracklists WHERE album_id NOT LIKE 'recovery:%'").all()
+    const rows = await db.prepare("SELECT album_id AS albumId, tracklist_json AS tracklistJson, fetched_at AS fetchedAt FROM release_tracklists WHERE album_id NOT LIKE 'recovery:%'").all<{ albumId: string; tracklistJson: string; fetchedAt: string }>()
     const recoveries = await completenessRecoveryRows(db, username)
     const albums = []
     for (const row of rows.results || []) {
-      let tracklist
+      let tracklist: AlbumTracklist
       try { tracklist = JSON.parse(row.tracklistJson) } catch { continue }
       const total = Array.isArray(tracklist?.tracks) ? tracklist.tracks.length : 0
       const present = Math.min(total, Number(tracklist.localTrackCount) || 0)
@@ -227,7 +235,7 @@ export async function handleCompletenessRequest(request, env, url) {
   if (url.pathname === '/api/album-completeness/recovery') {
     const cached = await selectTracklist(db, albumId)
     if (!cached) return json({ error: 'tracklist-required', message: 'Load the album tracklist before adding missing tracks.' }, 409)
-    const keys = new Set((Array.isArray(body.trackKeys) ? body.trackKeys : []).filter((key) => typeof key === 'string').slice(0, 500))
+    const keys = new Set((Array.isArray(body.trackKeys) ? body.trackKeys : []).filter((key: unknown) => typeof key === 'string').slice(0, 500))
     const wanted = cached.tracklist.tracks.filter((track) => keys.has(track.key))
     if (!wanted.length) return json({ error: 'invalid-tracks' }, 400)
     const recoveries = await completenessRecoveryRows(db, username)
