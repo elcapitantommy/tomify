@@ -16,9 +16,27 @@ import { EqualiserGraph, equaliserSupported } from '../lib/equaliser'
 import { useNormalisation } from '../stores/normalisation'
 import { useDj } from '../stores/dj'
 import { gainModeAt, originalVolumeScale, queueIndexOf, streamGainMode } from '../lib/loudness'
+import { crossfadeSeconds, fadeInLevel, fadeOutLevel, GAPLESS_LEAD_SECONDS, volumeCanFade } from '../lib/crossfade'
+import { MAX_CROSSFADE_SECONDS, useCrossfade } from '../stores/crossfade'
+import type { PlayerState } from '../stores/player'
 import type { Track } from '../types'
 
 type AudioSlot = 0 | 1
+const otherSlot = (slot: AudioSlot) => (slot === 0 ? 1 : 0) as AudioSlot
+
+// The song that plays when the current one ends, if any.
+function upcomingTrack(state: Pick<PlayerState, 'queue' | 'currentIndex' | 'repeat'>): Track | undefined {
+  if (state.repeat === 'one' || state.queue.length < 2) return undefined
+  let index = state.currentIndex + 1
+  if (index >= state.queue.length) {
+    if (state.repeat !== 'all') return undefined
+    index = 0
+  }
+  const next = state.queue[index]
+  return next && next.id !== state.queue[state.currentIndex]?.id ? next : undefined
+}
+
+const FADE_STEP_MS = 50
 
 // A paused player only fetches enough to show the duration. A full preload of a
 // restored track on every page load downloads whole FLACs nobody asked for, and
@@ -54,6 +72,13 @@ export function PlayerRuntime() {
   // Loudness normalisation for each element: what the listener's volume is multiplied by. Adaptive
   // streams arrive normalised, so theirs is 1; an original file is turned down by its ReplayGain.
   const volumeScale = useRef<[number, number]>([1, 1])
+  // Crossfade and gapless (lib/crossfade.ts): near the end of a song the next one, already loaded in the other
+  // element, is started early. `fadeLevel` multiplies each element's volume while the two overlap.
+  const fadeLevel = useRef<[number, number]>([1, 1])
+  const handoffTimer = useRef<number | undefined>(undefined)
+  const handingOff = useRef<{ from: AudioSlot; seconds: number } | null>(null)
+  const fade = useRef<{ from: AudioSlot; to: AudioSlot; timer: number } | null>(null)
+  const canFade = useRef<boolean | null>(null)
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
@@ -82,6 +107,7 @@ export function PlayerRuntime() {
     retries.current = 0
     clearRetry()
     clearStall()
+    clearHandoff()
   }, [track?.id])
 
   // Listening history for mixes: a play ends when the track changes (or the page closes), and only
@@ -101,6 +127,8 @@ export function PlayerRuntime() {
   useEffect(() => () => {
     clearRetry()
     clearStall()
+    clearHandoff()
+    if (fade.current) window.clearInterval(fade.current.timer)
     for (const slot of [0, 1] as const) { const element = getAudio(slot); if (element) sources.current.detach(element) }
   }, [])
 
@@ -137,7 +165,7 @@ export function PlayerRuntime() {
     const element = getAudio(slot)
     if (!element) return
     const { volume: level, muted: isMuted } = usePlayer.getState()
-    element.volume = Math.min(1, Math.max(0, level * volumeScale.current[slot]))
+    element.volume = Math.min(1, Math.max(0, level * volumeScale.current[slot] * fadeLevel.current[slot]))
     element.muted = isMuted
   }
 
@@ -182,10 +210,108 @@ export function PlayerRuntime() {
   function leftLan(element: HTMLAudioElement) { return mediaStreamFailed(sources.current.url(element)) }
 
   function pauseAll() {
+    clearHandoff()
+    stopFade(false)
     for (const slot of [0, 1] as const) {
       const element = getAudio(slot)
       if (element && !element.paused) element.pause()
     }
+  }
+
+  function clearHandoff() {
+    if (handoffTimer.current !== undefined) window.clearTimeout(handoffTimer.current)
+    handoffTimer.current = undefined
+  }
+
+  // Called as the current song plays: in its last moments, set a timer to start the next one early, by the
+  // crossfade length or, gapless, just enough to cover the time the next element takes to start.
+  function scheduleHandoff(element: HTMLAudioElement, slot: AudioSlot) {
+    if (handoffTimer.current !== undefined || element.paused || !Number.isFinite(element.duration)) return
+    const remaining = element.duration - element.currentTime
+    if (remaining > MAX_CROSSFADE_SECONDS + 1) return
+    const state = usePlayer.getState()
+    const current = state.queue[state.currentIndex]
+    const upcoming = upcomingTrack(state)
+    if (!current || !upcoming || !state.playing) return
+    if (canFade.current === null) canFade.current = volumeCanFade()
+    const seconds = crossfadeSeconds(current, upcoming, useCrossfade.getState().seconds, { canFade: canFade.current, dj: useDj.getState().active })
+    const lead = Math.max(seconds, GAPLESS_LEAD_SECONDS)
+    // Progress arrives about four times a second, so the timer is set within the last second before the hand-over.
+    if (remaining > lead + 1) return
+    handoffTimer.current = window.setTimeout(() => handOff(slot, current, upcoming.id, seconds, lead), Math.max(0, (remaining - lead) * 1000))
+  }
+
+  function handOff(slot: AudioSlot, current: Track, nextId: string, seconds: number, lead: number) {
+    handoffTimer.current = undefined
+    const state = usePlayer.getState()
+    const element = getAudio(slot)
+    const standby = getAudio(otherSlot(slot))
+    if (!state.playing || activeSlot.current !== slot || state.queue[state.currentIndex]?.id !== current.id || upcomingTrack(state)?.id !== nextId) return
+    if (!element || element.paused || element.duration - element.currentTime > lead + 0.5) return
+    // Only a next song that can start at once takes over early; otherwise it starts when this one ends, as before.
+    if (!standby || loadedTrackIds.current[otherSlot(slot)] !== nextId || standby.error || standby.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) return
+    finishPlay(current)
+    handingOff.current = { from: slot, seconds }
+    try { state.next() } finally { handingOff.current = null }
+  }
+
+  // The song handed over from keeps playing to its end (gapless) or fades out while the next fades in.
+  function beginFade(from: AudioSlot, to: AudioSlot, seconds: number) {
+    stopFade(false)
+    const total = Math.max(seconds, 0.5) * 1000
+    const startedAt = Date.now()
+    const step = () => {
+      const progress = (Date.now() - startedAt) / total
+      const element = getAudio(from)
+      if (progress >= 1 || !element || element.paused || element.ended) { stopFade(true); return }
+      if (seconds > 0) {
+        fadeLevel.current[from] = fadeOutLevel(progress)
+        fadeLevel.current[to] = fadeInLevel(progress)
+        applyVolume(from)
+        applyVolume(to)
+      }
+    }
+    fade.current = { from, to, timer: window.setInterval(step, FADE_STEP_MS) }
+    if (seconds > 0) { fadeLevel.current[to] = 0; applyVolume(to) }
+  }
+
+  function stopFade(finished: boolean) {
+    const running = fade.current
+    if (!running) return
+    window.clearInterval(running.timer)
+    fade.current = null
+    const element = getAudio(running.from)
+    if (element && !element.paused) element.pause()
+    fadeLevel.current = [1, 1]
+    applyVolume(0)
+    applyVolume(1)
+    // The element faded out is free again: load the song after this one into it.
+    if (finished) primeNext()
+  }
+
+  // A song that played to its end (or was handed over from in its last seconds) counts as finished.
+  function finishPlay(finished: Track) {
+    if (listening.current.trackId === finished.id) {
+      void sendListeningEvent(listening.current.finish(true, localPlaybackDeviceName))
+      if (usePlayer.getState().repeat === 'one') listening.current.begin(finished)
+    }
+    if (submittedTrackId.current !== finished.id) {
+      submittedTrackId.current = finished.id
+      void api.scrobble(finished.id, true).catch(() => undefined)
+    }
+  }
+
+  // Keep one complete track primed ahead. The current element can then hand off
+  // to an already-buffering decoder instead of loading the next URL after ended.
+  function primeNext() {
+    const state = usePlayer.getState()
+    if (!state.playing) return
+    const nextTrack = upcomingTrack(state)
+    const slot = otherSlot(activeSlot.current)
+    const element = getAudio(slot)
+    if (!nextTrack || !element || loadedTrackIds.current[slot] === nextTrack.id || fade.current?.from === slot) return
+    if (!element.paused) element.pause()
+    loadInto(slot, nextTrack, 'auto')
   }
 
   function clearRetry() {
@@ -292,6 +418,7 @@ export function PlayerRuntime() {
 
   useEffect(() => bindPlayerRuntime({
     seek: (value) => {
+      clearHandoff()
       const element = currentAudio()
       if (element) element.currentTime = value
     },
@@ -299,7 +426,7 @@ export function PlayerRuntime() {
       for (const slot of [0, 1] as const) {
         const element = getAudio(slot)
         if (element) {
-          element.volume = Math.min(1, Math.max(0, value * volumeScale.current[slot]))
+          element.volume = Math.min(1, Math.max(0, value * volumeScale.current[slot] * fadeLevel.current[slot]))
           element.muted = isMuted
         }
       }
@@ -313,9 +440,14 @@ export function PlayerRuntime() {
         activeSlot.current = standby
         target = standby
       }
-      // Only one element may ever be heard.
-      const other = getAudio(target === 0 ? 1 : 0)
-      if (other && !other.paused) other.pause()
+      // Only one element may be heard, except while a song hands over to the next one (crossfade or gapless).
+      const handoff = handingOff.current
+      if (handoff && handoff.from === otherSlot(target)) beginFade(handoff.from, target, handoff.seconds)
+      else {
+        stopFade(false)
+        const other = getAudio(otherSlot(target))
+        if (other && !other.paused) other.pause()
+      }
 
       const element = getAudio(target)
       if (!element) return
@@ -361,26 +493,8 @@ export function PlayerRuntime() {
     }
   }, [api, track?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Keep one complete track primed ahead. The current element can then hand off
-  // to an already-buffering decoder instead of loading the next URL after ended.
   useEffect(() => {
-    if (!track || !playing || repeat === 'one' || queue.length < 2) return
-
-    let nextIndex = currentIndex + 1
-    if (nextIndex >= queue.length) {
-      if (repeat !== 'all') return
-      nextIndex = 0
-    }
-
-    const nextTrack = queue[nextIndex]
-    if (!nextTrack || nextTrack.id === track.id) return
-
-    const slot = (activeSlot.current === 0 ? 1 : 0) as AudioSlot
-    const element = getAudio(slot)
-    if (!element || loadedTrackIds.current[slot] === nextTrack.id) return
-
-    if (!element.paused) element.pause()
-    loadInto(slot, nextTrack, 'auto')
+    if (track && playing) primeNext()
   }, [api, currentIndex, muted, playing, queue, repeat, track?.id, volume]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Downloaded songs coming up are opened early, so a next track pre-loaded as a stream switches to the copy on the device.
@@ -501,6 +615,7 @@ export function PlayerRuntime() {
         submittedTrackId.current = track.id
         void api.scrobble(track.id, true).catch(() => { if (submittedTrackId.current === track.id) submittedTrackId.current = undefined })
       }
+      scheduleHandoff(element, slot)
       if ('mediaSession' in navigator && Number.isFinite(element.duration) && element.duration > 0) {
         try { navigator.mediaSession.setPositionState({ duration: element.duration, playbackRate: element.playbackRate, position: Math.min(element.currentTime, element.duration) }) } catch { /* browser rejected position update */ }
       }
@@ -566,14 +681,7 @@ export function PlayerRuntime() {
     },
     onEnded: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       if (activeSlot.current !== slot) return
-      if (track && listening.current.trackId === track.id) {
-        void sendListeningEvent(listening.current.finish(true, localPlaybackDeviceName))
-        if (usePlayer.getState().repeat === 'one') listening.current.begin(track)
-      }
-      if (track && submittedTrackId.current !== track.id) {
-        submittedTrackId.current = track.id
-        void api.scrobble(track.id, true).catch(() => undefined)
-      }
+      if (track) finishPlay(track)
       if (usePlayer.getState().repeat === 'one') {
         submittedTrackId.current = undefined
         if (track) void api.scrobble(track.id, false).catch(() => undefined)
