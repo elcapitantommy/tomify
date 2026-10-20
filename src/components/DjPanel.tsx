@@ -88,7 +88,7 @@ function DjTalk({ disabled, ask }: { disabled: boolean; ask?: (text: string) => 
 }
 
 export function DjPanel() {
-  const { open, active, loading, speaking, script, voiceNote, error } = useDj()
+  const { open, active, loading, speaking, script, voiceNote, error, pool } = useDj()
   const [request, setRequest] = useState('')
   const [talkable] = useState(canListen)
   if (!open && !active && !error) return null
@@ -103,7 +103,7 @@ export function DjPanel() {
   const ready = !active
   const startWith = async (text: string) => { await useDj.getState().start(text); return useDj.getState().active }
   return <section className="dj-panel" aria-label="Tomify DJ">
-    <div className="dj-panel-head"><span className="eyebrow"><Radio size={14}/>{active ? (speaking ? 'DJ is talking' : 'DJ is on') : 'DJ'}</span>{ready && <button type="button" className="icon-button dj-close" aria-label="Close the DJ" onClick={() => useDj.getState().closePanel()}><X size={18}/></button>}</div>
+    <div className="dj-panel-head"><span className="eyebrow"><Radio size={14}/>{active ? (speaking ? 'DJ is talking' : 'DJ is on') : 'DJ'}{active && pool ? ` · ${pool.name}` : ''}</span>{ready && <button type="button" className="icon-button dj-close" aria-label="Close the DJ" onClick={() => useDj.getState().closePanel()}><X size={18}/></button>}</div>
     {ready && <p className="dj-script">What do you fancy? Tell the DJ, or let it pick.</p>}
     {active && <p className="dj-script">{script ?? (loading ? 'Picking your first songs…' : '')}</p>}
     {active && voiceNote && <p className="dj-voice-note">{voiceNote}</p>}

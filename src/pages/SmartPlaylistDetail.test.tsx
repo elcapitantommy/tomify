@@ -3,6 +3,8 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SmartPlaylistDetail } from './SmartPlaylistDetail'
 import { smartPlaylistsApi } from '../lib/smart-playlists'
+import { useDj } from '../stores/dj'
+import { useRadio } from '../stores/radio'
 
 const api = {
   session: { serverUrl: 'https://music.test', username: 'tom' },
@@ -18,8 +20,8 @@ vi.mock('../lib/smart-playlists', async (original) => {
 })
 
 const songs = [
-  { id: '1', title: 'So What', artist: 'Miles Davis', album: 'Kind of Blue', genre: 'Jazz', year: 1959, playCount: 9 },
-  { id: '2', title: 'Smells Like Teen Spirit', artist: 'Nirvana', album: 'Nevermind', genre: 'Rock', year: 1991, playCount: 2 },
+  { id: '1', title: 'So What', artist: 'Miles Davis', album: 'Kind of Blue', genre: 'Jazz', year: 1959, playCount: 9, bpm: 136, moods: ['Chill'] },
+  { id: '2', title: 'Smells Like Teen Spirit', artist: 'Nirvana', album: 'Nevermind', genre: 'Rock', year: 1991, playCount: 2, bpm: 117, moods: ['Energetic'] },
 ]
 
 function renderAt(path: string) {
@@ -52,5 +54,27 @@ describe('SmartPlaylistDetail', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Nineties' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     await vi.waitFor(() => expect(smartPlaylistsApi.create).toHaveBeenCalledWith('Nineties', expect.objectContaining({ yearFrom: 1990 })))
+  })
+
+  it('filters on tempo and mood, and starts the radio or the DJ from the matching songs', async () => {
+    const radio = vi.spyOn(useRadio.getState(), 'start').mockResolvedValue()
+    const dj = vi.spyOn(useDj.getState(), 'start').mockResolvedValue()
+    renderAt('/playlists/smart/new')
+    expect(await screen.findByText('Smells Like Teen Spirit')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('From bpm'), { target: { value: '110' } })
+    fireEvent.change(screen.getByLabelText('To bpm'), { target: { value: '120' } })
+    expect(screen.queryByText('So What')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('To bpm'), { target: { value: '' } })
+    const moods = screen.getByLabelText('Moods') as HTMLSelectElement
+    ;[...moods.options].forEach((option) => { option.selected = option.value === 'Chill' })
+    fireEvent.change(moods)
+    expect(await screen.findByText('So What')).toBeInTheDocument()
+    expect(screen.queryByText('Smells Like Teen Spirit')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Calm' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start radio' }))
+    expect(radio).toHaveBeenCalledWith(expect.objectContaining({ id: '1' }), { name: 'Calm', rules: expect.objectContaining({ moods: ['Chill'] }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Start DJ' }))
+    expect(dj).toHaveBeenCalledWith(null, { name: 'Calm', tracks: [expect.objectContaining({ id: '1' })] })
   })
 })

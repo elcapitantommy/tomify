@@ -22,8 +22,8 @@ function d1() {
 }
 
 test('segment requests are cleaned and the time of day is UK time', () => {
-  assert.deepEqual(cleanSegmentRequest({ recentTrackIds: ['a', 2, 'b'], recentArtists: ['Blur', '', 3, 'Oasis'], request: '  something calmer  ', first: true }), { recentTrackIds: ['a', 'b'], recentArtists: ['Blur', 'Oasis'], request: 'something calmer', justAsked: false, first: true })
-  assert.deepEqual(cleanSegmentRequest(null), { recentTrackIds: [], recentArtists: [], request: null, justAsked: false, first: false })
+  assert.deepEqual(cleanSegmentRequest({ recentTrackIds: ['a', 2, 'b'], recentArtists: ['Blur', '', 3, 'Oasis'], request: '  something calmer  ', first: true }), { recentTrackIds: ['a', 'b'], recentArtists: ['Blur', 'Oasis'], request: 'something calmer', justAsked: false, first: true, pool: [], poolName: null })
+  assert.deepEqual(cleanSegmentRequest(null), { recentTrackIds: [], recentArtists: [], request: null, justAsked: false, first: false, pool: [], poolName: null })
   assert.equal(cleanSegmentRequest({ request: 'upbeat', justAsked: true }).justAsked, true)
   assert.equal(cleanSegmentRequest({ request: ' ', justAsked: true }).justAsked, false)
   assert.equal(partOfDay(NOW), 'morning')
@@ -235,6 +235,29 @@ test('the segment endpoint picks songs from the library for the signed-in accoun
   assert.equal(body.tracks.length, 4)
   assert.ok(!body.tracks.some((track) => track.id === 's0'))
   assert.match(body.script, /^Good morning, Tom\./)
+})
+
+test('a smart playlist pool is cleaned, and the DJ picks only from it without reading the library', async (t) => {
+  const cleaned = cleanSegmentRequest({ poolName: '  House 120-130  ', pool: [song('p1', 'Bicep', { bpm: 124, extra: 'dropped', moods: ['Upbeat'] }), { id: 'bad' }, song('p2', 'Huge', { title: 'x'.repeat(2000) })] })
+  assert.deepEqual(cleaned.pool, [{ id: 'p1', title: 'Song p1', artist: 'Bicep', album: 'Bicep album', albumId: 'al-Bicep', duration: 200, bpm: 124, moods: ['Upbeat'] }])
+  assert.equal(cleaned.poolName, 'House 120-130')
+  assert.equal(cleanSegmentRequest({ poolName: 'Nothing', pool: [] }).poolName, null)
+  assert.equal(cleanSegmentRequest({ pool: Array.from({ length: 400 }, (_, index) => song(`p${index}`, 'A')) }).pool.length, 150)
+
+  t.mock.method(Date, 'now', () => NOW)
+  const asked = []
+  t.mock.method(globalThis, 'fetch', async (input) => { asked.push(new URL(String(input)).pathname); return subsonic({}) })
+  const smart = Array.from({ length: 8 }, (_, index) => song(`p${index}`, `Smart ${index}`, { bpm: 120 + index }))
+  const request = new Request('https://tomify.test/api/dj/segment', { method: 'POST', headers, body: JSON.stringify({ first: false, recentTrackIds: ['p0'], pool: smart, poolName: 'House', request: 'more Blur', justAsked: true }) })
+  const response = await createDjHandler()(request, { TOMIFY_DB: d1(), NAVIDROME_ORIGIN: 'https://navidrome.test' }, new URL(request.url))
+  const body = await response.json()
+  assert.equal(response.status, 200)
+  assert.equal(body.tracks.length, 4)
+  assert.ok(body.tracks.every((track) => track.id.startsWith('p') && track.id !== 'p0'))
+  assert.deepEqual(asked, [], 'no library gathering or request searches')
+
+  const { prompt } = djPrompt(pool.slice(0, 1), snapshot, input({ poolName: 'House' }))
+  assert.match(prompt, /play from their smart playlist "House"/)
 })
 
 test('a request for a genre, mood or tempo matches songs by their tags', () => {

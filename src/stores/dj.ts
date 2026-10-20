@@ -10,6 +10,8 @@ import type { Track } from '../types'
 // while the current one plays; when its first song comes up the music waits while the DJ talks.
 
 export interface DjSegment { tracks: Track[]; script: string; curatedBy: 'claude' | 'tomify'; voice: boolean }
+// A smart playlist the DJ keeps to: it only picks from these songs.
+export interface DjPool { name: string; tracks: Track[] }
 interface PendingLink { firstTrackId: string; script: string; audioUrl: string | null; voice: boolean }
 
 export interface DjState {
@@ -25,11 +27,13 @@ export interface DjState {
   request: string | null
   pending: PendingLink | null
   trackIds: string[]
+  pool: DjPool | null
   // Opens the panel without starting, so the listener can ask for something or let the DJ choose.
   openPanel(): void
   closePanel(): void
-  // Starts the DJ; with a request ("some Blur", "something calmer") the first set is picked for it.
-  start(request?: string | null): Promise<void>
+  // Starts the DJ; with a request ("some Blur", "something calmer") the first set is picked for it,
+  // and with a pool (a smart playlist's songs) every set comes from those songs.
+  start(request?: string | null, pool?: DjPool | null): Promise<void>
   stop(): void
   // Replaces the songs after this one with a set for the request. With now, that set starts straight
   // away (the DJ answers first); resolves whether it worked.
@@ -48,7 +52,8 @@ function headers(): HeadersInit {
   return { 'content-type': 'application/json', 'x-tomify-user': session.username, 'x-tomify-token': session.token, 'x-tomify-salt': session.salt }
 }
 
-export async function fetchSegment(body: { recentTrackIds: string[]; recentArtists: string[]; request: string | null; justAsked?: boolean; first: boolean }, fetcher: typeof fetch = fetch): Promise<DjSegment> {
+type PoolSong = Partial<Track> & Pick<Track, 'id' | 'title' | 'artist' | 'album'>
+export async function fetchSegment(body: { recentTrackIds: string[]; recentArtists: string[]; request: string | null; justAsked?: boolean; first: boolean; pool?: PoolSong[]; poolName?: string }, fetcher: typeof fetch = fetch): Promise<DjSegment> {
   const response = await fetcher('/api/dj/segment', { method: 'POST', headers: headers(), body: JSON.stringify(body) })
   const result = await response.json().catch(() => ({})) as DjSegment & { message?: string; error?: string }
   if (!response.ok) throw new Error(result.message || result.error || 'The DJ could not pick the next songs.')
@@ -240,23 +245,39 @@ const recentIds = (extra: string[] = []) => [...new Set([...usePlayer.getState()
 export const DJ_RECENT_ARTIST_TRACKS = 12
 const recentArtists = () => [...new Set(usePlayer.getState().queue.slice(-DJ_RECENT_ARTIST_TRACKS).map((track) => track.artist).filter(Boolean))]
 
+// The Worker can't read the whole library, so a smart playlist's songs are sent with each request: a random
+// DJ_POOL_SEND of those not played this session (the Worker's DJ pool is 150). Once they have all been played
+// the session starts over on them, so only the last set is kept out.
+export const DJ_POOL_SEND = 150
+const POOL_FIELDS = ['id', 'title', 'artist', 'artistId', 'album', 'albumId', 'coverArt', 'duration', 'track', 'discNumber', 'suffix', 'contentType', 'starred', 'replayGain', 'year', 'genre', 'genres', 'moods', 'bpm', 'playCount', 'played'] as const
+export function poolRequest(pool: DjPool, recent: string[], random = Math.random) {
+  const played = new Set(recent)
+  let fresh = pool.tracks.filter((track) => !played.has(track.id))
+  if (fresh.length < 5) { fresh = pool.tracks; recent = recent.slice(-6) }
+  const picked = fresh.map((track) => ({ track, order: random() })).sort((a, b) => a.order - b.order).slice(0, DJ_POOL_SEND)
+  const songs = picked.map(({ track }) => Object.fromEntries(POOL_FIELDS.filter((key) => track[key] !== undefined).map((key) => [key, track[key]])) as PoolSong)
+  return { recentTrackIds: recent, pool: songs, poolName: pool.name }
+}
+
 async function loadSet(first: boolean, request: string | null, justAsked = false) {
-  const segment = await fetchSegment({ recentTrackIds: recentIds(useDj.getState().trackIds), recentArtists: recentArtists(), request, first, ...(justAsked ? { justAsked } : {}) })
+  const pool = useDj.getState().pool
+  const recentTrackIds = recentIds(useDj.getState().trackIds)
+  const segment = await fetchSegment({ recentTrackIds, recentArtists: recentArtists(), request, first, ...(justAsked ? { justAsked } : {}), ...(pool ? poolRequest(pool, recentTrackIds) : {}) })
   if (!segment.tracks.length) throw new Error('The DJ could not find anything to play.')
   const audioUrl = segment.voice && segment.script ? await fetchVoice(segment.script) : null
   return { segment, link: { firstTrackId: segment.tracks[0].id, script: segment.script, audioUrl, voice: segment.voice } }
 }
 
 export const useDj = create<DjState>((set, get) => ({
-  open: false, active: false, loading: false, speaking: false, voiceNote: null, script: null, error: null, request: null, pending: null, trackIds: [],
+  open: false, active: false, loading: false, speaking: false, voiceNote: null, script: null, error: null, request: null, pending: null, trackIds: [], pool: null,
 
   openPanel: () => set({ open: true, error: null }),
   closePanel: () => { if (!get().active) set({ open: false, error: null }) },
 
-  start: async (request = null) => {
+  start: async (request = null, pool = null) => {
     unlockVoice()
     const asked = request?.trim() || null
-    set({ open: true, active: true, loading: true, error: null, request: asked, pending: null, trackIds: [], script: null, voiceNote: null })
+    set({ open: true, active: true, loading: true, error: null, request: asked, pending: null, trackIds: [], script: null, voiceNote: null, pool: pool?.tracks.length ? pool : null })
     try {
       const { segment, link } = await loadSet(true, asked, Boolean(asked))
       if (!get().active) return
@@ -282,7 +303,7 @@ export const useDj = create<DjState>((set, get) => ({
       silenceVoice()
       usePlayer.getState().setPlaying(true)
     }
-    set({ open: false, active: false, loading: false, speaking: false, pending: null, request: null })
+    set({ open: false, active: false, loading: false, speaking: false, pending: null, request: null, pool: null })
   },
 
   hush: () => {

@@ -3,11 +3,17 @@ import type { Track } from '../types'
 import { useAuth } from '../stores/auth'
 
 // A smart playlist is a saved set of rules. Tracks are picked in the browser from the whole library each time it
-// opens, using what Navidrome knows about each song (genre, year, favourite, rating, play count, last played, added).
+// opens, using what Navidrome knows about each song (genre, mood, tempo, year, favourite, rating, play count, last
+// played, added). The same rules can feed the DJ and song radio (see radioPool / djPool below).
 export type SmartSort = 'random' | 'most-played' | 'least-played' | 'recently-added' | 'recently-played' | 'newest' | 'oldest'
 export type PlayedRule = 'any' | 'never' | 'within' | 'not-within'
 export interface SmartRules {
   genres?: string[]
+  // Moods from the MOOD tag the agent writes (recovery-agent/track-style.mjs). M4A files have none.
+  moods?: string[]
+  // Tempo from the BPM tag; songs without one never match a tempo rule.
+  bpmFrom?: number
+  bpmTo?: number
   artist?: string
   yearFrom?: number
   yearTo?: number
@@ -17,6 +23,8 @@ export interface SmartRules {
   played?: PlayedRule
   playedDays?: number
   addedDays?: number
+  // Added on or after this calendar day (YYYY-MM-DD), for "added this year" and the like.
+  addedFrom?: string
   sort?: SmartSort
   limit?: number
 }
@@ -36,12 +44,25 @@ function shuffle<T>(items: T[], seed: number) {
   return items
 }
 
+// Midnight at the start of a YYYY-MM-DD day, in the listener's own time zone.
+function startOfDay(day: string) {
+  const [year, month, date] = day.split('-').map(Number)
+  return year && month && date ? new Date(year, month - 1, date).getTime() : 0
+}
+
 export function matchesRules(track: Track, rules: SmartRules, now: number) {
   const genres = (rules.genres ?? []).map(lower).filter(Boolean)
   if (genres.length) {
-    const own = lower(track.genre).split(/\s*[;/,]\s*/)
-    if (!genres.some((genre) => own.includes(genre))) return false
+    // Navidrome gives one genre string ("Rock; Jazz") and, for multi-valued tags, a list as well.
+    const own = new Set([...lower(track.genre).split(/\s*[;/,]\s*/), ...(track.genres ?? []).map((genre) => lower(genre.name))])
+    if (!genres.some((genre) => own.has(genre))) return false
   }
+  const moods = (rules.moods ?? []).map(lower).filter(Boolean)
+  if (moods.length) {
+    const own = new Set((track.moods ?? []).map(lower))
+    if (!moods.some((mood) => own.has(mood))) return false
+  }
+  if ((rules.bpmFrom || rules.bpmTo) && !(track.bpm && track.bpm >= (rules.bpmFrom ?? 0) && track.bpm <= (rules.bpmTo ?? Infinity))) return false
   if (rules.artist && !lower(track.artist).includes(lower(rules.artist))) return false
   if (rules.yearFrom && !(track.year && track.year >= rules.yearFrom)) return false
   if (rules.yearTo && !(track.year && track.year <= rules.yearTo)) return false
@@ -54,11 +75,12 @@ export function matchesRules(track: Track, rules: SmartRules, now: number) {
   if (rules.played === 'within' && !(lastPlayed && now - lastPlayed <= days)) return false
   if (rules.played === 'not-within' && lastPlayed && now - lastPlayed <= days) return false
   if (rules.addedDays && !(time(track.created) && now - time(track.created) <= rules.addedDays * DAY_MS)) return false
+  if (rules.addedFrom && !(time(track.created) && time(track.created) >= startOfDay(rules.addedFrom))) return false
   return true
 }
 
 export function evaluateSmartPlaylist(library: Track[], rules: SmartRules, now = Date.now(), seed = 1): Track[] {
-  const matched = library.filter((track) => matchesRules(track, rules, now))
+  const matched = smartPool(library, rules, now)
   const by = (value: (track: Track) => number, direction = -1) => matched.sort((a, b) => direction * (value(a) - value(b)) || a.title.localeCompare(b.title))
   switch (rules.sort ?? 'random') {
     case 'most-played': by((track) => track.playCount ?? 0); break
@@ -72,9 +94,17 @@ export function evaluateSmartPlaylist(library: Track[], rules: SmartRules, now =
   return matched.slice(0, Math.min(MAX_LIMIT, Math.max(1, rules.limit ?? DEFAULT_LIMIT)))
 }
 
+// "1 January 2026" for a YYYY-MM-DD day.
+function addedLabel(day: string) {
+  const at = startOfDay(day)
+  return at ? new Date(at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : day
+}
+
 export function describeRules(rules: SmartRules) {
   const parts: string[] = []
   if (rules.genres?.length) parts.push(rules.genres.join(' or '))
+  if (rules.moods?.length) parts.push(rules.moods.join(' or '))
+  if (rules.bpmFrom || rules.bpmTo) parts.push(rules.bpmFrom && rules.bpmTo ? `${rules.bpmFrom}–${rules.bpmTo} bpm` : rules.bpmFrom ? `${rules.bpmFrom}+ bpm` : `up to ${rules.bpmTo} bpm`)
   if (rules.artist) parts.push(`artist “${rules.artist}”`)
   if (rules.yearFrom || rules.yearTo) parts.push(rules.yearFrom && rules.yearTo ? `${rules.yearFrom}–${rules.yearTo}` : rules.yearFrom ? `from ${rules.yearFrom}` : `up to ${rules.yearTo}`)
   if (rules.favouritesOnly) parts.push('favourites')
@@ -84,8 +114,12 @@ export function describeRules(rules: SmartRules) {
   if (rules.played === 'within') parts.push(`played in the last ${rules.playedDays ?? 30} days`)
   if (rules.played === 'not-within') parts.push(`not played in ${rules.playedDays ?? 30} days`)
   if (rules.addedDays) parts.push(`added in the last ${rules.addedDays} days`)
+  if (rules.addedFrom) parts.push(`added since ${addedLabel(rules.addedFrom)}`)
   return parts.length ? parts.join(' · ') : 'Anything in your library'
 }
+
+// Every song the rules match, ignoring the order and length limit: the pool the DJ and song radio pick from.
+export const smartPool = (library: Track[], rules: SmartRules, now = Date.now()) => library.filter((track) => matchesRules(track, rules, now))
 
 // The library is fetched once per session and reused for half an hour, since every smart playlist reads all of it.
 const LIBRARY_TTL_MS = 30 * 60 * 1000
