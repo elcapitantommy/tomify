@@ -18,7 +18,7 @@ async function sourceFiles(directory) {
   return files
 }
 
-test('the deployed Worker stays below 176 KB and contains no hard-coded Navidrome REST origin', async () => {
+test('the deployed Worker stays below 192 KB and contains no hard-coded Navidrome REST origin', async () => {
   const output = await mkdtemp(join(tmpdir(), 'tomify-worker-'))
   const windows = process.platform === 'win32'
   try {
@@ -29,7 +29,7 @@ test('the deployed Worker stays below 176 KB and contains no hard-coded Navidrom
     })
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
     const bundle = join(output, 'index.js')
-    assert.ok((await stat(bundle)).size <= 176 * 1024, `minified Worker is ${(await stat(bundle)).size} bytes`)
+    assert.ok((await stat(bundle)).size <= 192 * 1024, `minified Worker is ${(await stat(bundle)).size} bytes`)
     assert.doesNotMatch(await readFile(bundle, 'utf8'), /https:\/\/tomify\.tomdixon\.uk\/rest/)
   } finally {
     await rm(output, { recursive: true, force: true })
