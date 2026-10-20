@@ -66,6 +66,7 @@ Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/
 | `worker/routes/live-playback.ts` | `/api/live-playback*` | Cross-device playback state and commands |
 | `worker/routes/listening.ts`, `worker/routes/smart-playlists.ts` | `/api/listening`, `/api/listening/stats`, `/api/listening/wrapped`, `/api/smart-playlists*` | Listening history and stats, saved smart-playlist rules |
 | `worker/routes/lyrics.ts` (+ `worker/features/lyrics.ts`) | `/api/lyrics` | LRCLIB lyrics for songs Navidrome has none for, saved in D1 |
+| `worker/routes/new-releases.ts` (+ `worker/features/new-releases.ts`) | `/api/new-releases`, `/api/new-releases/artists` | New releases from the library's artists: pages send the artist list, the daily cron checks MusicBrainz |
 | `worker/routes/inventory.ts`, `worker/routes/system-settings.ts` | `/api/inventory*`, `/api/library-health*`, `/api/system*`, quality, scan and preflight routes | Administrative library and server operations |
 | `worker/routes/navidrome.ts`, `worker/routes/version.ts` | `/navidrome/*`, `/api/version` | Navidrome proxy and deployed version information |
 | `worker/routes/hls.ts`, `worker/routes/media-session.ts` (+ `worker/features/media-session.ts`) | `/api/hls/*`, `/api/media-session` | Adaptive streaming through the agent; short-lived media tokens and the LAN address |

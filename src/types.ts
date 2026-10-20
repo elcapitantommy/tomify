@@ -1,5 +1,5 @@
 import type { ReplayGain } from '../shared/replaygain.mjs'
-export interface Artist { id: string; name: string; albumCount?: number; coverArt?: string; starred?: string }
+export interface Artist { id: string; name: string; albumCount?: number; coverArt?: string; starred?: string; musicBrainzId?: string }
 export type PartialDate = string | { year?: number; month?: number; day?: number }
 export interface Album {
   id: string

@@ -1,4 +1,4 @@
-import type { Ai, D1Database, Fetcher } from '@cloudflare/workers-types'
+import type { Ai, D1Database, ExecutionContext, Fetcher } from '@cloudflare/workers-types'
 
 export interface Env {
   TOMIFY_DB: D1Database
@@ -32,4 +32,5 @@ export interface Env {
   TOMIFY_PARTY_PASSWORD?: string
 }
 
-export type RouteHandler = (request: Request, env: Env, url: URL) => Promise<Response | null>
+// `ctx` lets a route finish work after answering (waitUntil).
+export type RouteHandler = (request: Request, env: Env, url: URL, ctx?: Pick<ExecutionContext, 'waitUntil'>) => Promise<Response | null>

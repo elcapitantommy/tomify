@@ -7,6 +7,8 @@ import { isNavidromeConfigurationError } from './lib/navidrome.ts'
 import { albumArtworkRoute } from './routes/album-artwork.ts'
 import { catalogueRoute } from './routes/catalogue.ts'
 import { refreshCataloguePlaylists } from './features/catalogue.ts'
+import { checkNewReleases } from './features/new-releases.ts'
+import { newReleasesRoute } from './routes/new-releases.ts'
 import { hlsRoute } from './routes/hls.ts'
 import { djRoute } from './routes/dj.ts'
 import { inventoryRoute } from './routes/inventory.ts'
@@ -34,6 +36,7 @@ const routes: RouteHandler[] = [
   listeningRoute,
   lyricsRoute,
   smartPlaylistsRoute,
+  newReleasesRoute,
   partyRoute,
   mixesRoute,
   djRoute,
@@ -48,11 +51,11 @@ const routes: RouteHandler[] = [
 ]
 
 const worker: ExportedHandler<Env> = {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url)
       for (const route of routes) {
-        const response = await route(request, env, url)
+        const response = await route(request, env, url, ctx)
         if (response) return response
       }
       if (url.pathname === '/api' || url.pathname.startsWith('/api/')) return json({ error: 'not-found' }, 404)
@@ -67,6 +70,7 @@ const worker: ExportedHandler<Env> = {
   },
   scheduled(_controller, env, ctx) {
     ctx.waitUntil(refreshCataloguePlaylists(env))
+    ctx.waitUntil(checkNewReleases(env))
   },
 }
 

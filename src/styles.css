@@ -212,3 +212,9 @@ button.settings-link{border:0;background:none;width:100%;font:inherit;font-weigh
 .artist-bio-text p{margin:0 0 12px}
 .artist-bio-text:not(.open) p{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
 .artist-bio-actions{display:flex;gap:18px;align-items:center}
+/* New releases from your artists (Home) */
+.new-release-cover{aspect-ratio:1;box-shadow:0 15px 28px #0005;margin-bottom:13px}
+.new-release .new-release-meta{display:flex;align-items:center;gap:5px;margin-top:4px;font-size:.7rem}
+.new-release-add{margin-top:10px;padding:7px 12px;font-size:.75rem;width:100%}
+.new-release-add svg{width:15px}
+.new-release-error{color:#ffaaa5;font-size:.72rem;margin:6px 0 0;white-space:normal}
