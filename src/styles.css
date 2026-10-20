@@ -128,3 +128,23 @@ button.settings-link{border:0;background:none;width:100%;font:inherit;font-weigh
 /* Album header: the eyebrow lines up with the top of the cover, and the title stays a sensible size even for long catalogue-numbered names. */
 .album-hero{align-items:start}.album-hero h1{font-size:clamp(2.1rem,3.8vw,3.6rem);line-height:1.04;letter-spacing:-.045em;margin:12px 0 14px;text-wrap:balance}.album-hero h1.long-title{font-size:clamp(1.8rem,2.9vw,2.7rem)}
 @media(max-width:800px){.detail-hero .eyebrow{justify-content:center}.album-hero h1{font-size:2rem}.album-hero h1.long-title{font-size:1.6rem}}
+
+/* Desktop Now Playing: one column sized from the viewport height so the artwork,
+   title, seek bar and controls share the same width and edges, and the whole
+   group sits centred between the header and the bottom of the screen. */
+@media(min-width:801px){
+  .now-playing{--np-chrome:390px;--np-col:min(clamp(240px,calc(100vh - var(--np-chrome)),820px),100%);padding:clamp(18px,3vh,40px) clamp(20px,4vw,50px);overflow-y:auto}
+  .now-playing:has(.play-here){--np-chrome:450px}
+  .now-playing:has(.lyrics-panel){--np-col:min(650px,100%)}
+  .now-playing>header{margin-bottom:auto}
+  .now-playing::after{content:'';margin-top:auto}
+  .now-art{flex:none;padding:3vh 0 0}
+  .now-art .artwork{height:auto;width:var(--np-col);max-width:100%}
+  .now-meta,.now-playing>.seek,.now-playing>.transport{width:var(--np-col)}
+  .now-meta{margin:clamp(16px,2.6vh,28px) auto 0}
+  .now-meta h1{font-size:clamp(1.5rem,2.4vw,2.4rem);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .now-meta p{margin:4px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .now-radio{margin-right:-8px}
+  .now-playing>.seek{margin:14px auto 0;font-size:.7rem}
+  .now-playing>.transport{margin:8px auto 0}
+}
