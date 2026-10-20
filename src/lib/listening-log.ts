@@ -17,7 +17,11 @@ export interface ListeningEvent {
   skipped: boolean
   playedAt: number
   device?: string
+  genre?: string
 }
+
+// The first genre of a track, for top genres in listening stats ("Rock; Jazz" counts as Rock).
+export const primaryGenre = (track: Track) => (track.genres?.[0]?.name ?? track.genre?.split(/\s*[;/,]\s*/)[0])?.trim() || undefined
 
 // Under this many seconds a track counts as never really played (a quick flick past it).
 export const MIN_LISTEN_SECONDS = 5
@@ -73,6 +77,7 @@ export class ListeningTracker {
       skipped: !completed && current.listened < skipAt,
       playedAt: current.startedAt,
       device,
+      genre: primaryGenre(track),
     }
   }
 }

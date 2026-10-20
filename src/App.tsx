@@ -23,6 +23,7 @@ import { Recovery } from './pages/Recovery'
 import { Settings } from './pages/Settings'
 import { LibraryHealth } from './pages/LibraryHealth'
 import { ListeningStats } from './pages/ListeningStats'
+import { Wrapped } from './pages/Wrapped'
 import { SmartPlaylistDetail } from './pages/SmartPlaylistDetail'
 import { Party } from './pages/Party'
 import { PartyGuest } from './pages/PartyGuest'
@@ -38,5 +39,5 @@ export default function App() {
   const join = window.location.pathname.match(/^\/join(?:\/([A-Za-z0-9]{1,12}))?\/?$/)
   if (join) return <PartyGuest initialCode={join[1]}/>
   if (!session) return <Login/>
-  return <ApiProvider><BrowserRouter><Routes><Route element={<AppShell/>}><Route index element={<Home/>}/><Route path="artists" element={<Artists/>}/><Route path="artists/:id" element={<ArtistDetail/>}/><Route path="albums" element={<Albums/>}/><Route path="albums/:id" element={<AlbumDetail/>}/><Route path="search" element={<Search/>}/><Route path="playlists" element={<Playlists/>}/><Route path="playlists/import/spotify" element={<SpotifyPlaylistImport/>}/><Route path="playlists/imported/:id" element={<ImportedPlaylistDetail/>}/><Route path="playlists/smart/:id" element={<SmartPlaylistDetail/>}/><Route path="playlists/:id" element={<PlaylistDetail/>}/><Route path="mixes/:id" element={<MixDetail/>}/><Route path="favourites" element={<Favourites/>}/><Route path="downloads" element={<Downloads/>}/><Route path="recovery" element={<Recovery/>}/><Route path="library-health" element={<LibraryHealth/>}/><Route path="stats" element={<ListeningStats/>}/><Route path="party" element={<Party/>}/><Route path="settings" element={<Settings/>}/><Route path="*" element={<NotFound/>}/></Route></Routes></BrowserRouter></ApiProvider>
+  return <ApiProvider><BrowserRouter><Routes><Route element={<AppShell/>}><Route index element={<Home/>}/><Route path="artists" element={<Artists/>}/><Route path="artists/:id" element={<ArtistDetail/>}/><Route path="albums" element={<Albums/>}/><Route path="albums/:id" element={<AlbumDetail/>}/><Route path="search" element={<Search/>}/><Route path="playlists" element={<Playlists/>}/><Route path="playlists/import/spotify" element={<SpotifyPlaylistImport/>}/><Route path="playlists/imported/:id" element={<ImportedPlaylistDetail/>}/><Route path="playlists/smart/:id" element={<SmartPlaylistDetail/>}/><Route path="playlists/:id" element={<PlaylistDetail/>}/><Route path="mixes/:id" element={<MixDetail/>}/><Route path="favourites" element={<Favourites/>}/><Route path="downloads" element={<Downloads/>}/><Route path="recovery" element={<Recovery/>}/><Route path="library-health" element={<LibraryHealth/>}/><Route path="stats" element={<ListeningStats/>}/><Route path="wrapped/:year" element={<Wrapped/>}/><Route path="party" element={<Party/>}/><Route path="settings" element={<Settings/>}/><Route path="*" element={<NotFound/>}/></Route></Routes></BrowserRouter></ApiProvider>
 }
