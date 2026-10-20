@@ -29,4 +29,9 @@ describe('now playing layout', () => {
   it('keeps the phone layout on its own rules', () => {
     expect(rulesFor('.now-art .artwork').some(rule => /width:min\(85vw,55vh\)/.test(rule))).toBe(true)
   })
+
+  it('centres the header label on the page whatever the width of the icon groups', () => {
+    expect(rulesFor('.now-playing>header').some(rule => /display:grid/.test(rule) && /grid-template-columns:1fr auto 1fr/.test(rule))).toBe(true)
+    expect(rulesFor('.now-playing>header>.now-playing-actions').some(rule => /justify-self:end/.test(rule))).toBe(true)
+  })
 })
