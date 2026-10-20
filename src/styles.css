@@ -37,8 +37,8 @@
 .track-number{flex:none;font-variant-numeric:tabular-nums}
 
 .artwork-wrap{position:relative}.variant-badge{position:absolute;right:8px;bottom:20px;background:#101210e8;border:1px solid #ffffff24;border-radius:999px;padding:5px 9px;font-size:.65rem;font-weight:700;color:var(--text);backdrop-filter:blur(10px)}
-.release-variants{display:grid;gap:54px}.release-variant{border-top:1px solid var(--line);padding-top:28px}.release-variant-heading{display:flex;align-items:end;justify-content:space-between;gap:20px;margin-bottom:14px}.release-variant-heading h2{font:700 1.45rem Manrope;margin:5px 0}.release-variant-heading p{color:var(--muted);margin:0;font-size:.78rem}
-@media(max-width:800px){.variant-badge{bottom:18px}.release-variants{gap:38px}.release-variant-heading{align-items:flex-start;flex-direction:column}.release-variant-heading .button{width:auto}}
+.version-picker{margin:2px 0 16px;max-width:100%}.version-picker select{min-width:0;max-width:min(440px,100%);text-overflow:ellipsis}
+@media(max-width:800px){.variant-badge{bottom:18px}}
 
 .variant-loading{margin:18px 0 0;color:var(--muted);font-size:.78rem}
 
