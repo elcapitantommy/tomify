@@ -18,6 +18,7 @@ import { useNormalisation } from '../stores/normalisation'
 import { useDj } from '../stores/dj'
 import { gainModeAt, originalVolumeScale, queueIndexOf, streamGainMode } from '../lib/loudness'
 import { crossfadeSeconds, fadeInLevel, fadeOutLevel, GAPLESS_LEAD_SECONDS, volumeCanFade } from '../lib/crossfade'
+import { sleepsAtTrackEnd, takeTrackEnd } from '../stores/sleepTimer'
 import { MAX_CROSSFADE_SECONDS, useCrossfade } from '../stores/crossfade'
 import type { PlayerState } from '../stores/player'
 import type { Track } from '../types'
@@ -237,6 +238,8 @@ export function PlayerRuntime() {
     const current = state.queue[state.currentIndex]
     const upcoming = upcomingTrack(state)
     if (!current || !upcoming || !state.playing) return
+    // The sleep timer is waiting for this song to end, so nothing starts early.
+    if (sleepsAtTrackEnd()) return
     if (canFade.current === null) canFade.current = volumeCanFade()
     const seconds = crossfadeSeconds(current, upcoming, useCrossfade.getState().seconds, { canFade: canFade.current, dj: useDj.getState().active })
     const lead = Math.max(seconds, GAPLESS_LEAD_SECONDS)
@@ -252,6 +255,7 @@ export function PlayerRuntime() {
     const standby = getAudio(otherSlot(slot))
     if (!state.playing || activeSlot.current !== slot || state.queue[state.currentIndex]?.id !== current.id || upcomingTrack(state)?.id !== nextId) return
     if (!element || element.paused || element.duration - element.currentTime > lead + 0.5) return
+    if (sleepsAtTrackEnd()) return
     // Only a next song that can start at once takes over early; otherwise it starts when this one ends, as before.
     if (!standby || loadedTrackIds.current[otherSlot(slot)] !== nextId || standby.error || standby.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) return
     finishPlay(current)
@@ -709,7 +713,9 @@ export function PlayerRuntime() {
     onEnded: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       if (activeSlot.current !== slot) return
       if (track) finishPlay(track)
-      if (usePlayer.getState().repeat === 'one') {
+      if (takeTrackEnd()) {
+        usePlayer.getState().next({ pause: true })
+      } else if (usePlayer.getState().repeat === 'one') {
         submittedTrackId.current = undefined
         if (track) void api.scrobble(track.id, false).catch(() => undefined)
         event.currentTarget.currentTime = 0

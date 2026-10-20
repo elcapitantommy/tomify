@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { Album, CircleAlert, CircleCheck, CloudDownload, Database, HardDrive, ListMusic, LoaderCircle, Music2, Play, RotateCw, ShieldCheck, Trash2 } from 'lucide-react'
 import { artKey, readFile, TRACK_OWNER, type OfflineCollection, type OfflineTrack } from '../lib/offline-db'
 import { formatBytes } from '../lib/format'
+import { DownloadQuality } from '../components/DownloadQuality'
+import { downloadQualityLabel } from '../stores/downloadQuality'
 import { summariseDownloads, useDownloads, type DownloadSummary } from '../stores/downloads'
 import { usePlayer } from '../stores/player'
 
@@ -55,7 +57,7 @@ function CollectionRow({ collection, tracks }: { collection: OfflineCollection; 
   const ready = playable(collection.trackIds, tracks)
   return <li className="download-row">
     <OfflineArtwork coverArt={collection.coverArt} icon={collection.kind === 'album' ? Album : ListMusic}/>
-    <span className="download-copy"><strong>{collection.name}</strong><small>{collection.kind === 'album' ? 'Album' : 'Playlist'}{collection.artist ? ` · ${collection.artist}` : ''} · {collection.trackIds.length} songs · {formatBytes(summary.bytes)}</small>{summary.error && <small className="download-error">{summary.error}</small>}</span>
+    <span className="download-copy"><strong>{collection.name}</strong><small>{collection.kind === 'album' ? 'Album' : 'Playlist'}{collection.artist ? ` · ${collection.artist}` : ''} · {collection.trackIds.length} songs · {formatBytes(summary.bytes)}{collection.kind === 'playlist' ? ' · Updates automatically' : ''}</small>{summary.error && <small className="download-error">{summary.error}</small>}</span>
     <StatusBadge summary={summary}/>
     <span className="download-actions">
       <button type="button" className="icon-button" disabled={!ready.length} onClick={() => usePlayer.getState().playTracks(ready)} aria-label={`Play ${collection.name}`} title="Play"><Play/></button>
@@ -71,7 +73,7 @@ function TrackRow({ record, progress, queue }: { record: OfflineTrack; progress?
   const ready = queue.filter((item) => item.status === 'available-offline')
   return <li className="download-row">
     <OfflineArtwork coverArt={record.track.coverArt} icon={Music2}/>
-    <span className="download-copy"><strong>{record.track.title}</strong><small>{record.track.artist} · {record.track.album}{record.bytes ? ` · ${formatBytes(record.bytes)}` : ''}</small>{record.error && <small className="download-error">{record.error}</small>}</span>
+    <span className="download-copy"><strong>{record.track.title}</strong><small>{record.track.artist} · {record.track.album}{record.bytes ? ` · ${formatBytes(record.bytes)}` : ''}{record.quality && record.quality !== 'original' ? ` · ${downloadQualityLabel(record.quality)}` : ''}</small>{record.error && <small className="download-error">{record.error}</small>}</span>
     <StatusBadge summary={summary} progress={progress}/>
     <span className="download-actions">
       <button type="button" className="icon-button" disabled={record.status !== 'available-offline'} onClick={() => usePlayer.getState().playTracks(ready.map((item) => item.track), ready.indexOf(record))} aria-label={`Play ${record.track.title}`} title="Play"><Play/></button>
@@ -98,7 +100,7 @@ export function Downloads() {
   const free = storage?.quota !== undefined && storage.usage !== undefined ? Math.max(0, storage.quota - storage.usage) : undefined
 
   return <div className="page">
-    <header className="page-header"><span className="eyebrow">Offline</span><h1>Downloads</h1><p>Music saved on this device plays with no connection, and Tomify plays the saved copy whenever it has one.</p></header>
+    <header className="page-header"><span className="eyebrow">Offline</span><h1>Downloads</h1><p>Music saved on this device plays with no connection, and Tomify plays the saved copy whenever it has one. Downloaded playlists update themselves when songs are added or taken out.</p></header>
     {!supported && <div className="notice"><CloudDownload/><div><strong>This browser can’t keep music offline</strong><p>Downloads need IndexedDB storage, which this browser has turned off (private browsing often does).</p></div></div>}
     {notice && <div className="notice download-notice" role="alert"><CircleAlert/><div><strong>Downloads stopped</strong><p>{notice}</p></div>{failed.length > 0 && <button type="button" className="button secondary" onClick={() => void useDownloads.getState().retry(failed)}><RotateCw/>Retry all</button>}</div>}
     {supported && <div className="download-stats">
@@ -106,6 +108,7 @@ export function Downloads() {
       <article><Database/><span><small>Space left for Tomify</small><strong>{free !== undefined ? `${formatBytes(free)} of ${formatBytes(storage?.quota)}` : 'Not reported by this browser'}</strong></span></article>
       <article><ShieldCheck/><span><small>Storage</small><strong>{persisted ? 'Kept until you remove it' : 'The browser may clear it when space runs low'}</strong></span></article>
     </div>}
+    {supported && <section className="settings-card download-settings"><DownloadQuality/></section>}
     {supported && !ready && <p className="download-empty"><LoaderCircle className="spin"/>Loading downloads…</p>}
     {ready && !albumsAndPlaylists.length && !singles.length && <div className="state-card"><CloudDownload/><h2>Nothing downloaded yet</h2><p>Tap Download on an album or playlist, or the download button on a song, to keep it on this device.</p></div>}
     {albumsAndPlaylists.length > 0 && <section><div className="section-title"><h2>Albums and playlists</h2></div><ul className="download-list">{albumsAndPlaylists.map((collection) => <CollectionRow key={collection.key} collection={collection} tracks={tracks}/>)}</ul></section>}

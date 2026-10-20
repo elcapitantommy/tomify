@@ -5,6 +5,7 @@ import { usePlayer } from '../stores/player'
 import { useLivePlayback, type LivePlaybackSnapshot } from '../stores/livePlayback'
 import { PlayerBar } from './Player'
 import { useRadio } from '../stores/radio'
+import { useSleepTimer } from '../stores/sleepTimer'
 
 vi.mock('./Artwork', () => ({ Artwork: () => null }))
 vi.mock('./Lyrics', () => ({ LyricsPanel: ({ track, time, onSeek }: { track: { title: string }; time: number; onSeek: (time: number) => void }) => <button onClick={() => onSeek(12)}>Lyrics of {track.title} at {Math.floor(time)}</button> }))
@@ -33,7 +34,7 @@ describe('PlayerBar across devices', () => {
     }))
   })
 
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { useSleepTimer.getState().cancel(); vi.unstubAllGlobals() })
 
   it('shows and controls the other device, updating the button straight away', async () => {
     useLivePlayback.setState({ snapshot: remote(), devices: [{ deviceId: 'desktop', deviceName: 'Windows · Chrome', lastSeen: Date.now() }] })
@@ -46,6 +47,26 @@ describe('PlayerBar across devices', () => {
     expect(within(nowPlaying).getByRole('button', { name: 'Play' })).toBeInTheDocument()
     expect(requests.find((request) => request.url === '/api/live-playback/command')?.body).toMatchObject({ targetDeviceId: 'desktop', action: 'pause' })
     expect(usePlayer.getState().playing).toBe(false)
+  })
+
+  it('sets and turns off a sleep timer from Now Playing, and hides it while another device plays', () => {
+    usePlayer.setState({ nowPlayingOpen: true })
+    const { unmount } = render(<PlayerBar/>)
+    fireEvent.click(screen.getByRole('button', { name: 'Sleep timer' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '30 minutes' }))
+    expect(useSleepTimer.getState().timer).toMatchObject({ kind: 'minutes', minutes: 30 })
+    const button = screen.getByRole('button', { name: 'Sleep timer: Stops in 30 min' })
+    fireEvent.click(button)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'End of this song' }))
+    expect(useSleepTimer.getState().timer).toEqual({ kind: 'end-of-track' })
+    fireEvent.click(screen.getByRole('button', { name: 'Sleep timer: Stops after this song' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Turn off timer' }))
+    expect(useSleepTimer.getState().timer).toBeNull()
+    unmount()
+
+    useLivePlayback.setState({ snapshot: remote(), devices: [{ deviceId: 'desktop', deviceName: 'Windows · Chrome', lastSeen: Date.now() }] })
+    render(<PlayerBar/>)
+    expect(screen.queryByRole('button', { name: 'Sleep timer' })).not.toBeInTheDocument()
   })
 
   it('moves playback here from the other device at the same track', () => {

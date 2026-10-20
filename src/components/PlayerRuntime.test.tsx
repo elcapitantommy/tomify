@@ -15,6 +15,7 @@ import { FakeAudioContext } from '../test/fakeAudioContext'
 import { useNormalisation } from '../stores/normalisation'
 import { useDj } from '../stores/dj'
 import { useCrossfade } from '../stores/crossfade'
+import { useSleepTimer } from '../stores/sleepTimer'
 import { FakeIndexedDb } from '../test/fakeIndexedDb'
 import { offlineAccount, resetOfflineDbForTests, storeDownload } from '../lib/offline-db'
 
@@ -63,7 +64,7 @@ describe('PlayerRuntime', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => { requests.push(String(url)); return Response.json({ 'subsonic-response': { status: 'ok' } }) }))
   })
 
-  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+  afterEach(() => { useSleepTimer.getState().cancel(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
   const fail = (element: HTMLAudioElement, code = 2) => {
     Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code }) })
@@ -108,6 +109,21 @@ describe('PlayerRuntime', () => {
     expect(streamed(standby)).toBe('b')
     expect(standby.preload).toBe('auto')
     expect(requests.filter((url) => url.includes('/rest/scrobble.view') && url.includes('submission=false'))).toHaveLength(1)
+  })
+
+  it('stops at the end of the song when the sleep timer is set to the end of this song', async () => {
+    const [first] = await startPlaying()
+    useSleepTimer.getState().startEndOfTrack()
+    await act(async () => { first.dispatchEvent(new Event('ended')) })
+    // The queue moves on to the next song, ready to play, but nothing starts.
+    expect(usePlayer.getState().currentIndex).toBe(1)
+    expect(usePlayer.getState().playing).toBe(false)
+    expect(useSleepTimer.getState().timer).toBeNull()
+    // With the timer used up, the next song that ends plays on as normal.
+    await act(async () => { usePlayer.getState().setPlaying(true) })
+    await act(async () => { audio().find((element) => streamed(element) === 'b')!.dispatchEvent(new Event('ended')) })
+    expect(usePlayer.getState().currentIndex).toBe(2)
+    expect(usePlayer.getState().playing).toBe(true)
   })
 
   it('does not hand off to a pre-loaded next track whose download failed', async () => {
