@@ -86,8 +86,8 @@ async function summaryBetween(env: Env, username: string, [from, to]: Range, lim
   const [totals, artists, albums, tracks, genres] = await Promise.all([
     db.prepare(`SELECT COUNT(*) AS plays, COALESCE(SUM(skipped), 0) AS skips, COALESCE(SUM(listened_seconds), 0) AS seconds FROM listening_events WHERE ${WHERE}`).bind(username, from, to).first<StatsTotals>(),
     top('MAX(artist_id) AS artistId, artist', 'artist'),
-    top('album_id AS albumId, MAX(album) AS album, MAX(artist) AS artist', 'album_id'),
-    top('track_id AS trackId, MAX(title) AS title, MAX(artist) AS artist, MAX(album_id) AS albumId', 'track_id'),
+    top('album_id AS albumId, MAX(album) AS album, MAX(artist) AS artist, MAX(artist_id) AS artistId', 'album_id'),
+    top('track_id AS trackId, MAX(title) AS title, MAX(artist) AS artist, MAX(artist_id) AS artistId, MAX(album_id) AS albumId', 'track_id'),
     top('MAX(genre) AS genre', 'LOWER(genre)'),
   ])
   return { plays: 0, skips: 0, seconds: 0, ...totals, artists, albums, tracks, genres }
@@ -125,8 +125,8 @@ export async function buildWrapped(env: Env, username: string, year: number) {
   const [summary, months, [firstTrack = null], [repeated = null], newArtists, playlist] = await Promise.all([
     summaryBetween(env, username, range, 5),
     rows(`SELECT CAST(strftime('%m', played_at / 1000, 'unixepoch') AS INTEGER) AS month, COUNT(*) AS plays, SUM(listened_seconds) AS seconds FROM listening_events WHERE ${WHERE} GROUP BY month ORDER BY month`),
-    rows(`SELECT track_id AS trackId, title, artist, album_id AS albumId, played_at AS playedAt ${played} ORDER BY played_at LIMIT 1`),
-    rows(`SELECT track_id AS trackId, MAX(title) AS title, MAX(artist) AS artist, MAX(album_id) AS albumId, date(played_at / 1000, 'unixepoch') AS day, COUNT(*) AS plays ${played} GROUP BY track_id, day ORDER BY plays DESC, day LIMIT 1`),
+    rows(`SELECT track_id AS trackId, title, artist, artist_id AS artistId, album_id AS albumId, played_at AS playedAt ${played} ORDER BY played_at LIMIT 1`),
+    rows(`SELECT track_id AS trackId, MAX(title) AS title, MAX(artist) AS artist, MAX(artist_id) AS artistId, MAX(album_id) AS albumId, date(played_at / 1000, 'unixepoch') AS day, COUNT(*) AS plays ${played} GROUP BY track_id, day ORDER BY plays DESC, day LIMIT 1`),
     rows(`SELECT MAX(artist_id) AS artistId, artist, COUNT(*) AS plays ${played} AND artist IS NOT NULL AND artist NOT IN (SELECT artist FROM listening_events WHERE username = ? AND played_at < ? AND artist IS NOT NULL) GROUP BY artist ORDER BY plays DESC`, username, range[0]),
     rows(`SELECT track_id AS trackId ${played} GROUP BY track_id ORDER BY COUNT(*) DESC, SUM(listened_seconds) DESC LIMIT 50`),
   ])

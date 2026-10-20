@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ItemArtists } from '../components/ArtistLinks'
 import { Album, CircleAlert, CircleCheck, CloudDownload, Database, HardDrive, ListMusic, LoaderCircle, Music2, Play, RotateCw, ShieldCheck, Trash2 } from 'lucide-react'
 import { artKey, readFile, TRACK_OWNER, type OfflineCollection, type OfflineTrack } from '../lib/offline-db'
 import { formatBytes } from '../lib/format'
@@ -73,7 +74,7 @@ function TrackRow({ record, progress, queue }: { record: OfflineTrack; progress?
   const ready = queue.filter((item) => item.status === 'available-offline')
   return <li className="download-row">
     <OfflineArtwork coverArt={record.track.coverArt} icon={Music2}/>
-    <span className="download-copy"><strong>{record.track.title}</strong><small>{record.track.artist} · {record.track.album}{record.bytes ? ` · ${formatBytes(record.bytes)}` : ''}{record.quality && record.quality !== 'original' ? ` · ${downloadQualityLabel(record.quality)}` : ''}</small>{record.error && <small className="download-error">{record.error}</small>}</span>
+    <span className="download-copy"><strong>{record.track.title}</strong><small><ItemArtists item={record.track}/> · {record.track.album}{record.bytes ? ` · ${formatBytes(record.bytes)}` : ''}{record.quality && record.quality !== 'original' ? ` · ${downloadQualityLabel(record.quality)}` : ''}</small>{record.error && <small className="download-error">{record.error}</small>}</span>
     <StatusBadge summary={summary} progress={progress}/>
     <span className="download-actions">
       <button type="button" className="icon-button" disabled={record.status !== 'available-offline'} onClick={() => usePlayer.getState().playTracks(ready.map((item) => item.track), ready.indexOf(record))} aria-label={`Play ${record.track.title}`} title="Play"><Play/></button>
