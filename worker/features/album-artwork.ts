@@ -157,16 +157,20 @@ async function saveAlbumArtwork(db: D1Database, albumId: string, artwork: AlbumA
 
 // Spotify's 2026 Development Mode rules can refuse app-only (client credentials) tokens for
 // search, so the connected Spotify account from playlist import is preferred when there is one.
-async function spotifySearchToken(env: Env, db: D1Database, username: string, forceRefresh: boolean) {
-  try { return { token: await spotifyUserToken(env, db, username, forceRefresh), account: true } }
-  catch { /* not connected, or token storage unavailable */ }
+// A connection made through an earlier Spotify app keeps answering 403 after the app is replaced,
+// so a 403 for the account is retried once with the app's own credentials (appOnly).
+async function spotifySearchToken(env: Env, db: D1Database, username: string, forceRefresh: boolean, appOnly = false) {
+  if (!appOnly) {
+    try { return { token: await spotifyUserToken(env, db, username, forceRefresh), account: true } }
+    catch { /* not connected, or token storage unavailable */ }
+  }
   const token = await spotifyAccessToken(env)
   if (!token) throw Object.assign(new Error('Spotify rejected the server credentials.'), { code: 'spotify-auth-failed' })
   return { token, account: false }
 }
 
-async function searchSpotifyAlbums(env: Env, db: D1Database, username: string, query: string, refreshed = false): Promise<SpotifyAlbum[]> {
-  const { token, account } = await spotifySearchToken(env, db, username, refreshed)
+async function searchSpotifyAlbums(env: Env, db: D1Database, username: string, query: string, refreshed = false, appOnly = false): Promise<SpotifyAlbum[]> {
+  const { token, account } = await spotifySearchToken(env, db, username, refreshed, appOnly)
   const url = new URL('https://api.spotify.com/v1/search')
   url.searchParams.set('q', query)
   url.searchParams.set('type', 'album')
@@ -174,11 +178,12 @@ async function searchSpotifyAlbums(env: Env, db: D1Database, username: string, q
   url.searchParams.set('market', String(env.SPOTIFY_MARKET || 'GB').slice(0, 2).toUpperCase())
   const response = await fetch(url, { headers: { authorization: 'Bearer ' + token, accept: 'application/json' } })
   if (response.status === 429) throw Object.assign(new Error('Spotify is rate limiting Tomify.'), { code: 'spotify-rate-limited', retryAfter: Math.min(120, Math.max(1, Number(response.headers.get('retry-after')) || 5)) })
-  if (response.status === 401 && !refreshed) { if (!account) resetSpotifyTokenCache(); return searchSpotifyAlbums(env, db, username, query, true) }
+  if (response.status === 401 && !refreshed) { if (!account) resetSpotifyTokenCache(); return searchSpotifyAlbums(env, db, username, query, true, appOnly) }
+  if (response.status === 403 && account) return searchSpotifyAlbums(env, db, username, query, false, true)
   const body: OpenJson = await response.json().catch(() => null)
   if (!response.ok) {
     const detail = typeof body?.error?.message === 'string' ? ': ' + body.error.message.slice(0, 200).replace(/[.\s]+$/, '') : ''
-    const hint = response.status === 403 ? (account ? ' Since March 2026 Spotify refuses Development Mode apps whose owner has no Premium subscription.' : ' Connect Spotify under Playlists > Import so Tomify can search as your account.') : ''
+    const hint = response.status === 403 ? (account || appOnly ? ' Since March 2026 Spotify refuses Development Mode apps whose owner has no Premium subscription.' : ' Connect Spotify under Playlists > Import so Tomify can search as your account.') : ''
     throw Object.assign(new Error('Spotify search returned HTTP ' + response.status + detail + '.' + hint), { code: response.status === 403 ? 'spotify-forbidden' : 'spotify-error' })
   }
   return Array.isArray(body?.albums?.items) ? body.albums.items.filter(Boolean) : []

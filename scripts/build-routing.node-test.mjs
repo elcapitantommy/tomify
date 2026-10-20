@@ -608,7 +608,8 @@ test('album artwork searches Spotify as the connected account and explains a 403
     const response = await artworkCall({ ...env, TOMIFY_DB: database }, 'auto', { albumId: 'album-1', name: 'Flood', artist: 'They Might Be Giants' })
     assert.equal(response.status, 502)
     assert.match((await response.json()).message, /Spotify search returned HTTP 403: Active premium subscription required for the owner of the app\. Since March 2026 Spotify refuses Development Mode apps whose owner has no Premium subscription\./)
-    assert.deepEqual(requested.filter(({ host }) => host === 'api.spotify.com').map(({ authorization }) => authorization), ['Bearer user-token'])
+    // The app token is cached across tests, so only check that the retry did not reuse the account token.
+    assert.deepEqual(requested.filter(({ host }) => host === 'api.spotify.com').map(({ authorization }) => authorization === 'Bearer user-token' ? 'account' : 'app'), ['account', 'app'], 'a 403 for the connected account is retried with the app credentials')
   })
   const noMatch = () => Response.json({ results: [], data: [] })
   await withArtworkFetch({ 'itunes.apple.com': noMatch, 'api.deezer.com': noMatch, 'api.spotify.com': () => Response.json({ error: { status: 403, message: 'Active premium subscription required for the owner of the app.' } }, { status: 403 }) }, async () => {
@@ -619,6 +620,27 @@ test('album artwork searches Spotify as the connected account and explains a 403
     assert.deepEqual(lookup.failed.map(({ provider }) => provider), ['spotify'], 'a failed catalogue is reported even when the others answer')
     assert.match(lookup.failed[0].message, /owner of the app/)
   })
+})
+
+test('album artwork retries Spotify with the app credentials when an old connection is refused', async () => {
+  const env = { SPOTIFY_CLIENT_ID: 'id', SPOTIFY_CLIENT_SECRET: 'secret', SPOTIFY_TOKEN_ENCRYPTION_KEY: 'test-key' }
+  const encryptedToken = await encryptCatalogueToken(env, { accessToken: 'old-app-user-token', refreshToken: 'refresh', expiresAt: Date.now() + 3_600_000 })
+  const database = artworkDatabase()
+  const prepare = database.prepare
+  database.prepare = (sql) => sql.includes('FROM catalogue_provider_tokens') ? { bind() { return this }, async first() { return { encryptedToken } } } : prepare(sql)
+  const noMatch = () => Response.json({ results: [], data: [] })
+  const gold = { id: 'sp-gold', name: 'Gold', release_date: '2005-01-01', artists: [{ name: 'Earth, Wind & Fire' }], images: [{ url: 'https://i.scdn.co/image/gold', width: 640, height: 640 }] }
+  const originalFetch = globalThis.fetch
+  let spotifyReply = () => new Response('{}', { status: 500 })
+  // withArtworkFetch records each request's authorization header, so the route reads it back from there.
+  await withArtworkFetch({ 'itunes.apple.com': noMatch, 'api.deezer.com': noMatch, 'api.spotify.com': () => spotifyReply() }, async (requested) => {
+    spotifyReply = () => requested.at(-1).authorization === 'Bearer old-app-user-token' ? Response.json({ error: { status: 403 } }, { status: 403 }) : Response.json({ albums: { items: [gold] } })
+    const lookup = await artworkCall({ ...env, TOMIFY_DB: database }, 'lookup', { albumId: 'album-1', name: 'Gold', artist: 'Earth, Wind & Fire' }).then((response) => response.json())
+    assert.deepEqual(lookup.candidates.map((candidate) => candidate.providerId), ['sp-gold'])
+    assert.deepEqual(lookup.failed, [])
+    assert.deepEqual(requested.filter(({ host }) => host === 'api.spotify.com').map(({ authorization }) => authorization === 'Bearer old-app-user-token' ? 'account' : 'app'), ['account', 'app'])
+  })
+  assert.equal(globalThis.fetch, originalFetch)
 })
 
 test('Recovery explains an out-of-date agent instead of showing not-found', async () => {
