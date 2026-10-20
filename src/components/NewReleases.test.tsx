@@ -5,7 +5,7 @@ import { NewReleases } from './NewReleases'
 
 const api = { artists: vi.fn(async () => [{ id: 'ar1', name: 'Muse' }]), allAlbums: vi.fn(async () => [{ id: 'al1', name: 'Drones', artist: 'Muse' }]) }
 vi.mock('../lib/api-context', () => ({ useApi: () => api }))
-const recoveryAdd = vi.fn(async () => ({ item: {} }))
+const recoveryAdd = vi.fn(async (input: unknown) => { void input; return { item: {} } })
 vi.mock('../lib/recovery-api', () => ({ recoveryApi: { add: (input: unknown) => recoveryAdd(input) } }))
 
 let fetchMock: ReturnType<typeof vi.fn>
