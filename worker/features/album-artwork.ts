@@ -45,7 +45,12 @@ export function isAlbumArtworkUrl(value: unknown) {
 
 // Catalogues often name the edition ("Abbey Road (Remastered 2009)", "Flood - Deluxe Edition")
 // while a library folder does not, or the other way round, so titles are also compared
-// with trailing bracketed or dashed edition qualifiers removed.
+// with trailing bracketed or dashed edition qualifiers removed. Disc markers from albums split
+// per disc ("The Essential Roy Orbison - Disc 2", "White Album CD1", "Flood, Disc One") go too,
+// because catalogues list the whole release under its plain title.
+const discNumberWords = 'one|two|three|four|five|six|seven|eight|nine|ten'
+const trailingDiscPattern = new RegExp(`(?:\\s+|\\s*[-\u2013\u2014:,]\\s*)(?:disc|disk|cd)\\s*(?:\\d+|${discNumberWords})(?:\\s*(?:of|/)\\s*\\d+)?\\s*$`, 'i')
+
 export function baseAlbumTitle(name: unknown) {
   const original = String(name || '').trim()
   let title = original
@@ -53,6 +58,7 @@ export function baseAlbumTitle(name: unknown) {
   while (title && title !== previous) {
     previous = title
     title = title.replace(/\s*[([][^()[\]]*[)\]]\s*$/, '').trim()
+    title = title.replace(trailingDiscPattern, '').trim()
     title = title.replace(/\s+[-\u2013\u2014]\s+[^-\u2013\u2014]*\b(?:remaster\w*|deluxe|edition|expanded|anniversary|reissue|version|mono|stereo|bonus)\b[^-\u2013\u2014]*$/i, '').trim()
   }
   return title || original

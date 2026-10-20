@@ -61,6 +61,21 @@ describe('album artwork store', () => {
     expect(requested).toEqual(['broken'])
   })
 
+  it('searches again for albums checked by an older matcher and clears that list', async () => {
+    vi.useFakeTimers()
+    localStorage.setItem('tomify-artwork-checked:' + session.username, JSON.stringify({ missing: Date.now() }))
+    const requested: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_path: string, init: RequestInit) => {
+      requested.push((JSON.parse(String(init.body)) as { albumId: string }).albumId)
+      return Response.json({ applied: false, reason: 'no-match' })
+    }))
+    const run = useAlbumArtwork.getState().upgradeMany([album('missing')])
+    await vi.runAllTimersAsync()
+    await run
+    expect(requested).toEqual(['missing'])
+    expect(localStorage.getItem('tomify-artwork-checked:' + session.username)).toBeNull()
+  })
+
   it('draws the Spotify replacement and falls back to the library artwork if it fails to load', () => {
     vi.spyOn(apiContext, 'useApi').mockReturnValue(new NavidromeClient(session, vi.fn()))
     useAlbumArtwork.setState({ overrides: { 'al-1': { albumId: 'al-1', provider: 'spotify', url: 'https://i.scdn.co/image/blue', source: 'auto' } } })
