@@ -4,6 +4,7 @@ import type { ReplayGainMode } from '../../shared/replaygain.mjs'
 import { mediaRoute, startMediaRoute } from './mediaRoute'
 import type { Lyrics } from './lyrics'
 import { parseArtistInfo, type ArtistInfo } from './artist-info'
+import type { RadioStation } from './internet-radio'
 
 export type NowPlaying = Track & { username: string; minutesAgo: number; playerName?: string }
 export interface ScanStatus { scanning: boolean; count?: number; folderCount?: number; lastScan?: string }
@@ -11,6 +12,9 @@ export interface AuthSession { serverUrl: string; username: string; salt: string
 interface SubsonicEnvelope { 'subsonic-response': Record<string, unknown> & { status: 'ok' | 'failed'; error?: { code: number; message: string } } }
 
 export type StarKind = 'song' | 'album' | 'artist'
+export interface GenreCount { name: string; albumCount: number; songCount: number }
+// A public link Navidrome serves to anyone, without signing in (needs ND_ENABLESHARING=true on the server).
+export interface ShareLink { id: string; url: string; description?: string; expires?: string; created?: string; visitCount?: number; entry?: { id: string; title?: string; artist?: string; album?: string; isDir?: boolean }[] }
 const STAR_PARAM: Record<StarKind, string> = { song: 'id', album: 'albumId', artist: 'artistId' }
 
 type SubsonicParams = Record<string, string | number | string[] | number[] | undefined>
@@ -127,6 +131,21 @@ export class NavidromeClient {
   async artistInfo(id: string, signal?: AbortSignal): Promise<ArtistInfo> { const r = await this.get<{ artistInfo2?: Parameters<typeof parseArtistInfo>[0] }>('getArtistInfo2', { id, count: 12, includeNotPresent: 'false' }, signal); return parseArtistInfo(r.artistInfo2, id) }
   // An artist's most played songs on Last.fm that are in this library (empty without Navidrome's Last.fm agent).
   async topSongs(artist: string, count = 10, signal?: AbortSignal): Promise<Track[]> { const r = await this.get<{ topSongs?: { song?: Track[] } }>('getTopSongs', { artist, count }, signal); return r.topSongs?.song ?? [] }
+  // Genres with how many albums and songs carry each one, for Browse.
+  async genreList(signal?: AbortSignal): Promise<GenreCount[]> { const r = await this.get<{ genres?: { genre?: { value: string; albumCount?: number; songCount?: number }[] } }>('getGenres', {}, signal); return (r.genres?.genre ?? []).filter((genre) => genre.value).map((genre) => ({ name: genre.value, albumCount: genre.albumCount ?? 0, songCount: genre.songCount ?? 0 })) }
+  // Every album in a genre, or released between two years, a page of 500 at a time.
+  async albumsByGenre(genre: string, signal?: AbortSignal): Promise<Album[]> { return this.albumPages({ type: 'byGenre', genre }, signal) }
+  async albumsByYears(fromYear: number, toYear: number, signal?: AbortSignal): Promise<Album[]> { return this.albumPages({ type: 'byYear', fromYear, toYear }, signal) }
+  private async albumPages(params: SubsonicParams, signal?: AbortSignal): Promise<Album[]> { const albums: Album[] = []; for (let offset = 0; offset < 5000; offset += 500) { const r = await this.get<{ albumList2?: { album?: Album[] } }>('getAlbumList2', { ...params, size: 500, offset }, signal); const page = r.albumList2?.album ?? []; albums.push(...page); if (page.length < 500) break } return albums }
+  // Random songs, optionally from one genre or a range of years.
+  async randomSongs(options: { size?: number; genre?: string; fromYear?: number; toYear?: number } = {}, signal?: AbortSignal): Promise<Track[]> { const r = await this.get<{ randomSongs?: { song?: Track[] } }>('getRandomSongs', { size: options.size ?? 100, genre: options.genre, fromYear: options.fromYear, toYear: options.toYear }, signal); return r.randomSongs?.song ?? [] }
+  // Internet radio stations kept in Navidrome; only administrators can add or delete them.
+  async radioStations(signal?: AbortSignal): Promise<RadioStation[]> { const r = await this.get<{ internetRadioStations?: { internetRadioStation?: RadioStation[] } }>('getInternetRadioStations', {}, signal); return r.internetRadioStations?.internetRadioStation ?? [] }
+  async addRadioStation(station: { name: string; streamUrl: string; homePageUrl?: string }) { await this.get('createInternetRadioStation', { name: station.name, streamUrl: station.streamUrl, homepageUrl: station.homePageUrl }) }
+  async deleteRadioStation(id: string) { await this.get('deleteInternetRadioStation', { id }) }
+  async createShareLink(ids: string[], description: string, expires?: number): Promise<ShareLink> { const r = await this.get<{ shares?: { share?: ShareLink[] } }>('createShare', { id: ids, description, expires }); const share = r.shares?.share?.[0]; if (!share?.url) throw new NavidromeError('The music server did not return a link.'); return share }
+  async shareLinks(signal?: AbortSignal): Promise<ShareLink[]> { const r = await this.get<{ shares?: { share?: ShareLink[] } }>('getShares', {}, signal); return r.shares?.share ?? [] }
+  async deleteShareLink(id: string) { await this.get('deleteShare', { id }) }
   async genres(signal?: AbortSignal): Promise<string[]> { const r = await this.get<{ genres?: { genre?: { value: string }[] } }>('getGenres', {}, signal); return (r.genres?.genre ?? []).map((genre) => genre.value).filter(Boolean).sort((a, b) => a.localeCompare(b)) }
   // What every account is playing now: Navidrome records it from the "now playing" scrobble each player sends.
   async nowPlaying(signal?: AbortSignal): Promise<NowPlaying[]> { const r = await this.get<{ nowPlaying?: { entry?: NowPlaying[] } }>('getNowPlaying', {}, signal); return r.nowPlaying?.entry ?? [] }
