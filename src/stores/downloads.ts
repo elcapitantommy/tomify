@@ -2,15 +2,18 @@ import { create } from 'zustand'
 import { NavidromeClient, type AuthSession } from '../lib/navidrome'
 import { artKey, collectionKey, deleteCollection, deleteTracks, forgetLocalAudio, isQuotaError, offlineAccount, offlineSupported, readFile, readLibrary, saveCollection, saveTracks, storeDownload, storeFile, TRACK_OWNER, type CollectionKind, type OfflineCollection, type OfflineTrack } from '../lib/offline-db'
 import type { DownloadStatus, Track } from '../types'
+import { downloadBitRate, useDownloadQuality, type DownloadQuality } from './downloadQuality'
 
 // Offline downloads: the queue runs one song at a time in the background (one at a time keeps
-// a phone's memory and connection free for playback), from the Navidrome stream URL with
-// format=raw, so the stored copy is the original file rather than a transcode or HLS chunks.
+// a phone's memory and connection free for playback), from the Navidrome stream URL: format=raw
+// for the original file, or an MP3 the server makes for the smaller download qualities (never HLS chunks).
+// Downloaded playlists keep themselves up to date: Tomify checks them against the server when it
+// opens, comes back online or comes back to the foreground (see syncPlaylists).
 
 export const QUOTA_MESSAGE = 'Not enough storage space on this device. Remove some downloads, then retry.'
 const OFFLINE_MESSAGE = 'Waiting for a connection.'
 
-export interface CollectionInput { id: string; name: string; artist?: string; coverArt?: string }
+export interface CollectionInput { id: string; name: string; artist?: string; owner?: string; coverArt?: string }
 export interface DownloadSummary { status: DownloadStatus; total: number; done: number; failed: number; bytes: number; error?: string }
 
 interface DownloadsState {
@@ -29,16 +32,29 @@ interface DownloadsState {
   removeTrack(id: string): Promise<void>
   removeCollection(key: string): Promise<void>
   retry(ids: string[]): Promise<void>
+  syncPlaylists(): Promise<void>
 }
 
 let client: NavidromeClient | null = null
 let active: { account: string; id: string; controller: AbortController } | null = null
 let pumping = false
 let listening = false
+let syncing = false
+let lastSync = 0
+// How often the downloaded playlists are checked for changes, at most.
+export const PLAYLIST_SYNC_INTERVAL_MS = 15 * 60_000
 
 const now = () => Date.now()
 const errorMessage = (error: unknown, fallback: string) => error instanceof Error && error.message ? error.message : fallback
 const unique = (ids: string[]) => [...new Set(ids)]
+const currentQuality = (): DownloadQuality => useDownloadQuality.getState().quality
+const offline = () => typeof navigator !== 'undefined' && navigator.onLine === false
+// Automatic updates wait when the phone says it is on mobile data or in data saver mode (Android Chrome
+// reports this; iPhone Safari does not, so there they run on any connection).
+function meteredConnection() {
+  const connection = typeof navigator === 'undefined' ? undefined : (navigator as Navigator & { connection?: { type?: string; saveData?: boolean } }).connection
+  return Boolean(connection && (connection.saveData || connection.type === 'cellular'))
+}
 
 export const useDownloads = create<DownloadsState>()((set, get) => {
   // State is updated first so the page reacts at once; IndexedDB follows. A failed write is reported, not hidden.
@@ -71,9 +87,9 @@ export const useDownloads = create<DownloadsState>()((set, get) => {
     const records = unique(tracks.map((track) => track.id)).map((id) => {
       const track = tracks.find((candidate) => candidate.id === id)!
       const record = existing[id]
-      if (!record) return { id, track, status: 'queued', owners: [owner], addedAt: now(), updatedAt: now() } satisfies OfflineTrack
+      if (!record) return { id, track, status: 'queued', owners: [owner], quality: currentQuality(), addedAt: now(), updatedAt: now() } satisfies OfflineTrack
       const status = record.status === 'failed' ? 'queued' : record.status
-      return { ...record, track: record.status === 'available-offline' ? record.track : track, owners: unique([...record.owners, owner]), status, error: status === 'queued' ? undefined : record.error, updatedAt: now() }
+      return { ...record, track: record.status === 'available-offline' ? record.track : track, owners: unique([...record.owners, owner]), status, quality: record.status === 'failed' ? currentQuality() : record.quality, error: status === 'queued' ? undefined : record.error, updatedAt: now() }
     })
     await persistTracks(account, records)
   }
@@ -110,7 +126,7 @@ export const useDownloads = create<DownloadsState>()((set, get) => {
     if (estimate?.quota && estimate.usage !== undefined && estimate.quota - estimate.usage < size * 1.05) throw new DOMException(QUOTA_MESSAGE, 'QuotaExceededError')
   }
 
-  async function fetchAudio(url: string, track: Track, signal: AbortSignal, onProgress: (share: number) => void) {
+  async function fetchAudio(url: string, track: Track, expectedSize: number | undefined, signal: AbortSignal, onProgress: (share: number) => void) {
     const response = await fetch(url, { signal, credentials: 'omit', cache: 'no-store' }).catch((error: unknown) => {
       if (signal.aborted) throw error
       throw new Error('Tomify cannot reach the music server.')
@@ -122,7 +138,7 @@ export const useDownloads = create<DownloadsState>()((set, get) => {
       const body = await response.json().catch(() => null) as { 'subsonic-response'?: { error?: { message?: string } } } | null
       throw new Error(body?.['subsonic-response']?.error?.message ?? 'The music server refused the download.')
     }
-    const total = Number(response.headers.get('content-length')) || track.size || 0
+    const total = Number(response.headers.get('content-length')) || expectedSize || 0
     const chunks: BlobPart[] = []
     if (response.body) {
       const reader = response.body.getReader()
@@ -166,9 +182,12 @@ export const useDownloads = create<DownloadsState>()((set, get) => {
     const stillWanted = () => !controller.signal.aborted && get().account === account && Boolean(get().tracks[queued.id])
     set((state) => ({ tracks: { ...state.tracks, [queued.id]: { ...queued, status: 'downloading', error: undefined } }, progress: { ...state.progress, [queued.id]: 0 } }))
     try {
-      await ensureSpace(queued.track.size)
-      const url = client.url('stream', { id: queued.id, format: 'raw' }).toString()
-      const audio = await fetchAudio(url, queued.track, controller.signal, (share) => set((state) => ({ progress: { ...state.progress, [queued.id]: share } })))
+      // A smaller quality is an MP3 the server makes as it goes, so it sends no size: estimate it from the length.
+      const kbps = downloadBitRate(queued.quality)
+      const expectedSize = kbps ? (queued.track.duration ? Math.round(queued.track.duration * kbps * 125) : undefined) : queued.track.size
+      await ensureSpace(expectedSize)
+      const url = client.url('stream', kbps ? { id: queued.id, format: 'mp3', maxBitRate: kbps } : { id: queued.id, format: 'raw' }).toString()
+      const audio = await fetchAudio(url, queued.track, expectedSize, controller.signal, (share) => set((state) => ({ progress: { ...state.progress, [queued.id]: share } })))
       const artwork = await fetchArtwork(account, queued.track.coverArt, controller.signal)
       if (!stillWanted()) return
       const latest = get().tracks[queued.id]!
@@ -214,6 +233,48 @@ export const useDownloads = create<DownloadsState>()((set, get) => {
     }
   }
 
+  // Saves an album or playlist download and links its songs; a playlist that changed lets go of the songs taken out.
+  async function collect(account: string, kind: CollectionKind, item: CollectionInput, tracks: Track[]) {
+    const key = collectionKey(kind, item.id)
+    const previous = get().collections[key]
+    const trackIds = unique(tracks.map((track) => track.id))
+    const collection: OfflineCollection = { key, kind, id: item.id, name: item.name, artist: item.artist, owner: item.owner ?? previous?.owner, coverArt: item.coverArt, trackIds, addedAt: previous?.addedAt ?? now(), updatedAt: now() }
+    set((state) => ({ collections: { ...state.collections, [key]: collection } }))
+    try { await saveCollection(account, collection) } catch (error) { set({ notice: isQuotaError(error) ? QUOTA_MESSAGE : errorMessage(error, 'The download could not be saved.') }); return }
+    await link(account, key, tracks)
+    if (previous) await unlink(account, key, previous.trackIds.filter((id) => !trackIds.includes(id)))
+    void pump()
+    // The album or playlist cover, for the Downloads page with no connection.
+    if (item.coverArt && item.coverArt !== previous?.coverArt) void fetchArtwork(account, item.coverArt).then((art) => art && get().account === account ? storeFile(account, art.key, art.blob) : undefined).catch(() => undefined)
+  }
+
+  // Brings each downloaded playlist in line with the server: new songs download, removed ones are let go,
+  // and a rename shows on the Downloads page. A playlist the server no longer has (deleted, or no longer
+  // shared) keeps what is on the device; Remove on the Downloads page clears it.
+  async function syncPlaylists(force = false) {
+    const { account, ready } = get()
+    if (!account || !ready || !client || syncing || offline() || meteredConnection()) return
+    if (!force && now() - lastSync < PLAYLIST_SYNC_INTERVAL_MS) return
+    syncing = true
+    lastSync = now()
+    const server = client
+    try {
+      for (const collection of Object.values(get().collections).filter((item) => item.kind === 'playlist')) {
+        if (get().account !== account || client !== server) return
+        const playlist = await server.playlist(collection.id, undefined, collection.owner).catch(() => null)
+        // Removed from downloads while the server was being asked.
+        if (!playlist || !get().collections[collection.key]) continue
+        const tracks = playlist.entry ?? []
+        const ids = unique(tracks.map((track) => track.id))
+        const unchanged = playlist.name === collection.name && ids.length === collection.trackIds.length && ids.every((id, index) => id === collection.trackIds[index])
+        if (unchanged) continue
+        await collect(account, 'playlist', { id: collection.id, name: playlist.name, owner: playlist.owner ?? collection.owner, coverArt: playlist.coverArt ?? collection.coverArt }, tracks)
+      }
+    } finally {
+      syncing = false
+    }
+  }
+
   return {
     supported: offlineSupported(),
     ready: false,
@@ -231,7 +292,11 @@ export const useDownloads = create<DownloadsState>()((set, get) => {
       active?.controller.abort()
       set({ supported: offlineSupported(), ready: false, account, tracks: {}, collections: {}, progress: {}, notice: null })
       if (!account) return
-      if (!listening && typeof window !== 'undefined') { listening = true; window.addEventListener('online', () => void pump()) }
+      if (!listening && typeof window !== 'undefined') {
+        listening = true
+        window.addEventListener('online', () => { void pump(); void syncPlaylists(true) })
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) void syncPlaylists() })
+      }
       try {
         const library = await readLibrary(account)
         if (get().account !== account) return
@@ -243,6 +308,7 @@ export const useDownloads = create<DownloadsState>()((set, get) => {
         const persisted = await (navigator.storage?.persisted?.() ?? Promise.resolve(null)).catch(() => null)
         set({ persisted })
         void pump()
+        void syncPlaylists(true)
       } catch (error) {
         if (get().account === account) set({ ready: false, supported: false, notice: errorMessage(error, 'Offline storage is not available in this browser.') })
       }
@@ -258,23 +324,14 @@ export const useDownloads = create<DownloadsState>()((set, get) => {
     },
 
     downloadCollection: async (kind, item, tracks) => {
-      const { account, ready, collections } = get()
+      const { account, ready } = get()
       if (!account || !ready) return
       set({ notice: null })
       void requestPersistence()
-      const key = collectionKey(kind, item.id)
-      const previous = collections[key]
-      const trackIds = unique(tracks.map((track) => track.id))
-      const collection: OfflineCollection = { key, kind, id: item.id, name: item.name, artist: item.artist, coverArt: item.coverArt, trackIds, addedAt: previous?.addedAt ?? now(), updatedAt: now() }
-      set((state) => ({ collections: { ...state.collections, [key]: collection } }))
-      try { await saveCollection(account, collection) } catch (error) { set({ notice: isQuotaError(error) ? QUOTA_MESSAGE : errorMessage(error, 'The download could not be saved.') }); return }
-      await link(account, key, tracks)
-      // A playlist that changed since it was downloaded: songs taken out of it are released.
-      if (previous) await unlink(account, key, previous.trackIds.filter((id) => !trackIds.includes(id)))
-      void pump()
-      // The album or playlist cover, for the Downloads page with no connection.
-      if (item.coverArt) void fetchArtwork(account, item.coverArt).then((art) => art && get().account === account ? storeFile(account, art.key, art.blob) : undefined).catch(() => undefined)
+      await collect(account, kind, item, tracks)
     },
+
+    syncPlaylists: () => syncPlaylists(true),
 
     removeTrack: async (id) => {
       const { account } = get()
@@ -295,7 +352,7 @@ export const useDownloads = create<DownloadsState>()((set, get) => {
       const { account, tracks } = get()
       if (!account) return
       set({ notice: null })
-      await persistTracks(account, ids.map((id) => tracks[id]).filter((record): record is OfflineTrack => record?.status === 'failed').map((record) => ({ ...record, status: 'queued', error: undefined, updatedAt: now() })))
+      await persistTracks(account, ids.map((id) => tracks[id]).filter((record): record is OfflineTrack => record?.status === 'failed').map((record) => ({ ...record, status: 'queued', quality: currentQuality(), error: undefined, updatedAt: now() })))
       void pump()
     },
   }
@@ -321,5 +378,7 @@ export function resetDownloadsForTests() {
   client = null
   active = null
   pumping = false
+  syncing = false
+  lastSync = 0
   useDownloads.setState({ supported: offlineSupported(), ready: false, account: null, tracks: {}, collections: {}, progress: {}, persisted: null, notice: null })
 }

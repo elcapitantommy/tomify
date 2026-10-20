@@ -4,6 +4,7 @@ import { NavidromeClient } from '../lib/navidrome'
 import { LocalFirstSourceResolver } from '../lib/sourceResolver'
 import { cachedLocalAudioUrl, localAudioUrl, offlineAccount, resetOfflineDbForTests, storeDownload } from '../lib/offline-db'
 import { QUOTA_MESSAGE, resetDownloadsForTests, summariseDownloads, useDownloads } from './downloads'
+import { useDownloadQuality } from './downloadQuality'
 import type { Track } from '../types'
 
 const session = { serverUrl: 'https://music.example', username: 'Tom', salt: 's', token: 't' }
@@ -41,6 +42,7 @@ describe('offline downloads', () => {
   })
 
   afterEach(() => {
+    useDownloadQuality.setState({ quality: 'original' })
     resetDownloadsForTests()
     vi.unstubAllGlobals()
     delete (navigator as { storage?: unknown }).storage
@@ -103,6 +105,104 @@ describe('offline downloads', () => {
     expect(status('t2')).toBeUndefined()
     expect(useDownloads.getState().collections['playlist:pl-1'].trackIds).toEqual(['t3', 't1'])
     await until(() => expect(status('t3')).toBe('available-offline'))
+  })
+
+  it('downloads a smaller MP3 when a smaller download quality is chosen, keeping songs already saved as they are', async () => {
+    await useDownloads.getState().downloadTracks([song('t1')])
+    await until(() => expect(status('t1')).toBe('available-offline'))
+    useDownloadQuality.getState().setQuality('small')
+    await useDownloads.getState().downloadTracks([song('t1'), song('t2', { duration: 100 })])
+    await until(() => expect(status('t2')).toBe('available-offline'))
+
+    const streams = requests.filter((url) => url.includes('/rest/stream.view')).map((url) => new URL(url).searchParams)
+    expect(streams).toHaveLength(2)
+    expect(streams[1].get('id')).toBe('t2')
+    expect(streams[1].get('format')).toBe('mp3')
+    expect(streams[1].get('maxBitRate')).toBe('128')
+    expect(useDownloads.getState().tracks.t1.quality).toBe('original')
+    expect(useDownloads.getState().tracks.t2.quality).toBe('small')
+  })
+
+  it('retries a failed download in the quality chosen now', async () => {
+    respond = () => new Response('nope', { status: 500 })
+    await useDownloads.getState().downloadTracks([song('t1')])
+    await until(() => expect(status('t1')).toBe('failed'))
+    respond = defaultResponse
+    useDownloadQuality.getState().setQuality('high')
+    await useDownloads.getState().retry(['t1'])
+    await until(() => expect(status('t1')).toBe('available-offline'))
+    const last = new URL(requests.filter((url) => url.includes('/rest/stream.view')).at(-1)!)
+    expect(last.searchParams.get('maxBitRate')).toBe('320')
+  })
+
+  describe('downloaded playlists', () => {
+    let serverPlaylist: { id: string; name: string; owner: string; entry: Track[] } | null
+    beforeEach(() => {
+      serverPlaylist = null
+      respond = (url) => {
+        if (url.pathname.endsWith('/getPlaylist.view')) {
+          if (!serverPlaylist) return Response.json({ 'subsonic-response': { status: 'failed', error: { code: 70, message: 'Playlist not found' } } })
+          return Response.json({ 'subsonic-response': { status: 'ok', playlist: serverPlaylist } })
+        }
+        return defaultResponse(url)
+      }
+    })
+    const playlistRequests = () => requests.filter((url) => url.includes('/rest/getPlaylist.view'))
+
+    it('update themselves from the server: new songs download and removed ones are let go', async () => {
+      await useDownloads.getState().downloadCollection('playlist', { id: 'pl-1', name: 'Road trip', owner: 'Tom' }, [song('t1'), song('t2')])
+      await until(() => expect(status('t2')).toBe('available-offline'))
+      serverPlaylist = { id: 'pl-1', name: 'Road trip 2026', owner: 'Tom', entry: [song('t3'), song('t1')] }
+
+      await useDownloads.getState().syncPlaylists()
+      expect(useDownloads.getState().collections['playlist:pl-1']).toMatchObject({ name: 'Road trip 2026', trackIds: ['t3', 't1'] })
+      expect(status('t2')).toBeUndefined()
+      await until(() => expect(status('t3')).toBe('available-offline'))
+    })
+
+    it('are checked when Tomify opens, and left alone when nothing changed', async () => {
+      await useDownloads.getState().downloadCollection('playlist', { id: 'pl-1', name: 'Road trip', owner: 'Tom' }, [song('t1')])
+      await until(() => expect(status('t1')).toBe('available-offline'))
+      serverPlaylist = { id: 'pl-1', name: 'Road trip', owner: 'Tom', entry: [song('t1'), song('t2')] }
+      resetDownloadsForTests()
+      resetOfflineDbForTests()
+      await useDownloads.getState().bind(session)
+      await until(() => expect(status('t2')).toBe('available-offline'))
+      expect(playlistRequests()).toHaveLength(1)
+
+      const streams = requests.filter((url) => url.includes('/rest/stream.view')).length
+      await useDownloads.getState().syncPlaylists()
+      expect(playlistRequests()).toHaveLength(2)
+      expect(requests.filter((url) => url.includes('/rest/stream.view'))).toHaveLength(streams)
+    })
+
+    it('keep what is on the device when the server no longer has the playlist', async () => {
+      await useDownloads.getState().downloadCollection('playlist', { id: 'pl-1', name: 'Road trip', owner: 'Tom' }, [song('t1')])
+      await until(() => expect(status('t1')).toBe('available-offline'))
+      await useDownloads.getState().syncPlaylists()
+      expect(playlistRequests()).toHaveLength(1)
+      expect(useDownloads.getState().collections['playlist:pl-1'].trackIds).toEqual(['t1'])
+      expect(status('t1')).toBe('available-offline')
+    })
+
+    it('read a playlist shared by someone else as that owner\'s', async () => {
+      await useDownloads.getState().downloadCollection('playlist', { id: 'pl-anna', name: 'Anna mix', owner: 'anna' }, [song('t1')])
+      await until(() => expect(status('t1')).toBe('available-offline'))
+      serverPlaylist = { id: 'pl-anna', name: 'Anna mix', owner: 'anna', entry: [song('t1'), song('t5')] }
+      await useDownloads.getState().syncPlaylists()
+      await until(() => expect(status('t5')).toBe('available-offline'))
+    })
+
+    it('wait while the phone is on mobile data', async () => {
+      await useDownloads.getState().downloadCollection('playlist', { id: 'pl-1', name: 'Road trip', owner: 'Tom' }, [song('t1')])
+      Object.defineProperty(navigator, 'connection', { configurable: true, value: { type: 'cellular' } })
+      try {
+        await useDownloads.getState().syncPlaylists()
+        expect(playlistRequests()).toHaveLength(0)
+      } finally {
+        delete (navigator as { connection?: unknown }).connection
+      }
+    })
   })
 
   it('marks a failed download and retries it', async () => {

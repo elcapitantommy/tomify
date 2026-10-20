@@ -4,11 +4,14 @@
 // A song is kept while anything owns it: a single-track download (`track`) or a collection (`album:<id>`, `playlist:<id>`).
 import { normaliseServerUrl, type AuthSession } from './navidrome'
 import type { DownloadStatus, Track } from '../types'
+import type { DownloadQuality } from '../stores/downloadQuality'
 
 export type OfflineStatus = Extract<DownloadStatus, 'queued' | 'downloading' | 'available-offline' | 'failed'>
-export interface OfflineTrack { id: string; track: Track; status: OfflineStatus; owners: string[]; bytes?: number; error?: string; addedAt: number; updatedAt: number }
+// `quality` is what the song is (or will be) saved as; records from before download qualities are originals.
+export interface OfflineTrack { id: string; track: Track; status: OfflineStatus; owners: string[]; quality?: DownloadQuality; bytes?: number; error?: string; addedAt: number; updatedAt: number }
 export type CollectionKind = 'album' | 'playlist'
-export interface OfflineCollection { key: string; kind: CollectionKind; id: string; name: string; artist?: string; coverArt?: string; trackIds: string[]; addedAt: number; updatedAt: number }
+// `owner` is the playlist's owner, so a playlist shared with this account can be checked for changes later.
+export interface OfflineCollection { key: string; kind: CollectionKind; id: string; name: string; artist?: string; owner?: string; coverArt?: string; trackIds: string[]; addedAt: number; updatedAt: number }
 interface OfflineFile { key: string; blob: Blob }
 
 type StoreName = 'tracks' | 'collections' | 'files'

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeIndexedDb } from '../test/fakeIndexedDb'
 import { offlineAccount, resetOfflineDbForTests, saveCollection, saveTracks, type OfflineTrack } from '../lib/offline-db'
 import { resetDownloadsForTests, useDownloads } from '../stores/downloads'
+import { useDownloadQuality } from '../stores/downloadQuality'
 import { usePlayer } from '../stores/player'
 import { CollectionDownloadButton, TrackDownloadButton } from '../components/DownloadButton'
 import { Downloads } from './Downloads'
@@ -52,6 +53,21 @@ describe('Downloads', () => {
 
     fireEvent.click(within(album).getByRole('button', { name: 'Remove Doolittle from downloads' }))
     expect(await screen.findByText('Nothing downloaded yet')).toBeInTheDocument()
+  })
+
+  it('chooses the download quality and shows which playlists update themselves', async () => {
+    await saveTracks(account, [record('t1', ['playlist:pl-1'], 'available-offline', { quality: 'small' })])
+    await saveCollection(account, { key: 'playlist:pl-1', kind: 'playlist', id: 'pl-1', name: 'Road trip', trackIds: ['t1'], addedAt: 1, updatedAt: 1 })
+    await saveTracks(account, [record('t2', ['track'], 'available-offline', { quality: 'high' })])
+    await useDownloads.getState().bind(session)
+    render(<MemoryRouter><Downloads/></MemoryRouter>)
+
+    expect(within(screen.getByText('Road trip').closest('li')!).getByText(/Updates automatically/)).toBeInTheDocument()
+    expect(within(screen.getByText('Song t2').closest('li')!).getByText(/MP3 320/)).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /Original/ })).toBeChecked()
+    fireEvent.click(screen.getByRole('radio', { name: /Space saver/ }))
+    expect(useDownloadQuality.getState().quality).toBe('small')
+    useDownloadQuality.setState({ quality: 'original' })
   })
 
   it('says so when the browser cannot store music', () => {
