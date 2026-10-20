@@ -148,3 +148,10 @@ button.settings-link{border:0;background:none;width:100%;font:inherit;font-weigh
   .now-playing>.seek{margin:14px auto 0;font-size:.7rem}
   .now-playing>.transport{margin:8px auto 0}
 }
+
+/* Now Playing header: three columns so the "Now playing" label sits on the
+   page centre (over the artwork) even though the icon group on the right is
+   wider than the close button on the left. */
+.now-playing>header{display:grid;grid-template-columns:1fr auto 1fr;gap:12px}
+.now-playing>header>button{justify-self:start}
+.now-playing>header>.now-playing-actions{justify-self:end}
