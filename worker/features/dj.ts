@@ -13,6 +13,8 @@ const DJ_POOL_SIZE = 150
 export const DJ_POOL_PER_ARTIST = 3
 // Artists from the last few sets are rested while there are at least this many other artists to pick from.
 const DJ_MIN_RESTED_ARTISTS = 8
+// A new session rests the artists heard in this many days, so the DJ doesn't open with the same favourites every time.
+const DJ_OPENER_REST_MS = 2 * 86_400_000
 const MAX_SCRIPT_CHARS = 600
 const MAX_REQUEST_CHARS = 200
 export const DEFAULT_DJ_VOICE = 'ophelia'
@@ -26,13 +28,13 @@ export const DJ_LISTEN_MODEL = '@cf/openai/whisper-large-v3-turbo'
 const MAX_LISTEN_BYTES = 2 * 1024 * 1024
 
 export interface DjSegment { tracks: MixTrack[], script: string, curatedBy: 'claude' | 'tomify', voice: boolean }
-export interface DjSegmentInput { recentTrackIds: string[], recentArtists: string[], request: string | null, justAsked?: boolean, first: boolean, username: string, now: number }
+export interface DjSegmentInput { recentTrackIds: string[], recentArtists: string[], request: string | null, justAsked?: boolean, first: boolean, username: string, now: number, heardLately?: string[] }
 
 export const DJ_SYSTEM = `You are the DJ in Tomify, a personal music player: a bubbly, upbeat radio presenter talking to one listener between songs, who knows their taste.
 
 Each time, pick the next 3 to 5 songs from the candidate pool and write the short spoken link that plays before them.
 - Only use refs from the pool. Never pick a recently played song. Order them so they flow.
-- At most one song per artist in a set. Don't keep returning to the same few artists.
+- At most one song per artist in a set, and at most one of their most-played artists. Don't keep returning to the same few artists.
 - Mix favourites with songs they haven't played lately or ever.
 - If the listener asked for something, honour it. When they have just asked, start the link by answering them in a few words ("Upbeat it is!") before introducing the first song. Never mention an earlier request: it has been answered. Songs show their tempo (bpm), genre and mood when known: when asked for a style, mood or tempo, keep the whole set to it and order it by tempo so it flows.
 - The link is 2 to 4 sentences and at most 70 words, read by a text-to-speech voice: plain words, no emojis, lists, stage directions or sound effects. Introduce what's coming (you can name the first song and artist) and give a personal reason when there is one.
@@ -118,6 +120,13 @@ export function djPool(candidates: Candidate[], recentTrackIds: string[], seed: 
   return [...requested, ...(new Set(rested.map((candidate) => candidate.song.artist)).size >= DJ_MIN_RESTED_ARTISTS ? rested : pool)].slice(0, size)
 }
 
+// Artists heard in the last couple of days, most played first.
+export function heardLately(candidates: Candidate[], now: number): string[] {
+  const plays = new Map<string, number>()
+  for (const { song, lastPlayed, playCount } of candidates) if ((lastPlayed ?? 0) >= now - DJ_OPENER_REST_MS) plays.set(song.artist, (plays.get(song.artist) ?? 0) + playCount + 1)
+  return [...plays].sort((a, b) => b[1] - a[1]).map(([artist]) => artist)
+}
+
 const shortDate = (time: number | null) => time ? new Date(time).toISOString().slice(0, 7) : 'never'
 
 // The song a request names ("play Hangman Jury"), when the library search found one whose title is in it.
@@ -143,6 +152,7 @@ export function djPrompt(pool: Candidate[], snapshot: LibrarySnapshot, input: Dj
     input.first ? 'This is the first link of the session.' : 'The session is already under way.',
     `Artists they play most lately: ${snapshot.topArtists.join(', ') || 'not enough history yet'}.`,
     input.recentArtists.length ? `Played this session, so rest them unless asked: ${input.recentArtists.join(', ')}.` : '',
+    input.heardLately?.length ? `Heard in the last two days, so open with other artists: ${input.heardLately.slice(0, 20).join(', ')}.` : '',
     input.request ? (input.justAsked ? `The listener just asked: "${input.request}"` : `Earlier the listener asked: "${input.request}". Keep to its style, mood or tempo but don't mention it.`) : '',
     named ? `They named ${named.song.artist} - ${named.song.title} (t${pool.indexOf(named) + 1}). Pick it first and name it.` : '',
     '',
@@ -165,10 +175,12 @@ export function plainSegment(pool: Candidate[], input: DjSegmentInput): { tracks
 
 export interface DjDependencies { claude?: (env: Env, system: string, prompt: string, schema: object) => Promise<unknown> }
 
-export async function buildSegment(env: Env, candidates: Candidate[], snapshot: LibrarySnapshot, input: DjSegmentInput, deps: DjDependencies = {}): Promise<Omit<DjSegment, 'voice'>> {
+export async function buildSegment(env: Env, candidates: Candidate[], snapshot: LibrarySnapshot, given: DjSegmentInput, deps: DjDependencies = {}): Promise<Omit<DjSegment, 'voice'>> {
+  // The first set of a session rests what was heard lately, or every session opens with the same favourites.
+  const input = { ...given, heardLately: given.first && !given.justAsked ? heardLately(candidates, given.now) : [] }
   // A request just made ("more Radiohead") may name a resting artist, so nobody is rested for that set; the sets
   // after it keep to its style but rest artists again, or the session would replay the same few. Claude is still told who played.
-  const pool = djPool(candidates, input.recentTrackIds, `${input.username}:${input.now}`, DJ_POOL_SIZE, input.justAsked ? [] : input.recentArtists, input.request ? styleMatcher(input.request) : undefined)
+  const pool = djPool(candidates, input.recentTrackIds, `${input.username}:${input.now}`, DJ_POOL_SIZE, input.justAsked ? [] : [...input.recentArtists, ...input.heardLately], input.request ? styleMatcher(input.request) : undefined)
   if (!pool.length) throw new Error('There is nothing left in the library the DJ hasn\'t just played.')
   if (env.ANTHROPIC_API_KEY) {
     try {

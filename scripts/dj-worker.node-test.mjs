@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_BACKUP_TTS_MODEL, DJ_LISTEN_MODEL, meloAudio, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, namedSong, partOfDay, plainSegment, requestSearches, styleMatcher, ukDate } from '../worker/features/dj.ts'
+import { buildSegment, cleanSegmentRequest, createDjHandler, DEFAULT_DJ_VOICE, DJ_BACKUP_TTS_MODEL, DJ_LISTEN_MODEL, meloAudio, DJ_POOL_PER_ARTIST, DJ_TTS_MODEL, djPool, djPrompt, heardLately, namedSong, partOfDay, plainSegment, requestSearches, styleMatcher, ukDate } from '../worker/features/dj.ts'
 import { buildCandidates } from '../worker/features/mixes.ts'
 
 const NOW = Date.parse('2026-10-17T08:30:00Z')
@@ -90,6 +90,31 @@ test('a set plays several different artists and Claude is told who to rest', asy
   assert.match(asked, / \| Blur - /, 'a request can bring a resting artist back')
   await buildSegment({ ANTHROPIC_API_KEY: 'key' }, library, snapshot, input({ recentArtists: ['Blur'], request: 'more Blur' }), { claude: async (env, system, prompt) => { asked = prompt; return { script: 'x', trackRefs: ['t1'] } } })
   assert.doesNotMatch(asked, / \| Blur - /, 'the sets after a request rest artists again, so the session does not replay them')
+})
+
+test('a new session opens with artists not heard in the last two days', async () => {
+  const { pool: library, top } = realisticPool()
+  const DAY = 86_400_000
+  // The favourites were all heard yesterday; one other artist was last heard a week ago.
+  const played = library.map((candidate) => top.includes(candidate.song.artist) ? { ...candidate, lastPlayed: NOW - DAY, playCount: 5 }
+    : candidate.song.artist === 'Library artist 0' ? { ...candidate, lastPlayed: NOW - 7 * DAY } : candidate)
+  assert.deepEqual(heardLately(played, NOW).sort(), [...top].sort())
+
+  let asked
+  const claude = async (env, system, prompt) => { asked = prompt; return { script: 'Hello.', trackRefs: ['t1', 't2', 't3'] } }
+  const opener = await buildSegment({ ANTHROPIC_API_KEY: 'key' }, played, snapshot, input(), { claude })
+  assert.ok(!opener.tracks.some((track) => top.includes(track.artist)), 'the first set rests artists heard lately')
+  assert.ok(!top.some((artist) => asked.includes(` | ${artist} - `)), 'and leaves them out of the pool')
+  assert.match(asked, /^Heard in the last two days, so open with other artists: /m)
+  assert.match(asked, / \| Library artist 0 - /, 'an artist heard a week ago can open')
+
+  const plain = await buildSegment({}, played, snapshot, input())
+  assert.ok(!plain.tracks.some((track) => top.includes(track.artist)), 'the plain DJ rests them too')
+
+  await buildSegment({ ANTHROPIC_API_KEY: 'key' }, played, snapshot, input({ first: false }), { claude })
+  assert.doesNotMatch(asked, /Heard in the last two days/, 'later sets rest only what this session played')
+  await buildSegment({ ANTHROPIC_API_KEY: 'key' }, played, snapshot, input({ request: 'some Blur', justAsked: true }), { claude })
+  assert.match(asked, / \| Blur - /, 'asking for an artist still brings them in')
 })
 
 test('the DJ prompt names the listener, the time and any request', () => {
