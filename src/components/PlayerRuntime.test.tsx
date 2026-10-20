@@ -5,6 +5,7 @@ import { useAuth } from '../stores/auth'
 import { usePlayer } from '../stores/player'
 import { useAlbumArtwork } from '../stores/albumArtwork'
 import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
+import { OUTPUT_CHANGE_GUARD_MS } from '../lib/audioOutputs'
 import { PlayerRuntime } from './PlayerRuntime'
 import { loadHlsLibrary, resetAdaptiveAvailability } from '../lib/adaptiveStream'
 import { DEFAULT_NAVIDROME_SERVER } from '../lib/navidrome'
@@ -257,6 +258,79 @@ describe('PlayerRuntime', () => {
     } finally {
       delete (navigator as { mediaSession?: unknown }).mediaSession
     }
+  })
+
+  describe('when headphones or a car disconnect', () => {
+    let handlers: Map<string, MediaSessionActionHandler | null>
+    let devices: EventTarget & { enumerateDevices: () => Promise<MediaDeviceInfo[]> }
+    let deviceList: { kind: string; deviceId: string }[]
+    const changeDevices = async (list: { kind: string; deviceId: string }[]) => {
+      deviceList = list
+      await act(async () => { devices.dispatchEvent(new Event('devicechange')) })
+      await act(async () => { await Promise.resolve() })
+    }
+    const sessionAction = async (action: string) => { await act(async () => { handlers.get(action)?.({ action: action as MediaSessionAction }) }) }
+
+    beforeEach(() => {
+      handlers = new Map()
+      deviceList = [{ kind: 'audiooutput', deviceId: '' }]
+      devices = Object.assign(new EventTarget(), { enumerateDevices: async () => deviceList as MediaDeviceInfo[] })
+      Object.defineProperty(navigator, 'mediaSession', { configurable: true, value: { metadata: null, playbackState: 'none', setActionHandler: (action: string, handler: MediaSessionActionHandler | null) => handlers.set(action, handler), setPositionState: () => {} } })
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: devices })
+    })
+    afterEach(() => {
+      delete (navigator as { mediaSession?: unknown }).mediaSession
+      delete (navigator as { mediaDevices?: unknown }).mediaDevices
+    })
+
+    it('ignores the play the phone sends as the headphones drop out', async () => {
+      const [current] = await startPlaying()
+      // Taking the headphones out pauses...
+      await sessionAction('pause')
+      expect(usePlayer.getState().playing).toBe(false)
+      // ...then as they disconnect, the phone sends a play of its own.
+      await changeDevices([])
+      vi.mocked(HTMLMediaElement.prototype.play).mockClear()
+      await sessionAction('play')
+      expect(usePlayer.getState().playing).toBe(false)
+      expect(vi.mocked(HTMLMediaElement.prototype.play).mock.contexts).not.toContain(current)
+    })
+
+    it('pauses again when that play arrives just before the disconnect is reported', async () => {
+      await startPlaying()
+      await sessionAction('pause')
+      await sessionAction('play')
+      expect(usePlayer.getState().playing).toBe(true)
+      await changeDevices([])
+      expect(usePlayer.getState().playing).toBe(false)
+    })
+
+    it('still plays when the listener presses play later on', async () => {
+      vi.useFakeTimers()
+      await startPlaying()
+      await sessionAction('pause')
+      await changeDevices([])
+      await act(async () => { vi.advanceTimersByTime(OUTPUT_CHANGE_GUARD_MS) })
+      await sessionAction('play')
+      expect(usePlayer.getState().playing).toBe(true)
+    })
+
+    it('keeps playing when a device change has nothing to do with a play request', async () => {
+      vi.useFakeTimers()
+      await startPlaying()
+      await act(async () => { vi.advanceTimersByTime(OUTPUT_CHANGE_GUARD_MS) })
+      await changeDevices([{ kind: 'audiooutput', deviceId: '' }, { kind: 'audiooutput', deviceId: '' }])
+      expect(usePlayer.getState().playing).toBe(true)
+    })
+
+    it('pauses when a known audio device goes away while playing', async () => {
+      deviceList = [{ kind: 'audiooutput', deviceId: 'speaker' }, { kind: 'audiooutput', deviceId: 'buds' }]
+      vi.useFakeTimers()
+      await startPlaying()
+      await act(async () => { vi.advanceTimersByTime(OUTPUT_CHANGE_GUARD_MS) })
+      await changeDevices([{ kind: 'audiooutput', deviceId: 'speaker' }])
+      expect(usePlayer.getState().playing).toBe(false)
+    })
   })
 
   it('stops the DJ\'s link and keeps the music paused when pause is pressed on the headphones or lock screen', async () => {
