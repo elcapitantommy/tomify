@@ -610,6 +610,15 @@ test('album artwork searches Spotify as the connected account and explains a 403
     assert.match((await response.json()).message, /Spotify search returned HTTP 403: Active premium subscription required for the owner of the app\. Since March 2026 Spotify refuses Development Mode apps whose owner has no Premium subscription\./)
     assert.deepEqual(requested.filter(({ host }) => host === 'api.spotify.com').map(({ authorization }) => authorization), ['Bearer user-token'])
   })
+  const noMatch = () => Response.json({ results: [], data: [] })
+  await withArtworkFetch({ 'itunes.apple.com': noMatch, 'api.deezer.com': noMatch, 'api.spotify.com': () => Response.json({ error: { status: 403, message: 'Active premium subscription required for the owner of the app.' } }, { status: 403 }) }, async () => {
+    const lookup = await artworkCall({ ...env, TOMIFY_DB: database }, 'lookup', { albumId: 'album-1', name: 'Gold - Disc 1', artist: 'Earth, Wind & Fire' }).then((response) => response.json())
+    assert.deepEqual(lookup.candidates, [])
+    assert.deepEqual(lookup.query, { album: 'Gold', artist: 'Earth, Wind & Fire' })
+    assert.deepEqual(lookup.searched, ['apple', 'deezer'])
+    assert.deepEqual(lookup.failed.map(({ provider }) => provider), ['spotify'], 'a failed catalogue is reported even when the others answer')
+    assert.match(lookup.failed[0].message, /owner of the app/)
+  })
 })
 
 test('Recovery explains an out-of-date agent instead of showing not-found', async () => {

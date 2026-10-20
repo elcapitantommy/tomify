@@ -227,18 +227,26 @@ async function searchSpotifyArtwork(env: Env, db: D1Database, username: string, 
 
 // Providers are tried in order. A provider that fails is skipped while another still
 // answers; only when every provider fails is the error reported, a rate limit first.
-async function lookupAlbumArtwork(env: Env, db: D1Database, username: string, album: { albumId: string; name: string; artist: string; year: number | null }, { stopAtConfident = false } = {}) {
+// `report`, when given, records which catalogues answered and why any failed, so the album
+// page can say "Spotify could not be searched: ..." instead of a bare "no match".
+export interface AlbumArtworkLookupReport { query: { album: string; artist: string } | null; searched: string[]; failed: Array<{ provider: string; message: string }> }
+async function lookupAlbumArtwork(env: Env, db: D1Database, username: string, album: { albumId: string; name: string; artist: string; year: number | null }, { stopAtConfident = false } = {}, report?: AlbumArtworkLookupReport) {
   const releaseDate = (await selectRelease(db, album.albumId))?.releaseDate || (album.year ? String(album.year) : null)
   const wanted = { artist: album.artist, album: cleanReleaseTitle(album.name), releaseDate }
-  const searches: Array<() => Promise<AlbumSearchResult[]>> = [() => searchAppleAlbums(env, wanted), () => searchDeezerAlbums(env, wanted)]
-  if (env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET) searches.push(() => searchSpotifyArtwork(env, db, username, wanted))
+  if (report) report.query = { album: baseAlbumTitle(wanted.album), artist: wanted.artist }
+  const searches: Array<{ provider: string; run: () => Promise<AlbumSearchResult[]> }> = [{ provider: 'apple', run: () => searchAppleAlbums(env, wanted) }, { provider: 'deezer', run: () => searchDeezerAlbums(env, wanted) }]
+  if (env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET) searches.push({ provider: 'spotify', run: () => searchSpotifyArtwork(env, db, username, wanted) })
   let candidates: OpenJson[] = []
   const errors: OpenJson[] = []
   for (const search of searches) {
     try {
-      const found = (await search()).map((result) => albumArtworkCandidate(wanted, result, metadataTextSimilarity, artworkYearScore)).filter(Boolean)
+      const found = (await search.run()).map((result) => albumArtworkCandidate(wanted, result, metadataTextSimilarity, artworkYearScore)).filter(Boolean)
       candidates = rankArtworkCandidates([...candidates, ...found]).slice(0, 6)
-    } catch (error) { errors.push(error) }
+      report?.searched.push(search.provider)
+    } catch (error: OpenJson) {
+      errors.push(error)
+      report?.failed.push({ provider: search.provider, message: String(error?.message || 'Search failed.').slice(0, 400) })
+    }
     if (stopAtConfident && chooseAutomaticAlbumArtwork(candidates)) break
   }
   if (!candidates.length && errors.length === searches.length) {
@@ -287,12 +295,13 @@ export async function handleAlbumArtworkRequest(request: Request, env: Env, url:
     // A person's own choice, including keeping the library image, is never replaced automatically.
     if (url.pathname === '/api/album-artwork/auto' && existing?.source === 'manual') return json({ item: existing, applied: false, reason: 'manual-choice' })
     let candidates: OpenJson[]
-    try { candidates = await lookupAlbumArtwork(env, db, username, album, { stopAtConfident: url.pathname === '/api/album-artwork/auto' }) }
+    const report: AlbumArtworkLookupReport = { query: null, searched: [], failed: [] }
+    try { candidates = await lookupAlbumArtwork(env, db, username, album, { stopAtConfident: url.pathname === '/api/album-artwork/auto' }, report) }
     catch (error: OpenJson) {
       if (error?.code === 'rate-limited' || error?.code === 'spotify-rate-limited') return json({ error: 'rate-limited', message: error.message, retryAfter: error.retryAfter }, 429)
       return json({ error: error?.code || 'artwork-unavailable', message: error?.code ? error.message : 'Artwork catalogues could not be reached. Try again shortly.' }, 502)
     }
-    if (url.pathname === '/api/album-artwork/lookup') return json({ candidates, item: existing })
+    if (url.pathname === '/api/album-artwork/lookup') return json({ candidates, item: existing, ...report })
     const chosen = chooseAutomaticAlbumArtwork(candidates)
     if (!chosen) return json({ item: existing, applied: false, reason: candidates.length ? 'low-confidence' : 'no-match' })
     if (existing?.url === chosen.url) return json({ item: existing, applied: false, reason: 'unchanged' })
