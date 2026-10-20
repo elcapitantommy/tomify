@@ -67,7 +67,7 @@ function withoutOne(tracks: Track[], id: string): Track[] {
 
 export interface PlayerState {
   queue: Track[]; currentIndex: number; playing: boolean; unshuffledQueue: Track[] | null; shuffle: boolean; repeat: RepeatMode; currentTime: number; duration: number; volume: number; muted: boolean; queueOpen: boolean; nowPlayingOpen: boolean; activitySerial: number;
-  playTracks(tracks: Track[], startIndex?: number, options?: { keepOrder?: boolean }): void; playNow(track: Track): void; addToQueue(track: Track): void; removeFromQueue(index: number): void; moveInQueue(from: number, to: number): void; clearQueue(): void; next(): void; previous(): void; setPlaying(value: boolean): void; setProgress(currentTime: number, duration: number): void; seekTo(value: number): void; setVolume(value: number): void; toggleMuted(): void; toggleShuffle(): void; cycleRepeat(): void; setQueueOpen(value: boolean): void; setNowPlayingOpen(value: boolean): void;
+  playTracks(tracks: Track[], startIndex?: number, options?: { keepOrder?: boolean }): void; playNow(track: Track): void; addToQueue(track: Track): void; removeFromQueue(index: number): void; moveInQueue(from: number, to: number): void; clearQueue(): void; next(options?: { pause?: boolean }): void; previous(): void; setPlaying(value: boolean): void; setProgress(currentTime: number, duration: number): void; seekTo(value: number): void; setVolume(value: number): void; toggleMuted(): void; toggleShuffle(): void; cycleRepeat(): void; setQueueOpen(value: boolean): void; setNowPlayingOpen(value: boolean): void;
 }
 
 let seekHandler: ((value: number) => void) | undefined
@@ -131,10 +131,11 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   moveInQueue: (from, to) => set((s) => { const queue = [...s.queue]; const [item] = queue.splice(from, 1); queue.splice(to, 0, item); let currentIndex = s.currentIndex; if (from === currentIndex) currentIndex = to; else if (from < currentIndex && to >= currentIndex) currentIndex--; else if (from > currentIndex && to <= currentIndex) currentIndex++; return { queue, currentIndex, activitySerial: s.activitySerial + 1 } }),
   clearQueue: () => set((s) => ({ queue: [], unshuffledQueue: null, currentIndex: -1, playing: false, currentTime: 0, duration: 0, activitySerial: s.activitySerial + 1 })),
 
-  next: () => {
+  // `pause` moves on to the next song without starting it (the sleep timer stopping at the end of a song).
+  next: (options = {}) => {
     const s = get()
     if (!s.queue.length) return
-    if (s.repeat === 'one') {
+    if (s.repeat === 'one' && !options.pause) {
       s.seekTo(0)
       if (!s.playing) set({ playing: true, activitySerial: s.activitySerial + 1 })
       startHandler?.(s.queue[s.currentIndex])
@@ -151,7 +152,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     }
 
     const track = s.queue[nextIndex]
-    set({ currentIndex: nextIndex, playing: true, currentTime: 0, duration: track.duration ?? 0, activitySerial: s.activitySerial + 1 })
+    set({ currentIndex: nextIndex, playing: !options.pause, currentTime: 0, duration: track.duration ?? 0, activitySerial: s.activitySerial + 1 })
     startHandler?.(track)
   },
 
