@@ -15,6 +15,8 @@ import { castLabels } from '../lib/cast'
 import { DragHandle } from './DragHandle'
 import { CarMode } from './CarMode'
 import { useCarMode } from '../stores/carMode'
+import { LiveRadioBar } from './LiveRadio'
+import { useLiveRadio } from '../stores/liveRadio'
 
 const noCommand = (action: LivePlaybackCommandAction, value?: number) => { void action; void value }
 
@@ -137,7 +139,9 @@ function SeekBar() {
 export function PlayerBar() {
   const player = usePlayer()
   const view = usePlaybackView()
+  const radioOn = useLiveRadio((state) => state.station !== null)
   const track = view.queue[view.currentIndex]
+  if (radioOn) return <LiveRadioBar/>
   if (!track) return null
 
   const togglePlaying = () => view.remote ? view.command(view.playing ? 'pause' : 'play') : player.setPlaying(!player.playing)

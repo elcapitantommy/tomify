@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, LogOut, Search, Settings, UsersRound, X, BarChart3, PartyPopper, Compass } from 'lucide-react'
+import { Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, LogOut, Search, Settings, UsersRound, X, BarChart3, PartyPopper, Compass, Radio } from 'lucide-react'
 import { PlayerBar } from './Player'
 import { PlayerRuntime } from './PlayerRuntime'
 import { LivePlaybackSync } from './LivePlaybackSync'
@@ -8,6 +8,7 @@ import { DjRuntime } from './DjPanel'
 import { RadioRuntime } from './SongRadio'
 import { PartyRuntime } from './PartyRuntime'
 import { KeyboardShortcuts } from './KeyboardShortcuts'
+import { LiveRadioRuntime } from './LiveRadio'
 import { usePlayer } from '../stores/player'
 import { useRemoteSession } from '../stores/livePlayback'
 import { useAuth } from '../stores/auth'
@@ -15,7 +16,7 @@ import { useDownloads } from '../stores/downloads'
 import { useScrollRestoration } from '../hooks/useScrollRestoration'
 
 const primary = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }, { to: '/browse', label: 'Browse', icon: Compass }]
-const library = [{ to: '/playlists', label: 'Playlists', icon: ListMusic }, { to: '/favourites', label: 'Favourites', icon: Heart }, { to: '/stats', label: 'Listening stats', icon: BarChart3 }, { to: '/party', label: 'Party mode', icon: PartyPopper }, { to: '/downloads', label: 'Downloads', icon: Download }]
+const library = [{ to: '/playlists', label: 'Playlists', icon: ListMusic }, { to: '/favourites', label: 'Favourites', icon: Heart }, { to: '/stats', label: 'Listening stats', icon: BarChart3 }, { to: '/party', label: 'Party mode', icon: PartyPopper }, { to: '/radio', label: 'Radio', icon: Radio }, { to: '/downloads', label: 'Downloads', icon: Download }]
 // Administrative tools stay out of the mobile tab bar and live in the account sheet instead.
 const recovery = { to: '/recovery', label: 'Recovery', icon: LifeBuoy }
 const mobile = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }, { to: '/playlists', label: 'Playlists', icon: ListMusic }, { to: '/favourites', label: 'Favourites', icon: Heart }]
@@ -84,7 +85,7 @@ export function AppShell() {
     {accountOpen && <AccountSheet isAdmin={isAdmin} onClose={() => setAccountOpen(false)} onLogout={logout}/>}
     <main className="content" key={location.pathname}><Outlet/></main>
     <nav className="mobile-nav">{mobile.map((item) => <NavItem {...item} key={item.to}/>)}</nav>
-    <LivePlaybackSync/><PlayerRuntime/><DjRuntime/><RadioRuntime/><PartyRuntime/><PlayerBar/><KeyboardShortcuts/>
+    <LivePlaybackSync/><PlayerRuntime/><DjRuntime/><RadioRuntime/><PartyRuntime/><LiveRadioRuntime/><PlayerBar/><KeyboardShortcuts/>
   </div>
 }
 function AccountSheet({ isAdmin, onClose, onLogout }: { isAdmin: boolean; onClose(): void; onLogout(): void }) {
@@ -101,6 +102,7 @@ function AccountSheet({ isAdmin, onClose, onLogout }: { isAdmin: boolean; onClos
       <NavLink to="/downloads" state={{ fromAccount: true }}><Download/>Downloads</NavLink>
       <NavLink to="/stats" state={{ fromAccount: true }}><BarChart3/>Listening stats</NavLink>
       <NavLink to="/party" state={{ fromAccount: true }}><PartyPopper/>Party mode</NavLink>
+      <NavLink to="/radio" state={{ fromAccount: true }}><Radio/>Radio</NavLink>
       <NavLink to="/settings" state={{ fromAccount: true }}><Settings/>Settings</NavLink>
       <button type="button" onClick={onLogout}><LogOut/>Sign out</button>
     </div>

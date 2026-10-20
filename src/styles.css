@@ -257,3 +257,32 @@ button.settings-link{border:0;background:none;width:100%;font:inherit;font-weigh
 .browse-tile.decade strong{font-size:1.6rem}
 .browse-tile small{color:#d6dbd6;opacity:.75;font-size:.75rem}
 @media(max-width:800px){.tile-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* Internet radio */
+.radio-list{list-style:none;margin:0 0 18px;padding:0;display:grid;gap:8px}
+.radio-list li{display:flex;align-items:center;gap:12px;padding:12px;border-radius:12px;background:var(--panel);border:1px solid var(--line)}
+.radio-list li.current{border-color:var(--accent)}
+.radio-list.results li{background:var(--panel2)}
+.radio-icon{width:44px;height:44px;border-radius:10px;background:#293024;color:var(--accent);display:grid;place-items:center;flex:none}
+.radio-copy{display:grid;flex:1;min-width:0}
+.radio-copy strong,.radio-copy small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.radio-copy small{color:var(--muted);font-size:.75rem;margin-top:3px}
+.radio-copy small a{display:inline-flex;align-items:center;gap:4px;color:var(--muted)}
+.radio-list .button{padding:9px 14px;font-size:.85rem}
+.radio-help{color:var(--muted);font-size:.85rem}
+.radio-help a{color:var(--accent)}
+.radio-search{display:flex;align-items:center;gap:10px;border:1px solid #3b413b;border-radius:12px;background:var(--panel2);padding:6px 6px 6px 14px;margin:14px 0}
+.radio-search>svg{color:var(--accent);width:18px;flex:none}
+.radio-search input{flex:1;min-width:0;background:none;border:0;outline:0;color:#fff}
+.radio-link{display:grid;gap:8px;margin-top:18px;border-top:1px solid var(--line);padding-top:16px}
+.radio-link input{height:44px;border:1px solid #3a3f3a;background:#111311;border-radius:9px;padding:0 12px;color:#fff}
+.radio-link .button{justify-self:start}
+.radio-bar{grid-template-columns:minmax(0,1fr) auto auto}
+.radio-now{display:flex;align-items:center;gap:12px;min-width:0}
+.radio-now>span:last-child{display:grid;min-width:0}
+.radio-now strong,.radio-now small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.radio-now small{color:var(--muted);font-size:.75rem;margin-top:4px}
+.radio-live-dot{display:flex;align-items:center;gap:6px;font-size:.7rem;font-weight:800;letter-spacing:.12em;color:#ff7d76}
+.radio-live-dot i{width:8px;height:8px;border-radius:50%;background:#ff7d76;animation:radio-pulse 1.4s ease-in-out infinite}
+.radio-bar .player-actions .button{padding:9px 14px;color:var(--text)}
+@keyframes radio-pulse{50%{opacity:.3}}
+@media(max-width:800px){.radio-bar{grid-template-columns:minmax(0,1fr) auto auto;grid-template-rows:1fr;height:72px}.radio-bar .player-actions .button{padding:8px 12px}.radio-list li{flex-wrap:wrap}.radio-list.results .radio-copy{flex-basis:100%}}

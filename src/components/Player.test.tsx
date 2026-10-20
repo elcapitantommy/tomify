@@ -9,6 +9,7 @@ import { useSleepTimer } from '../stores/sleepTimer'
 import { useRatings } from '../stores/ratings'
 import { useCast } from '../stores/cast'
 import { useCarMode } from '../stores/carMode'
+import { useLiveRadio } from '../stores/liveRadio'
 import * as castStore from '../stores/cast'
 
 vi.mock('./Artwork', () => ({ Artwork: () => null }))
@@ -110,6 +111,14 @@ describe('PlayerBar across devices', () => {
     expect(usePlayer.getState().nowPlayingOpen).toBe(false)
     expect(screen.getByRole('dialog', { name: 'Car mode' })).toHaveTextContent('Ana Ng')
     act(() => { useCarMode.getState().setOpen(false) })
+  })
+
+  it('shows the live station in place of the player bar and stops it', () => {
+    act(() => { useLiveRadio.getState().play({ id: 'r1', name: 'Radio Paradise', streamUrl: 'https://stream.example/rp.mp3' }) })
+    render(<PlayerBar/>)
+    expect(screen.getByRole('region', { name: 'Live radio' })).toHaveTextContent('Radio Paradise')
+    fireEvent.click(screen.getByRole('button', { name: 'Stop Radio Paradise' }))
+    expect(useLiveRadio.getState().station).toBeNull()
   })
 
   it('moves playback here from the other device at the same track', () => {

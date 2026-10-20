@@ -4,6 +4,7 @@ import type { ReplayGainMode } from '../../shared/replaygain.mjs'
 import { mediaRoute, startMediaRoute } from './mediaRoute'
 import type { Lyrics } from './lyrics'
 import { parseArtistInfo, type ArtistInfo } from './artist-info'
+import type { RadioStation } from './internet-radio'
 
 export type NowPlaying = Track & { username: string; minutesAgo: number; playerName?: string }
 export interface ScanStatus { scanning: boolean; count?: number; folderCount?: number; lastScan?: string }
@@ -136,6 +137,10 @@ export class NavidromeClient {
   private async albumPages(params: SubsonicParams, signal?: AbortSignal): Promise<Album[]> { const albums: Album[] = []; for (let offset = 0; offset < 5000; offset += 500) { const r = await this.get<{ albumList2?: { album?: Album[] } }>('getAlbumList2', { ...params, size: 500, offset }, signal); const page = r.albumList2?.album ?? []; albums.push(...page); if (page.length < 500) break } return albums }
   // Random songs, optionally from one genre or a range of years.
   async randomSongs(options: { size?: number; genre?: string; fromYear?: number; toYear?: number } = {}, signal?: AbortSignal): Promise<Track[]> { const r = await this.get<{ randomSongs?: { song?: Track[] } }>('getRandomSongs', { size: options.size ?? 100, genre: options.genre, fromYear: options.fromYear, toYear: options.toYear }, signal); return r.randomSongs?.song ?? [] }
+  // Internet radio stations kept in Navidrome; only administrators can add or delete them.
+  async radioStations(signal?: AbortSignal): Promise<RadioStation[]> { const r = await this.get<{ internetRadioStations?: { internetRadioStation?: RadioStation[] } }>('getInternetRadioStations', {}, signal); return r.internetRadioStations?.internetRadioStation ?? [] }
+  async addRadioStation(station: { name: string; streamUrl: string; homePageUrl?: string }) { await this.get('createInternetRadioStation', { name: station.name, streamUrl: station.streamUrl, homepageUrl: station.homePageUrl }) }
+  async deleteRadioStation(id: string) { await this.get('deleteInternetRadioStation', { id }) }
   async genres(signal?: AbortSignal): Promise<string[]> { const r = await this.get<{ genres?: { genre?: { value: string }[] } }>('getGenres', {}, signal); return (r.genres?.genre ?? []).map((genre) => genre.value).filter(Boolean).sort((a, b) => a.localeCompare(b)) }
   // What every account is playing now: Navidrome records it from the "now playing" scrobble each player sends.
   async nowPlaying(signal?: AbortSignal): Promise<NowPlaying[]> { const r = await this.get<{ nowPlaying?: { entry?: NowPlaying[] } }>('getNowPlaying', {}, signal); return r.nowPlaying?.entry ?? [] }
