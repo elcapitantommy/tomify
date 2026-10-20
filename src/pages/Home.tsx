@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowRight, Clock3, Play, RefreshCw, Sparkles } from 'lucide-react'
+import { ArrowRight, Clock3, Gift, Play, RefreshCw, Sparkles } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { AlbumCard } from '../components/MediaCards'
 import { MixCard } from '../components/MixCard'
@@ -11,6 +11,7 @@ import { useLoad } from '../hooks/useLoad'
 import { usePlayer } from '../stores/player'
 import { useAuth } from '../stores/auth'
 import { cachedMixes, mixesApi, type MixesResponse } from '../lib/mixes-api'
+import { wrappedSeasonYear } from '../lib/listening-stats'
 
 const homeMessages = [
   "You look nice today.",
@@ -83,7 +84,7 @@ export function Home() {
     return () => window.clearInterval(interval)
   }, [])
 
-  return <div className="page home-page"><header className="page-header hero"><div><span className="eyebrow"><Sparkles size={14}/> Your library</span><h1>{greeting.replace('.', '')}{username ? `, ${username}` : ''}.</h1><p>{homeMessage}</p></div><div className="hero-actions"><DjButton/>{data?.recent[0] && <button className="button primary" onClick={() => void playAlbum(data.recent[0].id)}><Play fill="currentColor"/>Play something</button>}</div></header><DjPanel/><ListeningNow/>{loading && <><SectionTitle title="Recently played"/><SkeletonGrid/><SectionTitle title="Fresh from the shelves"/><SkeletonGrid rows={4}/></>}{error && <ErrorState message={error} retry={retry}/>} {data && !loading && <>{data.recent.length ? <LibrarySection title="Recently played" icon={<Clock3/>} albums={data.recent} onPlay={playAlbum}/> : <EmptyState title="Nothing played yet" message="Your listening history will appear here."/>}<LibrarySection title="Fresh from the shelves" subtitle="Recently added" albums={data.newest} onPlay={playAlbum}/><MadeForYou/>{data.starred.length > 0 && <LibrarySection title="Favourite albums" subtitle="Starred" albums={data.starred} onPlay={playAlbum}/>}</>}</div>
+  return <div className="page home-page"><header className="page-header hero"><div><span className="eyebrow"><Sparkles size={14}/> Your library</span><h1>{greeting.replace('.', '')}{username ? `, ${username}` : ''}.</h1><p>{homeMessage}</p></div><div className="hero-actions"><DjButton/>{data?.recent[0] && <button className="button primary" onClick={() => void playAlbum(data.recent[0].id)}><Play fill="currentColor"/>Play something</button>}</div></header><DjPanel/><ListeningNow/><WrappedBanner/>{loading && <><SectionTitle title="Recently played"/><SkeletonGrid/><SectionTitle title="Fresh from the shelves"/><SkeletonGrid rows={4}/></>}{error && <ErrorState message={error} retry={retry}/>} {data && !loading && <>{data.recent.length ? <LibrarySection title="Recently played" icon={<Clock3/>} albums={data.recent} onPlay={playAlbum}/> : <EmptyState title="Nothing played yet" message="Your listening history will appear here."/>}<LibrarySection title="Fresh from the shelves" subtitle="Recently added" albums={data.newest} onPlay={playAlbum}/><MadeForYou/>{data.starred.length > 0 && <LibrarySection title="Favourite albums" subtitle="Starred" albums={data.starred} onPlay={playAlbum}/>}</>}</div>
 }
 // Each "See all" opens the full list behind its section rather than the A–Z albums page.
 const seeAll: Record<string, string> = { 'Recently played': '/albums?type=all&sort=played', 'Fresh from the shelves': '/albums?type=all&sort=added', 'Favourite albums': '/favourites' }
@@ -121,4 +122,11 @@ export function MadeForYou() {
   const status = building ? (mixes.length ? 'Refreshing your mixes…' : 'Building your mixes from what you listen to. This can take a minute.') : error ?? (state?.lastError && !mixes.length ? state.lastError : null)
   if (!mixes.length && !building && !error && !state?.refreshing) return null
   return <section aria-label="Made for you"><div className="section-title"><div><span className="eyebrow">{state?.curatedBy === 'claude' ? 'Picked by Claude' : 'From your listening'}</span><h2><Sparkles/>Made for you</h2></div>{mixes.length > 0 && <button className="link-button" onClick={() => refreshMixes.current()} disabled={building}><RefreshCw className={building ? 'spin' : ''}/>Refresh</button>}</div>{status && <p className="mixes-status" role="status">{status}</p>}{mixes.length ? <div className="card-grid">{mixes.map((mix, index) => <MixCard key={mix.id} mix={mix} onPlay={() => play(index)}/>)}</div> : (building || state?.refreshing) && <SkeletonGrid rows={6}/>}</section>
+}
+
+// Through December and January, Home links to the year's Wrapped recap.
+function WrappedBanner() {
+  const year = wrappedSeasonYear()
+  if (!year) return null
+  return <Link className="wrapped-banner" to={`/wrapped/${year}`}><Gift/><span><strong>Your {year} Wrapped</strong><small>Your year in music: top artists, songs, genres and more.</small></span><ArrowRight/></Link>
 }

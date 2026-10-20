@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuth } from '../stores/auth'
-import { ListeningTracker, sendListeningEvent } from './listening-log'
+import { ListeningTracker, primaryGenre, sendListeningEvent } from './listening-log'
 
 const track = { id: 't1', title: 'Dreams', artist: 'Fleetwood Mac', album: 'Rumours', albumId: 'al1', duration: 257 }
 const session = { serverUrl: 'https://music.example', username: 'tom', salt: 'salt', token: 'token' }
@@ -33,6 +33,20 @@ describe('ListeningTracker', () => {
     tracker.progress(202, 257, true)
     listen(tracker, 40, 203)
     expect(tracker.finish(false)?.listenedSeconds).toBe(52)
+  })
+})
+
+describe('primaryGenre', () => {
+  it('uses the first genre so plays can be grouped by genre', () => {
+    expect(primaryGenre({ ...track, genres: [{ name: 'Soft Rock' }, { name: 'Pop' }], genre: 'Pop' })).toBe('Soft Rock')
+    expect(primaryGenre({ ...track, genre: 'Rock; Jazz' })).toBe('Rock')
+    expect(primaryGenre(track)).toBeUndefined()
+  })
+
+  it('is sent with each play', () => {
+    const tracker = new ListeningTracker()
+    tracker.begin({ ...track, genre: 'Rock' }); listen(tracker, 60)
+    expect(tracker.finish(false)?.genre).toBe('Rock')
   })
 })
 

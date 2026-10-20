@@ -155,3 +155,29 @@ button.settings-link{border:0;background:none;width:100%;font:inherit;font-weigh
 .now-playing>header{display:grid;grid-template-columns:1fr auto 1fr;gap:12px}
 .now-playing>header>button{justify-self:start}
 .now-playing>header>.now-playing-actions{justify-self:end}
+
+/* Listening stats month picker and Wrapped (year in review). */
+.stats-month{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:.8rem;font-weight:700}
+.stats-month input{background:#111311;color:var(--text);border:1px solid #3a3f3a;border-radius:8px;padding:8px 10px;color-scheme:dark}
+.stats-wrapped-links{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--muted);margin:-8px 0 22px}
+.stats-wrapped-links svg{color:var(--accent)}
+.stats-wrapped-links a{color:var(--accent);font-weight:700}
+.wrapped-banner{display:flex;align-items:center;gap:16px;margin:0 0 8px;padding:18px 22px;border-radius:14px;background:linear-gradient(120deg,#2b3a1c,#17201a);border:1px solid #3a482d}
+.wrapped-banner>svg{color:var(--accent);flex:none}
+.wrapped-banner span{display:grid;flex:1;min-width:0}
+.wrapped-banner small{color:var(--muted);margin-top:3px}
+.wrapped-compare{color:var(--muted);margin:-8px 0 26px}
+.wrapped-months{margin-bottom:26px}
+.wrapped-months h2{margin-bottom:4px}
+.wrapped-months>p{color:var(--muted);margin:0 0 14px}
+.wrapped-months ol{display:grid;grid-template-columns:repeat(12,1fr);gap:6px;height:140px;margin:0;padding:14px;list-style:none;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+.wrapped-months li{display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:6px;min-width:0}
+.wrapped-months li span{display:block;width:100%;min-height:2px;border-radius:4px 4px 0 0;background:#3a4530}
+.wrapped-months li span.busiest{background:var(--accent)}
+.wrapped-months li small{color:var(--muted);font-size:.7rem}
+.wrapped-moments{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:26px}
+.wrapped-moment{display:grid;gap:4px;padding:18px;border:1px solid var(--line);border-radius:12px;background:var(--panel);min-width:0}
+.wrapped-moment small{color:var(--accent);text-transform:uppercase;letter-spacing:.1em;font-size:.68rem;font-weight:700}
+.wrapped-moment strong{font-size:1.1rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wrapped-moment span{color:var(--muted);font-size:.85rem}
+.wrapped-playlist p{color:var(--muted)}

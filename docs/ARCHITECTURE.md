@@ -64,7 +64,7 @@ Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/
 | `worker/routes/album-artwork.ts` | `/api/album-artwork*` | Apple, Deezer and Spotify artwork lookup, overrides and uploads |
 | `worker/routes/playlists.ts` | `/api/playlist-shares*` | Sharing playlists between Tomify accounts |
 | `worker/routes/live-playback.ts` | `/api/live-playback*` | Cross-device playback state and commands |
-| `worker/routes/listening.ts`, `worker/routes/smart-playlists.ts` | `/api/listening`, `/api/listening/stats`, `/api/smart-playlists*` | Listening history and stats, saved smart-playlist rules |
+| `worker/routes/listening.ts`, `worker/routes/smart-playlists.ts` | `/api/listening`, `/api/listening/stats`, `/api/listening/wrapped`, `/api/smart-playlists*` | Listening history and stats, saved smart-playlist rules |
 | `worker/routes/lyrics.ts` (+ `worker/features/lyrics.ts`) | `/api/lyrics` | LRCLIB lyrics for songs Navidrome has none for, saved in D1 |
 | `worker/routes/inventory.ts`, `worker/routes/system-settings.ts` | `/api/inventory*`, `/api/library-health*`, `/api/system*`, quality, scan and preflight routes | Administrative library and server operations |
 | `worker/routes/navidrome.ts`, `worker/routes/version.ts` | `/navidrome/*`, `/api/version` | Navidrome proxy and deployed version information |
@@ -162,6 +162,7 @@ Migrations live in `drizzle/`:
 | `0015_smart_playlists.sql` | `smart_playlists` (each account's saved smart-playlist rules) |
 | `0016_lyrics.sql` | `lyrics` (LRCLIB lyrics per song, misses included) |
 | `0017_parties.sql` | `parties`, `party_guests`, `party_queue`, `party_votes` (party mode; deleted when a party ends) |
+| `0018_listening_wrapped.sql` | `listening_events.genre` (top genres), `listening_years` (each account's saved Wrapped recap per year, written before that year's plays are pruned) |
 
 The migrations are the only source of the schema: `pnpm run deploy` applies new ones before deploying the Worker, and the Worker runs no DDL. A query against a table no migration has created gets a 503 `schema-out-of-date`. Production was baselined with `scripts/d1-baseline.sh`; see [D1 migrations](RECOVERY.md#d1-migrations).
 
