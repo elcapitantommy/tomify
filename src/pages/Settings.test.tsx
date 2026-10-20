@@ -9,6 +9,7 @@ vi.mock('../components/VpnControl', () => ({ VpnControl: () => <p>vpn control</p
 vi.mock('../components/LibraryScan', () => ({ LibraryScan: () => <p>scan control</p> }))
 vi.mock('../components/ArtworkUpgrade', () => ({ ArtworkUpgrade: () => null }))
 vi.mock('../components/QualitySettings', () => ({ QualitySettings: () => <p>quality control</p> }))
+vi.mock('../components/ShareLink', () => ({ SharedLinks: () => <p>shared links</p> }))
 
 const session = { serverUrl: 'https://music.example', username: 'guest', salt: 's', token: 't' }
 

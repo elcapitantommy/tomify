@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Airplay, Cast, Check, ChevronDown, ListMusic, Maximize2, MicVocal, MonitorSpeaker, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react'
+import { Airplay, Car, Cast, Check, ChevronDown, ListMusic, Maximize2, MicVocal, MonitorSpeaker, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react'
 import { Artwork } from './Artwork'
 import { ItemArtists } from './ArtistLinks'
 import { StartRadioButton } from './SongRadio'
@@ -13,10 +13,17 @@ import { controlRemote, isDeviceOnline, livePosition, localPlaybackDeviceId, loc
 import { playHere, transferTo } from '../stores/playbackHandoff'
 import { promptCast, useCast } from '../stores/cast'
 import { castLabels } from '../lib/cast'
+import { DragHandle } from './DragHandle'
+import { CarMode } from './CarMode'
+import { useCarMode } from '../stores/carMode'
+import { LiveRadioBar } from './LiveRadio'
+import { ShareLinkButton } from './ShareLink'
+import { useLiveRadio } from '../stores/liveRadio'
 
 const noCommand = (action: LivePlaybackCommandAction, value?: number) => { void action; void value }
 
-function usePlaybackView() {
+// eslint-disable-next-line react-refresh/only-export-components
+export function usePlaybackView() {
   const player = usePlayer()
   const { remote, now } = useRemoteSession(500)
 
@@ -134,14 +141,16 @@ function SeekBar() {
 export function PlayerBar() {
   const player = usePlayer()
   const view = usePlaybackView()
+  const radioOn = useLiveRadio((state) => state.station !== null)
   const track = view.queue[view.currentIndex]
+  if (radioOn) return <LiveRadioBar/>
   if (!track) return null
 
   const togglePlaying = () => view.remote ? view.command(view.playing ? 'pause' : 'play') : player.setPlaying(!player.playing)
   const toggleMuted = () => view.remote ? view.command('toggle-muted') : player.toggleMuted()
   const setVolume = (value: number) => view.remote ? view.command('set-volume', value) : player.setVolume(value)
 
-  return <><div className="player-bar"><div className="player-track"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={160}/><span><button type="button" className="player-track-open" onClick={() => player.setNowPlayingOpen(true)}><strong>{track.title}</strong></button><small><ItemArtists item={track}/>{view.remote && view.deviceName ? <em className="remote-device"> · {view.deviceName}</em> : null}</small></span></div><div className="desktop-player-controls"><Transport/><SeekBar/></div><div className="player-actions"><DevicePicker/><button className="mobile-toggle" onClick={togglePlaying} aria-label={view.playing ? 'Pause' : 'Play'}>{view.playing ? <Pause fill="currentColor"/> : <Play fill="currentColor"/>}</button><button onClick={() => player.setQueueOpen(true)} aria-label="Open queue"><ListMusic/></button><button onClick={toggleMuted} aria-label="Mute">{view.muted ? <VolumeX/> : <Volume2/>}</button><input className="volume" aria-label="Volume" type="range" min="0" max="1" step="0.01" value={view.volume} onChange={(event) => setVolume(Number(event.target.value))}/><button className="desktop-only" onClick={() => player.setNowPlayingOpen(true)} aria-label="Full screen player"><Maximize2/></button></div><div className="mobile-player-progress"><SeekBar/></div></div><QueueDrawer/><NowPlaying/></>
+  return <><div className="player-bar"><div className="player-track"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={160}/><span><button type="button" className="player-track-open" onClick={() => player.setNowPlayingOpen(true)}><strong>{track.title}</strong></button><small><ItemArtists item={track}/>{view.remote && view.deviceName ? <em className="remote-device"> · {view.deviceName}</em> : null}</small></span></div><div className="desktop-player-controls"><Transport/><SeekBar/></div><div className="player-actions"><DevicePicker/><button className="mobile-toggle" onClick={togglePlaying} aria-label={view.playing ? 'Pause' : 'Play'}>{view.playing ? <Pause fill="currentColor"/> : <Play fill="currentColor"/>}</button><button onClick={() => player.setQueueOpen(true)} aria-label="Open queue"><ListMusic/></button><button onClick={toggleMuted} aria-label="Mute">{view.muted ? <VolumeX/> : <Volume2/>}</button><input className="volume" aria-label="Volume" type="range" min="0" max="1" step="0.01" value={view.volume} onChange={(event) => setVolume(Number(event.target.value))}/><button className="desktop-only" onClick={() => player.setNowPlayingOpen(true)} aria-label="Full screen player"><Maximize2/></button></div><div className="mobile-player-progress"><SeekBar/></div></div><QueueDrawer/><NowPlaying/><CarMode/></>
 }
 
 function QueueDrawer() {
@@ -155,7 +164,7 @@ function QueueDrawer() {
   const removeIndex = (index: number) => view.remote ? view.command('remove-index', index) : player.removeFromQueue(index)
   const clear = () => view.remote ? view.command('clear-queue') : player.clearQueue()
 
-  return <div className="drawer-backdrop" onMouseDown={() => player.setQueueOpen(false)}><aside className="queue-drawer" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="eyebrow">{remoteLabel(view) ?? radioLabel ?? 'Up next'}</span><h2>Queue</h2>{radioLabel && (radio.loading || radio.error) && <small className="radio-status">{radio.error ?? 'Finding similar songs…'}</small>}</div><button onClick={() => player.setQueueOpen(false)} aria-label="Close queue"><X/></button></header><div className="queue-list">{view.queue.map((track, index) => <div className={index === view.currentIndex ? 'queue-item active' : 'queue-item'} key={`${track.id}-${index}`}><div className="queue-open"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={100}/><span><button type="button" className="queue-play" onClick={() => playIndex(index)}><strong>{track.title}</strong></button><small><ItemArtists item={track} onNavigate={() => player.setQueueOpen(false)}/></small></span></div><button onClick={() => removeIndex(index)} aria-label={`Remove ${track.title}`}><X/></button></div>)}</div><button className="button secondary clear" onClick={clear}>Clear queue</button></aside></div>
+  return <div className="drawer-backdrop" onMouseDown={() => player.setQueueOpen(false)}><aside className="queue-drawer" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="eyebrow">{remoteLabel(view) ?? radioLabel ?? 'Up next'}</span><h2>Queue</h2>{radioLabel && (radio.loading || radio.error) && <small className="radio-status">{radio.error ?? 'Finding similar songs…'}</small>}</div><button onClick={() => player.setQueueOpen(false)} aria-label="Close queue"><X/></button></header><div className="queue-list">{view.queue.map((track, index) => <div className={index === view.currentIndex ? 'queue-item active' : 'queue-item'} key={`${track.id}-${index}`}><div className="queue-open"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={100}/><span><button type="button" className="queue-play" onClick={() => playIndex(index)}><strong>{track.title}</strong></button><small><ItemArtists item={track} onNavigate={() => player.setQueueOpen(false)}/></small></span></div>{!view.remote && <DragHandle index={index} count={view.queue.length} label={track.title} onMove={(from, to) => player.moveInQueue(from, to)}/>}<button onClick={() => removeIndex(index)} aria-label={`Remove ${track.title}`}><X/></button></div>)}</div><button className="button secondary clear" onClick={clear}>Clear queue</button></aside></div>
 }
 
 const LYRICS_KEY = 'tomify-lyrics-open'
@@ -174,5 +183,5 @@ function NowPlaying() {
   }
   const seek = (value: number) => view.remote ? view.command('seek', value) : player.seekTo(value)
 
-  return <section className="now-playing"><header><button onClick={() => player.setNowPlayingOpen(false)} aria-label="Close now playing"><ChevronDown/></button><span>{remoteLabel(view) ?? 'Now playing'}</span><span className="now-playing-actions"><button className={lyricsOpen ? 'active' : ''} onClick={toggleLyrics} aria-label={lyricsOpen ? 'Hide lyrics' : 'Show lyrics'} aria-pressed={lyricsOpen}><MicVocal/></button>{!view.remote && <SleepTimerButton/>}<DevicePicker placement="down"/><button onClick={() => { player.setNowPlayingOpen(false); player.setQueueOpen(true) }} aria-label="Open queue"><ListMusic/></button></span></header>{lyricsOpen ? <LyricsPanel track={track} time={view.currentTime} onSeek={seek}/> : <div className="now-art"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={1000}/></div>}<div className="now-meta"><span><h1>{track.title}</h1><p><ItemArtists item={track} onNavigate={() => player.setNowPlayingOpen(false)}/></p><RatingStars key={track.id} item={track} name={track.title} className="now-rating"/></span>{!view.remote && <StartRadioButton track={track} className="now-radio"/>}</div><SeekBar/><Transport large/>{view.remote && <button type="button" className="button secondary play-here" onClick={view.playHere}><MonitorSpeaker/>Play on this device</button>}</section>
+  return <section className="now-playing"><header><button onClick={() => player.setNowPlayingOpen(false)} aria-label="Close now playing"><ChevronDown/></button><span>{remoteLabel(view) ?? 'Now playing'}</span><span className="now-playing-actions"><button className={lyricsOpen ? 'active' : ''} onClick={toggleLyrics} aria-label={lyricsOpen ? 'Hide lyrics' : 'Show lyrics'} aria-pressed={lyricsOpen}><MicVocal/></button>{!view.remote && <SleepTimerButton/>}<button onClick={() => { player.setNowPlayingOpen(false); useCarMode.getState().setOpen(true) }} aria-label="Car mode" title="Car mode"><Car/></button><ShareLinkButton key={track.id} ids={[track.id]} label={track.title} variant="icon"/><DevicePicker placement="down"/><button onClick={() => { player.setNowPlayingOpen(false); player.setQueueOpen(true) }} aria-label="Open queue"><ListMusic/></button></span></header>{lyricsOpen ? <LyricsPanel track={track} time={view.currentTime} onSeek={seek}/> : <div className="now-art"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={1000}/></div>}<div className="now-meta"><span><h1>{track.title}</h1><p><ItemArtists item={track} onNavigate={() => player.setNowPlayingOpen(false)}/></p><RatingStars key={track.id} item={track} name={track.title} className="now-rating"/></span>{!view.remote && <StartRadioButton track={track} className="now-radio"/>}</div><SeekBar/><Transport large/>{view.remote && <button type="button" className="button secondary play-here" onClick={view.playHere}><MonitorSpeaker/>Play on this device</button>}</section>
 }

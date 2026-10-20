@@ -34,6 +34,18 @@ describe('PlaylistDetail editing', () => {
     expect(screen.getByRole('button', { name: 'Move Bravo up' })).toBeDisabled()
   })
 
+  it('drags a track to a new place and saves the order', async () => {
+    api.replacePlaylistTracks.mockResolvedValue(undefined)
+    await startEditing()
+    const rows = screen.getAllByRole('listitem')
+    rows.forEach((row, index) => { row.getBoundingClientRect = () => ({ top: index * 50, height: 50, bottom: index * 50 + 50, left: 0, right: 100, width: 100, x: 0, y: index * 50, toJSON: () => ({}) }) })
+    const handle = screen.getByRole('button', { name: 'Drag to reorder Charlie' })
+    fireEvent.pointerDown(handle, { pointerId: 1, button: 0, clientY: 120 })
+    fireEvent.pointerMove(handle, { pointerId: 1, clientY: 5 })
+    fireEvent.pointerUp(handle, { pointerId: 1, clientY: 5 })
+    expect(api.replacePlaylistTracks).toHaveBeenCalledWith('p1', ['c', 'a', 'b'])
+  })
+
   it('puts a removed track back when the server refuses', async () => {
     api.removeFromPlaylist.mockRejectedValue(new Error('Server said no'))
     await startEditing()
