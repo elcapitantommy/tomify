@@ -13,6 +13,8 @@ interface SubsonicEnvelope { 'subsonic-response': Record<string, unknown> & { st
 
 export type StarKind = 'song' | 'album' | 'artist'
 export interface GenreCount { name: string; albumCount: number; songCount: number }
+// A public link Navidrome serves to anyone, without signing in (needs ND_ENABLESHARING=true on the server).
+export interface ShareLink { id: string; url: string; description?: string; expires?: string; created?: string; visitCount?: number; entry?: { id: string; title?: string; artist?: string; album?: string; isDir?: boolean }[] }
 const STAR_PARAM: Record<StarKind, string> = { song: 'id', album: 'albumId', artist: 'artistId' }
 
 type SubsonicParams = Record<string, string | number | string[] | number[] | undefined>
@@ -141,6 +143,9 @@ export class NavidromeClient {
   async radioStations(signal?: AbortSignal): Promise<RadioStation[]> { const r = await this.get<{ internetRadioStations?: { internetRadioStation?: RadioStation[] } }>('getInternetRadioStations', {}, signal); return r.internetRadioStations?.internetRadioStation ?? [] }
   async addRadioStation(station: { name: string; streamUrl: string; homePageUrl?: string }) { await this.get('createInternetRadioStation', { name: station.name, streamUrl: station.streamUrl, homepageUrl: station.homePageUrl }) }
   async deleteRadioStation(id: string) { await this.get('deleteInternetRadioStation', { id }) }
+  async createShareLink(ids: string[], description: string, expires?: number): Promise<ShareLink> { const r = await this.get<{ shares?: { share?: ShareLink[] } }>('createShare', { id: ids, description, expires }); const share = r.shares?.share?.[0]; if (!share?.url) throw new NavidromeError('The music server did not return a link.'); return share }
+  async shareLinks(signal?: AbortSignal): Promise<ShareLink[]> { const r = await this.get<{ shares?: { share?: ShareLink[] } }>('getShares', {}, signal); return r.shares?.share ?? [] }
+  async deleteShareLink(id: string) { await this.get('deleteShare', { id }) }
   async genres(signal?: AbortSignal): Promise<string[]> { const r = await this.get<{ genres?: { genre?: { value: string }[] } }>('getGenres', {}, signal); return (r.genres?.genre ?? []).map((genre) => genre.value).filter(Boolean).sort((a, b) => a.localeCompare(b)) }
   // What every account is playing now: Navidrome records it from the "now playing" scrobble each player sends.
   async nowPlaying(signal?: AbortSignal): Promise<NowPlaying[]> { const r = await this.get<{ nowPlaying?: { entry?: NowPlaying[] } }>('getNowPlaying', {}, signal); return r.nowPlaying?.entry ?? [] }
