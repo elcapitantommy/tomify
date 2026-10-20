@@ -3,6 +3,7 @@ import { useEffect, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { Artwork } from '../components/Artwork'
 import { AlbumCard } from '../components/MediaCards'
+import { ArtistAbout, ArtistPopular } from '../components/ArtistAbout'
 import { ErrorState, SkeletonGrid } from '../components/States'
 import { useLoad } from '../hooks/useLoad'
 import { useSearchParamState } from '../hooks/useSearchParamState'
@@ -68,7 +69,9 @@ export function ArtistDetail() {
 
   return <div className="page detail-page">
     <header className="detail-hero artist-hero"><Artwork id={data.artist.coverArt ?? data.artist.id} alt={data.artist.name} round size={1000}/><div><span className="eyebrow">Artist</span><h1>{data.artist.name}</h1><p>{allFamilies.length} releases · {albums.length} versions in your library</p><div className="hero-actions"><button className="button primary" onClick={() => void playAll()}><Play fill="currentColor"/>Play</button><button className="button secondary" onClick={() => void playAll(true)}><Shuffle/>Shuffle</button></div></div></header>
+    <ArtistPopular artist={data.artist}/>
     <div className="release-toolbar artist-release-toolbar"><div className="release-tabs" role="tablist" aria-label="Artist release type">{artistFilters.map((item) => <button key={item.value} className={filter === item.value ? 'release-tab active' : 'release-tab'} onClick={() => setFilter(item.value)}>{item.label}<span>{counts[item.value]}</span></button>)}</div></div>
     {visibleSections.filter((section) => section.items.length > 0).map((section) => <section key={section.key} className="discography-section"><div className="section-title"><div><span className="eyebrow">{section.items.length} {section.items.length === 1 ? 'release' : 'releases'}</span><h2>{section.title}</h2></div></div><div className="card-grid">{section.items.map((family) => <AlbumCard album={family.representative} key={family.key} displayTitle={releaseFamilyTitle(family.representative)} variantCount={family.variants.length} dateLabel={releaseYearLabel(family.representative, overrides[family.representative.id])}/>)}</div></section>)}
+    <ArtistAbout artist={data.artist}/>
   </div>
 }

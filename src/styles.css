@@ -203,3 +203,12 @@ button.settings-link{border:0;background:none;width:100%;font:inherit;font-weigh
 .now-meta .now-rating{margin-top:6px}
 .now-meta .now-rating svg{width:18px;height:18px}
 @media(max-width:800px){.track-list li>.track-rating{display:none}.album-rating{justify-content:center}}
+/* Artist page: popular songs, biography, similar artists */
+.text-button{border:0;background:none;padding:4px 0;color:var(--muted);font-size:.8rem;font-weight:600;display:inline-flex;align-items:center;gap:5px}
+.text-button:hover{color:var(--text)}
+.artist-popular{margin-bottom:34px}
+.artist-popular .section-title{margin-top:0}
+.artist-bio-text{max-width:760px;color:#c1c6c1;line-height:1.65}
+.artist-bio-text p{margin:0 0 12px}
+.artist-bio-text:not(.open) p{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.artist-bio-actions{display:flex;gap:18px;align-items:center}

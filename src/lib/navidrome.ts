@@ -3,6 +3,7 @@ import type { Album, Artist, Playlist, SearchResults, Track } from '../types'
 import type { ReplayGainMode } from '../../shared/replaygain.mjs'
 import { mediaRoute, startMediaRoute } from './mediaRoute'
 import type { Lyrics } from './lyrics'
+import { parseArtistInfo, type ArtistInfo } from './artist-info'
 
 export type NowPlaying = Track & { username: string; minutesAgo: number; playerName?: string }
 export interface ScanStatus { scanning: boolean; count?: number; folderCount?: number; lastScan?: string }
@@ -122,6 +123,10 @@ export class NavidromeClient {
     const synced = best.synced === true
     return { synced, lines: best.line!.map((line) => ({ time: synced ? Math.max(0, ((line.start ?? 0) - (best.offset ?? 0)) / 1000) : -1, text: (line.value ?? '').trim() })) }
   }
+  // Biography and similar artists from Navidrome's Last.fm agent; similar artists are only ones in this library.
+  async artistInfo(id: string, signal?: AbortSignal): Promise<ArtistInfo> { const r = await this.get<{ artistInfo2?: Parameters<typeof parseArtistInfo>[0] }>('getArtistInfo2', { id, count: 12, includeNotPresent: 'false' }, signal); return parseArtistInfo(r.artistInfo2, id) }
+  // An artist's most played songs on Last.fm that are in this library (empty without Navidrome's Last.fm agent).
+  async topSongs(artist: string, count = 10, signal?: AbortSignal): Promise<Track[]> { const r = await this.get<{ topSongs?: { song?: Track[] } }>('getTopSongs', { artist, count }, signal); return r.topSongs?.song ?? [] }
   async genres(signal?: AbortSignal): Promise<string[]> { const r = await this.get<{ genres?: { genre?: { value: string }[] } }>('getGenres', {}, signal); return (r.genres?.genre ?? []).map((genre) => genre.value).filter(Boolean).sort((a, b) => a.localeCompare(b)) }
   // What every account is playing now: Navidrome records it from the "now playing" scrobble each player sends.
   async nowPlaying(signal?: AbortSignal): Promise<NowPlaying[]> { const r = await this.get<{ nowPlaying?: { entry?: NowPlaying[] } }>('getNowPlaying', {}, signal); return r.nowPlaying?.entry ?? [] }
