@@ -15,7 +15,7 @@ export const DJ_POOL_PER_ARTIST = 3
 const DJ_MIN_RESTED_ARTISTS = 8
 const MAX_SCRIPT_CHARS = 600
 const MAX_REQUEST_CHARS = 200
-export const DEFAULT_DJ_VOICE = 'pandora'
+export const DEFAULT_DJ_VOICE = 'ophelia'
 export const DJ_TTS_MODEL = '@cf/deepgram/aura-2-en'
 // MeloTTS is plainer than Aura-2 but costs about 8 neurons a link against Aura-2's ~1,100, so it is the
 // default: the free 10,000 a day are shared by every model, and Aura-2 alone spends them in about nine

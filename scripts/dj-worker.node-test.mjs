@@ -146,7 +146,7 @@ test('the voice endpoint reads the link with MeloTTS, or Aura-2 first when chose
   const aura = await call({ AI: ai(auraOk), TOMIFY_DJ_VOICE_MODEL: 'aura' }, 'Morning Tom.')
   assert.equal(await aura.text(), 'aura-mp3')
   assert.equal(aura.headers.get('x-tomify-voice'), 'aura')
-  assert.equal(DEFAULT_DJ_VOICE, 'pandora', 'the British female voice Tom chose')
+  assert.equal(DEFAULT_DJ_VOICE, 'ophelia', 'Tom went back to Ophelia after trying Pandora')
   assert.deepEqual(runs, [{ model: DJ_TTS_MODEL, inputs: { text: 'Morning Tom.', speaker: DEFAULT_DJ_VOICE, encoding: 'mp3' }, options: { returnRawResponse: true } }])
 
   // A refused Aura-2 falls back to MeloTTS, and the app is told why.
