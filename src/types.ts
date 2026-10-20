@@ -14,6 +14,7 @@ export interface Album {
   created?: string
   played?: string
   starred?: string
+  userRating?: number
   musicBrainzId?: string
   releaseTypes?: string[]
   isCompilation?: boolean

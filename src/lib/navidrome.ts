@@ -129,6 +129,8 @@ export class NavidromeClient {
   // Subsonic stars songs by `id`, albums by `albumId` and artists by `artistId`.
   async star(id: string, kind: StarKind = 'song') { await this.get('star', { [STAR_PARAM[kind]]: id }) }
   async unstar(id: string, kind: StarKind = 'song') { await this.get('unstar', { [STAR_PARAM[kind]]: id }) }
+  // Navidrome rates songs and albums by id; 0 clears the rating.
+  async setRating(id: string, rating: number) { await this.get('setRating', { id, rating: Math.max(0, Math.min(5, Math.round(rating))) }) }
   async scrobble(id: string, submission = true) { await this.get('scrobble', { id, submission: submission ? 'true' : 'false' }); return true }
   coverArtUrl(id?: string, size = 600) { return id ? this.url('getCoverArt', { id, size }).toString() : '' }
   streamUrl(id: string) {

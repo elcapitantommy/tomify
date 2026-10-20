@@ -181,3 +181,25 @@ button.settings-link{border:0;background:none;width:100%;font:inherit;font-weigh
 .wrapped-moment strong{font-size:1.1rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wrapped-moment span{color:var(--muted);font-size:.85rem}
 .wrapped-playlist p{color:var(--muted)}
+/* Keyboard shortcuts help */
+.shortcuts-backdrop{display:grid;place-items:center;padding:16px}
+.shortcuts-help{width:min(460px,100%);max-height:calc(100vh - 32px);overflow:auto;background:#121512;border:1px solid var(--line);border-radius:14px;padding:22px 24px}
+.shortcuts-help header{display:flex;justify-content:space-between;align-items:center}
+.shortcuts-help h2{font:700 1.3rem Manrope;margin:0}
+.shortcuts-help header button{border:0;background:none;padding:6px;color:var(--muted)}
+.shortcuts-help dl{display:grid;gap:8px;margin:16px 0 0}
+.shortcuts-help dl>div{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.shortcuts-help dt{display:flex;gap:4px;flex:none}
+.shortcuts-help dd{margin:0;color:var(--muted);font-size:.85rem;text-align:right}
+.shortcuts-help kbd{font:600 .75rem 'DM Sans',system-ui,sans-serif;min-width:26px;text-align:center;padding:3px 7px;border:1px solid #3a3f3a;border-bottom-width:2px;border-radius:6px;background:var(--panel2);color:var(--text)}
+/* Star ratings */
+.rating-stars{display:inline-flex;align-items:center;gap:1px}
+.rating-stars button{border:0;background:none;padding:2px;color:#4c524c;line-height:0}
+.rating-stars button.lit{color:var(--accent)}
+.rating-stars svg{width:14px;height:14px}
+.track-list li>.track-rating{grid-column:span 2;justify-self:center}
+.album-rating{margin:-4px 0 4px}
+.album-rating svg{width:18px;height:18px}
+.now-meta .now-rating{margin-top:6px}
+.now-meta .now-rating svg{width:18px;height:18px}
+@media(max-width:800px){.track-list li>.track-rating{display:none}.album-rating{justify-content:center}}
