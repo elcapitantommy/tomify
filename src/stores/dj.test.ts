@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuth } from './auth'
 import { usePlayer } from './player'
-import { bindDj, djVoiceElement, DJ_SPEECH_TIMEOUT_MS, fetchHeard, musicLoudness, speechLoudness, voiceGain, DJ_UNTAGGED_LUFS, DJ_VOICE_LIFT_DB, fetchVoice, useDj } from './dj'
+import { bindDj, DJ_POOL_SEND, poolRequest, djVoiceElement, DJ_SPEECH_TIMEOUT_MS, fetchHeard, musicLoudness, speechLoudness, voiceGain, DJ_UNTAGGED_LUFS, DJ_VOICE_LIFT_DB, fetchVoice, useDj } from './dj'
 
 const session = { serverUrl: 'https://music.example', username: 'tom', salt: 's', token: 't' }
 const track = (id: string) => ({ id, title: `Song ${id}`, artist: `Artist ${id}`, album: 'Album' })
@@ -39,6 +39,26 @@ describe('Tomify DJ', () => {
     expect(useDj.getState().speaking).toBe(false)
     expect(usePlayer.getState().playing).toBe(true)
     expect(play).toHaveBeenCalled()
+  })
+
+  it('starts from a smart playlist and sends a sample of its unplayed songs with each request', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => json({ tracks: [track('p1'), track('p2')], script: '', curatedBy: 'claude', voice: false }))
+    vi.stubGlobal('fetch', fetcher)
+    const tracks = Array.from({ length: 200 }, (_, index) => ({ ...track(`p${index}`), bpm: 120, extra: 'x' }))
+    await useDj.getState().start(null, { name: 'House', tracks })
+    const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
+    expect(body).toEqual(expect.objectContaining({ poolName: 'House', first: true, recentTrackIds: [] }))
+    expect(body.pool).toHaveLength(DJ_POOL_SEND)
+    expect(body.pool[0]).toEqual({ id: expect.any(String), title: expect.any(String), artist: expect.any(String), album: 'Album', bpm: 120 })
+    expect(useDj.getState().pool?.name).toBe('House')
+    useDj.getState().stop()
+    expect(useDj.getState().pool).toBeNull()
+
+    const small = { name: 'Few', tracks: [track('a'), track('b'), track('c')] }
+    expect(poolRequest(small, ['x', 'a']).pool.map((item) => item.id).sort()).toEqual(['a', 'b', 'c'])
+    const fresh = poolRequest({ name: 'Some', tracks: Array.from({ length: 10 }, (_, index) => track(`t${index}`)) }, ['t0', 't1'])
+    expect(fresh.pool.map((item) => item.id)).not.toContain('t0')
+    expect(fresh.recentTrackIds).toEqual(['t0', 't1'])
   })
 
   it('opens without starting, and starts with a request for the first set', async () => {

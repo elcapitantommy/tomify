@@ -5,7 +5,7 @@ import { usePlayer } from './player'
 import { bindRadio, useRadio } from './radio'
 
 const library: Track[] = Array.from({ length: 40 }, (_, index) => ({ id: `l${index}`, title: `Track ${index}`, artist: `Artist ${index % 10}`, album: 'A', genre: index % 2 ? 'Rock' : 'Pop' }))
-vi.mock('../lib/smart-playlists', () => ({ loadLibrary: async () => library }))
+vi.mock('../lib/smart-playlists', async (importOriginal) => ({ ...await importOriginal<typeof import('../lib/smart-playlists')>(), loadLibrary: async () => library }))
 
 const seed: Track = { id: 'seed', title: 'Seed song', artist: 'Seed artist', artistId: 'ar1', album: 'S', genre: 'Rock' }
 const api = { similarSongs: vi.fn(async () => [library[3]]) } as unknown as NavidromeClient
@@ -14,7 +14,7 @@ describe('song radio', () => {
   let unbind: () => void
   beforeEach(() => {
     usePlayer.setState({ queue: [], currentIndex: -1, playing: false, shuffle: true, repeat: 'all' })
-    useRadio.setState({ seed: null, loading: false, error: null })
+    useRadio.setState({ seed: null, pool: null, loading: false, error: null })
     unbind = bindRadio(api)
   })
   afterEach(() => unbind())
@@ -44,5 +44,16 @@ describe('song radio', () => {
     await useRadio.getState().start(seed)
     usePlayer.getState().toggleShuffle()
     expect(useRadio.getState().seed).toBeNull()
+  })
+
+  it('keeps to a smart playlist: only songs its rules match are queued, similar songs included', async () => {
+    await useRadio.getState().start(seed, { name: 'Pop', rules: { genres: ['pop'] } })
+    const queued = usePlayer.getState().queue.slice(1)
+    expect(queued.length).toBe(15)
+    expect(queued.every((track) => track.genre === 'Pop')).toBe(true)
+    expect(queued).not.toContain(library[3])
+    expect(useRadio.getState().pool?.name).toBe('Pop')
+    useRadio.getState().stop()
+    expect(useRadio.getState().pool).toBeNull()
   })
 })

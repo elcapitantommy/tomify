@@ -5,7 +5,7 @@ import type { Env, RouteHandler } from '../env.ts'
 import { authenticate } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
 import { subsonicForRequest } from '../lib/subsonic.ts'
-import { buildCandidates, gatherLibrary, songsOf, limitPerArtist, listeningStats, seededRandom, toMixTrack, type Candidate, type LibrarySnapshot, type MixTrack, type SubsonicSong } from './mixes.ts'
+import { buildCandidates, gatherLibrary, songsOf, limitPerArtist, listeningStats, seededRandom, toMixTrack, topArtistsFrom, type Candidate, type LibrarySnapshot, type MixTrack, type SubsonicSong } from './mixes.ts'
 import { callClaudeJson } from './mix-curator.ts'
 
 const DJ_POOL_SIZE = 150
@@ -28,7 +28,7 @@ export const DJ_LISTEN_MODEL = '@cf/openai/whisper-large-v3-turbo'
 const MAX_LISTEN_BYTES = 2 * 1024 * 1024
 
 export interface DjSegment { tracks: MixTrack[], script: string, curatedBy: 'claude' | 'tomify', voice: boolean }
-export interface DjSegmentInput { recentTrackIds: string[], recentArtists: string[], request: string | null, justAsked?: boolean, first: boolean, username: string, now: number, heardLately?: string[] }
+export interface DjSegmentInput { recentTrackIds: string[], recentArtists: string[], request: string | null, justAsked?: boolean, first: boolean, username: string, now: number, heardLately?: string[], poolName?: string | null }
 
 export const DJ_SYSTEM = `You are the DJ in Tomify, a personal music player: a bubbly, upbeat radio presenter talking to one listener between songs, who knows their taste.
 
@@ -51,13 +51,23 @@ const DJ_SCHEMA = {
   },
 } as const
 
-export function cleanSegmentRequest(body: unknown): { recentTrackIds: string[], recentArtists: string[], request: string | null, justAsked: boolean, first: boolean } {
+// A smart playlist's songs, sent by the browser (which matched its rules over the whole library) so the DJ
+// picks only from them. Only the fields the DJ reads are kept, and oversized songs are dropped.
+const POOL_KEYS = ['id', 'title', 'artist', 'artistId', 'album', 'albumId', 'coverArt', 'duration', 'track', 'discNumber', 'suffix', 'contentType', 'starred', 'replayGain', 'year', 'genre', 'genres', 'moods', 'bpm', 'playCount', 'played']
+export function cleanPool(value: unknown): SubsonicSong[] {
+  return songsOf(value).slice(0, DJ_POOL_SIZE).map((song) => Object.fromEntries(POOL_KEYS.filter((key) => key in song).map((key) => [key, song[key as keyof SubsonicSong]])) as unknown as SubsonicSong)
+    .filter((song) => typeof song.artist === 'string' && typeof song.album === 'string' && JSON.stringify(song).length <= 1500)
+}
+
+export function cleanSegmentRequest(body: unknown): { recentTrackIds: string[], recentArtists: string[], request: string | null, justAsked: boolean, first: boolean, pool: SubsonicSong[], poolName: string | null } {
   const input = body && typeof body === 'object' ? body as Record<string, unknown> : {}
   const strings = (value: unknown, limit: number) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item !== '').slice(-limit) : []
   const recentTrackIds = strings(input.recentTrackIds, 200)
   const recentArtists = strings(input.recentArtists, 20).map((artist) => artist.slice(0, MAX_REQUEST_CHARS))
   const request = typeof input.request === 'string' && input.request.trim() ? input.request.trim().slice(0, MAX_REQUEST_CHARS) : null
-  return { recentTrackIds, recentArtists, request, justAsked: Boolean(request) && input.justAsked === true, first: input.first === true }
+  const pool = cleanPool(input.pool)
+  const poolName = pool.length && typeof input.poolName === 'string' ? input.poolName.trim().slice(0, 120) || null : null
+  return { recentTrackIds, recentArtists, request, justAsked: Boolean(request) && input.justAsked === true, first: input.first === true, pool, poolName }
 }
 
 export function partOfDay(now: number) {
@@ -150,6 +160,7 @@ export function djPrompt(pool: Candidate[], snapshot: LibrarySnapshot, input: Dj
   const prompt = [
     `Listener: ${input.username}. It is ${ukDate(input.now)}, ${partOfDay(input.now)} in the UK.`,
     input.first ? 'This is the first link of the session.' : 'The session is already under way.',
+    input.poolName ? `They asked the DJ to play from their smart playlist "${input.poolName}", so every candidate is from it.` : '',
     `Artists they play most lately: ${snapshot.topArtists.join(', ') || 'not enough history yet'}.`,
     input.recentArtists.length ? `Played this session, so rest them unless asked: ${input.recentArtists.join(', ')}.` : '',
     input.heardLately?.length ? `Heard in the last two days, so open with other artists: ${input.heardLately.slice(0, 20).join(', ')}.` : '',
@@ -287,10 +298,11 @@ export function createDjHandler(deps: DjDependencies & { fetcher?: typeof fetch 
     try {
       const stats = await listeningStats(env, username, now)
       const subsonic = subsonicForRequest(request, signedIn, env, deps.fetcher)
-      const snapshot = await gatherLibrary(subsonic, stats)
+      // From a smart playlist, the browser's songs are the whole pool and requests only steer within them.
+      const snapshot = input.pool.length ? { songs: input.pool.map((song) => ({ song, source: 'smart playlist' })), stats, topArtists: topArtistsFrom(stats, []) } : await gatherLibrary(subsonic, stats)
       // A request naming a song or artist is searched for in the whole library, since the gathered songs are
       // only a sample of it; one naming one of the library's genres ("some deep house") brings in that genre too.
-      if (input.request) {
+      if (input.request && !input.pool.length) {
         for (const query of input.justAsked ? requestSearches(input.request) : []) {
           const found = await subsonic<{ searchResult3?: { song?: unknown } }>('search3', { query, songCount: 20, artistCount: 0, albumCount: 0 }).catch(() => ({ searchResult3: undefined }))
           const songs = songsOf(found.searchResult3?.song)
