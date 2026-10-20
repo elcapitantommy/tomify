@@ -1,9 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, FolderOpen, ImageUp, LoaderCircle, RotateCcw, X } from 'lucide-react'
 import type { Album } from '../types'
-import { useAlbumArtwork, type AlbumArtworkCandidate } from '../stores/albumArtwork'
+import { useAlbumArtwork, type AlbumArtworkLookup } from '../stores/albumArtwork'
 
-type LookupState = { status: 'idle' } | { status: 'loading' } | { status: 'ready'; candidates: AlbumArtworkCandidate[] } | { status: 'error'; message: string }
+type LookupState = { status: 'idle' } | { status: 'loading' } | ({ status: 'ready' } & AlbumArtworkLookup) | { status: 'error'; message: string }
+
+const providerLabels: Record<string, string> = { apple: 'Apple', deezer: 'Deezer', spotify: 'Spotify' }
+
+function listNames(names: string[]) {
+  return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+// Names the catalogues that answered and the title searched, so a miss is easy to understand.
+function noMatchMessage(lookup: AlbumArtworkLookup) {
+  const searched = lookup.searched.map((provider) => providerLabels[provider] ?? provider)
+  if (!searched.length) return 'No catalogue could be searched for this album.'
+  const query = lookup.query ? ` for “${lookup.query.album}” by ${lookup.query.artist}` : ' for this album'
+  return `${listNames(searched)} ${searched.length === 1 ? 'has' : 'have'} no confident match${query}.`
+}
 
 // Opened by clicking the album's artwork (administrators only); searchOnOpen looks up replacements straight away.
 export function AlbumArtworkPicker({ album, searchOnOpen = false, onClose }: { album: Album; searchOnOpen?: boolean; onClose?: () => void }) {
@@ -20,7 +34,7 @@ export function AlbumArtworkPicker({ album, searchOnOpen = false, onClose }: { a
 
   const search = async () => {
     setState({ status: 'loading' })
-    try { setState({ status: 'ready', candidates: await lookup(album) }) }
+    try { setState({ status: 'ready', ...await lookup(album) }) }
     catch (reason) { setState({ status: 'error', message: reason instanceof Error ? reason.message : 'Artwork lookup failed.' }) }
   }
 
@@ -54,7 +68,8 @@ export function AlbumArtworkPicker({ album, searchOnOpen = false, onClose }: { a
     </div>
     {state.status === 'error' && <p className="artwork-picker-note">{state.message}</p>}
     {error && <p className="artwork-picker-note">{error}</p>}
-    {state.status === 'ready' && !state.candidates.length && <p className="artwork-picker-note">Apple, Deezer and Spotify have no confident match for this album.</p>}
+    {state.status === 'ready' && !state.candidates.length && <p className="artwork-picker-note">{noMatchMessage(state)}</p>}
+    {state.status === 'ready' && state.failed.map((failure) => <p key={failure.provider} className="artwork-picker-note">{providerLabels[failure.provider] ?? failure.provider} could not be searched: {failure.message}</p>)}
     {state.status === 'ready' && state.candidates.length > 0 && <ul className="artwork-picker-candidates">{state.candidates.map((candidate) => {
       const current = override?.provider === 'spotify' && override.url === candidate.url
       return <li key={candidate.id}><button className={current ? 'active' : ''} disabled={saving || current} onClick={() => void run(() => select(album.id, candidate))} aria-label={`Use ${candidate.providerLabel ?? candidate.provider} artwork from ${candidate.album ?? 'this release'}`}>

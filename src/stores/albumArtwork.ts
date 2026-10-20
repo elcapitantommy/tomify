@@ -37,6 +37,14 @@ export interface AlbumArtworkCandidate {
   quality?: 'high' | 'preferred' | 'fallback'
 }
 
+// What the album page's search found, which catalogues answered, and why any could not be searched.
+export interface AlbumArtworkLookup {
+  candidates: AlbumArtworkCandidate[]
+  query?: { album: string; artist: string } | null
+  searched: ArtworkProvider[]
+  failed: Array<{ provider: ArtworkProvider; message: string }>
+}
+
 export type AutoArtworkResult = 'applied' | 'unchanged' | 'manual-choice' | 'low-confidence' | 'no-match' | 'failed'
 export interface AutoArtworkOutcome { result: AutoArtworkResult | 'rate-limited'; retryAfter?: number; message?: string }
 export interface ArtworkUpgradeProgress { done: number; total: number; applied: number; unchanged: number; noMatch: number; lowConfidence: number; failed: number; skipped?: number; waitingSeconds?: number; lastError?: string; stopped?: boolean }
@@ -50,7 +58,7 @@ interface AlbumArtworkState {
   providers: ArtworkProvider[]
   upgrade: ArtworkUpgradeRun
   load(): Promise<void>
-  lookup(album: Album): Promise<AlbumArtworkCandidate[]>
+  lookup(album: Album): Promise<AlbumArtworkLookup>
   select(albumId: string, candidate: AlbumArtworkCandidate | 'library'): Promise<void>
   reset(albumId: string): Promise<void>
   upload(albumId: string, file: File): Promise<void>
@@ -121,7 +129,10 @@ export const useAlbumArtwork = create<AlbumArtworkState>((set, get) => ({
     }
   },
 
-  lookup: async (album) => (await post<{ candidates: AlbumArtworkCandidate[] }>('lookup', albumInput(album))).candidates ?? [],
+  lookup: async (album) => {
+    const body = await post<Partial<AlbumArtworkLookup>>('lookup', albumInput(album))
+    return { candidates: body.candidates ?? [], query: body.query ?? null, searched: body.searched ?? [], failed: body.failed ?? [] }
+  },
 
   select: async (albumId, candidate) => {
     const { item } = await post<{ item: AlbumArtworkOverride }>('select', candidate === 'library' ? { albumId, provider: 'library' } : { albumId, candidate })

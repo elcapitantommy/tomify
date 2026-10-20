@@ -12,7 +12,7 @@ describe('AlbumArtworkPicker', () => {
   const upload = vi.fn()
   beforeEach(() => {
     upload.mockReset().mockResolvedValue(undefined)
-    lookup.mockReset().mockResolvedValue([candidate])
+    lookup.mockReset().mockResolvedValue({ candidates: [candidate], query: { album: 'Flood', artist: 'They Might Be Giants' }, searched: ['apple', 'deezer'], failed: [] })
     select.mockReset().mockResolvedValue(undefined)
     useAlbumArtwork.setState({ overrides: {}, status: 'ready', providers: ['apple', 'deezer'], lookup, select, upload })
   })
@@ -39,6 +39,13 @@ describe('AlbumArtworkPicker', () => {
     useAlbumArtwork.setState({ overrides: { 'album-1': { albumId: 'album-1', provider: 'upload', url: '/api/album-artwork/image/x', source: 'manual' } } })
     render(<AlbumArtworkPicker album={album}/>)
     expect(screen.getByText('Showing an image uploaded from a device.')).toBeInTheDocument()
+  })
+
+  it('names the catalogues searched, the title used and why a catalogue failed', async () => {
+    lookup.mockResolvedValue({ candidates: [], query: { album: 'Gold', artist: 'Earth, Wind & Fire' }, searched: ['apple', 'deezer'], failed: [{ provider: 'spotify', message: 'Spotify search returned HTTP 403.' }] })
+    render(<AlbumArtworkPicker album={album} searchOnOpen/>)
+    expect(await screen.findByText('Apple and Deezer have no confident match for “Gold” by Earth, Wind & Fire.')).toBeInTheDocument()
+    expect(screen.getByText('Spotify could not be searched: Spotify search returned HTTP 403.')).toBeInTheDocument()
   })
 
   it('waits for a click before searching otherwise', () => {
