@@ -5,28 +5,47 @@ import { useDj } from '../stores/dj'
 import { usePlayer } from '../stores/player'
 import { resetListening } from '../lib/dj-listen'
 
-const idle = { active: false, loading: false, speaking: false, script: null, error: null, request: null, pending: null, trackIds: [] }
+const idle = { open: false, active: false, loading: false, speaking: false, script: null, error: null, request: null, pending: null, trackIds: [] }
 
 describe('DJ button', () => {
   const realStart = useDj.getState().start
   const realStop = useDj.getState().stop
   beforeEach(() => useDj.setState(idle))
-  afterEach(() => useDj.setState({ ...idle, start: realStart, stop: realStop }))
+  afterEach(() => { cleanup(); useDj.setState({ ...idle, start: realStart, stop: realStop }) })
 
-  it('shows straight away that the DJ is starting, then offers to stop it', () => {
+  it('opens the DJ without starting it, then shows it starting and offers to stop it', () => {
     const start = vi.fn(async () => { useDj.setState({ active: true, loading: true }) })
     const stop = vi.fn()
     useDj.setState({ start, stop })
-    render(<DjButton/>)
+    render(<><DjButton/><DjPanel/></>)
 
     fireEvent.click(screen.getByRole('button', { name: 'DJ' }))
-    expect(start).toHaveBeenCalled()
+    expect(start).not.toHaveBeenCalled()
+    expect(useDj.getState().open).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: /Pick some songs for me/ }))
+    expect(start).toHaveBeenCalledWith()
     const starting = screen.getByRole('button', { name: /Starting DJ/ })
     expect(starting).toBeDisabled()
 
     act(() => useDj.setState({ loading: false, trackIds: ['a', 'b'] }))
-    fireEvent.click(screen.getByRole('button', { name: /Stop DJ/ }))
+    const stopButton = screen.getByRole('button', { name: /Stop DJ/ })
+    expect(stopButton.querySelector('svg')).toHaveAttribute('fill', 'currentColor')
+    fireEvent.click(stopButton)
     expect(stop).toHaveBeenCalled()
+  })
+
+  it('starts the DJ with what you type, or closes without starting', () => {
+    const start = vi.fn(async () => {})
+    useDj.setState({ start })
+    render(<><DjButton/><DjPanel/></>)
+    fireEvent.click(screen.getByRole('button', { name: 'DJ' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Tell the DJ what you want' }), { target: { value: 'something calmer' } })
+    fireEvent.click(screen.getByRole('button', { name: /Send/ }))
+    expect(start).toHaveBeenCalledWith('something calmer')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close the DJ' }))
+    expect(useDj.getState().open).toBe(false)
+    expect(screen.queryByRole('region', { name: 'Tomify DJ' })).toBeNull()
   })
 
   it('keeps showing Stop DJ while the next set loads', () => {
@@ -70,6 +89,22 @@ describe('hold to talk to the DJ', () => {
     clock += 1500
     await act(async () => { fireEvent.pointerUp(mic, { pointerId: 1 }) })
     expect(steer).toHaveBeenCalledWith('something upbeat', { now: true })
+  })
+
+  it('starts the DJ with what you say when it has only been opened', async () => {
+    const realStart = useDj.getState().start
+    const start = vi.fn(async () => { useDj.setState({ active: true }) })
+    const steer = vi.fn(async () => true)
+    useDj.setState({ ...idle, open: true, start, steer })
+    render(<DjPanel/>)
+    const mic = screen.getByRole('button', { name: 'Hold to talk to the DJ' })
+    fireEvent.pointerDown(mic, { pointerId: 1 })
+    say('some Blur')
+    clock += 1500
+    await act(async () => { fireEvent.pointerUp(mic, { pointerId: 1 }) })
+    expect(start).toHaveBeenCalledWith('some Blur')
+    expect(steer).not.toHaveBeenCalled()
+    useDj.setState({ start: realStart })
   })
 
   it('puts the music back on when nothing was heard, or the button was only tapped', async () => {

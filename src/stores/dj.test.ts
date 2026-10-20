@@ -41,6 +41,23 @@ describe('Tomify DJ', () => {
     expect(play).toHaveBeenCalled()
   })
 
+  it('opens without starting, and starts with a request for the first set', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => json({ tracks: [track('a'), track('b')], script: '', curatedBy: 'claude', voice: false }))
+    vi.stubGlobal('fetch', fetcher)
+    useDj.getState().openPanel()
+    expect(useDj.getState()).toEqual(expect.objectContaining({ open: true, active: false }))
+    expect(fetcher).not.toHaveBeenCalled()
+
+    await useDj.getState().start('  some Blur ')
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ recentTrackIds: [], recentArtists: [], request: 'some Blur', first: true, justAsked: true })
+    expect(useDj.getState()).toEqual(expect.objectContaining({ open: true, active: true, request: 'some Blur' }))
+    useDj.getState().closePanel()
+    expect(useDj.getState().open).toBe(true)
+
+    useDj.getState().stop()
+    expect(useDj.getState()).toEqual(expect.objectContaining({ open: false, active: false }))
+  })
+
   it('fetches the next set near the end of the current one and stops when something else is played', async () => {
     const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body))

@@ -13,6 +13,8 @@ export interface DjSegment { tracks: Track[]; script: string; curatedBy: 'claude
 interface PendingLink { firstTrackId: string; script: string; audioUrl: string | null; voice: boolean }
 
 export interface DjState {
+  // The DJ panel is showing (opened from the DJ button), whether or not the DJ has started.
+  open: boolean
   active: boolean
   loading: boolean
   speaking: boolean
@@ -23,7 +25,11 @@ export interface DjState {
   request: string | null
   pending: PendingLink | null
   trackIds: string[]
-  start(): Promise<void>
+  // Opens the panel without starting, so the listener can ask for something or let the DJ choose.
+  openPanel(): void
+  closePanel(): void
+  // Starts the DJ; with a request ("some Blur", "something calmer") the first set is picked for it.
+  start(request?: string | null): Promise<void>
   stop(): void
   // Replaces the songs after this one with a set for the request. With now, that set starts straight
   // away (the DJ answers first); resolves whether it worked.
@@ -242,13 +248,17 @@ async function loadSet(first: boolean, request: string | null, justAsked = false
 }
 
 export const useDj = create<DjState>((set, get) => ({
-  active: false, loading: false, speaking: false, voiceNote: null, script: null, error: null, request: null, pending: null, trackIds: [],
+  open: false, active: false, loading: false, speaking: false, voiceNote: null, script: null, error: null, request: null, pending: null, trackIds: [],
 
-  start: async () => {
+  openPanel: () => set({ open: true, error: null }),
+  closePanel: () => { if (!get().active) set({ open: false, error: null }) },
+
+  start: async (request = null) => {
     unlockVoice()
-    set({ active: true, loading: true, error: null, request: null, pending: null, trackIds: [], script: null, voiceNote: null })
+    const asked = request?.trim() || null
+    set({ open: true, active: true, loading: true, error: null, request: asked, pending: null, trackIds: [], script: null, voiceNote: null })
     try {
-      const { segment, link } = await loadSet(true, null)
+      const { segment, link } = await loadSet(true, asked, Boolean(asked))
       if (!get().active) return
       set({ pending: link, trackIds: segment.tracks.map((track) => track.id), loading: false })
       // While the player switches over, the old track is still current for a moment; that must not stop the DJ.
@@ -272,7 +282,7 @@ export const useDj = create<DjState>((set, get) => ({
       silenceVoice()
       usePlayer.getState().setPlaying(true)
     }
-    set({ active: false, loading: false, speaking: false, pending: null, request: null })
+    set({ open: false, active: false, loading: false, speaking: false, pending: null, request: null })
   },
 
   hush: () => {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Loader2, Mic, Radio, Send, Square } from 'lucide-react'
+import { Loader2, Mic, Radio, Send, Sparkles, Square, X } from 'lucide-react'
 import { bindDj, fetchHeard, useDj } from '../stores/dj'
 import { usePlayer } from '../stores/player'
 import { canListen, listen, type Listening } from '../lib/dj-listen'
@@ -10,13 +10,15 @@ export function DjRuntime() {
   return null
 }
 
-// Shows at once that a tap did something: "Starting DJ" while the first set is picked, then "Stop DJ".
+// Opens the DJ panel (it doesn't start playing until asked), shows "Starting DJ" while the first set
+// is picked, then "Stop DJ".
 export function DjButton() {
   const active = useDj((state) => state.active)
+  const open = useDj((state) => state.open)
   const starting = useDj((state) => state.active && state.loading && !state.trackIds.length)
   if (starting) return <button className="button primary" disabled aria-busy="true"><Loader2 className="spin"/>Starting DJ…</button>
-  if (active) return <button className="button primary" onClick={() => useDj.getState().stop()}><Square/>Stop DJ</button>
-  return <button className="button secondary" onClick={() => void useDj.getState().start()}><Radio/>DJ</button>
+  if (active) return <button className="button primary" onClick={() => useDj.getState().stop()}><Square fill="currentColor"/>Stop DJ</button>
+  return <button className="button secondary" aria-expanded={open} onClick={() => open ? useDj.getState().closePanel() : useDj.getState().openPanel()}><Radio/>DJ</button>
 }
 
 // Shorter presses than this are taken as a tap, which gets a hint to hold the button instead.
@@ -24,7 +26,7 @@ export const DJ_TALK_MIN_MS = 350
 
 // Hold to talk: the music pauses so the mic can hear you, and on letting go the DJ answers and the new
 // songs start. Nothing heard, or a failed request, puts the music back on.
-function DjTalk({ disabled }: { disabled: boolean }) {
+function DjTalk({ disabled, ask }: { disabled: boolean; ask?: (text: string) => Promise<boolean> }) {
   const [phase, setPhase] = useState<'idle' | 'listening' | 'hearing'>('idle')
   const [heard, setHeard] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
@@ -63,8 +65,8 @@ function DjTalk({ disabled }: { disabled: boolean }) {
     setPhase('idle')
     setHeard(text)
     setProblem(trouble)
-    const steered = text ? await useDj.getState().steer(text, { now: true }) : false
-    if (!steered && current.resume && useDj.getState().active) usePlayer.getState().setPlaying(true)
+    const steered = text ? await (ask ? ask(text) : useDj.getState().steer(text, { now: true })) : false
+    if (!steered && current.resume && (ask || useDj.getState().active)) usePlayer.getState().setPlaying(true)
   }
   const key = (event: React.KeyboardEvent, down: boolean) => {
     if (event.key !== ' ' && event.key !== 'Enter') return
@@ -86,21 +88,27 @@ function DjTalk({ disabled }: { disabled: boolean }) {
 }
 
 export function DjPanel() {
-  const { active, loading, speaking, script, voiceNote, error } = useDj()
+  const { open, active, loading, speaking, script, voiceNote, error } = useDj()
   const [request, setRequest] = useState('')
   const [talkable] = useState(canListen)
-  if (!active && !error) return null
+  if (!open && !active && !error) return null
   const send = (event: React.FormEvent) => {
     event.preventDefault()
     if (!request.trim()) return
-    void useDj.getState().steer(request.trim())
+    if (active) void useDj.getState().steer(request.trim())
+    else void useDj.getState().start(request.trim())
     setRequest('')
   }
+  // Before it starts: ask for something, or let the DJ choose.
+  const ready = !active
+  const startWith = async (text: string) => { await useDj.getState().start(text); return useDj.getState().active }
   return <section className="dj-panel" aria-label="Tomify DJ">
-    <div className="dj-panel-head"><span className="eyebrow"><Radio size={14}/>{active ? (speaking ? 'DJ is talking' : 'DJ is on') : 'DJ'}</span></div>
+    <div className="dj-panel-head"><span className="eyebrow"><Radio size={14}/>{active ? (speaking ? 'DJ is talking' : 'DJ is on') : 'DJ'}</span>{ready && <button type="button" className="icon-button dj-close" aria-label="Close the DJ" onClick={() => useDj.getState().closePanel()}><X size={18}/></button>}</div>
+    {ready && <p className="dj-script">What do you fancy? Tell the DJ, or let it pick.</p>}
     {active && <p className="dj-script">{script ?? (loading ? 'Picking your first songs…' : '')}</p>}
     {active && voiceNote && <p className="dj-voice-note">{voiceNote}</p>}
     {error && <p className="dj-error" role="alert">{error}</p>}
-    {active && <form onSubmit={send} className="dj-request">{talkable && <DjTalk disabled={speaking}/>}<input value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Tell the DJ: something calmer, 124 bpm house…" aria-label="Tell the DJ what you want" maxLength={200}/><button className="button secondary" type="submit" disabled={loading || !request.trim()}>{loading ? <Loader2 className="spin"/> : <Send/>}Send</button></form>}
+    <form onSubmit={send} className="dj-request">{talkable && <DjTalk disabled={ready ? loading : speaking} ask={ready ? startWith : undefined}/>}<input value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Tell the DJ: something calmer, 124 bpm house…" aria-label="Tell the DJ what you want" maxLength={200}/><button className="button secondary" type="submit" disabled={loading || !request.trim()}>{loading ? <Loader2 className="spin"/> : <Send/>}Send</button></form>
+    {ready && <button type="button" className="button primary dj-pick" disabled={loading} onClick={() => void useDj.getState().start()}><Sparkles/>Pick some songs for me</button>}
   </section>
 }
