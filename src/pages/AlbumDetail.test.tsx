@@ -5,11 +5,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Album, Track } from '../types'
 import { useAlbumArtwork } from '../stores/albumArtwork'
 import { useAuth } from '../stores/auth'
+import { usePlayer } from '../stores/player'
 import { useReleaseMetadata } from '../stores/releaseMetadata'
 import { AlbumDetail } from './AlbumDetail'
 
 const album: Album & { song: Track[] } = { id: 'album-1', name: 'Flood', artist: 'They Might Be Giants', year: 1990, song: [{ id: 'track-1', title: 'Birdhouse in Your Soul', artist: 'They Might Be Giants', album: 'Flood', duration: 200 }] }
-const api = { session: { username: 'guest' }, album: vi.fn(async () => album), albums: vi.fn(async () => [album]), allAlbums: vi.fn(async () => [album]), artist: vi.fn(), coverArtUrl: () => 'https://music.example/cover.jpg' }
+const api = { session: { username: 'guest' }, album: vi.fn(async (_id: string) => album), albums: vi.fn(async () => [album]), allAlbums: vi.fn(async () => [album]), artist: vi.fn(), coverArtUrl: () => 'https://music.example/cover.jpg' }
 
 vi.mock('../lib/api-context', () => ({ useApi: () => api }))
 const completenessMounts = vi.hoisted(() => ({ count: 0 }))
@@ -61,5 +62,40 @@ describe('AlbumDetail admin tools', () => {
     expect(screen.queryByRole('button', { name: 'Edit metadata' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Change album artwork' })).not.toBeInTheDocument()
     expect(screen.queryByText('completeness check')).not.toBeInTheDocument()
+  })
+})
+
+describe('AlbumDetail versions', () => {
+  const japan: Album & { song: Track[] } = { id: 'album-2', name: 'Flood (Japan Edition)', artist: 'They Might Be Giants', year: 1990, song: [{ id: 'track-2', title: 'Birdhouse in Your Soul', artist: 'They Might Be Giants', album: 'Flood (Japan Edition)', duration: 200 }, { id: 'track-3', title: 'Bonus Track', artist: 'They Might Be Giants', album: 'Flood (Japan Edition)', duration: 100 }] }
+
+  beforeEach(() => {
+    useAuth.setState({ isAdmin: false })
+    useReleaseMetadata.setState({ overrides: {}, cloudStatus: 'local' } as never)
+    api.allAlbums.mockResolvedValue([album, japan])
+    api.album.mockImplementation(async (albumId: string) => albumId === japan.id ? japan : album)
+  })
+
+  it('shows one version at a time, picked from a dropdown, and plays the picked version', async () => {
+    const playTracks = vi.fn()
+    usePlayer.setState({ playTracks } as never)
+    renderAlbum()
+    const picker = await screen.findByRole('combobox', { name: 'Version' }, { timeout: 5000 })
+    expect(screen.getByRole('option', { name: 'Flood' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Flood (Japan Edition)' })).toBeInTheDocument()
+    expect(screen.getByText(/2 versions · 1 songs/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Play' }))
+    expect(playTracks).toHaveBeenLastCalledWith(album.song)
+    fireEvent.change(picker, { target: { value: 'album-2' } })
+    expect(await screen.findByText(/2 versions · 2 songs/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Play' }))
+    expect(playTracks).toHaveBeenLastCalledWith(japan.song)
+  })
+
+  it('has no dropdown when there is only one version', async () => {
+    api.allAlbums.mockResolvedValue([album])
+    renderAlbum()
+    expect(await screen.findByRole('heading', { name: 'Flood' })).toBeInTheDocument()
+    await waitFor(() => expect(api.allAlbums).toHaveBeenCalled())
+    expect(screen.queryByRole('combobox', { name: 'Version' })).not.toBeInTheDocument()
   })
 })

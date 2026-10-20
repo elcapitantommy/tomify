@@ -9,8 +9,10 @@ import { Artwork } from '../components/Artwork'
 import { ErrorState, SkeletonGrid } from '../components/States'
 import { TrackList } from '../components/TrackList'
 import { useLoad } from '../hooks/useLoad'
+import { useSearchParamState } from '../hooks/useSearchParamState'
 import { useApi } from '../lib/api-context'
 import { formatHours } from '../lib/format'
+import { versionLabels } from '../lib/release-versions'
 import { collapseReleaseVariants, releaseDateInputValue, releaseDateLabel, releaseFamilyTitle, releaseTypeLabels, resolvedReleaseType, type ReleaseType } from '../lib/release-metadata'
 import { usePlayer } from '../stores/player'
 import { useReleaseMetadata } from '../stores/releaseMetadata'
@@ -64,8 +66,13 @@ export function AlbumDetail() {
   const fullVersions = useMemo(() => !versionsLoading && versions?.length ? versions : album ? [album] : [], [album, versions, versionsLoading])
 
   const groupTitle = album ? releaseFamilyTitle(album) : ''
-  const allTracks = fullVersions.flatMap((version) => version.song ?? [])
-  const playAllVersions = (shuffle = false) => usePlayer.getState().playTracks(shuffle ? [...allTracks].sort(() => Math.random() - .5) : allTracks)
+  // With several versions, one is shown at a time and picked from a dropdown; the choice lives in the URL (?version=).
+  const versionIds = useMemo(() => fullVersions.map((version) => version.id), [fullVersions])
+  const [selectedVersionId, setSelectedVersionId] = useSearchParamState('version', album?.id ?? id, versionIds)
+  const selectedVersion = fullVersions.find((version) => version.id === selectedVersionId) ?? fullVersions[0] ?? album
+  const labels = useMemo(() => versionLabels(fullVersions), [fullVersions])
+  const versionTracks = selectedVersion?.song ?? []
+  const playVersion = (shuffle = false) => usePlayer.getState().playTracks(shuffle ? [...versionTracks].sort(() => Math.random() - .5) : versionTracks)
 
   const saveType = async (nextType: ReleaseType) => {
     if (!album) return
@@ -94,7 +101,13 @@ export function AlbumDetail() {
   if (!album) return null
 
   return <div className="page detail-page">
-    <header className="detail-hero">{isAdmin && artworkStatus === 'ready' ? <button type="button" className="artwork-change" onClick={() => setChangingArtwork((value) => !value)} aria-expanded={changingArtwork} aria-label={changingArtwork ? 'Close album artwork options' : 'Change album artwork'}><Artwork id={album.coverArt ?? album.id} albumId={album.id} alt={groupTitle} size={1000}/><span className="artwork-change-hint" aria-hidden="true"><ImageUp/>Change artwork</span></button> : <Artwork id={album.coverArt ?? album.id} albumId={album.id} alt={groupTitle} size={1000}/>}<div><span className="eyebrow">{releaseTypeLabels[releaseType]}</span><h1>{groupTitle}</h1><p className="detail-artist">{album.artist}</p><p>{releaseDate && `${releaseDate} · `}{fullVersions.length > 1 ? `${fullVersions.length} versions · ` : ''}{allTracks.length} songs · {formatHours(allTracks.reduce((sum, t) => sum + (t.duration ?? 0), 0))}</p>{override?.source === 'musicbrainz' && <p className="metadata-source">MusicBrainz classified · {override.musicBrainzId ?? 'matched release'}</p>}<div className="hero-actions"><button className="button primary" onClick={() => playAllVersions()}><Play fill="currentColor"/>Play</button><button className="button secondary" onClick={() => playAllVersions(true)}><Shuffle/>Shuffle</button>{allTracks.length > 0 && <AddToPlaylist songIds={allTracks.map((track) => track.id)} label={groupTitle} variant="button"/>}{!versionsLoading && <CollectionDownloadButton kind="album" item={{ id: album.id, name: groupTitle, artist: album.artist, coverArt: album.coverArt ?? album.id }} tracks={allTracks}/>}{isAdmin && cloudStatus === 'cloud' && <button className="button secondary" onClick={() => setEditingMetadata((value) => !value)}>{editingMetadata ? <X/> : <Pencil/>}{editingMetadata ? 'Close metadata' : 'Edit metadata'}</button>}</div></div></header>
+    <header className="detail-hero">{(() => {
+      const shown = selectedVersion ?? album
+      const art = <Artwork id={shown.coverArt ?? shown.id} albumId={shown.id} alt={groupTitle} size={1000}/>
+      return isAdmin && artworkStatus === 'ready' ? <button type="button" className="artwork-change" onClick={() => setChangingArtwork((value) => !value)} aria-expanded={changingArtwork} aria-label={changingArtwork ? 'Close album artwork options' : 'Change album artwork'}>{art}<span className="artwork-change-hint" aria-hidden="true"><ImageUp/>Change artwork</span></button> : art
+    })()}<div><span className="eyebrow">{releaseTypeLabels[releaseType]}</span><h1>{groupTitle}</h1><p className="detail-artist">{album.artist}</p><p>{releaseDate && `${releaseDate} · `}{fullVersions.length > 1 ? `${fullVersions.length} versions · ` : ''}{versionTracks.length} songs · {formatHours(versionTracks.reduce((sum, t) => sum + (t.duration ?? 0), 0))}</p>{override?.source === 'musicbrainz' && <p className="metadata-source">MusicBrainz classified · {override.musicBrainzId ?? 'matched release'}</p>}
+      {!versionsLoading && fullVersions.length > 1 && <label className="release-sort version-picker"><span>Version</span><select value={selectedVersion?.id} onChange={(event) => setSelectedVersionId(event.target.value)}>{fullVersions.map((version) => <option key={version.id} value={version.id}>{labels.get(version.id) ?? version.name}</option>)}</select></label>}
+      <div className="hero-actions"><button className="button primary" onClick={() => playVersion()}><Play fill="currentColor"/>Play</button><button className="button secondary" onClick={() => playVersion(true)}><Shuffle/>Shuffle</button>{versionTracks.length > 0 && <AddToPlaylist songIds={versionTracks.map((track) => track.id)} label={selectedVersion?.name ?? groupTitle} variant="button"/>}{!versionsLoading && selectedVersion && <CollectionDownloadButton key={selectedVersion.id} kind="album" item={{ id: selectedVersion.id, name: selectedVersion.name || groupTitle, artist: selectedVersion.artist || album.artist, coverArt: selectedVersion.coverArt ?? selectedVersion.id }} tracks={versionTracks}/>}{isAdmin && cloudStatus === 'cloud' && <button className="button secondary" onClick={() => setEditingMetadata((value) => !value)}>{editingMetadata ? <X/> : <Pencil/>}{editingMetadata ? 'Close metadata' : 'Edit metadata'}</button>}</div></div></header>
 
     {isAdmin && editingMetadata && cloudStatus === 'cloud' && <section className="release-editor cloud-only" aria-label="Release metadata">
       <div className="release-editor-title"><Check/><div><strong>Release metadata</strong><small>{override?.source === 'musicbrainz' ? 'Automatically matched from MusicBrainz and saved to Tomify.' : override?.source === 'manual' ? 'Manual override saved to Tomify.' : 'No cloud classification yet.'}</small></div></div>
@@ -102,18 +115,11 @@ export function AlbumDetail() {
       <label><span>Release date</span><input disabled={savingMetadata} type="date" value={releaseDateInputValue(album, override)} onChange={(event) => void saveDate(event.target.value)}/></label>
       <div className="release-editor-actions"><button className="button secondary" disabled={refreshingMetadata || savingMetadata} onClick={() => void refreshMetadata()}>{refreshingMetadata ? 'Checking MusicBrainz…' : override?.source === 'manual' ? 'Replace with MusicBrainz' : 'Refresh from MusicBrainz'}</button></div>
     </section>}
-    {isAdmin && changingArtwork && artworkStatus === 'ready' && <AlbumArtworkPicker album={album} searchOnOpen onClose={() => setChangingArtwork(false)}/>}
+    {isAdmin && changingArtwork && artworkStatus === 'ready' && <AlbumArtworkPicker album={selectedVersion ?? album} searchOnOpen onClose={() => setChangingArtwork(false)}/>}
 
-    {isAdmin && !versionsLoading && cloudStatus === 'cloud' && <AlbumCompleteness album={album} tracks={allTracks}/>}
+    {isAdmin && !versionsLoading && cloudStatus === 'cloud' && <AlbumCompleteness key={`completeness:${selectedVersion?.id}`} album={selectedVersion ?? album} tracks={versionTracks}/>}
 
     {versionsLoading && album && <><TrackList tracks={album.song ?? []} discAware/><p className="variant-loading">Checking for other editions…</p></>}
-    {!versionsLoading && fullVersions.length === 1 && <TrackList tracks={fullVersions[0].song ?? []} discAware/>}
-    {!versionsLoading && fullVersions.length > 1 && <div className="release-variants">{fullVersions.map((version, index) => {
-      const tracks = version.song ?? []
-      return <section className="release-variant" key={version.id}>
-        <div className="release-variant-heading"><div><span className="eyebrow">Version {index + 1}</span><h2>{version.name}</h2><p>{version.year ? `${version.year} · ` : ''}{tracks.length} songs · {formatHours(tracks.reduce((sum, t) => sum + (t.duration ?? 0), 0))}</p></div><div className="release-variant-actions"><button className="button secondary" onClick={() => usePlayer.getState().playTracks(tracks)}><Play fill="currentColor"/>Play this version</button></div></div>
-        <TrackList tracks={tracks} discAware/>
-      </section>
-    })}</div>}
+    {!versionsLoading && <TrackList key={`tracks:${selectedVersion?.id}`} tracks={versionTracks} discAware/>}
   </div>
 }
