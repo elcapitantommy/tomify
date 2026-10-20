@@ -80,7 +80,11 @@ export const upgradeIntervalMs = 3000
 let upgradeController: AbortController | null = null
 
 // Albums the bulk run checked without finding a confident match, so a restarted run (after an update or refresh) skips them.
-const checkedKey = () => 'tomify-artwork-checked:' + (useAuth.getState().session?.username ?? '')
+// Bump the matcher version when the Worker's matching improves (v2: disc markers such as " - Disc 2"
+// are ignored) so albums that found nothing before are searched again on the next run.
+export const artworkMatcherVersion = 2
+const checkedKey = () => `tomify-artwork-checked:v${artworkMatcherVersion}:` + (useAuth.getState().session?.username ?? '')
+const legacyCheckedKeys = () => ['tomify-artwork-checked:', ...Array.from({ length: artworkMatcherVersion - 2 }, (_, index) => `tomify-artwork-checked:v${index + 2}:`)].map((prefix) => prefix + (useAuth.getState().session?.username ?? ''))
 const recheckAfterMs = 30 * 24 * 60 * 60 * 1000
 
 function readChecked(): Record<string, number> {
@@ -91,6 +95,7 @@ function readChecked(): Record<string, number> {
 }
 
 function rememberChecked(albumId: string) {
+  try { for (const key of legacyCheckedKeys()) localStorage.removeItem(key) } catch { /* storage unavailable */ }
   try { localStorage.setItem(checkedKey(), JSON.stringify({ ...readChecked(), [albumId]: Date.now() })) } catch { /* storage unavailable: the album is simply checked again next run */ }
 }
 

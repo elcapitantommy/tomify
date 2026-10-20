@@ -16,6 +16,24 @@ test('only HTTPS Apple, Deezer and Spotify image hosts are accepted as album art
   assert.equal(isAlbumArtworkUrl('https://mzstatic.com.evil.example/a.jpg'), false)
 })
 
+test('base titles drop disc markers from albums split per disc', () => {
+  assert.equal(baseAlbumTitle('The Essential Roy Orbison - Disc 2'), 'The Essential Roy Orbison')
+  assert.equal(baseAlbumTitle('The Beatles CD1'), 'The Beatles')
+  assert.equal(baseAlbumTitle('Flood, Disc One'), 'Flood')
+  assert.equal(baseAlbumTitle('Greatest Hits: CD 2 of 3'), 'Greatest Hits')
+  assert.equal(baseAlbumTitle('Hits \u2013 Disk 1'), 'Hits')
+  assert.equal(baseAlbumTitle('Rumours [Disc 1]'), 'Rumours')
+  assert.equal(baseAlbumTitle('Rumours (Deluxe Edition) - Disc 3'), 'Rumours')
+  assert.equal(baseAlbumTitle('Discovery'), 'Discovery')
+  assert.equal(baseAlbumTitle('The Disc Jockey'), 'The Disc Jockey')
+  assert.equal(baseAlbumTitle('CD1'), 'CD1', 'a title that is only a disc marker is kept')
+  assert.deepEqual(albumArtworkSearchQueries('The Essential Roy Orbison - Disc 2', 'Roy Orbison'), ['album:The Essential Roy Orbison artist:Roy Orbison', 'The Essential Roy Orbison Roy Orbison'])
+  const wanted = { artist: 'Roy Orbison', album: 'The Essential Roy Orbison - Disc 2', releaseDate: '2006' }
+  const apple = appleAlbumResult({ collectionId: 9, collectionName: 'The Essential Roy Orbison', artistName: 'Roy Orbison', releaseDate: '2006-01-01', artworkUrl100: 'https://is1-ssl.mzstatic.com/image/thumb/a/100x100bb.jpg' })
+  const candidate = albumArtworkCandidate(wanted, apple, metadataTextSimilarity, () => 1)
+  assert.ok(candidate && candidate.confidence >= 85, 'the whole release is a confident match for one of its discs')
+})
+
 test('base titles drop trailing edition and remaster qualifiers but keep leading brackets', () => {
   assert.equal(baseAlbumTitle('Abbey Road (Remastered 2009)'), 'Abbey Road')
   assert.equal(baseAlbumTitle('OK Computer (Collector\'s Edition) [2009 Remaster]'), 'OK Computer')
