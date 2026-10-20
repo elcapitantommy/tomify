@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, LogOut, Search, Settings, UsersRound, X, BarChart3, PartyPopper } from 'lucide-react'
+import { Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, LogOut, Search, Settings, UsersRound, X, BarChart3, PartyPopper, Compass } from 'lucide-react'
 import { PlayerBar } from './Player'
 import { PlayerRuntime } from './PlayerRuntime'
 import { LivePlaybackSync } from './LivePlaybackSync'
@@ -14,7 +14,7 @@ import { useAuth } from '../stores/auth'
 import { useDownloads } from '../stores/downloads'
 import { useScrollRestoration } from '../hooks/useScrollRestoration'
 
-const primary = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }]
+const primary = [{ to: '/', label: 'Home', icon: Home }, { to: '/search', label: 'Search', icon: Search }, { to: '/artists', label: 'Artists', icon: UsersRound }, { to: '/albums', label: 'Albums', icon: Album }, { to: '/browse', label: 'Browse', icon: Compass }]
 const library = [{ to: '/playlists', label: 'Playlists', icon: ListMusic }, { to: '/favourites', label: 'Favourites', icon: Heart }, { to: '/stats', label: 'Listening stats', icon: BarChart3 }, { to: '/party', label: 'Party mode', icon: PartyPopper }, { to: '/downloads', label: 'Downloads', icon: Download }]
 // Administrative tools stay out of the mobile tab bar and live in the account sheet instead.
 const recovery = { to: '/recovery', label: 'Recovery', icon: LifeBuoy }

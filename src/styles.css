@@ -247,3 +247,13 @@ button.settings-link{border:0;background:none;width:100%;font:inherit;font-weigh
 .car-extras button svg{width:28px;height:28px;color:inherit}
 .car-extras button.active,.car-extras .car-like.starred{color:var(--accent);border-color:var(--accent)}
 @media(max-width:600px) and (orientation:portrait){.car-now{flex-direction:column;justify-content:center;text-align:center}.car-now>.artwork{height:min(34vh,70vw)}}
+/* Browse by genre and decade */
+.browse-tiles{display:grid;gap:8px}
+.browse-tiles .section-title{margin-top:18px}
+.tile-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
+.browse-tile{--tile-hue:88;min-height:92px;border-radius:12px;padding:16px;display:flex;flex-direction:column;justify-content:space-between;background:linear-gradient(135deg,hsl(var(--tile-hue) 45% 26%),hsl(var(--tile-hue) 35% 14%));border:1px solid hsl(var(--tile-hue) 30% 30%);transition:transform .15s}
+.browse-tile:hover{transform:translateY(-2px)}
+.browse-tile strong{font:800 1.15rem Manrope;overflow-wrap:anywhere}
+.browse-tile.decade strong{font-size:1.6rem}
+.browse-tile small{color:#d6dbd6;opacity:.75;font-size:.75rem}
+@media(max-width:800px){.tile-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}

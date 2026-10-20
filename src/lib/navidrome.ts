@@ -11,6 +11,7 @@ export interface AuthSession { serverUrl: string; username: string; salt: string
 interface SubsonicEnvelope { 'subsonic-response': Record<string, unknown> & { status: 'ok' | 'failed'; error?: { code: number; message: string } } }
 
 export type StarKind = 'song' | 'album' | 'artist'
+export interface GenreCount { name: string; albumCount: number; songCount: number }
 const STAR_PARAM: Record<StarKind, string> = { song: 'id', album: 'albumId', artist: 'artistId' }
 
 type SubsonicParams = Record<string, string | number | string[] | number[] | undefined>
@@ -127,6 +128,14 @@ export class NavidromeClient {
   async artistInfo(id: string, signal?: AbortSignal): Promise<ArtistInfo> { const r = await this.get<{ artistInfo2?: Parameters<typeof parseArtistInfo>[0] }>('getArtistInfo2', { id, count: 12, includeNotPresent: 'false' }, signal); return parseArtistInfo(r.artistInfo2, id) }
   // An artist's most played songs on Last.fm that are in this library (empty without Navidrome's Last.fm agent).
   async topSongs(artist: string, count = 10, signal?: AbortSignal): Promise<Track[]> { const r = await this.get<{ topSongs?: { song?: Track[] } }>('getTopSongs', { artist, count }, signal); return r.topSongs?.song ?? [] }
+  // Genres with how many albums and songs carry each one, for Browse.
+  async genreList(signal?: AbortSignal): Promise<GenreCount[]> { const r = await this.get<{ genres?: { genre?: { value: string; albumCount?: number; songCount?: number }[] } }>('getGenres', {}, signal); return (r.genres?.genre ?? []).filter((genre) => genre.value).map((genre) => ({ name: genre.value, albumCount: genre.albumCount ?? 0, songCount: genre.songCount ?? 0 })) }
+  // Every album in a genre, or released between two years, a page of 500 at a time.
+  async albumsByGenre(genre: string, signal?: AbortSignal): Promise<Album[]> { return this.albumPages({ type: 'byGenre', genre }, signal) }
+  async albumsByYears(fromYear: number, toYear: number, signal?: AbortSignal): Promise<Album[]> { return this.albumPages({ type: 'byYear', fromYear, toYear }, signal) }
+  private async albumPages(params: SubsonicParams, signal?: AbortSignal): Promise<Album[]> { const albums: Album[] = []; for (let offset = 0; offset < 5000; offset += 500) { const r = await this.get<{ albumList2?: { album?: Album[] } }>('getAlbumList2', { ...params, size: 500, offset }, signal); const page = r.albumList2?.album ?? []; albums.push(...page); if (page.length < 500) break } return albums }
+  // Random songs, optionally from one genre or a range of years.
+  async randomSongs(options: { size?: number; genre?: string; fromYear?: number; toYear?: number } = {}, signal?: AbortSignal): Promise<Track[]> { const r = await this.get<{ randomSongs?: { song?: Track[] } }>('getRandomSongs', { size: options.size ?? 100, genre: options.genre, fromYear: options.fromYear, toYear: options.toYear }, signal); return r.randomSongs?.song ?? [] }
   async genres(signal?: AbortSignal): Promise<string[]> { const r = await this.get<{ genres?: { genre?: { value: string }[] } }>('getGenres', {}, signal); return (r.genres?.genre ?? []).map((genre) => genre.value).filter(Boolean).sort((a, b) => a.localeCompare(b)) }
   // What every account is playing now: Navidrome records it from the "now playing" scrobble each player sends.
   async nowPlaying(signal?: AbortSignal): Promise<NowPlaying[]> { const r = await this.get<{ nowPlaying?: { entry?: NowPlaying[] } }>('getNowPlaying', {}, signal); return r.nowPlaying?.entry ?? [] }
