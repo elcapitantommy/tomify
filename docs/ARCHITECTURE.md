@@ -124,7 +124,7 @@ Audio elements cannot send headers either, so stream URLs used to carry the Navi
 | `ANTHROPIC_API_KEY` | Dashboard secret | Optional | None | `worker/features/mix-curator.ts` (Claude picks and names the Home "Made for you" mixes) | Tomify builds simpler mixes itself from the same listening data. |
 | `TOMIFY_MIXES_MODEL` | Dashboard var | Optional | `claude-sonnet-5-5` | `worker/features/mix-curator.ts` (mixes and the DJ) | Mixes and the DJ use Claude Sonnet 5.5. |
 | `AI` | Workers AI binding (`wrangler.toml`) | Optional | Workers AI | `worker/features/dj.ts` (the DJ's voice, Deepgram Aura-2) | The DJ still plays its sets but doesn't speak; `/api/dj/voice` returns `503`. |
-| `TOMIFY_DJ_VOICE` | Dashboard var | Optional | `pandora` | `worker/features/dj.ts` | The Aura-2 voice, used when `TOMIFY_DJ_VOICE_MODEL` is `aura`. |
+| `TOMIFY_DJ_VOICE` | Dashboard var | Optional | `ophelia` | `worker/features/dj.ts` | The Aura-2 voice, used when `TOMIFY_DJ_VOICE_MODEL` is `aura`. |
 | `TOMIFY_MEDIA_KEY` | Dashboard secret | Optional | None | `worker/features/media-session.ts` (seals and opens short-lived media tokens); the agent's `TOMIFY_MEDIA_KEY` must be the same value | `/api/media-session` returns `404` and stream URLs keep the Navidrome login, as before. |
 | `TOMIFY_PARTY_USERNAME` | Dashboard var | Optional | None | `worker/features/party.ts` (a Navidrome account party guests search and see covers with) | Guests search as the host, whose login is stored sealed with `TOMIFY_MEDIA_KEY` while the party runs. Without either, starting a party returns `503`. |
 | `TOMIFY_PARTY_PASSWORD` | Dashboard secret | Optional | None | `worker/features/party.ts` (the party account's password; used only with `TOMIFY_PARTY_USERNAME`) | As above. |
