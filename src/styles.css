@@ -225,3 +225,25 @@ button.settings-link{border:0;background:none;width:100%;font:inherit;font-weigh
 .drop-above{box-shadow:inset 0 2px 0 var(--accent)}
 .drop-below{box-shadow:inset 0 -2px 0 var(--accent)}
 .queue-item>.drag-handle svg{width:16px;color:var(--muted)}
+/* Car mode */
+.car-mode{position:fixed;inset:0;z-index:120;background:#0b0d0b;display:flex;flex-direction:column;gap:clamp(12px,2.5vh,24px);padding:max(16px,env(safe-area-inset-top)) clamp(16px,4vw,48px) max(20px,env(safe-area-inset-bottom))}
+.car-mode header{display:flex;justify-content:space-between;align-items:center;text-transform:uppercase;letter-spacing:.13em;font-size:.8rem;font-weight:700;color:var(--muted)}
+.car-exit{border:1px solid #383d38;background:var(--panel2);border-radius:999px;padding:12px 20px;display:flex;align-items:center;gap:8px;font-size:1rem;font-weight:700;text-transform:none;letter-spacing:0;color:var(--text)}
+.car-exit svg{width:22px;height:22px}
+.car-now{flex:1;min-height:0;display:flex;align-items:center;gap:clamp(16px,4vw,40px)}
+.car-now>.artwork{height:min(38vh,42vw,420px);aspect-ratio:1;flex:none;border-radius:14px}
+.car-now>div{min-width:0}
+.car-now h1{font:800 clamp(2rem,6vw,4rem)/1.05 Manrope;margin:0;letter-spacing:-.03em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.car-now p{font-size:clamp(1.2rem,3.4vw,2rem);color:var(--muted);margin:10px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.car-progress{height:8px;border-radius:4px;background:#2a2f2a;overflow:hidden}
+.car-progress span{display:block;height:100%;background:var(--accent)}
+.car-times{display:flex;justify-content:space-between;color:var(--muted);font-size:1rem;margin-top:-6px}
+.car-controls{display:grid;grid-template-columns:1fr 1.4fr 1fr;gap:clamp(10px,2vw,20px)}
+.car-controls button{border:0;border-radius:22px;background:var(--panel2);color:var(--text);min-height:clamp(96px,16vh,150px);display:grid;place-items:center}
+.car-controls button svg{width:clamp(40px,7vw,64px);height:clamp(40px,7vw,64px)}
+.car-controls .car-play{background:var(--accent);color:var(--accent-ink)}
+.car-extras{display:grid;grid-template-columns:1fr 1fr;gap:clamp(10px,2vw,20px)}
+.car-extras button{border:1px solid #383d38;border-radius:18px;background:var(--panel);color:var(--text);min-height:72px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:1.1rem;font-weight:700}
+.car-extras button svg{width:28px;height:28px;color:inherit}
+.car-extras button.active,.car-extras .car-like.starred{color:var(--accent);border-color:var(--accent)}
+@media(max-width:600px) and (orientation:portrait){.car-now{flex-direction:column;justify-content:center;text-align:center}.car-now>.artwork{height:min(34vh,70vw)}}

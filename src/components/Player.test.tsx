@@ -8,6 +8,7 @@ import { useRadio } from '../stores/radio'
 import { useSleepTimer } from '../stores/sleepTimer'
 import { useRatings } from '../stores/ratings'
 import { useCast } from '../stores/cast'
+import { useCarMode } from '../stores/carMode'
 import * as castStore from '../stores/cast'
 
 vi.mock('./Artwork', () => ({ Artwork: () => null }))
@@ -100,6 +101,15 @@ describe('PlayerBar across devices', () => {
     expect(screen.getByRole('button', { name: 'Connect to a device' })).toHaveAttribute('title', 'Playing on a speaker')
     useCast.setState({ kind: null, state: 'disconnected' })
     prompt.mockRestore()
+  })
+
+  it('switches Now Playing to car mode', () => {
+    usePlayer.setState({ nowPlayingOpen: true })
+    render(<PlayerBar/>)
+    fireEvent.click(screen.getByRole('button', { name: 'Car mode' }))
+    expect(usePlayer.getState().nowPlayingOpen).toBe(false)
+    expect(screen.getByRole('dialog', { name: 'Car mode' })).toHaveTextContent('Ana Ng')
+    act(() => { useCarMode.getState().setOpen(false) })
   })
 
   it('moves playback here from the other device at the same track', () => {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Airplay, Cast, Check, ChevronDown, ListMusic, Maximize2, MicVocal, MonitorSpeaker, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react'
+import { Airplay, Car, Cast, Check, ChevronDown, ListMusic, Maximize2, MicVocal, MonitorSpeaker, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react'
 import { Artwork } from './Artwork'
 import { StartRadioButton } from './SongRadio'
 import { useRadio } from '../stores/radio'
@@ -13,10 +13,13 @@ import { playHere, transferTo } from '../stores/playbackHandoff'
 import { promptCast, useCast } from '../stores/cast'
 import { castLabels } from '../lib/cast'
 import { DragHandle } from './DragHandle'
+import { CarMode } from './CarMode'
+import { useCarMode } from '../stores/carMode'
 
 const noCommand = (action: LivePlaybackCommandAction, value?: number) => { void action; void value }
 
-function usePlaybackView() {
+// eslint-disable-next-line react-refresh/only-export-components
+export function usePlaybackView() {
   const player = usePlayer()
   const { remote, now } = useRemoteSession(500)
 
@@ -141,7 +144,7 @@ export function PlayerBar() {
   const toggleMuted = () => view.remote ? view.command('toggle-muted') : player.toggleMuted()
   const setVolume = (value: number) => view.remote ? view.command('set-volume', value) : player.setVolume(value)
 
-  return <><div className="player-bar"><button className="player-track" onClick={() => player.setNowPlayingOpen(true)}><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={160}/><span><strong>{track.title}</strong><small>{track.artist}{view.remote && view.deviceName ? <em className="remote-device"> · {view.deviceName}</em> : null}</small></span></button><div className="desktop-player-controls"><Transport/><SeekBar/></div><div className="player-actions"><DevicePicker/><button className="mobile-toggle" onClick={togglePlaying} aria-label={view.playing ? 'Pause' : 'Play'}>{view.playing ? <Pause fill="currentColor"/> : <Play fill="currentColor"/>}</button><button onClick={() => player.setQueueOpen(true)} aria-label="Open queue"><ListMusic/></button><button onClick={toggleMuted} aria-label="Mute">{view.muted ? <VolumeX/> : <Volume2/>}</button><input className="volume" aria-label="Volume" type="range" min="0" max="1" step="0.01" value={view.volume} onChange={(event) => setVolume(Number(event.target.value))}/><button className="desktop-only" onClick={() => player.setNowPlayingOpen(true)} aria-label="Full screen player"><Maximize2/></button></div><div className="mobile-player-progress"><SeekBar/></div></div><QueueDrawer/><NowPlaying/></>
+  return <><div className="player-bar"><button className="player-track" onClick={() => player.setNowPlayingOpen(true)}><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={160}/><span><strong>{track.title}</strong><small>{track.artist}{view.remote && view.deviceName ? <em className="remote-device"> · {view.deviceName}</em> : null}</small></span></button><div className="desktop-player-controls"><Transport/><SeekBar/></div><div className="player-actions"><DevicePicker/><button className="mobile-toggle" onClick={togglePlaying} aria-label={view.playing ? 'Pause' : 'Play'}>{view.playing ? <Pause fill="currentColor"/> : <Play fill="currentColor"/>}</button><button onClick={() => player.setQueueOpen(true)} aria-label="Open queue"><ListMusic/></button><button onClick={toggleMuted} aria-label="Mute">{view.muted ? <VolumeX/> : <Volume2/>}</button><input className="volume" aria-label="Volume" type="range" min="0" max="1" step="0.01" value={view.volume} onChange={(event) => setVolume(Number(event.target.value))}/><button className="desktop-only" onClick={() => player.setNowPlayingOpen(true)} aria-label="Full screen player"><Maximize2/></button></div><div className="mobile-player-progress"><SeekBar/></div></div><QueueDrawer/><NowPlaying/><CarMode/></>
 }
 
 function QueueDrawer() {
@@ -174,5 +177,5 @@ function NowPlaying() {
   }
   const seek = (value: number) => view.remote ? view.command('seek', value) : player.seekTo(value)
 
-  return <section className="now-playing"><header><button onClick={() => player.setNowPlayingOpen(false)} aria-label="Close now playing"><ChevronDown/></button><span>{remoteLabel(view) ?? 'Now playing'}</span><span className="now-playing-actions"><button className={lyricsOpen ? 'active' : ''} onClick={toggleLyrics} aria-label={lyricsOpen ? 'Hide lyrics' : 'Show lyrics'} aria-pressed={lyricsOpen}><MicVocal/></button>{!view.remote && <SleepTimerButton/>}<DevicePicker placement="down"/><button onClick={() => { player.setNowPlayingOpen(false); player.setQueueOpen(true) }} aria-label="Open queue"><ListMusic/></button></span></header>{lyricsOpen ? <LyricsPanel track={track} time={view.currentTime} onSeek={seek}/> : <div className="now-art"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={1000}/></div>}<div className="now-meta"><span><h1>{track.title}</h1><p>{track.artist}</p><RatingStars key={track.id} item={track} name={track.title} className="now-rating"/></span>{!view.remote && <StartRadioButton track={track} className="now-radio"/>}</div><SeekBar/><Transport large/>{view.remote && <button type="button" className="button secondary play-here" onClick={view.playHere}><MonitorSpeaker/>Play on this device</button>}</section>
+  return <section className="now-playing"><header><button onClick={() => player.setNowPlayingOpen(false)} aria-label="Close now playing"><ChevronDown/></button><span>{remoteLabel(view) ?? 'Now playing'}</span><span className="now-playing-actions"><button className={lyricsOpen ? 'active' : ''} onClick={toggleLyrics} aria-label={lyricsOpen ? 'Hide lyrics' : 'Show lyrics'} aria-pressed={lyricsOpen}><MicVocal/></button>{!view.remote && <SleepTimerButton/>}<button onClick={() => { player.setNowPlayingOpen(false); useCarMode.getState().setOpen(true) }} aria-label="Car mode" title="Car mode"><Car/></button><DevicePicker placement="down"/><button onClick={() => { player.setNowPlayingOpen(false); player.setQueueOpen(true) }} aria-label="Open queue"><ListMusic/></button></span></header>{lyricsOpen ? <LyricsPanel track={track} time={view.currentTime} onSeek={seek}/> : <div className="now-art"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={1000}/></div>}<div className="now-meta"><span><h1>{track.title}</h1><p>{track.artist}</p><RatingStars key={track.id} item={track} name={track.title} className="now-rating"/></span>{!view.remote && <StartRadioButton track={track} className="now-radio"/>}</div><SeekBar/><Transport large/>{view.remote && <button type="button" className="button secondary play-here" onClick={view.playHere}><MonitorSpeaker/>Play on this device</button>}</section>
 }
