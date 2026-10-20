@@ -19,6 +19,9 @@ import { useReleaseMetadata } from '../stores/releaseMetadata'
 import { useAlbumArtwork } from '../stores/albumArtwork'
 import { useAuth } from '../stores/auth'
 
+// Titles longer than this (e.g. "Permanent Vacation [924 162-2]") get a smaller size so they stay on about two lines.
+const longAlbumTitle = 24
+
 export function AlbumDetail() {
   const { id = '' } = useParams()
   const api = useApi()
@@ -101,11 +104,11 @@ export function AlbumDetail() {
   if (!album) return null
 
   return <div className="page detail-page">
-    <header className="detail-hero">{(() => {
+    <header className="detail-hero album-hero">{(() => {
       const shown = selectedVersion ?? album
       const art = <Artwork id={shown.coverArt ?? shown.id} albumId={shown.id} alt={groupTitle} size={1000}/>
       return isAdmin && artworkStatus === 'ready' ? <button type="button" className="artwork-change" onClick={() => setChangingArtwork((value) => !value)} aria-expanded={changingArtwork} aria-label={changingArtwork ? 'Close album artwork options' : 'Change album artwork'}>{art}<span className="artwork-change-hint" aria-hidden="true"><ImageUp/>Change artwork</span></button> : art
-    })()}<div><span className="eyebrow">{releaseTypeLabels[releaseType]}</span><h1>{groupTitle}</h1><p className="detail-artist">{album.artist}</p><p>{releaseDate && `${releaseDate} · `}{fullVersions.length > 1 ? `${fullVersions.length} versions · ` : ''}{versionTracks.length} songs · {formatHours(versionTracks.reduce((sum, t) => sum + (t.duration ?? 0), 0))}</p>{override?.source === 'musicbrainz' && <p className="metadata-source">MusicBrainz classified · {override.musicBrainzId ?? 'matched release'}</p>}
+    })()}<div><span className="eyebrow">{releaseTypeLabels[releaseType]}</span><h1 className={groupTitle.length > longAlbumTitle ? 'long-title' : undefined}>{groupTitle}</h1><p className="detail-artist">{album.artist}</p><p>{releaseDate && `${releaseDate} · `}{fullVersions.length > 1 ? `${fullVersions.length} versions · ` : ''}{versionTracks.length} songs · {formatHours(versionTracks.reduce((sum, t) => sum + (t.duration ?? 0), 0))}</p>{override?.source === 'musicbrainz' && <p className="metadata-source">MusicBrainz classified · {override.musicBrainzId ?? 'matched release'}</p>}
       {!versionsLoading && fullVersions.length > 1 && <label className="release-sort version-picker"><span>Version</span><select value={selectedVersion?.id} onChange={(event) => setSelectedVersionId(event.target.value)}>{fullVersions.map((version) => <option key={version.id} value={version.id}>{labels.get(version.id) ?? version.name}</option>)}</select></label>}
       <div className="hero-actions"><button className="button primary" onClick={() => playVersion()}><Play fill="currentColor"/>Play</button><button className="button secondary" onClick={() => playVersion(true)}><Shuffle/>Shuffle</button>{versionTracks.length > 0 && <AddToPlaylist songIds={versionTracks.map((track) => track.id)} label={selectedVersion?.name ?? groupTitle} variant="button"/>}{!versionsLoading && selectedVersion && <CollectionDownloadButton key={selectedVersion.id} kind="album" item={{ id: selectedVersion.id, name: selectedVersion.name || groupTitle, artist: selectedVersion.artist || album.artist, coverArt: selectedVersion.coverArt ?? selectedVersion.id }} tracks={versionTracks}/>}{isAdmin && cloudStatus === 'cloud' && <button className="button secondary" onClick={() => setEditingMetadata((value) => !value)}>{editingMetadata ? <X/> : <Pencil/>}{editingMetadata ? 'Close metadata' : 'Edit metadata'}</button>}</div></div></header>
 

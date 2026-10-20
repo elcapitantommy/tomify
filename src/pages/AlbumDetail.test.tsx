@@ -63,6 +63,22 @@ describe('AlbumDetail admin tools', () => {
     expect(screen.queryByRole('button', { name: 'Change album artwork' })).not.toBeInTheDocument()
     expect(screen.queryByText('completeness check')).not.toBeInTheDocument()
   })
+
+  it('marks long album titles so they render smaller', async () => {
+    useAuth.setState({ isAdmin: false })
+    const title = 'Permanent Vacation [924 162-2]'
+    api.album.mockImplementationOnce(async () => ({ ...album, name: title }))
+    renderAlbum()
+    const heading = await screen.findByRole('heading', { name: title })
+    expect(heading).toHaveClass('long-title')
+    expect(heading.closest('header')).toHaveClass('album-hero')
+  })
+
+  it('keeps the normal title size for short album titles', async () => {
+    useAuth.setState({ isAdmin: false })
+    renderAlbum()
+    expect(await screen.findByRole('heading', { name: 'Flood' })).not.toHaveClass('long-title')
+  })
 })
 
 describe('AlbumDetail versions', () => {
