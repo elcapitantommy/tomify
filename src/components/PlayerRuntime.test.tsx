@@ -18,6 +18,7 @@ import { useCrossfade } from '../stores/crossfade'
 import { useSleepTimer } from '../stores/sleepTimer'
 import { FakeIndexedDb } from '../test/fakeIndexedDb'
 import { offlineAccount, resetOfflineDbForTests, storeDownload } from '../lib/offline-db'
+import { promptCast, useCast } from '../stores/cast'
 
 const hlsPlayers: { source?: string; media?: HTMLMediaElement; destroyed: boolean; emit(event: string, data: unknown): void }[] = []
 vi.mock('hls.js/light', () => {
@@ -124,6 +125,42 @@ describe('PlayerRuntime', () => {
     await act(async () => { audio().find((element) => streamed(element) === 'b')!.dispatchEvent(new Event('ended')) })
     expect(usePlayer.getState().currentIndex).toBe(2)
     expect(usePlayer.getState().playing).toBe(true)
+  })
+
+  describe('casting with the Remote Playback API', () => {
+    type FakeRemote = EventTarget & { state: string; prompt: ReturnType<typeof vi.fn> }
+    const remotes = new WeakMap<HTMLMediaElement, FakeRemote>()
+    const remoteOf = (element: HTMLMediaElement) => {
+      let remote = remotes.get(element)
+      if (!remote) { remote = Object.assign(new EventTarget(), { state: 'disconnected', prompt: vi.fn(async () => undefined) }); remotes.set(element, remote) }
+      return remote
+    }
+    beforeEach(() => { Object.defineProperty(HTMLMediaElement.prototype, 'remote', { configurable: true, get() { return remoteOf(this) } }) })
+    afterEach(() => { delete (HTMLMediaElement.prototype as unknown as { remote?: unknown }).remote; useCast.setState({ kind: null, state: 'disconnected', error: null }) })
+
+    it('opens the browser picker for the playing element and keeps every song on it while casting', async () => {
+      const [first, second] = await startPlaying()
+      expect(useCast.getState().kind).toBe('cast')
+      expect(streamed(second)).toBe('b')
+      promptCast()
+      expect(remoteOf(first).prompt).toHaveBeenCalled()
+      await act(async () => { remoteOf(first).state = 'connected'; remoteOf(first).dispatchEvent(new Event('connect')) })
+      expect(useCast.getState().state).toBe('connected')
+      await act(async () => { first.dispatchEvent(new Event('ended')) })
+      expect(usePlayer.getState().currentIndex).toBe(1)
+      // The next song plays on the element the speaker is connected to, not the one it was primed on.
+      expect(streamed(first)).toBe('b')
+      await act(async () => { remoteOf(first).state = 'disconnected'; remoteOf(first).dispatchEvent(new Event('disconnect')) })
+      expect(useCast.getState().state).toBe('disconnected')
+      expect(streamed(second)).toBe('c')
+    })
+
+    it('explains when no speakers are found', async () => {
+      const [first] = await startPlaying()
+      remoteOf(first).prompt.mockRejectedValueOnce(new DOMException('none', 'NotFoundError'))
+      await act(async () => { promptCast() })
+      expect(useCast.getState().error).toBe('No speakers or TVs were found on this network.')
+    })
   })
 
   it('does not hand off to a pre-loaded next track whose download failed', async () => {

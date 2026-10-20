@@ -9,7 +9,9 @@ import { localPlaybackDeviceName } from '../stores/livePlayback'
 import { albumArtworkUrl, useAlbumArtwork } from '../stores/albumArtwork'
 import { OUTPUT_CHANGE_GUARD_MS, watchAudioOutputs, type AudioOutputWatcher } from '../lib/audioOutputs'
 import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
-import { AdaptiveSources, chooseSource, loadHlsLibrary, markAdaptiveUnavailable, wantsAdaptive, type StreamSource } from '../lib/adaptiveStream'
+import { AdaptiveSources, chooseSource, loadHlsLibrary, markAdaptiveUnavailable, playbackEngine, wantsAdaptive, type StreamSource } from '../lib/adaptiveStream'
+import { castElementState, castErrorMessage, castKind, type CastableElement, type CastState } from '../lib/cast'
+import { bindCastPrompt, useCast } from '../stores/cast'
 import { isLanUrl, mediaStreamFailed } from '../lib/mediaRoute'
 import { useStreamQuality } from '../stores/streamQuality'
 import { useEqualiser } from '../stores/equaliser'
@@ -84,6 +86,8 @@ export function PlayerRuntime() {
   const outputs = useRef<AudioOutputWatcher | null>(null)
   // When the lock screen, headphones or car last asked to play (see the media session handlers).
   const sessionPlayAt = useRef(-Infinity)
+  // The element playing on a speaker or TV (lib/cast.ts). While set, every song plays on it, as an original file.
+  const castSlot = useRef<AudioSlot | null>(null)
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
@@ -161,9 +165,11 @@ export function PlayerRuntime() {
 
   function sourceFor(element: HTMLAudioElement, wanted: Track): StreamSource {
     // A downloaded copy the resolver has already opened plays from the device, on every load (see lib/offline-db.ts).
-    const local = cachedLocalAudioUrl(api.session, wanted.id)
+    // A speaker fetches the song itself, so it gets the stream, never a copy only this device can open.
+    const casting = castSlot.current !== null
+    const local = casting ? null : cachedLocalAudioUrl(api.session, wanted.id)
     if (local) return { kind: 'direct', url: local }
-    return chooseSource(element, { direct: api.streamUrl(wanted.id), hls: api.hlsUrl(wanted.id, streamGainMode(wanted, gainModeFor(wanted))) }, useStreamQuality.getState().quality)
+    return chooseSource(element, { direct: api.streamUrl(wanted.id), hls: api.hlsUrl(wanted.id, streamGainMode(wanted, gainModeFor(wanted))) }, casting ? 'original' : useStreamQuality.getState().quality)
   }
 
   function applyVolume(slot: AudioSlot) {
@@ -313,7 +319,8 @@ export function PlayerRuntime() {
   // to an already-buffering decoder instead of loading the next URL after ended.
   function primeNext() {
     const state = usePlayer.getState()
-    if (!state.playing) return
+    // Casting keeps to one element, so there is no second one to prime (and no crossfade).
+    if (!state.playing || castSlot.current !== null) return
     const nextTrack = upcomingTrack(state)
     const slot = otherSlot(activeSlot.current)
     const element = getAudio(slot)
@@ -444,7 +451,7 @@ export function PlayerRuntime() {
       const standby = (current === 0 ? 1 : 0) as AudioSlot
       let target = current
 
-      if (loadedTrackIds.current[current] !== nextTrack.id && loadedTrackIds.current[standby] === nextTrack.id && !getAudio(standby)?.error) {
+      if (castSlot.current === null && loadedTrackIds.current[current] !== nextTrack.id && loadedTrackIds.current[standby] === nextTrack.id && !getAudio(standby)?.error) {
         activeSlot.current = standby
         target = standby
       }
@@ -486,7 +493,7 @@ export function PlayerRuntime() {
       if (cancelled) { source.revoke?.(); return }
       release = source.revoke
       if (activeSlot.current !== slot || loadedTrackIds.current[slot] !== track.id) return
-      const wanted: StreamSource = source.kind === 'local' ? { kind: 'direct', url: source.url } : sourceFor(element, track)
+      const wanted: StreamSource = source.kind === 'local' && castSlot.current === null ? { kind: 'direct', url: source.url } : sourceFor(element, track)
       if (!sources.current.matches(element, wanted)) {
         // Switching a playing stream to its downloaded copy carries on from the same spot.
         if (source.kind === 'local' && element.currentTime > 0) resumeAt.current = { slot, trackId: track.id, position: element.currentTime }
@@ -500,6 +507,63 @@ export function PlayerRuntime() {
       release?.()
     }
   }, [api, track?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Follow AirPlay / Cast on both elements: the one sent to a speaker becomes the only one used until it comes back.
+  useEffect(() => {
+    const elements = ([0, 1] as const).map((slot) => getAudio(slot) as CastableElement | null)
+    const kind = castKind(elements[0])
+    useCast.getState().set({ kind })
+    if (!kind) return
+    const update = () => {
+      let slot: AudioSlot | null = null
+      let state: CastState = 'disconnected'
+      for (const candidate of [0, 1] as const) {
+        const element = elements[candidate]
+        const current = element ? castElementState(element, kind) : 'disconnected'
+        if (current !== 'disconnected') { slot = candidate; state = current; break }
+      }
+      const was = castSlot.current
+      castSlot.current = slot
+      useCast.getState().set({ state, ...(state === 'connected' ? { error: null } : {}) })
+      if (slot !== null && was === null) {
+        // The song primed on the other element would play here, not on the speaker: forget it.
+        const standby = getAudio(otherSlot(slot))
+        clearHandoff()
+        if (standby && !standby.paused) standby.pause()
+        loadedTrackIds.current[otherSlot(slot)] = undefined
+        activeSlot.current = slot
+      }
+      if (slot === null && was !== null) primeNext()
+    }
+    const events = kind === 'airplay' ? ['webkitcurrentplaybacktargetiswirelesschanged'] : ['connecting', 'connect', 'disconnect']
+    const targets: EventTarget[] = []
+    for (const element of elements) { const target = kind === 'airplay' ? element : element?.remote; if (target) targets.push(target as EventTarget) }
+    targets.forEach((target) => events.forEach((name) => target.addEventListener(name, update)))
+    update()
+    return () => targets.forEach((target) => events.forEach((name) => target.removeEventListener(name, update)))
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The player bar's AirPlay / Cast button. It runs inside the click, as browsers require for their picker.
+  useEffect(() => bindCastPrompt(() => {
+    const slot = activeSlot.current
+    const element = getAudio(slot)
+    const castable = element as CastableElement | null
+    const kind = castKind(castable)
+    if (!element || !castable || !kind) return
+    useCast.getState().set({ error: null })
+    if (kind === 'airplay') { castable.webkitShowPlaybackTargetPicker?.(); return }
+    // A stream hls.js builds in the browser, or a downloaded copy, can't be sent: switch this song to its
+    // original file at the same spot first.
+    const state = usePlayer.getState()
+    const wanted = state.queue[state.currentIndex]
+    const unsendable = (sources.current.kind(element) === 'hls' && playbackEngine(element) === 'hls.js') || (sources.current.url(element) ?? '').startsWith('blob:')
+    if (wanted && unsendable) {
+      if (element.currentTime > 0) resumeAt.current = { slot, trackId: wanted.id, position: element.currentTime }
+      loadInto(slot, wanted, 'auto', { kind: 'direct', url: api.streamUrl(wanted.id) })
+      if (state.playing) playElement(element, slot)
+    }
+    castable.remote?.prompt().catch((error: unknown) => useCast.getState().set({ error: castErrorMessage(error) }))
+  }), [api]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (track && playing) primeNext()
@@ -728,7 +792,7 @@ export function PlayerRuntime() {
   })
 
   return <>
-    <audio ref={audioA} preload="metadata" playsInline {...events(0)}/>
-    <audio ref={audioB} preload="metadata" playsInline {...events(1)}/>
+    <audio ref={audioA} preload="metadata" playsInline x-webkit-airplay="allow" {...events(0)}/>
+    <audio ref={audioB} preload="metadata" playsInline x-webkit-airplay="allow" {...events(1)}/>
   </>
 }

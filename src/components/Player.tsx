@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, ListMusic, Maximize2, MicVocal, MonitorSpeaker, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react'
+import { Airplay, Cast, Check, ChevronDown, ListMusic, Maximize2, MicVocal, MonitorSpeaker, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react'
 import { Artwork } from './Artwork'
 import { StartRadioButton } from './SongRadio'
 import { useRadio } from '../stores/radio'
 import { LyricsPanel } from './Lyrics'
 import { SleepTimerButton } from './SleepTimer'
+import { RatingStars } from './RatingStars'
 import { formatDuration } from '../lib/format'
 import { usePlayer } from '../stores/player'
 import { controlRemote, isDeviceOnline, livePosition, localPlaybackDeviceId, localPlaybackDeviceName, useLivePlayback, useRemoteSession, type LivePlaybackCommandAction } from '../stores/livePlayback'
 import { playHere, transferTo } from '../stores/playbackHandoff'
+import { promptCast, useCast } from '../stores/cast'
+import { castLabels } from '../lib/cast'
 
 const noCommand = (action: LivePlaybackCommandAction, value?: number) => { void action; void value }
 
@@ -64,6 +67,10 @@ export function DevicePicker({ placement = 'up' }: { placement?: 'up' | 'down' }
   const { remote, now } = useRemoteSession(5000)
   const container = useRef<HTMLDivElement>(null)
   const activeId = remote?.deviceId ?? localPlaybackDeviceId
+  const cast = useCast()
+  const casting = !remote && cast.state !== 'disconnected'
+  const castLabel = cast.kind ? castLabels[cast.kind] : null
+  const CastIcon = cast.kind === 'airplay' ? Airplay : Cast
   const others = devices.filter((device) => device.deviceId !== localPlaybackDeviceId && isDeviceOnline(devices, device.deviceId, now))
 
   useEffect(() => {
@@ -86,13 +93,18 @@ export function DevicePicker({ placement = 'up' }: { placement?: 'up' | 'down' }
   const items = [{ deviceId: localPlaybackDeviceId, deviceName: localPlaybackDeviceName, label: 'This device' }, ...others.map((device) => ({ ...device, label: device.deviceName }))]
 
   return <div className={`device-picker ${placement}`} ref={container}>
-    <button type="button" className={remote ? 'device-button remote' : 'device-button'} onClick={() => setOpen(!open)} aria-label="Connect to a device" aria-expanded={open} title={remote ? `Playing on ${remote.deviceName}` : 'Connect to a device'}><MonitorSpeaker/></button>
+    <button type="button" className={remote || casting ? 'device-button remote' : 'device-button'} onClick={() => setOpen(!open)} aria-label="Connect to a device" aria-expanded={open} title={remote ? `Playing on ${remote.deviceName}` : casting ? 'Playing on a speaker' : 'Connect to a device'}>{casting ? <CastIcon/> : <MonitorSpeaker/>}</button>
     {open && <div className="device-menu" role="menu">
       <strong>Connect to a device</strong>
       {items.map((item) => <button type="button" role="menuitem" key={item.deviceId} className={item.deviceId === activeId ? 'active' : ''} disabled={busy !== null} onClick={() => void choose(item.deviceId)}>
-        <MonitorSpeaker/><span>{item.label}{item.deviceId === localPlaybackDeviceId && <small>{item.deviceName}</small>}{item.deviceId === activeId && <small>{remote ? (remote.playing ? 'Playing' : 'Paused') : 'Listening here'}</small>}{busy === item.deviceId && <small>Connecting…</small>}</span>
+        <MonitorSpeaker/><span>{item.label}{item.deviceId === localPlaybackDeviceId && <small>{item.deviceName}</small>}{item.deviceId === activeId && <small>{remote ? (remote.playing ? 'Playing' : 'Paused') : casting ? 'Sending to a speaker' : 'Listening here'}</small>}{busy === item.deviceId && <small>Connecting…</small>}</span>
         {item.deviceId === activeId && <Check/>}
       </button>)}
+      {castLabel && !remote && <button type="button" role="menuitem" className={casting ? 'active cast-item' : 'cast-item'} onClick={() => promptCast()}>
+        <CastIcon/><span>{castLabel.action}<small>{cast.state === 'connected' ? 'Playing on a speaker. Tap to change or stop.' : cast.state === 'connecting' ? 'Connecting…' : castLabel.detail}</small></span>
+        {cast.state === 'connected' && <Check/>}
+      </button>}
+      {cast.error && !remote && <p className="device-error">{cast.error}</p>}
       {!others.length && <p>Open Tomify on another phone or computer signed in to this account to play there.</p>}
       {error && <p className="device-error">{error}</p>}
     </div>}
@@ -161,5 +173,5 @@ function NowPlaying() {
   }
   const seek = (value: number) => view.remote ? view.command('seek', value) : player.seekTo(value)
 
-  return <section className="now-playing"><header><button onClick={() => player.setNowPlayingOpen(false)} aria-label="Close now playing"><ChevronDown/></button><span>{remoteLabel(view) ?? 'Now playing'}</span><span className="now-playing-actions"><button className={lyricsOpen ? 'active' : ''} onClick={toggleLyrics} aria-label={lyricsOpen ? 'Hide lyrics' : 'Show lyrics'} aria-pressed={lyricsOpen}><MicVocal/></button>{!view.remote && <SleepTimerButton/>}<DevicePicker placement="down"/><button onClick={() => { player.setNowPlayingOpen(false); player.setQueueOpen(true) }} aria-label="Open queue"><ListMusic/></button></span></header>{lyricsOpen ? <LyricsPanel track={track} time={view.currentTime} onSeek={seek}/> : <div className="now-art"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={1000}/></div>}<div className="now-meta"><span><h1>{track.title}</h1><p>{track.artist}</p></span>{!view.remote && <StartRadioButton track={track} className="now-radio"/>}</div><SeekBar/><Transport large/>{view.remote && <button type="button" className="button secondary play-here" onClick={view.playHere}><MonitorSpeaker/>Play on this device</button>}</section>
+  return <section className="now-playing"><header><button onClick={() => player.setNowPlayingOpen(false)} aria-label="Close now playing"><ChevronDown/></button><span>{remoteLabel(view) ?? 'Now playing'}</span><span className="now-playing-actions"><button className={lyricsOpen ? 'active' : ''} onClick={toggleLyrics} aria-label={lyricsOpen ? 'Hide lyrics' : 'Show lyrics'} aria-pressed={lyricsOpen}><MicVocal/></button>{!view.remote && <SleepTimerButton/>}<DevicePicker placement="down"/><button onClick={() => { player.setNowPlayingOpen(false); player.setQueueOpen(true) }} aria-label="Open queue"><ListMusic/></button></span></header>{lyricsOpen ? <LyricsPanel track={track} time={view.currentTime} onSeek={seek}/> : <div className="now-art"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={1000}/></div>}<div className="now-meta"><span><h1>{track.title}</h1><p>{track.artist}</p><RatingStars key={track.id} item={track} name={track.title} className="now-rating"/></span>{!view.remote && <StartRadioButton track={track} className="now-radio"/>}</div><SeekBar/><Transport large/>{view.remote && <button type="button" className="button secondary play-here" onClick={view.playHere}><MonitorSpeaker/>Play on this device</button>}</section>
 }

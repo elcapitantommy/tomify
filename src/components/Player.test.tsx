@@ -6,8 +6,13 @@ import { useLivePlayback, type LivePlaybackSnapshot } from '../stores/livePlayba
 import { PlayerBar } from './Player'
 import { useRadio } from '../stores/radio'
 import { useSleepTimer } from '../stores/sleepTimer'
+import { useRatings } from '../stores/ratings'
+import { useCast } from '../stores/cast'
+import * as castStore from '../stores/cast'
 
 vi.mock('./Artwork', () => ({ Artwork: () => null }))
+const api = { setRating: vi.fn(async () => undefined) }
+vi.mock('../lib/api-context', () => ({ useApi: () => api, useOptionalApi: () => api }))
 vi.mock('./Lyrics', () => ({ LyricsPanel: ({ track, time, onSeek }: { track: { title: string }; time: number; onSeek: (time: number) => void }) => <button onClick={() => onSeek(12)}>Lyrics of {track.title} at {Math.floor(time)}</button> }))
 
 const session = { serverUrl: 'https://music.example', username: 'tom', salt: 's', token: 't' }
@@ -67,6 +72,34 @@ describe('PlayerBar across devices', () => {
     useLivePlayback.setState({ snapshot: remote(), devices: [{ deviceId: 'desktop', deviceName: 'Windows · Chrome', lastSeen: Date.now() }] })
     render(<PlayerBar/>)
     expect(screen.queryByRole('button', { name: 'Sleep timer' })).not.toBeInTheDocument()
+  })
+
+  it('rates the song playing from Now Playing, and clears it with the same star', async () => {
+    useRatings.setState({ overrides: {} })
+    usePlayer.setState({ nowPlayingOpen: true })
+    render(<PlayerBar/>)
+    const nowPlaying = document.querySelector('.now-playing') as HTMLElement
+    await act(async () => { fireEvent.click(within(nowPlaying).getByRole('button', { name: 'Rate Ana Ng 4 stars' })) })
+    expect(api.setRating).toHaveBeenLastCalledWith('a', 4)
+    expect(within(nowPlaying).getByRole('group', { name: 'Rating for Ana Ng: 4 of 5 stars' })).toBeInTheDocument()
+    await act(async () => { fireEvent.click(within(nowPlaying).getByRole('button', { name: 'Clear rating for Ana Ng' })) })
+    expect(api.setRating).toHaveBeenLastCalledWith('a', 0)
+    expect(useRatings.getState().overrides.a).toBe(0)
+  })
+
+  it('offers AirPlay in the device menu and shows when music is on a speaker', () => {
+    const prompt = vi.spyOn(castStore, 'promptCast').mockImplementation(() => undefined)
+    useCast.setState({ kind: 'airplay', state: 'disconnected', error: null })
+    const { unmount } = render(<PlayerBar/>)
+    fireEvent.click(screen.getByRole('button', { name: 'Connect to a device' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /AirPlay/ }))
+    expect(prompt).toHaveBeenCalled()
+    unmount()
+    useCast.setState({ state: 'connected' })
+    render(<PlayerBar/>)
+    expect(screen.getByRole('button', { name: 'Connect to a device' })).toHaveAttribute('title', 'Playing on a speaker')
+    useCast.setState({ kind: null, state: 'disconnected' })
+    prompt.mockRestore()
   })
 
   it('moves playback here from the other device at the same track', () => {
