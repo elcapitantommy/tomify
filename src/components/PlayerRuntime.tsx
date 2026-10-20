@@ -7,6 +7,7 @@ import { setMediaMetadata } from '../lib/mediaSession'
 import { ListeningTracker, sendListeningEvent } from '../lib/listening-log'
 import { localPlaybackDeviceName } from '../stores/livePlayback'
 import { albumArtworkUrl, useAlbumArtwork } from '../stores/albumArtwork'
+import { OUTPUT_CHANGE_GUARD_MS, watchAudioOutputs, type AudioOutputWatcher } from '../lib/audioOutputs'
 import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import { AdaptiveSources, chooseSource, loadHlsLibrary, markAdaptiveUnavailable, wantsAdaptive, type StreamSource } from '../lib/adaptiveStream'
 import { isLanUrl, mediaStreamFailed } from '../lib/mediaRoute'
@@ -79,6 +80,9 @@ export function PlayerRuntime() {
   const handingOff = useRef<{ from: AudioSlot; seconds: number } | null>(null)
   const fade = useRef<{ from: AudioSlot; to: AudioSlot; timer: number } | null>(null)
   const canFade = useRef<boolean | null>(null)
+  const outputs = useRef<AudioOutputWatcher | null>(null)
+  // When the lock screen, headphones or car last asked to play (see the media session handlers).
+  const sessionPlayAt = useRef(-Infinity)
   const api = useApi()
   const queue = usePlayer((s) => s.queue)
   const currentIndex = usePlayer((s) => s.currentIndex)
@@ -550,7 +554,13 @@ export function PlayerRuntime() {
   useEffect(() => {
     if (!track || !('mediaSession' in navigator)) return
     const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
-      ['play', () => usePlayer.getState().setPlaying(true)],
+      ['play', () => {
+        // Headphones or a car dropping out can send a play of their own as they go: that would start the
+        // music out of the speaker, so a play right as an audio device comes or goes is ignored.
+        if (!usePlayer.getState().playing && outputs.current?.changedRecently()) return
+        sessionPlayAt.current = Date.now()
+        usePlayer.getState().setPlaying(true)
+      }],
       ['pause', () => { useDj.getState().hush(); usePlayer.getState().setPlaying(false) }],
       ['previoustrack', () => usePlayer.getState().previous()],
       ['nexttrack', () => usePlayer.getState().next()],
@@ -561,6 +571,23 @@ export function PlayerRuntime() {
     handlers.forEach(([action, handler]) => { try { navigator.mediaSession.setActionHandler(action, handler) } catch { /* unsupported action on this browser */ } })
     return () => handlers.forEach(([action]) => { try { navigator.mediaSession.setActionHandler(action, null) } catch { /* unsupported action */ } })
   }, [api, track])
+
+  // The play from headphones dropping out can also arrive just before the browser reports the device change:
+  // undo a lock-screen or headphone play that close to it. A device that is known to have gone pauses the
+  // music as unplugging wired headphones does.
+  useEffect(() => {
+    const watcher = watchAudioOutputs((removed) => {
+      if (!usePlayer.getState().playing) return
+      if (!removed && Date.now() - sessionPlayAt.current >= OUTPUT_CHANGE_GUARD_MS) return
+      useDj.getState().hush()
+      usePlayer.getState().setPlaying(false)
+    })
+    outputs.current = watcher
+    return () => {
+      outputs.current = null
+      watcher.stop()
+    }
+  }, [])
 
   useEffect(() => {
     if (track && 'mediaSession' in navigator) setMediaMetadata(track, api)
