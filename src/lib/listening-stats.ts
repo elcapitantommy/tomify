@@ -2,7 +2,7 @@ import { useAuth } from '../stores/auth'
 
 export interface StatsRow { plays: number; seconds: number; artist?: string | null; artistId?: string | null; album?: string | null; albumId?: string | null; title?: string | null; trackId?: string; genre?: string | null }
 export interface ListeningSummary { days: number | null; from: number; to: number; plays: number; skips: number; seconds: number; artists: StatsRow[]; albums: StatsRow[]; tracks: StatsRow[]; genres: StatsRow[]; years: number[] }
-export interface WrappedTrack { trackId: string; title: string | null; artist: string | null; albumId: string | null; playedAt?: number; day?: string; plays?: number }
+export interface WrappedTrack { trackId: string; title: string | null; artist: string | null; artistId?: string | null; albumId: string | null; playedAt?: number; day?: string; plays?: number }
 export interface Wrapped {
   year: number; plays: number; skips: number; seconds: number
   artists: StatsRow[]; albums: StatsRow[]; tracks: StatsRow[]; genres: StatsRow[]

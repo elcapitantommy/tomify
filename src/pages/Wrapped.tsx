@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Gift, ListPlus } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { EmptyState, ErrorState, SkeletonGrid } from '../components/States'
+import { ArtistLinks } from '../components/ArtistLinks'
 import { AlbumLabel, ArtistLabel, StatsList, TrackLabel } from '../components/StatsList'
 import { useLoad } from '../hooks/useLoad'
 import { useApi } from '../lib/api-context'
@@ -12,7 +13,7 @@ const minutes = (seconds: number) => Math.round(seconds / 60).toLocaleString()
 
 function Moment({ title, track, detail }: { title: string; track: WrappedTrack | null; detail?: string }) {
   if (!track) return null
-  return <div className="wrapped-moment"><small>{title}</small><strong>{track.albumId ? <Link to={`/albums/${track.albumId}`}>{track.title}</Link> : track.title}</strong><span>{track.artist}{detail ? ` · ${detail}` : ''}</span></div>
+  return <div className="wrapped-moment"><small>{title}</small><strong>{track.albumId ? <Link to={`/albums/${track.albumId}`}>{track.title}</Link> : track.title}</strong><span><ArtistLinks name={track.artist} artistId={track.artistId}/>{detail ? ` · ${detail}` : ''}</span></div>
 }
 
 // A year in review from Tomify's own listening history, like Spotify Wrapped.

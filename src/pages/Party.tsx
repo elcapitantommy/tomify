@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ItemArtists } from '../components/ArtistLinks'
 import { Copy, LoaderCircle, PartyPopper, Save, Share2, ThumbsUp, Trash2, UserX } from 'lucide-react'
 import { ErrorState } from '../components/States'
 import { partyJoinUrl, type PartyOptions } from '../lib/party'
@@ -45,7 +46,7 @@ export function Party() {
         {notice && <p role="status">{notice}</p>}
       </section>
       <section className="stats-list"><h2>Up next from guests</h2>{queue.length ? <ol className="party-queue">{queue.map((item) => <li key={item.id}>
-        <span><strong>{item.track.title}</strong><small>{item.track.artist} · added by {item.guestName}{item.state === 'queued' ? ' · up next' : ''}</small></span>
+        <span><strong>{item.track.title}</strong><small><ItemArtists item={item.track}/> · added by {item.guestName}{item.state === 'queued' ? ' · up next' : ''}</small></span>
         {party.voting && <small className="party-votes"><ThumbsUp size={14}/>{item.votes}</small>}
         <button type="button" className="icon-button" aria-label={`Remove ${item.track.title}`} onClick={() => void remove(item.id)}><Trash2/></button>
       </li>)}</ol> : <p className="health-empty">Nothing yet. Guests' tracks appear here as they add them.</p>}</section>

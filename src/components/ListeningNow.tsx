@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Radio } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Artwork } from './Artwork'
+import { ItemArtists } from './ArtistLinks'
 import { useApi } from '../lib/api-context'
 import { sameAccount, type NowPlaying } from '../lib/navidrome'
 import { usePoll } from '../lib/usePoll'
@@ -30,7 +31,7 @@ export function ListeningNow() {
   return <section aria-label="Listening now"><div className="section-title"><div><span className="eyebrow">On this server</span><h2><Radio/>Listening now</h2></div></div>
     <div className="listening-now">{entries.map((entry) => <div className="listening-now-entry" key={entry.username}>
       <Artwork id={entry.coverArt} albumId={entry.albumId} alt="" size={120}/>
-      <span><small><strong>{entry.username}</strong> is playing{entry.minutesAgo > 1 ? ` (${entry.minutesAgo} min ago)` : ''}</small><strong>{entry.title}</strong><small>{entry.artist}{entry.albumId ? <> · <Link to={`/albums/${entry.albumId}`}>{entry.album}</Link></> : ''}</small></span>
+      <span><small><strong>{entry.username}</strong> is playing{entry.minutesAgo > 1 ? ` (${entry.minutesAgo} min ago)` : ''}</small><strong>{entry.title}</strong><small><ItemArtists item={entry}/>{entry.albumId ? <> · <Link to={`/albums/${entry.albumId}`}>{entry.album}</Link></> : ''}</small></span>
       <button className="button secondary" onClick={() => usePlayer.getState().playNow(entry)} aria-label={`Play ${entry.title}`}>Play</button>
     </div>)}</div>
   </section>
