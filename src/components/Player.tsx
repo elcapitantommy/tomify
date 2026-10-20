@@ -12,6 +12,7 @@ import { controlRemote, isDeviceOnline, livePosition, localPlaybackDeviceId, loc
 import { playHere, transferTo } from '../stores/playbackHandoff'
 import { promptCast, useCast } from '../stores/cast'
 import { castLabels } from '../lib/cast'
+import { DragHandle } from './DragHandle'
 
 const noCommand = (action: LivePlaybackCommandAction, value?: number) => { void action; void value }
 
@@ -154,7 +155,7 @@ function QueueDrawer() {
   const removeIndex = (index: number) => view.remote ? view.command('remove-index', index) : player.removeFromQueue(index)
   const clear = () => view.remote ? view.command('clear-queue') : player.clearQueue()
 
-  return <div className="drawer-backdrop" onMouseDown={() => player.setQueueOpen(false)}><aside className="queue-drawer" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="eyebrow">{remoteLabel(view) ?? radioLabel ?? 'Up next'}</span><h2>Queue</h2>{radioLabel && (radio.loading || radio.error) && <small className="radio-status">{radio.error ?? 'Finding similar songs…'}</small>}</div><button onClick={() => player.setQueueOpen(false)} aria-label="Close queue"><X/></button></header><div className="queue-list">{view.queue.map((track, index) => <div className={index === view.currentIndex ? 'queue-item active' : 'queue-item'} key={`${track.id}-${index}`}><button onClick={() => playIndex(index)}><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={100}/><span><strong>{track.title}</strong><small>{track.artist}</small></span></button><button onClick={() => removeIndex(index)} aria-label={`Remove ${track.title}`}><X/></button></div>)}</div><button className="button secondary clear" onClick={clear}>Clear queue</button></aside></div>
+  return <div className="drawer-backdrop" onMouseDown={() => player.setQueueOpen(false)}><aside className="queue-drawer" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="eyebrow">{remoteLabel(view) ?? radioLabel ?? 'Up next'}</span><h2>Queue</h2>{radioLabel && (radio.loading || radio.error) && <small className="radio-status">{radio.error ?? 'Finding similar songs…'}</small>}</div><button onClick={() => player.setQueueOpen(false)} aria-label="Close queue"><X/></button></header><div className="queue-list">{view.queue.map((track, index) => <div className={index === view.currentIndex ? 'queue-item active' : 'queue-item'} key={`${track.id}-${index}`}><button onClick={() => playIndex(index)}><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={100}/><span><strong>{track.title}</strong><small>{track.artist}</small></span></button>{!view.remote && <DragHandle index={index} count={view.queue.length} label={track.title} onMove={(from, to) => player.moveInQueue(from, to)}/>}<button onClick={() => removeIndex(index)} aria-label={`Remove ${track.title}`}><X/></button></div>)}</div><button className="button secondary clear" onClick={clear}>Clear queue</button></aside></div>
 }
 
 const LYRICS_KEY = 'tomify-lyrics-open'
