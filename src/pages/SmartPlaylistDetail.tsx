@@ -109,6 +109,6 @@ export function SmartPlaylistDetail() {
 
     {libraryError ? <ErrorState message={libraryError} retry={() => setReload((value) => value + 1)}/>
       : !library ? <p className="variant-loading"><LoaderCircle className="spin"/>Reading your library… {loaded ? `${loaded} songs` : ''}</p>
-      : <section><div className="section-title"><h2>{tracks.length ? 'Matching songs' : 'No songs match these rules'}</h2><button className="button secondary" onClick={() => setReload((value) => value + 1)} aria-label="Read the library again"><RefreshCw/></button></div>{tracks.length > 0 && <TrackList tracks={tracks}/>}</section>}
+      : <section><div className="section-title"><h2>{tracks.length ? 'Matching songs' : 'No songs match these rules'}</h2><button className="button secondary" onClick={() => setReload((value) => value + 1)} aria-label="Read the library again" title="Read the library again"><RefreshCw/></button></div>{tracks.length > 0 && <TrackList tracks={tracks}/>}</section>}
   </div>
 }

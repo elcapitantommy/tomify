@@ -69,7 +69,7 @@ export function AlbumCompleteness({ album, tracks }: { album: Album; tracks: Tra
         <strong>{result.editionMismatch ? 'Edition does not match' : result.complete ? 'Complete' : 'Incomplete'} · {result.present} of {result.total} tracks</strong>
         <small>Compared with MusicBrainz: {tracklist.title}{editionLabel(tracklist) ? ` · ${editionLabel(tracklist)}` : ''}{tracklist.source === 'tagged' ? ' · from your file tags' : tracklist.source === 'manual' ? ' · chosen edition' : ''}</small>
       </div>
-      <button className="button secondary" onClick={() => setRequest((current) => ({ releaseId: tracklist.source === 'manual' ? tracklist.releaseId : undefined, force: true, nonce: current.nonce + 1 }))} aria-label="Refresh MusicBrainz tracklist"><RefreshCw/></button>
+      <button className="button secondary" onClick={() => setRequest((current) => ({ releaseId: tracklist.source === 'manual' ? tracklist.releaseId : undefined, force: true, nonce: current.nonce + 1 }))} aria-label="Refresh MusicBrainz tracklist" title="Refresh MusicBrainz tracklist"><RefreshCw/></button>
     </div>
 
     {editions.length > 1 && <label className="album-completeness-edition"><span>Edition</span><select value={tracklist.releaseId} onChange={(event) => setRequest((current) => ({ releaseId: event.target.value, nonce: current.nonce + 1 }))}>

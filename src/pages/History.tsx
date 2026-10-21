@@ -43,7 +43,7 @@ export function History() {
     {!loading && !error && !events.length && <EmptyState title="Nothing played yet" message="Songs you play will be listed here."/>}
     {days.map((day) => <section key={day.label} className="history-day"><h2>{day.label}</h2><ol>{day.plays.map(({ event, index }) => <li key={event.id} className={event.skipped ? 'skipped' : undefined}>
       <span className="history-time">{playTime(event.playedAt)}</span>
-      <button type="button" className="history-play" onClick={() => usePlayer.getState().playTracks(replayFrom(events, index), 0, { keepOrder: true })} aria-label={`Play ${event.title ?? 'this song'} and what came after it`}><Artwork id={event.albumId ?? undefined} albumId={event.albumId ?? undefined} alt="" size={96}/><Play fill="currentColor"/></button>
+      <button type="button" className="history-play" onClick={() => usePlayer.getState().playTracks(replayFrom(events, index), 0, { keepOrder: true })} aria-label={`Play ${event.title ?? 'this song'} and what came after it`} title="Play from here"><Artwork id={event.albumId ?? undefined} albumId={event.albumId ?? undefined} alt="" size={96}/><Play fill="currentColor"/></button>
       <span className="history-copy"><strong>{event.title ?? 'Unknown song'}</strong><small><ArtistLinks name={event.artist} artistId={event.artistId}/>{event.album && <>{' · '}{event.albumId ? <Link to={`/albums/${event.albumId}`}>{event.album}</Link> : event.album}</>}</small></span>
       <span className="history-tags">{event.skipped && <i>Skipped</i>}{event.device && <small>{event.device}</small>}</span>
     </li>)}</ol></section>)}

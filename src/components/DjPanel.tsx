@@ -77,7 +77,7 @@ function DjTalk({ disabled, ask }: { disabled: boolean; ask?: (text: string) => 
 
   const line = phase === 'listening' ? (heard || 'Listening…') : phase === 'hearing' ? (heard || 'Working out what you said…') : heard && loading ? `“${heard}”` : null
   return <>
-    <button type="button" className={`button secondary dj-talk${phase === 'listening' ? ' listening' : ''}`} aria-label="Hold to talk to the DJ" aria-pressed={phase === 'listening'} disabled={disabled && phase === 'idle'}
+    <button type="button" className={`button secondary dj-talk${phase === 'listening' ? ' listening' : ''}`} aria-label="Hold to talk to the DJ" title="Hold to talk to the DJ" aria-pressed={phase === 'listening'} disabled={disabled && phase === 'idle'}
       onPointerDown={(event) => { event.preventDefault(); event.currentTarget.setPointerCapture?.(event.pointerId); begin() }}
       onPointerUp={() => void end()} onPointerCancel={() => void end()} onContextMenu={(event) => event.preventDefault()}
       onKeyDown={(event) => key(event, true)} onKeyUp={(event) => key(event, false)}>
@@ -103,7 +103,7 @@ export function DjPanel() {
   const ready = !active
   const startWith = async (text: string) => { await useDj.getState().start(text); return useDj.getState().active }
   return <section className="dj-panel" aria-label="Tomify DJ">
-    <div className="dj-panel-head"><span className="eyebrow"><Radio size={14}/>{active ? (speaking ? 'DJ is talking' : 'DJ is on') : 'DJ'}{active && pool ? ` · ${pool.name}` : ''}</span>{ready && <button type="button" className="icon-button dj-close" aria-label="Close the DJ" onClick={() => useDj.getState().closePanel()}><X size={18}/></button>}</div>
+    <div className="dj-panel-head"><span className="eyebrow"><Radio size={14}/>{active ? (speaking ? 'DJ is talking' : 'DJ is on') : 'DJ'}{active && pool ? ` · ${pool.name}` : ''}</span>{ready && <button type="button" className="icon-button dj-close" aria-label="Close the DJ" title="Close the DJ" onClick={() => useDj.getState().closePanel()}><X size={18}/></button>}</div>
     {ready && <p className="dj-script">What do you fancy? Tell the DJ, or let it pick.</p>}
     {active && <p className="dj-script">{script ?? (loading ? 'Picking your first songs…' : '')}</p>}
     {active && voiceNote && <p className="dj-voice-note">{voiceNote}</p>}

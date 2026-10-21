@@ -48,7 +48,7 @@ export function Party() {
       <section className="stats-list"><h2>Up next from guests</h2>{queue.length ? <ol className="party-queue">{queue.map((item) => <li key={item.id}>
         <span><strong>{item.track.title}</strong><small><ItemArtists item={item.track}/> · added by {item.guestName}{item.state === 'queued' ? ' · up next' : ''}</small></span>
         {party.voting && <small className="party-votes"><ThumbsUp size={14}/>{item.votes}</small>}
-        <button type="button" className="icon-button" aria-label={`Remove ${item.track.title}`} onClick={() => void remove(item.id)}><Trash2/></button>
+        <button type="button" className="icon-button" aria-label={`Remove ${item.track.title}`} title={`Remove ${item.track.title}`} onClick={() => void remove(item.id)}><Trash2/></button>
       </li>)}</ol> : <p className="health-empty">Nothing yet. Guests' tracks appear here as they add them.</p>}</section>
       <section className="stats-list"><h2>Guests ({guests.length})</h2>{guests.length ? <ol className="party-queue">{guests.map((guest) => <li key={guest.id}><span><strong>{guest.name}</strong></span><button type="button" className="icon-button" aria-label={`Remove ${guest.name}`} title="Remove guest and their waiting tracks" onClick={() => void removeGuest(guest.id)}><UserX/></button></li>)}</ol> : <p className="health-empty">No one has joined yet.</p>}</section>
       <form className="smart-editor" onSubmit={(event) => { event.preventDefault(); void act('save', () => update(options)) }}>
