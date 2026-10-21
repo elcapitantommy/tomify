@@ -43,7 +43,7 @@ Navidrome stays the source of truth for accounts, the library, playlists, favour
 - `src/components/LivePlaybackSync.tsx` publishes this device's playback state to the Worker and picks up commands from the user's other devices.
 - The service worker (Workbox via `vite-plugin-pwa`, configured in `vite.config.ts`) precaches the app shell and caches artwork. Its navigation fallback excludes `/api/` and `/navidrome/`. Audio is not cached.
 - Back and Forward return to where you were on a page: `src/hooks/useScrollRestoration.ts` (used by `AppShell`) saves the scroll position per history entry and, on Back, waits for the page's data to load before scrolling back (it gives up after 5 seconds or as soon as the user scrolls). New pages start at the top. The Artists, artist and Albums lists cache their data per user (`useLoad` cache key) so they draw immediately, and the Albums and artist release tabs and sort order live in the URL (`?type=`, `?sort=`) so Back shows the same tab.
-- Styles are one global stylesheet, `src/styles.css`.
+- Styles are one global stylesheet, `src/styles.css`. The light theme is generated from it at build time by the Vite plugin in `scripts/light-theme.mjs` (every colour declaration repeated under `:root[data-theme=light]`); `src/stores/theme.ts` and a script in `index.html` set `data-theme` on `<html>`.
 - Recovery and Settings are shown only to Navidrome administrators (`adminRole`). On mobile they sit behind the account button in the top bar.
 
 ## 3. The Cloudflare Worker

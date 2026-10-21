@@ -10,6 +10,16 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-180.png" />
     <title>Tomify</title>
     <script>
+      // Pick the theme before the page draws, so a light-theme page never flashes dark (src/stores/theme.ts).
+      (function () {
+        var mode = 'system'
+        try { mode = localStorage.getItem('tomify-theme') || 'system' } catch (e) {}
+        var light = mode === 'light' || (mode === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)
+        document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark')
+        if (light) document.querySelector('meta[name=theme-color]').setAttribute('content', '#f0f2f1')
+      })()
+    </script>
+    <script>
       // After a deploy, a page built from an old cached index.html can ask for
       // hashed assets that no longer exist, leaving a blank screen. Reload once
       // (after asking the service worker to update) so the new build loads.

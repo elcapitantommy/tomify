@@ -15,7 +15,8 @@ import { bindCastPrompt, useCast } from '../stores/cast'
 import { isLanUrl, mediaStreamFailed } from '../lib/mediaRoute'
 import { useStreamQuality } from '../stores/streamQuality'
 import { useEqualiser } from '../stores/equaliser'
-import { EqualiserGraph, equaliserSupported } from '../lib/equaliser'
+import { EqualiserGraph, equaliserSupported, setActiveGraph } from '../lib/equaliser'
+import { useVisualiser } from '../stores/visualiser'
 import { useNormalisation } from '../stores/normalisation'
 import { useDj } from '../stores/dj'
 import { gainModeAt, originalVolumeScale, queueIndexOf, streamGainMode } from '../lib/loudness'
@@ -97,6 +98,7 @@ export function PlayerRuntime() {
   const repeat = usePlayer((s) => s.repeat)
   const equaliserEnabled = useEqualiser((s) => s.enabled)
   const equaliserGains = useEqualiser((s) => s.gains)
+  const visualiserOn = useVisualiser((s) => s.mode !== 'off')
   const normalisation = useNormalisation((s) => s.setting)
   const track = queue[currentIndex]
   // Tomify's replacement covers load after the player restores, and can change while a
@@ -609,15 +611,18 @@ export function PlayerRuntime() {
     }
   }, [normalisation, queue]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Both elements go through the equaliser from the first time it is switched on (see lib/equaliser.ts).
+  // Both elements go through the equaliser from the first time it or the visualiser is switched on (see lib/equaliser.ts).
   useEffect(() => {
-    if (equaliserEnabled && !equaliser.current && equaliserSupported() && api.streamsSameOrigin()) {
+    if ((equaliserEnabled || visualiserOn) && !equaliser.current && equaliserSupported() && api.streamsSameOrigin()) {
       const graph = new EqualiserGraph()
-      if (graph.attach([audioA.current, audioB.current].filter((element): element is HTMLAudioElement => element !== null))) equaliser.current = graph
+      if (graph.attach([audioA.current, audioB.current].filter((element): element is HTMLAudioElement => element !== null))) {
+        equaliser.current = graph
+        setActiveGraph(graph)
+      }
     }
     equaliser.current?.apply(equaliserGains, equaliserEnabled)
     if (usePlayer.getState().playing) equaliser.current?.resume()
-  }, [api, equaliserEnabled, equaliserGains])
+  }, [api, equaliserEnabled, equaliserGains, visualiserOn])
 
   useEffect(() => {
     if (!track || !('mediaSession' in navigator)) return

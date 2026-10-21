@@ -11,3 +11,15 @@ if (typeof window !== 'undefined' && typeof window.PointerEvent === 'undefined')
   }
   window.PointerEvent = TestPointerEvent as unknown as typeof PointerEvent
 }
+
+// jsdom's Blob (and so File) has no text(); read it the old way.
+if (typeof Blob !== 'undefined' && typeof Blob.prototype.text !== 'function') {
+  Blob.prototype.text = function (this: Blob) {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => reject(reader.error)
+      reader.readAsText(this)
+    })
+  }
+}

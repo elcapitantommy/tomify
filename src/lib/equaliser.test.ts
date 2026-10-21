@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeAudioContext } from '../test/fakeAudioContext'
-import { EQ_BANDS, EqualiserGraph, bandLabel, clampGain, equaliserSupported, isAppleMobile, preampDb } from './equaliser'
+import { EQ_BANDS, EqualiserGraph, activeAnalyser, bandLabel, setActiveGraph, clampGain, equaliserSupported, isAppleMobile, preampDb } from './equaliser'
 
 describe('equaliser', () => {
   beforeEach(() => { FakeAudioContext.instances = []; vi.stubGlobal('AudioContext', FakeAudioContext) })
@@ -18,7 +18,17 @@ describe('equaliser', () => {
     expect(context.filters.map((filter) => filter.frequency.value)).toEqual([...EQ_BANDS])
     expect(context.filters.map((filter) => filter.type)).toEqual(['lowshelf', ...Array(8).fill('peaking'), 'highshelf'])
     expect(context.gains[0].connections).toEqual([context.filters[0]])
-    expect(context.filters[9].connections).toEqual([context.destination])
+    expect(context.filters[9].connections).toEqual([context.analysers[0]])
+    expect(context.analysers[0].connections).toEqual([context.destination])
+  })
+
+  it('shares its analyser with the visualiser once the player marks it active', () => {
+    const graph = new EqualiserGraph()
+    graph.attach([document.createElement('audio')])
+    expect(activeAnalyser()).toBeNull()
+    setActiveGraph(graph)
+    expect(activeAnalyser()).toBe(FakeAudioContext.instances[0].analysers[0])
+    setActiveGraph(null)
   })
 
   it('sets the band gains, turns the pre-amp down by the biggest boost, and flattens when switched off', () => {

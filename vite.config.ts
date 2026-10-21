@@ -1,11 +1,13 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { lightTheme } from './scripts/light-theme.mjs'
 
 export default defineConfig({
   build: { outDir: 'dist/client' },
   plugins: [
     react(),
+    lightTheme(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['tomify-logo-192.png', 'apple-touch-icon-180.png'],
