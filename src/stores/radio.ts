@@ -64,7 +64,14 @@ export const useRadio = create<RadioState>()(persist((set) => ({
     // The radio plays in its own order: shuffle and repeat would fight it.
     usePlayer.setState({ shuffle: false, unshuffledQueue: null, repeat: 'off' })
     set({ seed: track, pool, error: null })
-    usePlayer.getState().playTracks([track], 0, { keepOrder: true })
+    const player = usePlayer.getState()
+    if (player.queue[player.currentIndex]?.id === track.id) {
+      // Radio from the song already playing: keep it going from where it is and queue the radio after it.
+      usePlayer.setState({ queue: [player.queue[player.currentIndex]], currentIndex: 0, activitySerial: player.activitySerial + 1 })
+      if (!player.playing) player.setPlaying(true)
+    } else {
+      player.playTracks([track], 0, { keepOrder: true })
+    }
     await topUp()
   },
   stop: () => set({ seed: null, pool: null, loading: false, error: null }),

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Track } from '../types'
 import type { NavidromeClient } from '../lib/navidrome'
-import { usePlayer } from './player'
+import { bindPlayerRuntime, usePlayer } from './player'
 import { bindRadio, useRadio } from './radio'
 
 const library: Track[] = Array.from({ length: 40 }, (_, index) => ({ id: `l${index}`, title: `Track ${index}`, artist: `Artist ${index % 10}`, album: 'A', genre: index % 2 ? 'Rock' : 'Pop' }))
@@ -55,5 +55,20 @@ describe('song radio', () => {
     expect(useRadio.getState().pool?.name).toBe('Pop')
     useRadio.getState().stop()
     expect(useRadio.getState().pool).toBeNull()
+  })
+  it('keeps the playing song going from where it is when radio starts from it', async () => {
+    const start = vi.fn()
+    const unbindRuntime = bindPlayerRuntime({ seek: vi.fn(), volume: vi.fn(), start })
+    usePlayer.setState({ queue: [library[0], seed, library[1]], currentIndex: 1, playing: true, currentTime: 42, duration: 200, shuffle: false, repeat: 'off' })
+    await useRadio.getState().start(seed)
+    const player = usePlayer.getState()
+    expect(start).not.toHaveBeenCalled()
+    expect(player.queue[0]).toBe(seed)
+    expect(player.currentIndex).toBe(0)
+    expect(player.currentTime).toBe(42)
+    expect(player.playing).toBe(true)
+    expect(player.queue.length).toBe(16)
+    expect(useRadio.getState().seed).toBe(seed)
+    unbindRuntime()
   })
 })
