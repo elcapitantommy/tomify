@@ -92,7 +92,7 @@ function GuestParty({ saved, onEnded }: { saved: Saved; onEnded(): void }) {
     <h1>{party.party.name}</h1><p className="party-me">You're in as {party.me.name}</p>
     {party.nowPlaying && <section className="party-now"><Cover token={token} track={party.nowPlaying}/><span><small>Now playing</small><strong>{party.nowPlaying.title}</strong><small>{party.nowPlaying.artist}</small></span></section>}
     <section className="party-search">
-      <label className="input-wrap"><Search/><input type="text" enterKeyHint="search" placeholder="Search for a song or artist" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search the library"/>{query && <button type="button" className="icon-button" aria-label="Clear search" onClick={() => setQuery('')}><X/></button>}</label>
+      <label className="input-wrap"><Search/><input type="text" enterKeyHint="search" placeholder="Search for a song or artist" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search the library" title="Search the library"/>{query && <button type="button" className="icon-button" aria-label="Clear search" title="Clear search" onClick={() => setQuery('')}><X/></button>}</label>
       <p className="party-limit" role="status">{wait > 0 ? `You can add another song in ${wait}s.` : full ? `You have ${waiting} waiting. Add more once one has played.` : `You can have ${party.party.maxPerGuest} waiting at a time.`}</p>
       {notice && <p className="login-error" role="alert">{notice}</p>}
       {searching && <LoaderCircle className="spin"/>}
@@ -102,7 +102,7 @@ function GuestParty({ saved, onEnded }: { saved: Saved; onEnded(): void }) {
     <section><h2>Up next</h2>{party.queue.length ? <ol className="party-list">{party.queue.map((item) => <li key={item.id}><Cover token={token} track={item.track}/><span><strong>{item.track.title}</strong><small>{item.track.artist} · {item.mine ? 'you' : item.guestName}{item.state === 'queued' ? ' · next' : ''}</small></span>
       {party.party.voting && item.state === 'pending' && !item.mine && <button type="button" className={item.voted ? 'button primary party-vote' : 'button secondary party-vote'} aria-pressed={item.voted} aria-label={`Vote for ${item.track.title}`} onClick={() => void run(() => partyGuestApi.vote(token, item.id))}><ThumbsUp/>{item.votes}</button>}
       {party.party.voting && (item.state !== 'pending' || item.mine) && <small className="party-votes"><ThumbsUp size={14}/>{item.votes}</small>}
-      {item.mine && item.state === 'pending' && <button type="button" className="icon-button" aria-label={`Remove ${item.track.title}`} onClick={() => void run(() => partyGuestApi.remove(token, item.id))}><X/></button>}
+      {item.mine && item.state === 'pending' && <button type="button" className="icon-button" aria-label={`Remove ${item.track.title}`} title={`Remove ${item.track.title}`} onClick={() => void run(() => partyGuestApi.remove(token, item.id))}><X/></button>}
     </li>)}</ol> : <p className="health-empty">The queue is empty. Search above to add the first song.</p>}</section>
   </div>
 }

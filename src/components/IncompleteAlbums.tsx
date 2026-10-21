@@ -21,7 +21,7 @@ export function IncompleteAlbums() {
       : <ul>{entries.map((album) => <li key={album.albumId}>
         <div><strong>{album.artist ? `${album.artist} · ${album.title}` : album.title}</strong>
           <small>{album.present} of {album.total} tracks when checked {new Date(album.checkedAt.replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(album.checkedAt) ? '' : 'Z')).toLocaleDateString()}{album.queued ? ` · ${album.queued} in Recovery` : ''}</small></div>
-        <span className="health-actions"><Link to={`/albums/${encodeURIComponent(album.albumId)}`} aria-label={`Open ${album.title}`}><ExternalLink/></Link></span>
+        <span className="health-actions"><Link to={`/albums/${encodeURIComponent(album.albumId)}`} aria-label={`Open ${album.title}`} title={`Open ${album.title}`}><ExternalLink/></Link></span>
       </li>)}</ul>}
   </details>
 }

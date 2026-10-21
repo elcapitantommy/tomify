@@ -25,7 +25,7 @@ export function SongInfo({ track, onClose }: { track: Track; onClose: () => void
   const song = full ? { ...track, ...full } : track
   return <div className="drawer-backdrop shortcuts-backdrop song-info-backdrop" onMouseDown={onClose}>
     <section className="shortcuts-help song-info" role="dialog" aria-modal="true" aria-label={`Song info: ${track.title}`} onMouseDown={(event) => event.stopPropagation()}>
-      <header><div><h2>{song.title}</h2><p>{song.artist}</p></div><button type="button" onClick={onClose} aria-label="Close song info"><X/></button></header>
+      <header><div><h2>{song.title}</h2><p>{song.artist}</p></div><button type="button" onClick={onClose} aria-label="Close song info" title="Close song info"><X/></button></header>
       <p className="song-quality">{isHiRes(song) && <span className="quality-badge hi-res">Hi-Res</span>}{qualityLabel(song)}</p>
       {!full && !error && <p className="song-info-loading"><LoaderCircle className="spin"/>Loading details…</p>}
       {error && <p className="song-info-error" role="alert">{error}</p>}

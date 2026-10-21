@@ -81,7 +81,7 @@ export function AppShell() {
 
   return <div className="app-shell">
     <aside className="sidebar"><NavLink className="logo" to="/"><img className="brand-logo small" src="/tomify-logo-192.png" alt=""/><strong>Tomify</strong></NavLink><nav>{primary.map((item) => <NavItem {...item} key={item.to}/>)}</nav><div className="nav-section"><span>Your library</span>{(isAdmin ? [...library, recovery] : library).map((item) => <NavItem {...item} key={item.to}/>)}</div>{isAdmin ? <NavLink className="settings-link" to="/settings"><Settings/>Settings</NavLink> : <button type="button" className="settings-link" onClick={logout}><LogOut/>Sign out</button>}<div className="sidebar-user"><CircleUserRound/><span><small>Listening as</small><strong>{username}</strong><small>{isAdmin ? 'Navidrome administrator' : 'Your Navidrome account'}</small></span></div></aside>
-    <div className={topbarHidden ? "mobile-topbar hidden" : "mobile-topbar"}>{canGoBack ? <button type="button" className="mobile-back" onClick={goBack} aria-label="Go back"><ArrowLeft/></button> : <img className="brand-logo mobile-topbar-logo" src="/tomify-logo-192.png" alt=""/>}<strong>Tomify</strong><button type="button" className="mobile-account" onClick={() => setAccountOpen(true)} aria-label="Account" aria-haspopup="dialog"><CircleUserRound/></button></div>
+    <div className={topbarHidden ? "mobile-topbar hidden" : "mobile-topbar"}>{canGoBack ? <button type="button" className="mobile-back" onClick={goBack} aria-label="Go back" title="Go back"><ArrowLeft/></button> : <img className="brand-logo mobile-topbar-logo" src="/tomify-logo-192.png" alt=""/>}<strong>Tomify</strong><button type="button" className="mobile-account" onClick={() => setAccountOpen(true)} aria-label="Account" title="Account" aria-haspopup="dialog"><CircleUserRound/></button></div>
     {accountOpen && <AccountSheet isAdmin={isAdmin} onClose={() => setAccountOpen(false)} onLogout={logout}/>}
     <main className="content" key={location.pathname}><Outlet/></main>
     <nav className="mobile-nav">{mobile.map((item) => <NavItem {...item} key={item.to}/>)}</nav>
@@ -97,7 +97,7 @@ function AccountSheet({ isAdmin, onClose, onLogout }: { isAdmin: boolean; onClos
   }, [onClose])
   return <div className="account-sheet-backdrop" onClick={onClose}>
     <div className="account-sheet" role="dialog" aria-modal="true" aria-label="Account" onClick={(event) => event.stopPropagation()}>
-      <header><CircleUserRound/><span><strong>{username}</strong><small>{isAdmin ? 'Navidrome administrator' : 'Your Navidrome account'}</small></span><button type="button" className="account-sheet-close" onClick={onClose} aria-label="Close"><X/></button></header>
+      <header><CircleUserRound/><span><strong>{username}</strong><small>{isAdmin ? 'Navidrome administrator' : 'Your Navidrome account'}</small></span><button type="button" className="account-sheet-close" onClick={onClose} aria-label="Close" title="Close"><X/></button></header>
       {isAdmin && <NavLink to="/recovery" state={{ fromAccount: true }}><LifeBuoy/>Recovery</NavLink>}
       <NavLink to="/downloads" state={{ fromAccount: true }}><Download/>Downloads</NavLink>
       <NavLink to="/stats" state={{ fromAccount: true }}><BarChart3/>Listening stats</NavLink>

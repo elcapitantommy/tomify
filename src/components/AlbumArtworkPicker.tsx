@@ -54,7 +54,7 @@ export function AlbumArtworkPicker({ album, searchOnOpen = false, onClose }: { a
     : override?.provider === 'library' ? 'Keeping the library artwork. Automatic upgrades will skip this album.' : 'Showing the artwork from your music library.'
 
   return <section className="artwork-picker cloud-only" aria-label="Album artwork">
-    <div className="release-editor-title"><ImageUp/><div><strong>Album artwork</strong><small>{summary}{providerName && override?.storeUrl && <> <a href={override.storeUrl} target="_blank" rel="noreferrer">Open in {providerName}</a></>}</small></div>{onClose && <button type="button" className="icon-button artwork-picker-close" onClick={onClose} aria-label="Close album artwork options"><X/></button>}</div>
+    <div className="release-editor-title"><ImageUp/><div><strong>Album artwork</strong><small>{summary}{providerName && override?.storeUrl && <> <a href={override.storeUrl} target="_blank" rel="noreferrer">Open in {providerName}</a></>}</small></div>{onClose && <button type="button" className="icon-button artwork-picker-close" onClick={onClose} aria-label="Close album artwork options" title="Close album artwork options"><X/></button>}</div>
     <div className="artwork-picker-actions">
       <button className="button secondary" disabled={!available || state.status === 'loading' || saving} onClick={() => void search()}>{state.status === 'loading' ? <LoaderCircle className="spin"/> : <ImageUp/>}Find better artwork</button>
       <button className="button secondary" disabled={saving} onClick={() => fileInput.current?.click()}>{saving ? <LoaderCircle className="spin"/> : <FolderOpen/>}Upload from device</button>

@@ -11,5 +11,5 @@ export function MixCover({ mix, size = 300 }: { mix: Mix; size?: number }) {
 }
 
 export function MixCard({ mix, onPlay }: { mix: Mix; onPlay: () => void }) {
-  return <article className="media-card mix-card"><Link to={`/mixes/${mix.id}`}><div className="artwork-wrap"><MixCover mix={mix}/></div><h3>{mix.title}</h3><p title={mix.description}>{mix.description}</p></Link><button className="card-play" onClick={onPlay} aria-label={`Play ${mix.title}`}><Play fill="currentColor"/></button></article>
+  return <article className="media-card mix-card"><Link to={`/mixes/${mix.id}`}><div className="artwork-wrap"><MixCover mix={mix}/></div><h3>{mix.title}</h3><p title={mix.description}>{mix.description}</p></Link><button className="card-play" onClick={onPlay} aria-label={`Play ${mix.title}`} title={`Play ${mix.title}`}><Play fill="currentColor"/></button></article>
 }

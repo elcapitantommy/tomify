@@ -38,7 +38,7 @@ export function CarMode() {
     <div className="car-now"><Visualiser active={!view.remote}/><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={600}/><div><h1>{track.title}</h1><p>{track.artist}</p></div></div>
     <div className="car-progress" aria-hidden="true"><span style={{ width: `${progress}%` }}/></div>
     <div className="car-times"><span>{formatDuration(view.currentTime)}</span><span>{formatDuration(view.duration)}</span></div>
-    <div className="car-controls"><button type="button" onClick={previous} aria-label="Previous track"><SkipBack fill="currentColor"/></button><button type="button" className="car-play" onClick={togglePlaying} aria-label={view.playing ? 'Pause' : 'Play'}>{view.playing ? <Pause fill="currentColor"/> : <Play fill="currentColor"/>}</button><button type="button" onClick={next} aria-label="Next track"><SkipForward fill="currentColor"/></button></div>
+    <div className="car-controls"><button type="button" onClick={previous} aria-label="Previous track" title="Previous track"><SkipBack fill="currentColor"/></button><button type="button" className="car-play" onClick={togglePlaying} aria-label={view.playing ? 'Pause' : 'Play'} title={view.playing ? 'Pause' : 'Play'}>{view.playing ? <Pause fill="currentColor"/> : <Play fill="currentColor"/>}</button><button type="button" onClick={next} aria-label="Next track" title="Next track"><SkipForward fill="currentColor"/></button></div>
     <div className="car-extras"><button type="button" className={view.shuffle ? 'active' : ''} onClick={shuffle} aria-label="Shuffle" aria-pressed={view.shuffle}><Shuffle/>Shuffle</button><StarButton item={track} kind="song" name={track.title} className="car-like"/></div>
   </section>
 }

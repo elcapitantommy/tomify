@@ -102,7 +102,7 @@ export function KeyboardShortcuts() {
   if (!helpOpen) return null
   return <div className="drawer-backdrop shortcuts-backdrop" onMouseDown={() => setHelpOpen(false)}>
     <section className="shortcuts-help" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" onMouseDown={(event) => event.stopPropagation()}>
-      <header><h2>Keyboard shortcuts</h2><button type="button" onClick={() => setHelpOpen(false)} aria-label="Close keyboard shortcuts"><X/></button></header>
+      <header><h2>Keyboard shortcuts</h2><button type="button" onClick={() => setHelpOpen(false)} aria-label="Close keyboard shortcuts" title="Close keyboard shortcuts"><X/></button></header>
       <dl>{SHORTCUT_HELP.map((item) => <div key={item.label}><dt>{item.keys.map((key) => <kbd key={key}>{key}</kbd>)}</dt><dd>{item.label}</dd></div>)}</dl>
     </section>
   </div>

@@ -182,6 +182,8 @@ pnpm build
 
 GitHub Actions runs the frozen-lockfile install, lint, typecheck, production build, and complete test suite on every push and pull request. Build deliberately runs before tests because the Worker routing tests inspect the generated service worker and Worker bundle.
 
+Icon-only buttons and links need both an `aria-label` and a `title` tooltip (the tooltip may be a shorter form of the label). `src/iconTooltips.test.ts` scans every component and fails if one is missing.
+
 `pnpm build` writes the Vite application to `dist/client/` and asks the exactly pinned Wrangler dev dependency to bundle the TypeScript Worker from `worker/index.ts` into an unminified `dist/server/index.js` for route and SQL tests. Use `pnpm exec wrangler dev` when testing the complete local deployment, including Worker routes and Cloudflare's Static Assets routing; its custom build step refreshes the git SHA exposed by `/api/version`. `pnpm dev` runs the frontend development server only.
 
 ### Implemented
