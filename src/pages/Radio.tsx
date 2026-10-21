@@ -66,7 +66,7 @@ function AddStations({ saved, busy, add }: { saved: Set<string>; busy: string | 
 
   return <section className="settings-card radio-add" aria-label="Add stations">
     <h2>Add stations</h2>
-    <p className="radio-help">Search thousands of stations from the free <a href="https://www.radio-browser.info" target="_blank" rel="noreferrer">Radio Browser</a> directory. Try them before adding; they are saved in Navidrome for every account.</p>
+    <p className="radio-help">Search thousands of stations from the free <a href="https://www.radio-browser.info" target="_blank" rel="noreferrer">Radio Browser</a> directory; every word you type must appear in the name, in any order. Try them before adding; they are saved in Navidrome for every account.</p>
     <form className="radio-search" onSubmit={(event) => void search(event)}><Search/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Station name, e.g. BBC Radio 6 Music" aria-label="Search radio stations"/><button type="submit" className="button secondary" disabled={searching || !query.trim()}>{searching ? 'Searching…' : 'Search'}</button></form>
     {searchError && <p className="device-error" role="alert">{searchError}</p>}
     {results && !results.length && <p className="radio-help">No stations with a secure stream match “{query}”.</p>}
