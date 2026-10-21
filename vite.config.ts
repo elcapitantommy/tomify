@@ -18,6 +18,8 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Push notification handlers (public/push-sw.js).
+        importScripts: ['/push-sw.js'],
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//, /^\/navidrome\//],
         cleanupOutdatedCaches: true,

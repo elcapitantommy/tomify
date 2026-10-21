@@ -92,6 +92,12 @@ describe('instant feedback for remote controls', () => {
     expect(optimisticFields(snapshot(), 'next', NOW)).toBeNull()
   })
 
+  it('predicts play next putting the songs straight after the one playing', () => {
+    const queue = optimisticFields(snapshot({ queue: [track, { ...track, id: 't3' }], currentIndex: 0 }), 'play-next', NOW, undefined, undefined, [{ ...track, id: 'a' }, { ...track, id: 'b' }])?.queue
+    expect(queue?.map((item) => item.id)).toEqual([track.id, 'a', 'b', 't3'])
+    expect(optimisticFields(snapshot(), 'play-next', NOW, undefined, undefined, [])).toBeNull()
+  })
+
   it('keeps the predicted state until the other device reports back', () => {
     const state = useLivePlayback.getState()
     state.applyServer({ state: snapshot({ updatedAt: Date.now() }), command: null })

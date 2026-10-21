@@ -67,7 +67,7 @@ function withoutOne(tracks: Track[], id: string): Track[] {
 
 export interface PlayerState {
   queue: Track[]; currentIndex: number; playing: boolean; unshuffledQueue: Track[] | null; shuffle: boolean; repeat: RepeatMode; currentTime: number; duration: number; volume: number; muted: boolean; queueOpen: boolean; nowPlayingOpen: boolean; activitySerial: number;
-  playTracks(tracks: Track[], startIndex?: number, options?: { keepOrder?: boolean }): void; playNow(track: Track): void; addToQueue(track: Track): void; removeFromQueue(index: number): void; moveInQueue(from: number, to: number): void; clearQueue(): void; next(options?: { pause?: boolean }): void; previous(): void; setPlaying(value: boolean): void; setProgress(currentTime: number, duration: number): void; seekTo(value: number): void; setVolume(value: number): void; toggleMuted(): void; toggleShuffle(): void; cycleRepeat(): void; setQueueOpen(value: boolean): void; setNowPlayingOpen(value: boolean): void;
+  playTracks(tracks: Track[], startIndex?: number, options?: { keepOrder?: boolean }): void; playNow(track: Track): void; addToQueue(track: Track): void; playNext(tracks: Track[]): void; removeFromQueue(index: number): void; moveInQueue(from: number, to: number): void; clearQueue(): void; next(options?: { pause?: boolean }): void; previous(): void; setPlaying(value: boolean): void; setProgress(currentTime: number, duration: number): void; seekTo(value: number): void; setVolume(value: number): void; toggleMuted(): void; toggleShuffle(): void; cycleRepeat(): void; setQueueOpen(value: boolean): void; setNowPlayingOpen(value: boolean): void;
 }
 
 let seekHandler: ((value: number) => void) | undefined
@@ -124,6 +124,21 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     }
     set({ queue: next, unshuffledQueue: original, currentIndex: nextIndex, playing: true, currentTime: 0, duration: track.duration ?? 0, activitySerial: get().activitySerial + 1 })
     startHandler?.(track)
+  },
+
+  // Puts songs straight after the one playing, in order, without starting them. With nothing queued they start playing.
+  playNext: (tracks) => {
+    if (!tracks.length) return
+    const { queue, currentIndex, unshuffledQueue } = get()
+    if (!queue.length || currentIndex < 0) { get().playTracks(tracks, 0, { keepOrder: true }); return }
+    const next = [...queue.slice(0, currentIndex + 1), ...tracks, ...queue.slice(currentIndex + 1)]
+    let original = unshuffledQueue
+    if (original) {
+      const current = queue[currentIndex]
+      const at = current ? original.findIndex((item) => item.id === current.id) : -1
+      original = [...original.slice(0, at + 1), ...tracks, ...original.slice(at + 1)]
+    }
+    set((s) => ({ queue: next, unshuffledQueue: original, activitySerial: s.activitySerial + 1 }))
   },
 
   addToQueue: (track) => set((s) => ({ queue: [...s.queue, track], unshuffledQueue: s.unshuffledQueue ? [...s.unshuffledQueue, track] : null, activitySerial: s.activitySerial + 1 })),

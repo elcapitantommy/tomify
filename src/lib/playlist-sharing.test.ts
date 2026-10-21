@@ -11,13 +11,19 @@ describe('saveNavidromePlaylistShares', () => {
 
   it('makes the playlist public in Navidrome before recording the share', async () => {
     vi.mocked(playlistShareApi.update).mockImplementation(async (kind, playlistId, users) => { calls.push('share'); return { kind, playlistId, sharedWith: users } })
-    expect(await saveNavidromePlaylistShares(api, 'p1', ['anna'])).toEqual(['anna'])
+    expect(await saveNavidromePlaylistShares(api, 'p1', ['anna'])).toEqual({ sharedWith: ['anna'], editors: [] })
     expect(calls).toEqual(['public:true', 'share'])
   })
 
   it('makes the playlist private again once nobody is left on the share', async () => {
     vi.mocked(playlistShareApi.update).mockImplementation(async (kind, playlistId) => { calls.push('share'); return { kind, playlistId, sharedWith: [] } })
-    expect(await saveNavidromePlaylistShares(api, 'p1', [])).toEqual([])
+    expect(await saveNavidromePlaylistShares(api, 'p1', [])).toEqual({ sharedWith: [], editors: [] })
     expect(calls).toEqual(['share', 'public:false'])
+  })
+
+  it('sends who may edit and returns the editors the Worker kept', async () => {
+    vi.mocked(playlistShareApi.update).mockImplementation(async (kind, playlistId, users, editors) => ({ kind, playlistId, sharedWith: users, editors }))
+    expect(await saveNavidromePlaylistShares(api, 'p1', ['anna', 'sam'], ['anna'])).toEqual({ sharedWith: ['anna', 'sam'], editors: ['anna'] })
+    expect(playlistShareApi.update).toHaveBeenCalledWith('navidrome', 'p1', ['anna', 'sam'], ['anna'])
   })
 })

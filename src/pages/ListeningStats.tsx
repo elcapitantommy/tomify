@@ -20,7 +20,7 @@ export function ListeningStats() {
   return <div className="page narrow-page"><header className="page-header"><span className="eyebrow"><BarChart3 size={14}/> Your library</span><h1>Listening stats</h1><p>From the plays Tomify records on every device.</p></header>
     <div className="stats-periods" role="group" aria-label="Period">{periods.map(([value, label]) => <button key={value} className={value === key ? 'button primary' : 'button secondary'} aria-pressed={value === key} onClick={() => setKey(value)}>{label}</button>)}
       <label className="stats-month">Month <input type="month" aria-label="Choose a month" value={monthPeriod(key) ? key : ''} onChange={(event) => event.target.value && setKey(event.target.value)}/></label></div>
-    {data && data.years.length > 0 && <p className="stats-wrapped-links"><Gift size={16}/> Wrapped: {data.years.map((year) => <Link key={year} to={`/wrapped/${year}`}>{year}</Link>)}</p>}
+    <p className="stats-wrapped-links"><Link to="/history">See every play in Listening history</Link></p>{data && data.years.length > 0 && <p className="stats-wrapped-links"><Gift size={16}/> Wrapped: {data.years.map((year) => <Link key={year} to={`/wrapped/${year}`}>{year}</Link>)}</p>}
     {loading && <SkeletonGrid/>}{error && <ErrorState message={error} retry={retry}/>}
     {data && !data.plays && <EmptyState title="No plays yet" message="Play some music and your stats will build up here."/>}
     {data && data.plays > 0 && <>

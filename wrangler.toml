@@ -16,9 +16,10 @@ TOMIFY_DJ_VOICE_MODEL = "aura"
 # Players at home stream straight from the box here (docs/DEPLOYMENT.md). Plain dashboard variables are replaced on deploy, so it lives here.
 TOMIFY_LAN_ORIGIN = "https://lan.tomify.tomdixon.uk:8789"
 
-# Refreshes imported Spotify playlists once a day (UTC).
+# Once a day (UTC): refresh imported Spotify playlists and check for new releases.
+# Every five minutes: announce finished Recovery downloads (only when someone has notifications on).
 [triggers]
-crons = ["30 4 * * *"]
+crons = ["30 4 * * *", "*/5 * * * *"]
 
 [[d1_databases]]
 binding = "TOMIFY_DB"

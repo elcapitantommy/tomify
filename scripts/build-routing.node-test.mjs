@@ -1356,7 +1356,7 @@ test('playlists stay with their owner until shared, and recipients get read-only
     assert.equal((await shareCall(env, 'anna', '/api/playlist-shares/navidrome/nav-1', { method: 'PUT', body: JSON.stringify({ users: ['anna'] }) })).status, 404)
 
     const imported = await shareCall(env, 'Tom', '/api/playlist-shares/imported/imp-1', { method: 'PUT', body: JSON.stringify({ users: ['Anna', 'tom', 'stranger'] }) })
-    assert.deepEqual(await imported.json(), { kind: 'imported', playlistId: 'imp-1', sharedWith: ['anna'] })
+    assert.deepEqual(await imported.json(), { kind: 'imported', playlistId: 'imp-1', sharedWith: ['anna'], editors: [] })
     const navidrome = await shareCall(env, 'Tom', '/api/playlist-shares/navidrome/nav-1', { method: 'PUT', body: JSON.stringify({ users: ['anna', 'sam'] }) })
     assert.deepEqual((await navidrome.json()).sharedWith, ['anna', 'sam'])
     const ownerLookup = requests.find((url) => url.pathname === '/rest/getPlaylist.view' && url.searchParams.get('u') === 'Tom')
@@ -1364,9 +1364,9 @@ test('playlists stay with their owner until shared, and recipients get read-only
 
     const tom = await (await shareCall(env, 'Tom', '/api/playlist-shares')).json()
     assert.deepEqual(tom.accounts, ['anna', 'sam'])
-    assert.deepEqual(tom.sharedByMe, [{ kind: 'imported', playlistId: 'imp-1', sharedWith: ['anna'] }, { kind: 'navidrome', playlistId: 'nav-1', sharedWith: ['anna', 'sam'] }])
+    assert.deepEqual(tom.sharedByMe, [{ kind: 'imported', playlistId: 'imp-1', sharedWith: ['anna'], editors: [] }, { kind: 'navidrome', playlistId: 'nav-1', sharedWith: ['anna', 'sam'], editors: [] }])
     const anna = await (await shareCall(env, 'anna', '/api/playlist-shares')).json()
-    assert.deepEqual(anna.sharedWithMe, [{ kind: 'navidrome', playlistId: 'nav-1', owner: 'tom', name: 'Road trip' }, { kind: 'imported', playlistId: 'imp-1', owner: 'tom', name: 'Spotify mix' }])
+    assert.deepEqual(anna.sharedWithMe, [{ kind: 'navidrome', playlistId: 'nav-1', owner: 'tom', name: 'Road trip', canEdit: false }, { kind: 'imported', playlistId: 'imp-1', owner: 'tom', name: 'Spotify mix', canEdit: false }])
 
     const detail = await shareCall(env, 'anna', '/api/catalogue-playlists/imp-1')
     assert.equal(detail.status, 200)
@@ -1502,6 +1502,23 @@ test('live playback lists open devices, keeps quick commands and lets any open d
     assert.equal((await liveCall(env, '/api/live-playback/command', { method: 'POST', body: JSON.stringify({ targetDeviceId: 'phone', action: 'pause' }) })).status, 409)
     const transfer = await liveCall(env, '/api/live-playback/command', { method: 'POST', body: JSON.stringify({ targetDeviceId: 'phone', action: 'transfer' }) })
     assert.equal(transfer.status, 200)
+  })
+})
+
+test('play next from another device carries the songs, cleaned, and refuses an empty list', async () => {
+  const db = await sqliteDatabase()
+  const env = { TOMIFY_DB: db }
+  await withNavidromePlaylists({}, async () => {
+    await liveCall(env, '/api/live-playback', { method: 'POST', body: JSON.stringify(liveState('desktop')) })
+    const tracks = [{ id: 'a', title: 'Alpha', secret: 'dropped' }, { id: 'b', title: 'Bravo' }]
+    assert.equal((await liveCall(env, '/api/live-playback/command', { method: 'POST', body: JSON.stringify({ targetDeviceId: 'desktop', action: 'play-next', tracks }) })).status, 200)
+    assert.equal((await liveCall(env, '/api/live-playback/command', { method: 'POST', body: JSON.stringify({ targetDeviceId: 'desktop', action: 'play-next', tracks: [] }) })).status, 400)
+    assert.equal((await liveCall(env, '/api/live-playback/command', { method: 'POST', body: JSON.stringify({ targetDeviceId: 'desktop', action: 'play-next', tracks: [{ title: 'no id' }] }) })).status, 400)
+    const polled = await (await liveCall(env, '/api/live-playback?deviceId=phone')).json()
+    const command = polled.commands.at(-1)
+    assert.equal(command.action, 'play-next')
+    assert.deepEqual(command.tracks.map((track) => track.id), ['a', 'b'])
+    assert.equal(command.tracks[0].secret, undefined)
   })
 })
 

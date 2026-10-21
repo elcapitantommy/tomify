@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Airplay, Car, Cast, Check, ChevronDown, ListMusic, Maximize2, MicVocal, MonitorSpeaker, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react'
+import { Airplay, Car, Cast, Check, ChevronDown, Info, ListMusic, Maximize2, MicVocal, MonitorSpeaker, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react'
 import { Artwork } from './Artwork'
 import { ItemArtists } from './ArtistLinks'
 import { StartRadioButton } from './SongRadio'
@@ -18,6 +18,8 @@ import { CarMode } from './CarMode'
 import { useCarMode } from '../stores/carMode'
 import { LiveRadioBar } from './LiveRadio'
 import { ShareLinkButton } from './ShareLink'
+import { SongInfo } from './SongInfo'
+import { isHiRes, qualityLabel } from '../lib/song-info'
 import { useLiveRadio } from '../stores/liveRadio'
 
 const noCommand = (action: LivePlaybackCommandAction, value?: number) => { void action; void value }
@@ -174,6 +176,7 @@ function NowPlaying() {
   const player = usePlayer()
   const view = usePlaybackView()
   const [lyricsOpen, setLyricsOpen] = useState(lyricsWereOpen)
+  const [infoOpen, setInfoOpen] = useState(false)
   const track = view.queue[view.currentIndex]
   if (!player.nowPlayingOpen || !track) return null
 
@@ -183,5 +186,5 @@ function NowPlaying() {
   }
   const seek = (value: number) => view.remote ? view.command('seek', value) : player.seekTo(value)
 
-  return <section className="now-playing"><header><button onClick={() => player.setNowPlayingOpen(false)} aria-label="Close now playing"><ChevronDown/></button><span>{remoteLabel(view) ?? 'Now playing'}</span><span className="now-playing-actions"><button className={lyricsOpen ? 'active' : ''} onClick={toggleLyrics} aria-label={lyricsOpen ? 'Hide lyrics' : 'Show lyrics'} aria-pressed={lyricsOpen}><MicVocal/></button>{!view.remote && <SleepTimerButton/>}<button onClick={() => { player.setNowPlayingOpen(false); useCarMode.getState().setOpen(true) }} aria-label="Car mode" title="Car mode"><Car/></button><ShareLinkButton key={track.id} ids={[track.id]} label={track.title} variant="icon"/><DevicePicker placement="down"/><button onClick={() => { player.setNowPlayingOpen(false); player.setQueueOpen(true) }} aria-label="Open queue"><ListMusic/></button></span></header>{lyricsOpen ? <LyricsPanel track={track} time={view.currentTime} onSeek={seek}/> : <div className="now-art"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={1000}/></div>}<div className="now-meta"><span><h1>{track.title}</h1><p><ItemArtists item={track} onNavigate={() => player.setNowPlayingOpen(false)}/></p><RatingStars key={track.id} item={track} name={track.title} className="now-rating"/></span>{!view.remote && <StartRadioButton track={track} className="now-radio"/>}</div><SeekBar/><Transport large/>{view.remote && <button type="button" className="button secondary play-here" onClick={view.playHere}><MonitorSpeaker/>Play on this device</button>}</section>
+  return <section className="now-playing"><header><button onClick={() => player.setNowPlayingOpen(false)} aria-label="Close now playing"><ChevronDown/></button><span>{remoteLabel(view) ?? 'Now playing'}</span><span className="now-playing-actions"><button className={lyricsOpen ? 'active' : ''} onClick={toggleLyrics} aria-label={lyricsOpen ? 'Hide lyrics' : 'Show lyrics'} aria-pressed={lyricsOpen}><MicVocal/></button>{!view.remote && <SleepTimerButton/>}<button onClick={() => { player.setNowPlayingOpen(false); useCarMode.getState().setOpen(true) }} aria-label="Car mode" title="Car mode"><Car/></button><ShareLinkButton key={track.id} ids={[track.id]} label={track.title} variant="icon"/><DevicePicker placement="down"/><button onClick={() => { player.setNowPlayingOpen(false); player.setQueueOpen(true) }} aria-label="Open queue"><ListMusic/></button></span></header>{lyricsOpen ? <LyricsPanel track={track} time={view.currentTime} onSeek={seek}/> : <div className="now-art"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={1000}/></div>}<div className="now-meta"><span><h1>{track.title}</h1><p><ItemArtists item={track} onNavigate={() => player.setNowPlayingOpen(false)}/></p><RatingStars key={track.id} item={track} name={track.title} className="now-rating"/><button type="button" className="now-quality" onClick={() => setInfoOpen(true)} aria-label={`Song info: ${qualityLabel(track)}`} title="Song info">{isHiRes(track) && <span className="quality-badge hi-res">Hi-Res</span>}<Info/>{qualityLabel(track)}</button></span>{!view.remote && <StartRadioButton track={track} className="now-radio"/>}</div><SeekBar/><Transport large/>{view.remote && <button type="button" className="button secondary play-here" onClick={view.playHere}><MonitorSpeaker/>Play on this device</button>}{infoOpen && <SongInfo track={track} onClose={() => setInfoOpen(false)}/>}</section>
 }
