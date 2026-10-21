@@ -20,12 +20,17 @@ import { mediaSessionRoute } from './routes/media-session.ts'
 import { mixesRoute } from './routes/mixes.ts'
 import { navidromeRoute } from './routes/navidrome.ts'
 import { partyRoute } from './routes/party.ts'
+import { pushRoute } from './routes/push.ts'
+import { checkRecoveryJobs, notifyNewReleases } from './features/push.ts'
 import { playlistsRoute } from './routes/playlists.ts'
 import { releaseMetadataRoute } from './routes/release-metadata.ts'
 import { handleRecoveryRequest } from './routes/recovery.ts'
 import { smartPlaylistsRoute } from './routes/smart-playlists.ts'
 import { systemSettingsRoute } from './routes/system-settings.ts'
 import { versionRoute } from './routes/version.ts'
+
+// Must match wrangler.toml.
+const RECOVERY_CHECK_CRON = '*/5 * * * *'
 
 const routes: RouteHandler[] = [
   catalogueRoute,
@@ -38,6 +43,7 @@ const routes: RouteHandler[] = [
   smartPlaylistsRoute,
   newReleasesRoute,
   partyRoute,
+  pushRoute,
   mixesRoute,
   djRoute,
   systemSettingsRoute,
@@ -68,9 +74,15 @@ const worker: ExportedHandler<Env> = {
       throw error
     }
   },
-  scheduled(_controller, env, ctx) {
+  scheduled(controller, env, ctx) {
+    // Every five minutes: announce finished Recovery downloads to anyone who asked for notifications.
+    if (controller.cron === RECOVERY_CHECK_CRON) {
+      ctx.waitUntil(checkRecoveryJobs(env).catch((error) => console.warn('Recovery notifications failed', error)))
+      return
+    }
     ctx.waitUntil(refreshCataloguePlaylists(env))
-    ctx.waitUntil(checkNewReleases(env))
+    const now = Date.now()
+    ctx.waitUntil(checkNewReleases(env, undefined, now).then(() => notifyNewReleases(env, now)).catch((error) => console.warn('New releases failed', error)))
   },
 }
 

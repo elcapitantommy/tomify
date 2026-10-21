@@ -141,6 +141,21 @@ export async function wrappedYear(env: Env, username: string, year: number) {
   return { ...wrapped, previous: before?.plays ? { year: year - 1, plays: before.plays, seconds: before.seconds } : null }
 }
 
+const HISTORY_PAGE = 100
+
+// Every play, newest first, a page at a time. `before` is the cursor of the oldest play already shown ("playedAt:id").
+export async function listeningHistory(env: Env, username: string, before: string | null, limit = HISTORY_PAGE) {
+  const size = Math.min(200, Math.max(1, Math.floor(limit)))
+  const [at, id] = (before || '').split(':').map(Number)
+  const cursor = Number.isFinite(at) && at > 0 && Number.isFinite(id) ? [at, at, id] : null
+  const rows = await env.TOMIFY_DB.prepare(`SELECT id, track_id AS trackId, album_id AS albumId, artist_id AS artistId, title, artist, album, duration_seconds AS durationSeconds, listened_seconds AS listenedSeconds, completed, skipped, played_at AS playedAt, device FROM listening_events WHERE username = ?${cursor ? ' AND (played_at < ? OR (played_at = ? AND id < ?))' : ''} ORDER BY played_at DESC, id DESC LIMIT ?`)
+    .bind(username, ...(cursor ?? []), size + 1).all<{ id: number; playedAt: number; completed: number; skipped: number } & Record<string, unknown>>()
+  const events = (rows.results || []).map((row) => ({ ...row, completed: Boolean(row.completed), skipped: Boolean(row.skipped) }))
+  const page = events.slice(0, size)
+  const last = page[page.length - 1]
+  return { events: page, next: events.length > size && last ? `${last.playedAt}:${last.id}` : null }
+}
+
 export const handleListeningRequest: RouteHandler = async (request, env, url) => {
   if (url.pathname === '/api/listening/stats') {
     if (!env?.TOMIFY_DB) return json({ error: 'listening-store-unavailable' }, 503)
@@ -151,6 +166,12 @@ export const handleListeningRequest: RouteHandler = async (request, env, url) =>
     const username = signedIn.toLowerCase()
     const [summary, years] = await Promise.all([listeningSummary(env, username, days, Date.now(), from > 0 && to > from ? [from, to] : undefined), listeningYears(env, username)])
     return json({ ...summary, years })
+  }
+  if (url.pathname === '/api/listening/history') {
+    if (!env?.TOMIFY_DB) return json({ error: 'listening-store-unavailable' }, 503)
+    const signedIn = await authenticate(request, env)
+    if (!signedIn) return json({ error: 'unauthorized' }, 401)
+    return json(await listeningHistory(env, signedIn.toLowerCase(), url.searchParams.get('before'), Number(url.searchParams.get('limit')) || HISTORY_PAGE))
   }
   if (url.pathname === '/api/listening/wrapped') {
     if (!env?.TOMIFY_DB) return json({ error: 'listening-store-unavailable' }, 503)

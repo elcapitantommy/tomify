@@ -15,6 +15,9 @@ import {
   type LivePlaybackSnapshot,
 } from './livePlayback'
 
+// Must match the Worker (worker/features/live-playback.ts).
+export const MAX_PLAY_NEXT = 200
+
 const LOCAL_ACTIVITY_KEY = 'tomify-live-local-activity'
 
 // When this device last changed playback itself, on the server's clock. Another device's newer state wins over it.
@@ -95,6 +98,14 @@ export function addToQueueAnywhere(track: Track) {
   else usePlayer.getState().addToQueue(track)
 }
 
+// Play next on whichever device is playing.
+export function playNextAnywhere(tracks: Track[]) {
+  if (!tracks.length) return
+  const remote = currentRemoteSession()
+  if (remote) controlRemote(remote, 'play-next', undefined, undefined, tracks.slice(0, MAX_PLAY_NEXT))
+  else usePlayer.getState().playNext(tracks)
+}
+
 export function applyCommand(command: LivePlaybackCommand, snapshot: LivePlaybackSnapshot | null) {
   const player = usePlayer.getState()
   switch (command.action) {
@@ -113,6 +124,7 @@ export function applyCommand(command: LivePlaybackCommand, snapshot: LivePlaybac
     case 'toggle-muted': player.toggleMuted(); break
     case 'set-volume': if (typeof command.value === 'number') player.setVolume(command.value); break
     case 'add-to-queue': if (command.track) player.addToQueue(command.track); break
+    case 'play-next': if (command.tracks?.length) player.playNext(command.tracks); break
     case 'transfer': if (snapshot && snapshot.deviceId !== localPlaybackDeviceId && snapshot.queue[snapshot.currentIndex]) playHere(snapshot); break
   }
 }

@@ -33,6 +33,7 @@ export type LivePlaybackCommandAction =
   | 'toggle-muted'
   | 'set-volume'
   | 'add-to-queue'
+  | 'play-next'
   | 'transfer'
 
 export interface LivePlaybackCommand {
@@ -41,6 +42,7 @@ export interface LivePlaybackCommand {
   action: LivePlaybackCommandAction
   value?: number
   track?: Track
+  tracks?: Track[]
   updatedAt: number
 }
 
@@ -248,13 +250,13 @@ export function leaveLivePlayback(currentTime: number) {
   } catch { /* page is unloading */ }
 }
 
-export async function sendLivePlaybackCommand(targetDeviceId: string, action: LivePlaybackCommandAction, value?: number, track?: Track) {
+export async function sendLivePlaybackCommand(targetDeviceId: string, action: LivePlaybackCommandAction, value?: number, track?: Track, tracks?: Track[]) {
   const headers = authHeaders()
   if (!headers) return false
   const response = await window.fetch('/api/live-playback/command', {
     method: 'POST',
     headers: { ...headers, 'content-type': 'application/json' },
-    body: JSON.stringify({ targetDeviceId, action, value, track }),
+    body: JSON.stringify({ targetDeviceId, action, value, track, tracks }),
   })
   if (response.ok && typeof window !== 'undefined') window.dispatchEvent(new Event(LIVE_PLAYBACK_ACTIVITY_EVENT))
   return response.ok
@@ -264,7 +266,7 @@ export async function sendLivePlaybackCommand(targetDeviceId: string, action: Li
 export const LIVE_PLAYBACK_ACTIVITY_EVENT = 'tomify-live-playback-activity'
 
 // What a command will do to the other device's state, shown straight away instead of after a round trip.
-export function optimisticFields(snapshot: LivePlaybackSnapshot, action: LivePlaybackCommandAction, now: number, value?: number, track?: Track): Partial<LivePlaybackSnapshot> | null {
+export function optimisticFields(snapshot: LivePlaybackSnapshot, action: LivePlaybackCommandAction, now: number, value?: number, track?: Track, tracks?: Track[]): Partial<LivePlaybackSnapshot> | null {
   switch (action) {
     case 'play': return { playing: true, currentTime: livePosition(snapshot, now), updatedAt: now }
     case 'pause': return { playing: false, currentTime: livePosition(snapshot, now), updatedAt: now }
@@ -274,6 +276,7 @@ export function optimisticFields(snapshot: LivePlaybackSnapshot, action: LivePla
     case 'toggle-muted': return { muted: !snapshot.muted }
     case 'set-volume': return typeof value === 'number' ? { volume: value } : null
     case 'add-to-queue': return track ? { queue: [...snapshot.queue, track] } : null
+    case 'play-next': return tracks?.length ? { queue: [...snapshot.queue.slice(0, snapshot.currentIndex + 1), ...tracks, ...snapshot.queue.slice(snapshot.currentIndex + 1)] } : null
     default: return null
   }
 }
@@ -282,8 +285,8 @@ const debouncedCommands = new Map<string, number>()
 
 // Controls a remote device: updates this screen at once, then sends the command. Sliders (seek, volume) are
 // debounced so dragging sends one command instead of dozens.
-export function controlRemote(snapshot: LivePlaybackSnapshot, action: LivePlaybackCommandAction, value?: number, track?: Track) {
-  const fields = optimisticFields(snapshot, action, serverNow(), value, track)
+export function controlRemote(snapshot: LivePlaybackSnapshot, action: LivePlaybackCommandAction, value?: number, track?: Track, tracks?: Track[]) {
+  const fields = optimisticFields(snapshot, action, serverNow(), value, track, tracks)
   if (fields) useLivePlayback.getState().applyOptimistic(fields)
   if (action === 'seek' || action === 'set-volume') {
     const key = `${snapshot.deviceId}:${action}`
@@ -294,7 +297,7 @@ export function controlRemote(snapshot: LivePlaybackSnapshot, action: LivePlayba
     }, 250))
     return
   }
-  void sendLivePlaybackCommand(snapshot.deviceId, action, value, track)
+  void sendLivePlaybackCommand(snapshot.deviceId, action, value, track, tracks)
 }
 
 export interface PollConditions {

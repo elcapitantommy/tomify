@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Check, CirclePlus, ListMusic, LoaderCircle, Plus } from 'lucide-react'
 import { useApi } from '../lib/api-context'
 import type { Playlist } from '../types'
+import { loadPlaylistShares } from '../lib/playlist-sharing'
+import { collaboratorApi, type SharedPlaylist } from '../lib/playlist-shares'
 
 type Props = { songIds: string[]; label: string; variant?: 'icon' | 'button' }
 
@@ -10,6 +12,8 @@ export function AddToPlaylist({ songIds, label, variant = 'icon' }: Props) {
   const api = useApi()
   const [open, setOpen] = useState(false)
   const [playlists, setPlaylists] = useState<Playlist[] | null>(null)
+  // Other people's playlists they let this account edit.
+  const [shared, setShared] = useState<SharedPlaylist[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [naming, setNaming] = useState(false)
   const [name, setName] = useState('')
@@ -20,6 +24,8 @@ export function AddToPlaylist({ songIds, label, variant = 'icon' }: Props) {
     if (!open) return
     let active = true
     setPlaylists(null); setMessage(null); setNaming(false); setName('')
+    setShared([])
+    void loadPlaylistShares().then((shares) => { if (active) setShared((shares?.sharedWithMe ?? []).filter((item) => item.kind === 'navidrome' && item.canEdit)) })
     api.playlists().then((value) => { if (active) setPlaylists(value) }).catch((reason) => { if (active) { setPlaylists([]); setMessage({ text: reason instanceof Error ? reason.message : 'Playlists could not be loaded.', error: true }) } })
     const close = (event: MouseEvent) => { if (!container.current?.contains(event.target as Node)) setOpen(false) }
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
@@ -29,9 +35,9 @@ export function AddToPlaylist({ songIds, label, variant = 'icon' }: Props) {
   }, [open, api])
 
   const count = songIds.length === 1 ? 'Track' : `${songIds.length} tracks`
-  async function add(playlist: Playlist) {
+  async function add(playlist: Pick<Playlist, 'id' | 'name'>, collaborative = false) {
     setBusy(playlist.id); setMessage(null)
-    try { await api.addToPlaylist(playlist.id, songIds); setMessage({ text: `${count} added to ${playlist.name}.`, error: false }) }
+    try { await (collaborative ? collaboratorApi.add(playlist.id, songIds) : api.addToPlaylist(playlist.id, songIds)); setMessage({ text: `${count} added to ${playlist.name}.`, error: false }) }
     catch (reason) { setMessage({ text: reason instanceof Error ? reason.message : 'Could not add to the playlist.', error: true }) }
     finally { setBusy(null) }
   }
@@ -57,6 +63,10 @@ export function AddToPlaylist({ songIds, label, variant = 'icon' }: Props) {
       {playlists === null && <p><LoaderCircle className="spin"/>Loading playlists…</p>}
       {playlists?.map((playlist) => <button type="button" role="menuitem" key={playlist.id} disabled={busy !== null} onClick={() => void add(playlist)}>
         {busy === playlist.id ? <LoaderCircle className="spin"/> : <ListMusic/>}<span>{playlist.name}</span>
+      </button>)}
+      {playlists && shared.length > 0 && <small>Shared with you</small>}
+      {playlists && shared.map((playlist) => <button type="button" role="menuitem" key={`shared:${playlist.playlistId}`} disabled={busy !== null} onClick={() => void add({ id: playlist.playlistId, name: playlist.name }, true)}>
+        {busy === playlist.playlistId ? <LoaderCircle className="spin"/> : <ListMusic/>}<span>{playlist.name} · {playlist.owner}</span>
       </button>)}
       {playlists && (naming
         ? <form onSubmit={(event) => void create(event)}><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="Playlist name" aria-label="New playlist name" maxLength={200}/><button type="submit" className="button primary" disabled={busy !== null || !name.trim()}>{busy === 'new' ? <LoaderCircle className="spin"/> : <Check/>}Create</button></form>

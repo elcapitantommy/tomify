@@ -11,6 +11,8 @@ const api = { playlist: vi.fn(), ownsPlaylist: vi.fn(() => true), replacePlaylis
 const sharing = vi.hoisted(() => ({ loadPlaylistShares: vi.fn(), saveNavidromePlaylistShares: vi.fn() }))
 vi.mock('../lib/api-context', () => ({ useApi: () => api }))
 vi.mock('../lib/playlist-sharing', () => sharing)
+const collaborator = vi.hoisted(() => ({ add: vi.fn(), remove: vi.fn(), replace: vi.fn() }))
+vi.mock('../lib/playlist-shares', async (original) => ({ ...await original<typeof import('../lib/playlist-shares')>(), collaboratorApi: collaborator }))
 
 function renderPage() {
   render(<MemoryRouter initialEntries={['/playlists/p1']}><Routes><Route path="/playlists/:id" element={<PlaylistDetail/>}/><Route path="/playlists" element={<h1>All playlists</h1>}/></Routes></MemoryRouter>)
@@ -73,7 +75,7 @@ describe('PlaylistDetail editing', () => {
     const buttons = screen.getAllByRole('button', { name: 'Delete playlist' })
     fireEvent.click(buttons[buttons.length - 1])
     expect(await screen.findByRole('heading', { name: 'All playlists' })).toBeInTheDocument()
-    expect(sharing.saveNavidromePlaylistShares).toHaveBeenCalledWith(api, 'p1', [])
+    expect(sharing.saveNavidromePlaylistShares).toHaveBeenCalledWith(api, 'p1', [], [])
     expect(api.deletePlaylist).toHaveBeenCalledWith('p1')
   })
 
@@ -84,5 +86,35 @@ describe('PlaylistDetail editing', () => {
     renderPage()
     expect(await screen.findByText('Shared by anna')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+  })
+
+  it('lets someone the owner allows edit the songs, but not rename or delete', async () => {
+    api.ownsPlaylist.mockReturnValue(false)
+    sharing.loadPlaylistShares.mockResolvedValue({ accounts: [], sharedWithMe: [{ kind: 'navidrome', playlistId: 'p1', owner: 'anna', name: 'Morning', canEdit: true }], sharedByMe: [] })
+    api.playlist.mockResolvedValue({ ...playlist, owner: 'anna' })
+    collaborator.replace.mockResolvedValue(undefined)
+    collaborator.remove.mockResolvedValue(undefined)
+    renderPage()
+    expect(await screen.findByText('Shared by anna · you can edit')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.queryByRole('textbox', { name: 'Playlist name' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete playlist' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Move Alpha down' }))
+    expect(collaborator.replace).toHaveBeenCalledWith('p1', ['b', 'a', 'c'])
+    await waitFor(() => expect(screen.getAllByRole('listitem')[0]).toHaveTextContent('Bravo'))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Charlie from playlist' }))
+    expect(collaborator.remove).toHaveBeenCalledWith('p1', [2])
+    expect(api.replacePlaylistTracks).not.toHaveBeenCalled()
+  })
+
+  it('shows why a collaborator\'s change was not saved', async () => {
+    api.ownsPlaylist.mockReturnValue(false)
+    sharing.loadPlaylistShares.mockResolvedValue({ accounts: [], sharedWithMe: [{ kind: 'navidrome', playlistId: 'p1', owner: 'anna', name: 'Morning', canEdit: true }], sharedByMe: [] })
+    api.playlist.mockResolvedValue({ ...playlist, owner: 'anna' })
+    collaborator.remove.mockRejectedValue(new Error('Ask anna to open Tomify once, then try again.'))
+    await startEditing()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Bravo from playlist' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Ask anna to open Tomify once')
+    expect(screen.getAllByRole('listitem')).toHaveLength(3)
   })
 })

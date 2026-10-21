@@ -16,7 +16,7 @@ Cloudflare's Git integration builds and deploys the site on every push to `main`
 
 Deploying by hand from a checkout (for example through a Remote Control session) is the same pair of commands: `pnpm run build`, then `npx pnpm run deploy`. The deploy script does not build, so after a change under `src/` run the build first or the old frontend is uploaded again. Check what is live with `GET https://app.tomify.tomdixon.uk/api/version`, which returns the deployed short SHA and contract.
 
-The Worker also has a cron trigger (`[triggers]` in `wrangler.toml`, daily at 04:30 UTC) that refreshes imported Spotify playlists. `wrangler deploy` registers it; it needs `SPOTIFY_TOKEN_ENCRYPTION_KEY` and does nothing without it. Run it locally with `wrangler dev --test-scheduled` and `curl 'http://localhost:8787/__scheduled?cron=30+4+*+*+*'`.
+The Worker also has two cron triggers (`[triggers]` in `wrangler.toml`), which `wrangler deploy` registers. Daily at 04:30 UTC it refreshes imported Spotify playlists (needs `SPOTIFY_TOKEN_ENCRYPTION_KEY`, and skips them without it), checks the library's artists for new releases and sends the new-release notification. Every five minutes it checks active Recovery downloads for anyone with Recovery notifications on; with no such subscription it only runs one D1 query. Run them locally with `wrangler dev --test-scheduled` and `curl 'http://localhost:8787/__scheduled?cron=30+4+*+*+*'` (or `cron=*/5+*+*+*+*`).
 
 ## D1 migrations
 

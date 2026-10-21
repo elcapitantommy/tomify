@@ -7,16 +7,18 @@ import type { Env } from '../env.ts'
 import { authenticate } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
 
-const LIVE_PLAYBACK_COMMANDS = ['play', 'pause', 'next', 'previous', 'seek', 'toggle-shuffle', 'cycle-repeat', 'play-index', 'remove-index', 'clear-queue', 'toggle-muted', 'set-volume', 'add-to-queue', 'transfer']
+const LIVE_PLAYBACK_COMMANDS = ['play', 'pause', 'next', 'previous', 'seek', 'toggle-shuffle', 'cycle-repeat', 'play-index', 'remove-index', 'clear-queue', 'toggle-muted', 'set-volume', 'add-to-queue', 'play-next', 'transfer']
 // A device counts as online if it polled within this window; presence rows are only rewritten this often to save D1 writes.
 const LIVE_DEVICE_ONLINE_MS = 45000
 const LIVE_PRESENCE_WRITE_MS = 15000
 // Commands are kept as a short list so two quick presses (next, next) are both delivered.
 const LIVE_COMMAND_HISTORY = 10
+// Most songs one Play next command carries (a long album or playlist). Must match src/stores/playbackHandoff.ts.
+const MAX_PLAY_NEXT = 200
 
 // The live_playback row as selectRow reads it.
 interface LivePlaybackRow { deviceId: string | null; deviceName: string | null; stateJson: string; revision: number | null; updatedAt: number | null; commandJson: string | null; commandRevision: number | null; commandTargetDevice: string | null; commandUpdatedAt: number | null }
-interface LiveCommand { action: string; revision: number; targetDeviceId?: unknown; updatedAt?: number; value?: number; track?: QueuedTrack }
+interface LiveCommand { action: string; revision: number; targetDeviceId?: unknown; updatedAt?: number; value?: number; track?: QueuedTrack; tracks?: QueuedTrack[] }
 interface LiveDevice { deviceId: string; deviceName: string; lastSeen: number }
 type QueuedTrack = { id: string; title: string; artist: string; album: string } & Record<string, string | number>
 // Request bodies come from clients, so every field is checked before use.
@@ -162,6 +164,11 @@ export async function handleLivePlaybackRequest(request: Request, env: Env, url:
       const track = cleanQueuedTrack(body.track)
       if (!track) return json({ error: 'invalid-command' }, 400)
       command.track = track
+    }
+    if (body.action === 'play-next') {
+      const tracks = Array.isArray(body.tracks) ? body.tracks.slice(0, MAX_PLAY_NEXT).map(cleanQueuedTrack) : []
+      if (!tracks.length || tracks.some((track) => !track)) return json({ error: 'invalid-command' }, 400)
+      command.tracks = tracks as QueuedTrack[]
     }
     const history = [...commands, command].slice(-LIVE_COMMAND_HISTORY)
 
