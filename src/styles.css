@@ -435,3 +435,22 @@ button.settings-link{border:0;background:none;width:100%;font:inherit;font-weigh
 .file-import-recovery input{accent-color:var(--accent)}
 @media(max-width:800px){.file-import-list li{grid-template-columns:22px 22px minmax(0,1fr)}.file-import-match{grid-column:3}}
 .file-import-copy strong{color:var(--text)}
+
+/* Pop-out mini player (components/MiniPlayer.tsx), drawn in its own small window. */
+body.mini-player-window{min-width:0;min-height:0;margin:0;background:var(--panel);overflow:hidden}
+.mini-player{display:flex;align-items:center;gap:14px;height:100vh;padding:12px 14px;box-sizing:border-box}
+.mini-player>.artwork{height:calc(100vh - 24px);max-height:150px;aspect-ratio:1;flex:none;border-radius:8px}
+.mini-player-main{flex:1;min-width:0;display:grid;gap:6px}
+.mini-player-copy{display:grid;min-width:0}
+.mini-player-copy strong,.mini-player-copy small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mini-player-copy strong{font:700 .95rem Manrope}
+.mini-player-copy small{color:var(--muted);font-size:.75rem}
+.mini-player .transport{justify-content:space-between;gap:4px}
+.mini-player .transport button{padding:4px}
+.mini-player.empty{justify-content:center;color:var(--muted)}
+.player-actions button.active{color:var(--accent)}
+
+/* Saved place in a long track (components/LongTrackResume.tsx): a thin line under the song's name. */
+.track-resume{position:absolute;left:52px;right:10px;bottom:3px;height:3px;border-radius:2px;background:var(--line);overflow:hidden;pointer-events:none}
+.track-resume>span{display:block;height:100%;background:var(--accent)}
+@media(max-width:800px){.track-resume{left:42px;right:0}}
