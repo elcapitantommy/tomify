@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AlertTriangle, Check, CircleHelp, ListMusic, LoaderCircle, Music2, Plus, Sparkles } from 'lucide-react'
+import { AlertTriangle, Check, CircleHelp, FileUp, ListMusic, LoaderCircle, Music2, Plus, Sparkles } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { EmptyState, ErrorState } from '../components/States'
 import { useLoad } from '../hooks/useLoad'
@@ -31,7 +31,7 @@ export function Playlists() {
     catch (reason) { setCreateError(reason instanceof Error ? reason.message : 'The playlist could not be created.'); setSaving(false) }
   }
   const empty = navidrome.data && imported.data && !navidrome.data.length && !imported.data.length && !sharedWithMe.length && !smart.data?.length
-  return <div className="page"><header className="page-header playlist-page-header"><div><span className="eyebrow">Your library</span><h1>Playlists</h1><p>Every mix, in its original order.</p></div><div className="page-header-actions"><button className="button secondary" aria-expanded={creating} onClick={() => { setCreating((value) => !value); setCreateError(null) }}><Plus/>New playlist</button><Link className="button secondary" to="/playlists/smart/new"><Sparkles/>New smart playlist</Link><Link className="button primary" to="/playlists/import/spotify"><Music2/>Import from Spotify</Link></div></header>
+  return <div className="page"><header className="page-header playlist-page-header"><div><span className="eyebrow">Your library</span><h1>Playlists</h1><p>Every mix, in its original order.</p></div><div className="page-header-actions"><button className="button secondary" aria-expanded={creating} onClick={() => { setCreating((value) => !value); setCreateError(null) }}><Plus/>New playlist</button><Link className="button secondary" to="/playlists/smart/new"><Sparkles/>New smart playlist</Link><Link className="button secondary" to="/playlists/import/file"><FileUp/>Import file</Link><Link className="button primary" to="/playlists/import/spotify"><Music2/>Import from Spotify</Link></div></header>
     {creating && <form className="playlist-name-form" onSubmit={(event) => void create(event)}><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="Playlist name" aria-label="New playlist name" maxLength={200}/><button type="button" className="button secondary" onClick={() => setCreating(false)}>Cancel</button><button type="submit" className="button primary" disabled={saving || !name.trim()}>{saving ? <LoaderCircle className="spin"/> : <Plus/>}Create</button>{createError && <p role="alert" className="playlist-form-error">{createError}</p>}</form>}
     {(navidrome.loading || imported.loading) && <div className="playlist-list">{[1,2,3,4].map((index) => <div className="playlist-row skeleton" key={index}/>)}</div>}
     {navidrome.error && <ErrorState message={navidrome.error} retry={navidrome.retry}/>} {imported.error && <ErrorState message={imported.error} retry={imported.retry}/>} {empty && <EmptyState title="No playlists yet" message="Create a playlist here, or import one from Spotify."/>}

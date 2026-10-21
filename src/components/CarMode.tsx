@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { Pause, Play, Shuffle, SkipBack, SkipForward, X } from 'lucide-react'
 import { Artwork } from './Artwork'
 import { StarButton } from './StarButton'
+import { Visualiser } from './Visualiser'
 import { usePlaybackView } from './Player'
 import { formatDuration } from '../lib/format'
 import { keepScreenOn } from '../lib/wakeLock'
@@ -34,7 +35,7 @@ export function CarMode() {
 
   return <section className="car-mode" role="dialog" aria-modal="true" aria-label="Car mode">
     <header><span>Car mode{view.remote && view.deviceName ? ` · ${view.deviceName}` : ''}</span><button type="button" className="car-exit" onClick={() => setOpen(false)} aria-label="Leave car mode"><X/>Exit</button></header>
-    <div className="car-now"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={600}/><div><h1>{track.title}</h1><p>{track.artist}</p></div></div>
+    <div className="car-now"><Visualiser active={!view.remote}/><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={600}/><div><h1>{track.title}</h1><p>{track.artist}</p></div></div>
     <div className="car-progress" aria-hidden="true"><span style={{ width: `${progress}%` }}/></div>
     <div className="car-times"><span>{formatDuration(view.currentTime)}</span><span>{formatDuration(view.duration)}</span></div>
     <div className="car-controls"><button type="button" onClick={previous} aria-label="Previous track"><SkipBack fill="currentColor"/></button><button type="button" className="car-play" onClick={togglePlaying} aria-label={view.playing ? 'Pause' : 'Play'}>{view.playing ? <Pause fill="currentColor"/> : <Play fill="currentColor"/>}</button><button type="button" onClick={next} aria-label="Next track"><SkipForward fill="currentColor"/></button></div>

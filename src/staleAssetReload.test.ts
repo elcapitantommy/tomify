@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const html = readFileSync(resolve(__dirname, '../index.html'), 'utf8')
-const source = html.match(/<script>([\s\S]*?)<\/script>/)![1]
+const source = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]).find((script) => script.includes('getRegistrations'))!
 
 function failLoad(src: string) {
   const script = document.createElement('script')

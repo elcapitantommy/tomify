@@ -6,6 +6,7 @@ import { MixCard } from '../components/MixCard'
 import { DjButton, DjPanel } from '../components/DjPanel'
 import { ListeningNow } from '../components/ListeningNow'
 import { NewReleases } from '../components/NewReleases'
+import { OnThisDay } from '../components/OnThisDay'
 import { EmptyState, ErrorState, SkeletonGrid } from '../components/States'
 import { useApi } from '../lib/api-context'
 import { useLoad } from '../hooks/useLoad'
@@ -85,7 +86,7 @@ export function Home() {
     return () => window.clearInterval(interval)
   }, [])
 
-  return <div className="page home-page"><header className="page-header hero"><div><span className="eyebrow"><Sparkles size={14}/> Your library</span><h1>{greeting.replace('.', '')}{username ? `, ${username}` : ''}.</h1><p>{homeMessage}</p></div><div className="hero-actions"><DjButton/>{data?.recent[0] && <button className="button primary" onClick={() => void playAlbum(data.recent[0].id)}><Play fill="currentColor"/>Play something</button>}</div></header><DjPanel/><ListeningNow/><WrappedBanner/>{loading && <><SectionTitle title="Recently played"/><SkeletonGrid/><SectionTitle title="Fresh from the shelves"/><SkeletonGrid rows={4}/></>}{error && <ErrorState message={error} retry={retry}/>} {data && !loading && <>{data.recent.length ? <LibrarySection title="Recently played" icon={<Clock3/>} albums={data.recent} onPlay={playAlbum}/> : <EmptyState title="Nothing played yet" message="Your listening history will appear here."/>}<LibrarySection title="Fresh from the shelves" subtitle="Recently added" albums={data.newest} onPlay={playAlbum}/><MadeForYou/><NewReleases/>{data.starred.length > 0 && <LibrarySection title="Favourite albums" subtitle="Starred" albums={data.starred} onPlay={playAlbum}/>}</>}</div>
+  return <div className="page home-page"><header className="page-header hero"><div><span className="eyebrow"><Sparkles size={14}/> Your library</span><h1>{greeting.replace('.', '')}{username ? `, ${username}` : ''}.</h1><p>{homeMessage}</p></div><div className="hero-actions"><DjButton/>{data?.recent[0] && <button className="button primary" onClick={() => void playAlbum(data.recent[0].id)}><Play fill="currentColor"/>Play something</button>}</div></header><DjPanel/><ListeningNow/><WrappedBanner/>{loading && <><SectionTitle title="Recently played"/><SkeletonGrid/><SectionTitle title="Fresh from the shelves"/><SkeletonGrid rows={4}/></>}{error && <ErrorState message={error} retry={retry}/>} {data && !loading && <>{data.recent.length ? <LibrarySection title="Recently played" icon={<Clock3/>} albums={data.recent} onPlay={playAlbum}/> : <EmptyState title="Nothing played yet" message="Your listening history will appear here."/>}<LibrarySection title="Fresh from the shelves" subtitle="Recently added" albums={data.newest} onPlay={playAlbum}/><MadeForYou/><OnThisDay/><NewReleases/>{data.starred.length > 0 && <LibrarySection title="Favourite albums" subtitle="Starred" albums={data.starred} onPlay={playAlbum}/>}</>}</div>
 }
 // Each "See all" opens the full list behind its section rather than the A–Z albums page.
 const seeAll: Record<string, string> = { 'Recently played': '/albums?type=all&sort=played', 'Fresh from the shelves': '/albums?type=all&sort=added', 'Favourite albums': '/favourites' }

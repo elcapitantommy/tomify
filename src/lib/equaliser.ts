@@ -2,6 +2,8 @@
 // and a pre-amp. It is built the first time the equaliser is switched on, because routing an element
 // through Web Audio can't be undone; switching it off afterwards just flattens the filters.
 //
+// The visualiser uses the same chain, so switching it on builds the chain too.
+//
 // Not on iPhone or iPad: WebKit suspends a page's AudioContext when the screen locks or the app goes
 // to the background, which would silence lock-screen playback. There the setting is hidden.
 
@@ -52,9 +54,11 @@ export class EqualiserGraph {
   private context: AudioContext | null = null
   private filters: BiquadFilterNode[] = []
   private preamp: GainNode | null = null
+  private analyserNode: AnalyserNode | null = null
   private readonly routed = new WeakSet<HTMLMediaElement>()
 
   get active() { return this.context !== null }
+  get analyser() { return this.analyserNode }
 
   // Routes the elements through the chain, building it on first use.
   attach(elements: HTMLMediaElement[]) {
@@ -72,7 +76,13 @@ export class EqualiserGraph {
       })
       this.preamp = context.createGain()
       this.filters.reduce<AudioNode>((previous, filter) => { previous.connect(filter); return filter }, this.preamp)
-      this.filters[this.filters.length - 1].connect(context.destination)
+      // The analyser passes the sound straight through; the visualiser reads it (see lib/visualiser.ts).
+      const analyser = context.createAnalyser()
+      analyser.fftSize = 2048
+      analyser.smoothingTimeConstant = 0.78
+      this.filters[this.filters.length - 1].connect(analyser)
+      analyser.connect(context.destination)
+      this.analyserNode = analyser
       this.context = context
     }
     for (const element of elements) {
@@ -96,3 +106,8 @@ export class EqualiserGraph {
     if (this.context && this.context.state !== 'running') void this.context.resume().catch(() => undefined)
   }
 }
+
+// The one graph the player built, so the visualiser can read what is playing.
+let activeGraph: EqualiserGraph | null = null
+export function setActiveGraph(graph: EqualiserGraph | null) { activeGraph = graph }
+export function activeAnalyser() { return activeGraph?.analyser ?? null }

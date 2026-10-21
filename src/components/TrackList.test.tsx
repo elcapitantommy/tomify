@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Track } from '../types'
 import { useFavourites } from '../stores/favourites'
 import { TrackList } from './TrackList'
+import { usePlayer } from '../stores/player'
 
 const api = { star: vi.fn(), unstar: vi.fn() }
 vi.mock('../lib/api-context', () => ({ useApi: () => api }))
@@ -39,5 +40,43 @@ describe('TrackList favourite toggle', () => {
     expect(await screen.findByRole('button', { name: 'Remove Istanbul from favourites' })).toBeInTheDocument()
     expect(api.unstar).toHaveBeenCalledWith('t2', 'song')
     expect(useFavourites.getState().version).toBe(0)
+  })
+})
+
+describe('TrackList selecting several songs', () => {
+  const three: Track[] = [...tracks, { id: 't3', title: 'Dead', artist: 'They Might Be Giants', album: 'Flood' }]
+  beforeEach(() => { usePlayer.setState({ queue: [], currentIndex: 0, playing: false }) })
+
+  it('ticks songs, shift-ticks a run, and plays just those in list order', () => {
+    render(<TrackList tracks={three}/>)
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }))
+    expect(screen.getByRole('toolbar', { name: 'Selected songs' })).toHaveTextContent('Tick songs to select them')
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Dead' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Birdhouse in Your Soul' }), { shiftKey: true })
+    expect(screen.getByRole('toolbar')).toHaveTextContent('3 songs selected')
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Istanbul' }))
+    expect(screen.getByRole('toolbar')).toHaveTextContent('2 songs selected')
+    fireEvent.click(screen.getByRole('button', { name: 'Play' }))
+    expect(usePlayer.getState().queue.map((track) => track.id)).toEqual(['t1', 't3'])
+    expect(screen.queryByRole('toolbar')).toBeNull()
+  })
+
+  it('ticks a song by its title instead of playing it, and selects all', () => {
+    render(<TrackList tracks={three}/>)
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }))
+    fireEvent.click(screen.getByText('Istanbul'))
+    expect(usePlayer.getState().queue).toEqual([])
+    expect(screen.getByRole('checkbox', { name: 'Select Istanbul' })).toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
+    expect(screen.getByRole('toolbar')).toHaveTextContent('3 songs selected')
+    fireEvent.click(screen.getByRole('button', { name: 'Stop selecting' }))
+    expect(screen.queryByRole('checkbox')).toBeNull()
+  })
+
+  it('has no Select button when selecting is turned off or there is one song', () => {
+    const { rerender } = render(<TrackList tracks={three} selectable={false}/>)
+    expect(screen.queryByRole('button', { name: 'Select' })).toBeNull()
+    rerender(<TrackList tracks={[three[0]]}/>)
+    expect(screen.queryByRole('button', { name: 'Select' })).toBeNull()
   })
 })

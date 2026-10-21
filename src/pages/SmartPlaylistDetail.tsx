@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { LoaderCircle, Play, Radio, RadioTower, RefreshCw, Save, Shuffle, Sparkles, Trash2 } from 'lucide-react'
+import { ExportPlaylistButton } from '../components/ExportPlaylist'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { DjPanel } from '../components/DjPanel'
 import { ErrorState } from '../components/States'
@@ -87,7 +88,8 @@ export function SmartPlaylistDetail() {
       {(rules.sort ?? 'random') === 'random' && <button className="button secondary" disabled={!library} onClick={() => setSeed(Date.now())}><Shuffle/>New pick</button>}
       <button className="button secondary" disabled={!pool.length} onClick={startRadio} title="Endless radio from these songs"><RadioTower/>Start radio</button>
       <button className="button secondary" disabled={!pool.length} onClick={startDj} title="The DJ picks from these songs"><Radio/>Start DJ</button>
-      <button className="button secondary" disabled={!tracks.length || busy !== null} onClick={() => void snapshot()}>{busy === 'snapshot' ? <LoaderCircle className="spin"/> : <Save/>}Save as playlist</button></div></div></header>
+      <button className="button secondary" disabled={!tracks.length || busy !== null} onClick={() => void snapshot()}>{busy === 'snapshot' ? <LoaderCircle className="spin"/> : <Save/>}Save as playlist</button>
+      <ExportPlaylistButton name={name.trim() || 'Smart playlist'} tracks={tracks}/></div></div></header>
     <DjPanel/>
 
     <section className="smart-editor" aria-label="Rules">

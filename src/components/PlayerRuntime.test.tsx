@@ -12,6 +12,8 @@ import { DEFAULT_NAVIDROME_SERVER } from '../lib/navidrome'
 import { useStreamQuality } from '../stores/streamQuality'
 import { useEqualiser } from '../stores/equaliser'
 import { FakeAudioContext } from '../test/fakeAudioContext'
+import { activeAnalyser, setActiveGraph } from '../lib/equaliser'
+import { useVisualiser } from '../stores/visualiser'
 import { useNormalisation } from '../stores/normalisation'
 import { useDj } from '../stores/dj'
 import { useCrossfade } from '../stores/crossfade'
@@ -460,6 +462,22 @@ describe('PlayerRuntime', () => {
     expect(context.filters.at(-1)!.gain.value).toBe(0)
     expect(FakeAudioContext.instances).toHaveLength(1)
     useEqualiser.setState({ enabled: false, preset: 'flat', gains: Array(10).fill(0) })
+  })
+
+  it('builds the same chain for the visualiser and shares its analyser', async () => {
+    FakeAudioContext.instances = []
+    vi.stubGlobal('AudioContext', FakeAudioContext)
+    useAuth.setState({ session: { ...session, serverUrl: DEFAULT_NAVIDROME_SERVER } })
+    setActiveGraph(null)
+    const elements = await startPlaying()
+    expect(activeAnalyser()).toBeNull()
+    await act(async () => { useVisualiser.getState().setMode('bars') })
+    const context = FakeAudioContext.instances[0]
+    expect(context.sources.map((source) => source.element)).toEqual(elements)
+    expect(context.filters.every((filter) => filter.gain.value === 0)).toBe(true)
+    expect(activeAnalyser()).toBe(context.analysers[0])
+    useVisualiser.setState({ mode: 'off' })
+    setActiveGraph(null)
   })
 
   it('leaves the players alone when the equaliser is on but streams come from another server', async () => {
