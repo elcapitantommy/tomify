@@ -4,6 +4,7 @@ import type { Track } from '../types'
 import { useFavourites } from '../stores/favourites'
 import { TrackList } from './TrackList'
 import { usePlayer } from '../stores/player'
+import { useBookmarks } from '../stores/bookmarks'
 
 const api = { star: vi.fn(), unstar: vi.fn() }
 vi.mock('../lib/api-context', () => ({ useApi: () => api }))
@@ -78,5 +79,16 @@ describe('TrackList selecting several songs', () => {
     expect(screen.queryByRole('button', { name: 'Select' })).toBeNull()
     rerender(<TrackList tracks={[three[0]]}/>)
     expect(screen.queryByRole('button', { name: 'Select' })).toBeNull()
+  })
+})
+
+describe('TrackList saved place in long tracks', () => {
+  it('shows how far into a long track you got', () => {
+    useBookmarks.setState({ positions: { set: 900, t1: 60 } })
+    render(<TrackList tracks={[{ id: 'set', title: 'Live at Wembley', artist: 'Queen', album: 'Live', duration: 3600 }, tracks[0]]}/>)
+    const line = screen.getByRole('img', { name: 'Resume at 15:00' })
+    expect(line.firstElementChild).toHaveStyle({ width: '25%' })
+    expect(screen.getAllByRole('img', { name: /Resume at/ })).toHaveLength(1)
+    useBookmarks.setState({ positions: {} })
   })
 })

@@ -94,7 +94,7 @@ export class NavidromeClient {
   async scanStatus(signal?: AbortSignal): Promise<ScanStatus> { const r = await this.get<{ scanStatus?: ScanStatus }>('getScanStatus', undefined, signal); return r.scanStatus ?? { scanning: false } }
   async artists(signal?: AbortSignal): Promise<Artist[]> { const r = await this.get<{ artists?: { index?: { artist?: Artist[] }[] } }>('getArtists', {}, signal); return r.artists?.index?.flatMap((i) => i.artist ?? []) ?? [] }
   async artist(id: string, signal?: AbortSignal): Promise<{ artist: Artist & { album?: Album[] } }> { return this.get('getArtist', { id }, signal) }
-  async albums(type: 'alphabeticalByName' | 'newest' | 'recent' | 'starred' = 'alphabeticalByName', size = 100, signal?: AbortSignal): Promise<Album[]> { const r = await this.get<{ albumList2?: { album?: Album[] } }>('getAlbumList2', { type, size }, signal); return r.albumList2?.album ?? [] }
+  async albums(type: 'alphabeticalByName' | 'newest' | 'recent' | 'starred' | 'frequent' = 'alphabeticalByName', size = 100, signal?: AbortSignal): Promise<Album[]> { const r = await this.get<{ albumList2?: { album?: Album[] } }>('getAlbumList2', { type, size }, signal); return r.albumList2?.album ?? [] }
   async allAlbums(signal?: AbortSignal): Promise<Album[]> { const albums: Album[] = []; for (let offset = 0; ; offset += 500) { const r = await this.get<{ albumList2?: { album?: Album[] } }>('getAlbumList2', { type: 'alphabeticalByName', size: 500, offset }, signal); const page = r.albumList2?.album ?? []; albums.push(...page); if (page.length < 500) return albums } }
   async album(id: string, signal?: AbortSignal): Promise<Album & { song?: Track[] }> { const r = await this.get<{ album: Album & { song?: Track[] } }>('getAlbum', { id }, signal); return r.album }
   async song(id: string, signal?: AbortSignal): Promise<Track> { const r = await this.get<{ song: Track }>('getSong', { id }, signal); return r.song }
@@ -113,6 +113,10 @@ export class NavidromeClient {
   // createPlaylist with an existing playlistId replaces its whole track list, which is how Subsonic reorders.
   async replacePlaylistTracks(id: string, songIds: string[]) { await this.get('createPlaylist', { playlistId: id }, undefined, { songId: songIds }) }
   async deletePlaylist(id: string) { await this.get('deletePlaylist', { id }) }
+  // Bookmarks: a saved position in a song, per account, kept by Navidrome (positions in milliseconds).
+  async bookmarks(signal?: AbortSignal): Promise<{ entry: Track; position: number; changed?: string }[]> { const r = await this.get<{ bookmarks?: { bookmark?: { entry: Track; position: number; changed?: string }[] } }>('getBookmarks', {}, signal); return r.bookmarks?.bookmark ?? [] }
+  async createBookmark(id: string, positionMs: number) { await this.get('createBookmark', { id, position: Math.max(0, Math.round(positionMs)), comment: 'Tomify' }) }
+  async deleteBookmark(id: string) { await this.get('deleteBookmark', { id }) }
   ownsPlaylist(playlist: Pick<Playlist, 'owner'>) { return sameAccount(playlist.owner, this.session.username) }
   // Every song in the library, a page at a time (Navidrome returns everything for an empty search).
   async allSongs(signal?: AbortSignal, onPage?: (loaded: number) => void): Promise<Track[]> { const songs: Track[] = []; for (let offset = 0; ; offset += 500) { const r = await this.get<{ searchResult3?: { song?: Track[] } }>('search3', { query: '', artistCount: 0, albumCount: 0, songCount: 500, songOffset: offset }, signal); const page = r.searchResult3?.song ?? []; songs.push(...page); onPage?.(songs.length); if (page.length < 500) return songs } }
