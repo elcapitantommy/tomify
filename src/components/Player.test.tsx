@@ -167,4 +167,40 @@ describe('PlayerBar across devices', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Hide lyrics' }))
     expect(window.localStorage.getItem('tomify-lyrics-open')).toBe('0')
   })
+
+  it('drops played and skipped songs off the queue list, and drags only among the songs still to come', async () => {
+    const five = ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, title: `Song ${id.toUpperCase()}`, artist: 'Aerosmith', album: 'Permanent Vacation', duration: 200 }))
+    usePlayer.setState({ queue: five, currentIndex: 2, queueOpen: true })
+    render(<PlayerBar/>)
+    const drawer = document.querySelector('.queue-drawer') as HTMLElement
+    const titles = () => Array.from(drawer.querySelectorAll('.queue-item strong')).map((node) => node.textContent)
+    expect(titles()).toEqual(['Song C', 'Song D', 'Song E'])
+    expect(drawer.querySelector('.queue-item.active strong')?.textContent).toBe('Song C')
+    expect(within(drawer).queryByRole('button', { name: 'Drag to reorder Song C' })).toBeNull()
+
+    // The first upcoming song can't be moved above the current one (it would vanish into the played songs).
+    await act(async () => { fireEvent.keyDown(within(drawer).getByRole('button', { name: 'Drag to reorder Song D' }), { key: 'ArrowUp' }) })
+    expect(usePlayer.getState().queue.map((track) => track.id)).toEqual(['a', 'b', 'c', 'd', 'e'])
+    await act(async () => { fireEvent.keyDown(within(drawer).getByRole('button', { name: 'Drag to reorder Song E' }), { key: 'ArrowUp' }) })
+    expect(usePlayer.getState().queue.map((track) => track.id)).toEqual(['a', 'b', 'c', 'e', 'd'])
+    expect(usePlayer.getState().currentIndex).toBe(2)
+    expect(titles()).toEqual(['Song C', 'Song E', 'Song D'])
+
+    // Skipping on drops the current song off too; the played songs are still in the queue for Previous.
+    await act(async () => { usePlayer.getState().next() })
+    expect(titles()).toEqual(['Song E', 'Song D'])
+    expect(usePlayer.getState().queue).toHaveLength(5)
+    await act(async () => { fireEvent.click(within(drawer).getByRole('button', { name: 'Remove Song D' })) })
+    expect(usePlayer.getState().queue.map((track) => track.id)).toEqual(['a', 'b', 'c', 'e'])
+    expect(within(drawer).getByText('Nothing else queued.')).toBeInTheDocument()
+  })
+
+  it('hides played songs in the queue of another device too', () => {
+    useLivePlayback.setState({ snapshot: remote(), devices: [{ deviceId: 'desktop', deviceName: 'Windows · Chrome', lastSeen: Date.now() }] })
+    usePlayer.setState({ queueOpen: true })
+    render(<PlayerBar/>)
+    const drawer = document.querySelector('.queue-drawer') as HTMLElement
+    expect(within(drawer).queryByText('Ana Ng')).toBeNull()
+    expect(within(drawer).getByText('Purple Toupee')).toBeInTheDocument()
+  })
 })
