@@ -215,3 +215,14 @@ export function collapseReleaseVariants(albums: Album[], overrides: Record<strin
     }
   })
 }
+
+/**
+ * The release tab an artist page opens on when the URL names none:
+ * Albums, or else Compilations, then Singles & EPs, then All.
+ */
+export function defaultArtistReleaseFilter(counts: Record<ReleaseBucket, number>): ReleaseFilter {
+  if (counts.album > 0) return 'album'
+  if (counts.compilation > 0) return 'compilation'
+  if (counts['single-ep'] > 0) return 'single-ep'
+  return 'album'
+}
