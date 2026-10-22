@@ -454,3 +454,7 @@ body.mini-player-window{min-width:0;min-height:0;margin:0;background:var(--panel
 .track-resume{position:absolute;left:52px;right:10px;bottom:3px;height:3px;border-radius:2px;background:var(--line);overflow:hidden;pointer-events:none}
 .track-resume>span{display:block;height:100%;background:var(--accent)}
 @media(max-width:800px){.track-resume{left:42px;right:0}}
+/* Queue drawer: the current song, then only the songs still to come (played ones drop off) */
+.queue-section-label{display:block;margin:10px 8px 4px;font-size:.67rem;text-transform:uppercase;letter-spacing:.14em;color:#686e68;font-weight:700}
+.queue-now{margin-bottom:6px}
+.queue-empty{margin:12px 8px;color:var(--muted);font-size:.8rem}

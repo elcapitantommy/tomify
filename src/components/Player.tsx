@@ -9,6 +9,7 @@ import { SleepTimerButton } from './SleepTimer'
 import { RatingStars } from './RatingStars'
 import { formatDuration } from '../lib/format'
 import { usePlayer } from '../stores/player'
+import type { Track } from '../types'
 import { controlRemote, isDeviceOnline, livePosition, localPlaybackDeviceId, localPlaybackDeviceName, useLivePlayback, useRemoteSession, type LivePlaybackCommandAction } from '../stores/livePlayback'
 import { playHere, transferTo } from '../stores/playbackHandoff'
 import { promptCast, useCast } from '../stores/cast'
@@ -167,8 +168,15 @@ function QueueDrawer() {
   const playIndex = (index: number) => view.remote ? view.command('play-index', index) : player.playTracks(player.queue, index)
   const removeIndex = (index: number) => view.remote ? view.command('remove-index', index) : player.removeFromQueue(index)
   const clear = () => view.remote ? view.command('clear-queue') : player.clearQueue()
+  // Songs already played or skipped stay in the queue (Previous and shuffle need them) but drop off this list:
+  // it shows the current song, then only what comes after it.
+  const current = view.queue[view.currentIndex] as Track | undefined
+  const firstUpcoming = current ? view.currentIndex + 1 : 0
+  const upcoming = view.queue.slice(firstUpcoming)
+  // `position` is the row's place among the upcoming rows (for dragging); null for the current song.
+  const queueRow = (track: Track, index: number, position: number | null) => <div className={index === view.currentIndex ? 'queue-item active' : 'queue-item'} key={`${track.id}-${index}`}><div className="queue-open"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={100}/><span><button type="button" className="queue-play" onClick={() => playIndex(index)}><strong>{track.title}</strong></button><small><ItemArtists item={track} onNavigate={() => player.setQueueOpen(false)}/></small></span></div>{!view.remote && position !== null && <DragHandle index={position} count={upcoming.length} label={track.title} onMove={(from, to) => player.moveInQueue(firstUpcoming + from, firstUpcoming + to)}/>}<button onClick={() => removeIndex(index)} aria-label={`Remove ${track.title}`} title={`Remove ${track.title}`}><X/></button></div>
 
-  return <div className="drawer-backdrop" onMouseDown={() => player.setQueueOpen(false)}><aside className="queue-drawer" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="eyebrow">{remoteLabel(view) ?? radioLabel ?? 'Up next'}</span><h2>Queue</h2>{radioLabel && (radio.loading || radio.error) && <small className="radio-status">{radio.error ?? 'Finding similar songs…'}</small>}</div><button onClick={() => player.setQueueOpen(false)} aria-label="Close queue" title="Close queue"><X/></button></header><div className="queue-list">{view.queue.map((track, index) => <div className={index === view.currentIndex ? 'queue-item active' : 'queue-item'} key={`${track.id}-${index}`}><div className="queue-open"><Artwork id={track.coverArt ?? track.albumId} albumId={track.albumId} alt={track.album} size={100}/><span><button type="button" className="queue-play" onClick={() => playIndex(index)}><strong>{track.title}</strong></button><small><ItemArtists item={track} onNavigate={() => player.setQueueOpen(false)}/></small></span></div>{!view.remote && <DragHandle index={index} count={view.queue.length} label={track.title} onMove={(from, to) => player.moveInQueue(from, to)}/>}<button onClick={() => removeIndex(index)} aria-label={`Remove ${track.title}`} title={`Remove ${track.title}`}><X/></button></div>)}</div><button className="button secondary clear" onClick={clear}>Clear queue</button></aside></div>
+  return <div className="drawer-backdrop" onMouseDown={() => player.setQueueOpen(false)}><aside className="queue-drawer" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="eyebrow">{remoteLabel(view) ?? radioLabel ?? 'Up next'}</span><h2>Queue</h2>{radioLabel && (radio.loading || radio.error) && <small className="radio-status">{radio.error ?? 'Finding similar songs…'}</small>}</div><button onClick={() => player.setQueueOpen(false)} aria-label="Close queue" title="Close queue"><X/></button></header><div className="queue-list">{current && <div className="queue-now"><span className="queue-section-label">Now playing</span>{queueRow(current, view.currentIndex, null)}</div>}{current && upcoming.length > 0 && <span className="queue-section-label">Next</span>}<div className="queue-upcoming">{upcoming.map((track, offset) => queueRow(track, firstUpcoming + offset, offset))}</div>{current && !upcoming.length && <p className="queue-empty">Nothing else queued.</p>}</div><button className="button secondary clear" onClick={clear}>Clear queue</button></aside></div>
 }
 
 const LYRICS_KEY = 'tomify-lyrics-open'
