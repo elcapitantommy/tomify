@@ -8,7 +8,7 @@ import { ErrorState, SkeletonGrid } from '../components/States'
 import { useLoad } from '../hooks/useLoad'
 import { useSearchParamState } from '../hooks/useSearchParamState'
 import { useApi } from '../lib/api-context'
-import { collapseReleaseVariants, releaseBucket, releaseFamilyTitle, releaseYearLabel, resolvedReleaseType, sortReleases, type ReleaseFilter } from '../lib/release-metadata'
+import { collapseReleaseVariants, defaultArtistReleaseFilter, releaseBucket, releaseFamilyTitle, releaseYearLabel, resolvedReleaseType, sortReleases, type ReleaseFilter } from '../lib/release-metadata'
 import { usePlayer } from '../stores/player'
 import { useReleaseMetadata } from '../stores/releaseMetadata'
 
@@ -26,7 +26,6 @@ export function ArtistDetail() {
   const overrides = useReleaseMetadata((state) => state.overrides)
   const enrichMany = useReleaseMetadata((state) => state.enrichMany)
   const cloudStatus = useReleaseMetadata((state) => state.cloudStatus)
-  const [filter, setFilter] = useSearchParamState<ReleaseFilter>('type', 'album', releaseFilterValues)
   const { data, loading, error, retry } = useLoad((signal) => api.artist(id, signal), [api, id], `artist:${api.session.username}:${id}`)
   const albums = useMemo(() => data?.artist.album ?? [], [data])
 
@@ -59,6 +58,8 @@ export function ArtistDetail() {
     'single-ep': sections.find((section) => section.key === 'single-ep')?.items.length ?? 0,
     compilation: sections.find((section) => section.key === 'compilation')?.items.length ?? 0,
   }
+  // With no tab in the URL, open on the first tab that has something in it (an explicit ?type= still wins).
+  const [filter, setFilter] = useSearchParamState<ReleaseFilter>('type', defaultArtistReleaseFilter(counts), releaseFilterValues)
   const visibleSections = filter === 'all' ? sections : sections.filter((section) => section.key === filter)
   const getTracks = async () => (await Promise.all(albums.map((album) => api.album(album.id)))).flatMap((album) => album.song ?? [])
   const playAll = async (shuffle = false) => { const tracks = await getTracks(); usePlayer.getState().playTracks(shuffle ? tracks.sort(() => Math.random() - .5) : tracks) }

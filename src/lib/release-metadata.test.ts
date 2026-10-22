@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { collapseReleaseVariants, inferReleaseType, releaseBucket, releaseDateSortValue, releaseFamilyTitle, releaseTitleHint, resolvedReleaseType, sortFamiliesByLatest, sortReleases } from './release-metadata'
+import { collapseReleaseVariants, defaultArtistReleaseFilter, inferReleaseType, releaseBucket, releaseDateSortValue, releaseFamilyTitle, releaseTitleHint, resolvedReleaseType, sortFamiliesByLatest, sortReleases } from './release-metadata'
 import type { Album } from '../types'
 
 const album = (id: string, name: string, year?: number): Album => ({ id, name, artist: 'Test Artist', year })
@@ -92,5 +92,14 @@ describe('release variant grouping', () => {
     expect(sortFamiliesByLatest(families, 'created').map((item) => item.key)).toEqual(['a', 'b', 'c'])
     families[0].variants[1].created = undefined
     expect(sortFamiliesByLatest(families, 'created').map((item) => item.key)).toEqual(['b', 'a', 'c'])
+  })
+})
+
+describe('defaultArtistReleaseFilter', () => {
+  it('prefers albums, then compilations, then singles & EPs', () => {
+    expect(defaultArtistReleaseFilter({ album: 2, compilation: 1, 'single-ep': 1 })).toBe('album')
+    expect(defaultArtistReleaseFilter({ album: 0, compilation: 1, 'single-ep': 3 })).toBe('compilation')
+    expect(defaultArtistReleaseFilter({ album: 0, compilation: 0, 'single-ep': 3 })).toBe('single-ep')
+    expect(defaultArtistReleaseFilter({ album: 0, compilation: 0, 'single-ep': 0 })).toBe('album')
   })
 })
