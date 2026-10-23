@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CircleCheck, Clapperboard, ExternalLink, FileDown, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Pause, Play, RefreshCw, Search, TriangleAlert, UserRound, Users, X } from 'lucide-react'
-import { DESTINATIONS, formatEta, formatSize, formatSpeed, tomifinApi, TomifinRequestError, type TomifinDestination, type TomifinJob, type TomifinKind, type TomifinResult, type TomifinServiceStatus } from './api'
+import { CircleCheck, Clapperboard, ShieldAlert, ShieldCheck, ShieldQuestion, ExternalLink, FileDown, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Pause, Play, RefreshCw, Search, TriangleAlert, UserRound, Users, X } from 'lucide-react'
+import { DESTINATIONS, formatEta, formatSize, formatSpeed, tomifinApi, TomifinRequestError, type TomifinDestination, type TomifinJob, type TomifinKind, type TomifinResult, type TomifinServiceStatus, type TomifinVpnStatus } from './api'
 import { sortResults, type SortKey } from './results'
 
 type TomifinUser = { name: string }
@@ -142,6 +142,18 @@ function Downloads({ jobs, loading, error, onRefresh, onAction, busyId }: { jobs
   )
 }
 
+const VPN_POLL_MS = 30_000
+
+// The VPN qBittorrent downloads through, as one line in the toolbar.
+function VpnStatus({ vpn }: { vpn: TomifinVpnStatus }) {
+  const place = [vpn.nordvpn?.city, vpn.nordvpn?.country].filter(Boolean).join(', ')
+  const [tone, Icon, label] = vpn.state === 'connected' ? ['ok', ShieldCheck, `VPN connected${place ? ` · ${place}` : ''}`] as const
+    : vpn.state === 'connecting' ? ['warn', ShieldQuestion, 'VPN connecting…'] as const
+    : vpn.state === 'down' ? ['bad', ShieldAlert, 'VPN down: downloads and searches are paused'] as const
+    : ['warn', ShieldQuestion, 'VPN status unknown'] as const
+  return <span className={`tf-vpn tf-vpn-${tone}`} title={vpn.nordvpn?.server ? `NordVPN server ${vpn.nordvpn.server}` : `qBittorrent: ${vpn.qbittorrent}`}><Icon aria-hidden/>{label}</span>
+}
+
 function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignOut: () => void; onExpired: () => void }) {
   const [status, setStatus] = useState<TomifinServiceStatus | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
@@ -161,6 +173,7 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
   const [jobsError, setJobsError] = useState<string | null>(null)
   const [jobsLoading, setJobsLoading] = useState(false)
   const [busyJob, setBusyJob] = useState<string | null>(null)
+  const [vpn, setVpn] = useState<TomifinVpnStatus | null>(null)
   const searchAbort = useRef<AbortController | null>(null)
   const destinationRef = useRef<HTMLDivElement | null>(null)
   // A session Jellyfin no longer accepts goes back to the sign-in form; other errors are shown where they happened.
@@ -171,6 +184,16 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
     tomifinApi.status(controller.signal).then(setStatus, (error) => { if (!controller.signal.aborted && !failed(error)) setStatusError(message(error)) })
     return () => controller.abort()
   }, [failed])
+
+  useEffect(() => {
+    if (status && !status.available) return
+    const controller = new AbortController()
+    // An agent too old to report it (or any other failure) just hides the VPN line.
+    const load = () => tomifinApi.vpn(controller.signal).then(setVpn, (error) => { if (!controller.signal.aborted && !failed(error)) setVpn(null) })
+    void load()
+    const timer = window.setInterval(() => { if (document.visibilityState !== 'hidden') void load() }, VPN_POLL_MS)
+    return () => { controller.abort(); window.clearInterval(timer) }
+  }, [failed, status])
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setJobsLoading(true)
@@ -243,6 +266,7 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
   return (
     <>
       <div className="tf-toolbar-user">
+        {vpn && <VpnStatus vpn={vpn}/>}
         <span className="tf-muted">Signed in as <strong>{user.name}</strong></span>
         <button type="button" className="tf-link" onClick={onSignOut}><LogOut aria-hidden/>Sign out</button>
       </div>

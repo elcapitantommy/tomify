@@ -27,7 +27,12 @@ svg { width: 18px; height: 18px; flex: none }
 .tf-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px }
 .tf-muted { color: var(--muted); font-size: .88rem }
 .tf-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap }
-.tf-toolbar-user { display: flex; justify-content: flex-end; gap: 12px; margin-top: -8px }
+.tf-toolbar-user { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: -8px }
+.tf-vpn { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; padding: 5px 10px; border-radius: 999px; font-size: .8rem; font-weight: 700 }
+.tf-vpn svg { width: 15px; height: 15px }
+.tf-vpn-ok { background: #1f2a12; color: var(--accent) }
+.tf-vpn-warn { background: #2a2111; color: var(--warn) }
+.tf-vpn-bad { background: #2a1312; color: var(--danger) }
 .tf-link { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; padding: 8px 2px; color: var(--muted); font-weight: 600; text-decoration: none; cursor: pointer; min-height: 44px }
 .tf-link:hover { color: var(--text) }
 
