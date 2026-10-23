@@ -89,6 +89,30 @@ export function torrentCandidate(value, track, options) {
   }
 }
 
+// Query parameters that carry credentials on torrent sites and indexers (API keys, passkeys, session ids, …).
+const SECRET_PARAMETER = /(api|pass|auth|token|secret|key|sig|sess|sid|cookie|login|user|uid|rss|hash|code|jwt|nonce)/i
+// A value that looks like a generated secret: long hex, or a long run of mixed letters and digits with no separators.
+function secretLooking(value) {
+  const raw = text(value)
+  return /^[a-f0-9]{32,}$/i.test(raw) || (/^[A-Za-z0-9+/=_-]{24,}$/.test(raw) && /[0-9]/.test(raw) && /[A-Za-z]/.test(raw) && !/[-_]/.test(raw))
+}
+
+// A result's details page, for showing as a link. Results come from third-party plugins and indexers, so the link is
+// cleaned before anyone sees it: only public http(s) pages, no user name or password, no fragment, no query parameter
+// that could carry a credential, and nothing at all when a path segment looks like a passkey.
+export function safeDetailsUrl(value) {
+  let url
+  try { url = new URL(text(value)) } catch { return null }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || privateHost(url.hostname)) return null
+  let segments
+  try { segments = url.pathname.split('/').map((segment) => decodeURIComponent(segment)) } catch { return null }
+  if (segments.some(secretLooking)) return null
+  url.hash = ''
+  for (const [name, parameter] of [...url.searchParams]) if (SECRET_PARAMETER.test(name) || secretLooking(parameter)) url.searchParams.delete(name)
+  if (![...url.searchParams].length) url.search = ''
+  return url.toString()
+}
+
 function siteName(value) {
   try { return new URL(text(value)).hostname.replace(/^www\./, '') || null } catch { return null }
 }
@@ -111,8 +135,7 @@ export function seededTorrentResults(results, options) {
     const key = parsed.infoHash || text(result?.infoHash).toLowerCase() || resultId
     if (seen.has(key)) continue
     seen.add(key)
-    let detailsUrl = null
-    try { const details = new URL(text(result?.descrLink)); if (['http:', 'https:'].includes(details.protocol) && !details.username && !details.password) detailsUrl = details.toString() } catch { /* The plugin gave no details page. */ }
+    const detailsUrl = safeDetailsUrl(result?.descrLink)
     const leechers = number(result?.nbLeechers)
     const size = number(result?.fileSize)
     const site = text(result?.siteName).slice(0, 120) || siteName(result?.siteUrl) || siteName(detailsUrl) || 'Torrent search'
@@ -263,15 +286,16 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
 
   return {
     // category defaults to Recovery's; Tomifin Downloader passes its own per destination. subfolder keeps a
-    // multi-file torrent in a folder of its own rather than spread over the save path.
-    async add(link, { tag, savePath, category = config.category, subfolder = false }) {
+    // multi-file torrent in a folder of its own rather than spread over the save path. downloadPath (qBittorrent 4.4
+    // and later) keeps unfinished data there and moves it to savePath when the torrent completes.
+    async add(link, { tag, savePath, downloadPath = null, category = config.category, subfolder = false }) {
       // An indexer link is fetched here first: it needs the indexer's API key, and qBittorrent may not reach it.
       const fetched = isIndexerLink(link, config.indexers || []) ? await fetchIndexerTorrent(link, config.indexers, fetchImpl) : null
       const cookie = await session()
       await ensureCategory(cookie, category, savePath)
       await ensureQueueLimits(cookie)
       // contentLayout is qBittorrent 4.3.2 and later; root_folder is the older name for the same choice.
-      const form = { urls: fetched?.magnet || link, category, tags: tag, savepath: savePath, ...(subfolder ? { contentLayout: 'Subfolder', root_folder: 'true' } : {}) }
+      const form = { urls: fetched?.magnet || link, category, tags: tag, savepath: savePath, ...(downloadPath ? { useDownloadPath: 'true', downloadPath } : {}), ...(subfolder ? { contentLayout: 'Subfolder', root_folder: 'true' } : {}) }
       const { response, body } = fetched?.torrent ? await upload(cookie, fetched.torrent, form) : await call(cookie, 'torrents/add', form, 'qBittorrent add')
       if (!response.ok) throw new Error(`qBittorrent add returned HTTP ${response.status}.`)
       if (/^fails/i.test(text(body))) throw new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).')

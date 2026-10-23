@@ -1,11 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readdir, readFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { createQbittorrentClient } from './torrent.mjs'
+import { createQbittorrentClient, safeDetailsUrl } from './torrent.mjs'
 import { JellyfinAuthError } from './jellyfin.mjs'
-import { createTomifinController, handleTomifinRequest, hostContentPath, qualityFromTitle, tomifinConfig, tomifinTorrentState, validSearchQuery } from './tomifin.mjs'
+import { createTomifinController, handleTomifinRequest, hostContentPath, partialDataDeletable, stagingPath, qualityFromTitle, tomifinConfig, tomifinTorrentState, validSearchQuery } from './tomifin.mjs'
 
 const hash = '0123456789abcdef0123456789abcdef01234567'
 const other = 'fedcba9876543210fedcba9876543210fedcba98'
@@ -27,7 +27,7 @@ function fakeClient({ searchResults = [], existing = [] } = {}) {
     },
     async info(value) { calls.push(['info', value]); return torrents.find((torrent) => torrent.tags.split(',').includes(value)) || null },
     async list(category) { calls.push(['list', category]); return torrents.filter((torrent) => torrent.category === category) },
-    async pause(value) { calls.push(['pause', value]) },
+    async pause(value) { calls.push(['pause', value]); const torrent = torrents.find((entry) => entry.hash === value); if (torrent) torrent.state = 'stoppedDL' },
     async resume(value) { calls.push(['resume', value]) },
     async remove(value, deleteFiles) { calls.push(['remove', value, deleteFiles]); const index = torrents.findIndex((torrent) => torrent.hash === value); if (index >= 0) torrents.splice(index, 1) },
   }
@@ -44,7 +44,7 @@ const searchResults = [
 async function controllerWith(client, options = {}) {
   const stateRoot = await mkdtemp(join(tmpdir(), 'tomifin-'))
   let ids = 0
-  const controller = createTomifinController({ config, client, stateRoot, randomId: () => `00000000-0000-4000-8000-${String(++ids).padStart(12, '0')}`, pathExists: async () => false, ...options })
+  const controller = createTomifinController({ config, client, stateRoot, randomId: () => `00000000-0000-4000-8000-${String(++ids).padStart(12, '0')}`, ...options })
   return { controller, stateRoot }
 }
 
@@ -119,7 +119,7 @@ test('Family and Private downloads go to their own qBittorrent folder and catego
     const { job } = await controller.download({ resultId: best.id, destination })
     const add = client.calls.find(([name]) => name === 'add')
     assert.match(add[1], /^magnet:\?xt=urn:btih:0123/)
-    assert.deepEqual(add[2], { tag: `tomifin-${job.id}`, savePath: path, category, subfolder: true })
+    assert.deepEqual(add[2], { tag: `tomifin-${job.id}`, savePath: path, downloadPath: `${path}/.tomifin-incomplete/${job.id}`, category, subfolder: true })
     assert.equal(job.destination, destination)
     assert.equal(job.status, 'queued')
     const saved = JSON.parse(await readFile(join(stateRoot, 'tomifin', `${job.id}.json`), 'utf8'))
@@ -127,7 +127,7 @@ test('Family and Private downloads go to their own qBittorrent folder and catego
     assert.doesNotMatch(JSON.stringify(saved), /passkey|tracker\.test/)
     // Recovery's job runner only reads job files at the top of the state folder, so it never sees Tomifin's.
     assert.deepEqual((await readdir(stateRoot)).filter((name) => name.endsWith('.json')), [])
-    await assert.rejects(controller.download({ resultId: best.id, destination }), /expired/, 'a result is used once')
+    await assert.rejects(controller.download({ resultId: best.id, destination }), /expired|already/, 'a result is used once')
   }
 })
 
@@ -138,6 +138,7 @@ test('qBittorrent\'s own path is used when it sees the libraries at a different 
   const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
   await controller.download({ resultId: best.id, destination: 'private' })
   assert.equal(client.calls.find(([name]) => name === 'add')[2].savePath, '/data/private')
+  assert.match(client.calls.find(([name]) => name === 'add')[2].downloadPath, /^\/data\/private\/\.tomifin-incomplete\/[0-9a-f-]{36}$/)
   assert.equal(hostContentPath('/data/private/Big Buck Bunny', mapped.destinations.private), '/media/private/Big Buck Bunny')
   assert.equal(hostContentPath('/data/family/Big Buck Bunny', mapped.destinations.private), null)
   assert.equal(hostContentPath('/data/private', mapped.destinations.private), null)
@@ -189,7 +190,7 @@ test('the downloads list shows progress, speed, sizes and ETA for Tomifin jobs o
     { id: jobs[0].id, name: jobs[0].name, destination: jobs[0].destination, destinationLabel: jobs[0].destinationLabel, status: jobs[0].status, progress: jobs[0].progress, downloadSpeed: jobs[0].downloadSpeed, downloaded: jobs[0].downloaded, size: jobs[0].size, eta: jobs[0].eta, canPause: jobs[0].canPause, canResume: jobs[0].canResume },
     { id: job.id, name: 'Big Buck Bunny (2008) 1080p', destination: 'private', destinationLabel: 'Private', status: 'downloading', progress: 42.3, downloadSpeed: 2_500_000, downloaded: 635_550_000, size: 1_500_000_000, eta: 345, canPause: true, canResume: false },
   )
-  assert.deepEqual(client.calls.filter(([name]) => name === 'list').map(([, category]) => category), ['tomifin-private'])
+  assert.deepEqual(client.calls.filter(([name]) => name === 'list').map(([, category]) => category).sort(), ['tomifin-family', 'tomifin-private'])
 })
 
 test('pause and resume act only on the job\'s own torrent', async () => {
@@ -204,41 +205,202 @@ test('pause and resume act only on the job\'s own torrent', async () => {
   await assert.rejects(controller.pause({ id: '00000000-0000-4000-8000-999999999999' }), /no longer listed/)
 })
 
-test('cancelling deletes partial data only when the download started from nothing', async () => {
+test('cancelling deletes partial data only while it is still in the job\'s own staging folder', async () => {
   const client = fakeClient({ searchResults })
   const { controller } = await controllerWith(client)
   const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
   const { job } = await controller.download({ resultId: best.id, destination: 'family' })
-  Object.assign(client.torrents[0], { state: 'downloading', content_path: '/media/family/Big Buck Bunny', progress: 0, downloaded: 0 })
-  await controller.observe()
-  Object.assign(client.torrents[0], { progress: 0.3, downloaded: 400 })
+  const staging = `/media/family/.tomifin-incomplete/${job.id}`
+  Object.assign(client.torrents[0], { state: 'downloading', content_path: `${staging}/Big Buck Bunny`, download_path: staging, progress: 0.3, downloaded: 400 })
   assert.equal((await controller.list()).jobs[0].keepsFilesOnCancel, false)
   assert.deepEqual(await controller.cancel({ id: job.id }), { cancelled: true, filesDeleted: true, torrentRemoved: true })
   assert.deepEqual(client.calls.find(([name]) => name === 'remove'), ['remove', hash, true])
   assert.deepEqual((await controller.list()).jobs, [])
 })
 
-test('cancelling never deletes files that were already in the library, or a finished download', async () => {
+test('cancelling never deletes anything in the library, a finished download or another job\'s folder', async () => {
+  const id = '00000000-0000-4000-8000-000000000001'
+  const staging = `/media/family/.tomifin-incomplete/${id}`
   const cases = [
-    { name: 'existing files', exists: true, torrent: { state: 'checkingDL', content_path: '/media/family/Big Buck Bunny', progress: 0, downloaded: 0 } },
-    { name: 'checked late', exists: false, torrent: { state: 'downloading', content_path: '/media/family/Big Buck Bunny', progress: 0.2, downloaded: 10 } },
-    { name: 'outside the library', exists: false, torrent: { state: 'downloading', content_path: '/srv/music/Big Buck Bunny', progress: 0, downloaded: 0 } },
-    { name: 'the library folder itself', exists: false, torrent: { state: 'downloading', content_path: '/media/family', progress: 0, downloaded: 0 } },
-    { name: 'unreadable library', exists: 'error', torrent: { state: 'downloading', content_path: '/media/family/Big Buck Bunny', progress: 0, downloaded: 0 } },
-    { name: 'finished', exists: false, finishAfterCheck: true, torrent: { state: 'downloading', content_path: '/media/family/Big Buck Bunny', progress: 0, downloaded: 0 } },
+    { name: 'saved straight into the library (older qBittorrent)', torrent: { state: 'downloading', content_path: '/media/family/Big Buck Bunny', progress: 0.2 } },
+    { name: 'finished and moved', torrent: { state: 'uploading', content_path: '/media/family/Big Buck Bunny', progress: 1 } },
+    { name: 'finished, still in staging', torrent: { state: 'stalledUP', content_path: `${staging}/Big Buck Bunny`, progress: 1 } },
+    { name: 'being moved into the library', torrent: { state: 'moving', content_path: `${staging}/Big Buck Bunny`, progress: 0.99 } },
+    { name: 'another job\'s staging folder', torrent: { state: 'downloading', content_path: '/media/family/.tomifin-incomplete/00000000-0000-4000-8000-000000000009/Big Buck Bunny', progress: 0.2 } },
+    { name: 'the staging folder itself', torrent: { state: 'downloading', content_path: staging, progress: 0.2 } },
+    { name: 'escaping the staging folder', torrent: { state: 'downloading', content_path: `${staging}/../../Big Buck Bunny`, progress: 0.2 } },
+    { name: 'download path moved elsewhere', torrent: { state: 'downloading', content_path: `${staging}/Big Buck Bunny`, download_path: '/media/family', progress: 0.2 } },
+    { name: 'outside the library', torrent: { state: 'downloading', content_path: '/srv/music/Big Buck Bunny', progress: 0.2 } },
   ]
   for (const entry of cases) {
     const client = fakeClient({ searchResults })
-    const { controller } = await controllerWith(client, { pathExists: async () => { if (entry.exists === 'error') throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); return entry.exists } })
+    const { controller } = await controllerWith(client)
     const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
     const { job } = await controller.download({ resultId: best.id, destination: 'family' })
+    assert.equal(job.id, id)
     Object.assign(client.torrents[0], entry.torrent)
-    await controller.observe()
-    if (entry.finishAfterCheck) Object.assign(client.torrents[0], { state: 'uploading', progress: 1 })
+    assert.equal((await controller.list()).jobs[0].keepsFilesOnCancel, true, entry.name)
     const result = await controller.cancel({ id: job.id })
     assert.equal(result.filesDeleted, false, entry.name)
     assert.deepEqual(client.calls.find(([name]) => name === 'remove'), ['remove', hash, false], entry.name)
   }
+  assert.equal(stagingPath(config.destinations.private, id), `/media/private/.tomifin-incomplete/${id}`)
+  assert.equal(partialDataDeletable(null, config.destinations.family, id), false)
+})
+
+test('a job record is written before qBittorrent is asked, and nothing is added if it cannot be written', async () => {
+  const client = fakeClient({ searchResults })
+  const blocked = join(await mkdtemp(join(tmpdir(), 'tomifin-')), 'not-a-folder')
+  await writeFile(blocked, '')
+  const { controller } = await controllerWith(client, { stateRoot: blocked })
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  await assert.rejects(controller.download({ resultId: best.id, destination: 'family' }))
+  assert.equal(client.calls.some(([name]) => name === 'add'), false)
+
+  // The record already exists when qBittorrent is called.
+  const watched = fakeClient({ searchResults })
+  const { controller: second, stateRoot } = await controllerWith(watched)
+  const add = watched.add.bind(watched)
+  watched.add = async (link, options) => { assert.equal((await readdir(join(stateRoot, 'tomifin'))).length, 1); return add(link, options) }
+  const { results: [again] } = await second.search({ query: 'Big Buck Bunny' })
+  await second.download({ resultId: again.id, destination: 'family' })
+})
+
+test('an add that fails but reached qBittorrent keeps its record; one that did not is rolled back', async () => {
+  const client = fakeClient({ searchResults })
+  const add = client.add.bind(client)
+  client.add = async (link, options) => { await add(link, options); throw new Error('qBittorrent add timed out.') }
+  const { controller, stateRoot } = await controllerWith(client)
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  const { job } = await controller.download({ resultId: best.id, destination: 'family' })
+  assert.deepEqual(await readdir(join(stateRoot, 'tomifin')), [`${job.id}.json`])
+  assert.equal((await controller.list()).jobs.length, 1)
+
+  const refusing = fakeClient({ searchResults })
+  refusing.add = async () => { throw new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).') }
+  const { controller: other, stateRoot: otherRoot } = await controllerWith(refusing)
+  const { results: [again] } = await other.search({ query: 'Big Buck Bunny' })
+  await assert.rejects(other.download({ resultId: again.id, destination: 'family' }), /refused the torrent/)
+  assert.deepEqual(await readdir(join(otherRoot, 'tomifin')), [])
+})
+
+test('a double click or retry cannot add the same torrent twice', async () => {
+  const client = fakeClient({ searchResults: searchResults.slice(1, 2) })
+  let release = () => {}
+  let entered = () => {}
+  const adding = new Promise((resolve) => { entered = resolve })
+  const add = client.add.bind(client)
+  client.add = async (link, options) => { const wait = new Promise((resolve) => { release = resolve }); entered(); await wait; return add(link, options) }
+  const { controller } = await controllerWith(client)
+  const { results: [torrentFile] } = await controller.search({ query: 'Big Buck Bunny' })
+  assert.equal(torrentFile.linkType, 'torrent-file')
+  const first = controller.download({ resultId: torrentFile.id, destination: 'family' })
+  await adding
+  await assert.rejects(controller.download({ resultId: torrentFile.id, destination: 'family' }), /already being queued/)
+  release()
+  await first
+  // Searching again gives the same result id; it is refused because it is already in the downloads.
+  const { results: [repeat] } = await controller.search({ query: 'Big Buck Bunny' })
+  await assert.rejects(controller.download({ resultId: repeat.id, destination: 'private' }), /already in your downloads/)
+  assert.equal(client.calls.filter(([name]) => name === 'add').length, 1)
+})
+
+test('a Tomifin torrent with no record is tracked again, and its files are never deleted on cancel', async () => {
+  const lost = '00000000-0000-4000-8000-0000000000aa'
+  const client = fakeClient({ existing: [
+    { hash, name: 'Sintel 1080p', tags: `tomifin-${lost}`, category: 'tomifin-private', state: 'downloading', progress: 0.5, content_path: `/media/private/.tomifin-incomplete/${lost}/Sintel` },
+    { hash: other, name: 'Recovery album', tags: 'tomify-job', category: 'tomify', state: 'downloading' },
+  ] })
+  const { controller, stateRoot } = await controllerWith(client)
+  await controller.observe()
+  assert.deepEqual(await readdir(join(stateRoot, 'tomifin')), [`${lost}.json`])
+  const { jobs } = await controller.list()
+  assert.deepEqual(jobs.map(({ id, name, destination, keepsFilesOnCancel }) => ({ id, name, destination, keepsFilesOnCancel })), [{ id: lost, name: 'Sintel 1080p', destination: 'private', keepsFilesOnCancel: true }])
+  assert.equal((await controller.cancel({ id: lost })).filesDeleted, false)
+  assert.deepEqual(client.calls.find(([name]) => name === 'remove'), ['remove', hash, false])
+})
+
+test('a magnet that turns out larger than the limit once its details arrive is stopped and cannot be resumed', async () => {
+  const client = fakeClient({ searchResults: [{ ...searchResults[0], fileSize: -1 }] })
+  const { controller } = await controllerWith(client, { config: { ...config, maxBytes: 5_000_000_000 } })
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  assert.equal(best.size, null)
+  const { job } = await controller.download({ resultId: best.id, destination: 'family' })
+  await controller.observe()
+  assert.equal(client.calls.some(([name]) => name === 'pause'), false, 'size still unknown while fetching details')
+  Object.assign(client.torrents[0], { state: 'downloading', total_size: 9_000_000_000, size: 9_000_000_000 })
+  await controller.observe()
+  assert.deepEqual(client.calls.filter(([name]) => name === 'pause'), [['pause', hash]])
+  assert.equal(client.torrents[0].state, 'stoppedDL')
+  const [view] = (await controller.list()).jobs
+  assert.deepEqual([view.status, view.canResume, view.canPause], ['failed', false, false])
+  assert.match(view.message, /larger than the download limit/)
+  await assert.rejects(controller.resume({ id: job.id }), /cannot be resumed/)
+  assert.equal(client.calls.some(([name]) => name === 'resume'), false)
+  await controller.observe()
+  assert.equal(client.calls.filter(([name]) => name === 'pause').length, 1, 'stopped once')
+})
+
+test('a finished download is taken out of qBittorrent once its files are in the library, and the files are kept', async () => {
+  const client = fakeClient({ searchResults })
+  const { controller, stateRoot } = await controllerWith(client)
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  const { job } = await controller.download({ resultId: best.id, destination: 'family' })
+  const staging = `/media/family/.tomifin-incomplete/${job.id}`
+  // Finished but still in staging, or being moved: left alone.
+  for (const torrent of [{ state: 'uploading', progress: 1, content_path: `${staging}/Big Buck Bunny` }, { state: 'moving', progress: 1, content_path: `${staging}/Big Buck Bunny` }, { state: 'downloading', progress: 0.9, content_path: '/media/family/Big Buck Bunny' }]) {
+    Object.assign(client.torrents[0], torrent)
+    await controller.observe()
+    assert.equal(client.calls.some(([name]) => name === 'remove'), false, torrent.state)
+  }
+  Object.assign(client.torrents[0], { state: 'stalledUP', progress: 1, content_path: '/media/family/Big Buck Bunny', total_size: 1_500_000_000 })
+  await controller.observe()
+  assert.deepEqual(client.calls.filter(([name]) => name === 'remove'), [['remove', hash, false]])
+  assert.equal(client.torrents.length, 0)
+  const saved = JSON.parse(await readFile(join(stateRoot, 'tomifin', `${job.id}.json`), 'utf8'))
+  assert.match(saved.completedAt, /^\d{4}-/)
+  const [view] = (await controller.list()).jobs
+  assert.deepEqual([view.status, view.progress, view.size, view.keepsFilesOnCancel, view.canPause], ['completed', 100, 1_500_000_000, true, false])
+  assert.deepEqual(await controller.cancel({ id: job.id }), { cancelled: true, filesDeleted: false, torrentRemoved: false })
+  assert.deepEqual((await controller.list()).jobs, [])
+})
+
+test('a finished torrent qBittorrent will not remove is tried again', async () => {
+  const client = fakeClient({ searchResults })
+  let failures = 1
+  const remove = client.remove.bind(client)
+  client.remove = async (value, deleteFiles) => { if (failures-- > 0) throw new Error('qBittorrent delete returned HTTP 500.'); return remove(value, deleteFiles) }
+  const { controller } = await controllerWith(client)
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  await controller.download({ resultId: best.id, destination: 'family' })
+  Object.assign(client.torrents[0], { state: 'uploading', progress: 1, content_path: '/media/family/Big Buck Bunny' })
+  await controller.observe()
+  assert.equal(client.torrents.length, 1)
+  assert.equal((await controller.list()).jobs[0].status, 'completed')
+  assert.equal(client.torrents.length, 0)
+  assert.deepEqual(client.calls.filter(([name]) => name === 'remove'), [['remove', hash, false]])
+})
+
+test('details links never carry credentials or point at private hosts', () => {
+  assert.equal(safeDetailsUrl('https://yts.test/movies/big-buck-bunny-2008'), 'https://yts.test/movies/big-buck-bunny-2008')
+  assert.equal(safeDetailsUrl('https://tracker.test/details.php?id=12345'), 'https://tracker.test/details.php?id=12345')
+  assert.equal(safeDetailsUrl('https://tracker.test/details.php?id=12345&apikey=FAKEKEY123&passkey=abc&torrent_pass=x&sid=1#top'), 'https://tracker.test/details.php?id=12345')
+  assert.equal(safeDetailsUrl('https://tracker.test/details?id=7&t=0f1e2d3c4b5a69788796a5b4c3d2e1f0'), 'https://tracker.test/details?id=7')
+  assert.equal(safeDetailsUrl('https://tracker.test/details?q=Zx9Kq2LmP4vN8rT1yW6bH3jF'), 'https://tracker.test/details')
+  assert.equal(safeDetailsUrl('https://tracker.test/rss/0f1e2d3c4b5a69788796a5b4c3d2e1f0/details/1'), null)
+  assert.equal(safeDetailsUrl('https://user:pass@tracker.test/details/1'), null)
+  assert.equal(safeDetailsUrl('http://192.168.1.20:9696/details/1'), null)
+  assert.equal(safeDetailsUrl('http://localhost:9117/details/1'), null)
+  assert.equal(safeDetailsUrl('javascript:alert(1)'), null)
+  assert.equal(safeDetailsUrl(''), null)
+})
+
+test('search results show a cleaned details link', async () => {
+  const client = fakeClient({ searchResults: [{ ...searchResults[0], descrLink: 'https://tracker.test/details.php?id=9&apikey=FAKEKEY123456' }] })
+  const { controller } = await controllerWith(client)
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  assert.equal(best.detailsUrl, 'https://tracker.test/details.php?id=9')
+  assert.doesNotMatch(JSON.stringify(best), /FAKEKEY/)
 })
 
 // A Jellyfin sign-in stand-in: the session 'good-session-token' belongs to an administrator.

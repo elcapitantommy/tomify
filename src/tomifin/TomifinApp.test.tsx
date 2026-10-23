@@ -198,7 +198,7 @@ describe('Tomifin Downloader', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('Cancelled “Big Buck Bunny (2008)” and deleted its partial download.')
 
     fireEvent.click(within(done).getByRole('button', { name: 'Remove' }))
-    expect(within(done).getByText('Stop seeding and remove from this list? The files stay in the library.')).toBeInTheDocument()
+    expect(within(done).getByText('Remove from this list? The files stay in the library.')).toBeInTheDocument()
   })
 
   it('refreshes the downloads list on its own', async () => {
