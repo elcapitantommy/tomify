@@ -15,7 +15,8 @@ Tomifin Downloader is its own web app at its own address, **`https://tomifin.tom
 2. Search for a title. **Films & TV** searches both; **Films** and **TV** narrow it.
 3. Press **FAMILY** or **PRIVATE**. Nothing is selected until you choose, the choice is not remembered between visits, and the page shows where downloads will go.
 4. Press **Queue to Family** (or **Private**) on a result. Tomifin says it is queued only once qBittorrent has accepted the torrent; otherwise it shows qBittorrent's or the server's reason.
-5. **Downloads** lists everything queued from Tomifin with its library, progress, downloaded and total size, speed, time left and status (queued, downloading, stalled, paused, completed or failed). It refreshes every 3 seconds while something is downloading and every 15 seconds otherwise, and has a **Refresh** button.
+5. The bar above the search shows the **VPN** qBittorrent downloads through: connected (with NordVPN's city and country when the agent's VPN control is on), connecting, down (qBittorrent has no connection, so downloads and searches are paused) or unknown. It is checked every 30 seconds, from qBittorrent's own connection status and, when `TOMIFY_RECOVERY_ALLOW_VPN_CONTROL=true`, `nordvpn status`. Tomifin only shows it; connecting and disconnecting stay in Tomify's settings.
+6. **Downloads** lists everything queued from Tomifin with its library, progress, downloaded and total size, speed, time left and status (queued, downloading, stalled, paused, completed or failed). It refreshes every 3 seconds while something is downloading and every 15 seconds otherwise, and has a **Refresh** button.
 
 **Pause** and **Resume** stop and restart the torrent in qBittorrent. **Cancel** takes an unfinished torrent out of qBittorrent and off the list, after a confirmation, and **Remove** takes a finished one off the list:
 
@@ -57,6 +58,7 @@ Every other Tomify API, the Navidrome proxy, Tomify's push worker and manifest a
 | `POST /api/tomifin/session` `{ username, password }` | `/v1/tomifin/login` | Signs in with Jellyfin and sets the session cookie |
 | `GET /api/tomifin/session` | `/v1/tomifin/session` | Who is signed in |
 | `DELETE /api/tomifin/session` | `/v1/tomifin/logout` | Signs out and ends the Jellyfin session |
+| `GET /api/tomifin/vpn` | `/v1/tomifin/vpn` | VPN status: `connected`, `connecting`, `down` or `unknown`, plus NordVPN's country, city and server (no IP addresses) |
 | `GET /api/tomifin/status` | `/v1/tomifin/status` | Whether Tomifin is set up, and which destinations are available |
 | `GET /api/tomifin/search?q=…&kind=video\|movies\|tv` | `/v1/tomifin/search` | Searches the torrent sources |
 | `POST /api/tomifin/download` `{ resultId, destination }` | `/v1/tomifin/download` | Queues one search result in qBittorrent |

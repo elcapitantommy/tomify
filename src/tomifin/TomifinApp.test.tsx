@@ -18,7 +18,7 @@ const job = (extra: Partial<TomifinJob> = {}): TomifinJob => ({
 
 type Call = { url: string; method: string; body: unknown; headers: Record<string, string> }
 // Every request the page makes is answered here: nothing reaches Tomify, Jellyfin, the media server or qBittorrent.
-function fakeApi({ signedIn = true, jobs = [] as TomifinJob[], download = (body: { destination: string }) => new Response(JSON.stringify({ job: job({ destination: body.destination as TomifinJob['destination'], destinationLabel: body.destination === 'private' ? 'Private' : 'Family', status: 'queued', progress: 0 }) }), { status: 202 }), status = { available: true, problem: null, destinations: [{ id: 'family', label: 'Family', available: true }, { id: 'private', label: 'Private', available: true }] } } = {}) {
+function fakeApi({ vpn = { state: 'connected', qbittorrent: 'connected', nordvpn: { state: 'connected', country: 'United Kingdom', city: 'London', server: 'uk2012.nordvpn.com' } } as unknown, signedIn = true, jobs = [] as TomifinJob[], download = (body: { destination: string }) => new Response(JSON.stringify({ job: job({ destination: body.destination as TomifinJob['destination'], destinationLabel: body.destination === 'private' ? 'Private' : 'Family', status: 'queued', progress: 0 }) }), { status: 202 }), status = { available: true, problem: null, destinations: [{ id: 'family', label: 'Family', available: true }, { id: 'private', label: 'Private', available: true }] } } = {}) {
   let session = signedIn
   const calls: Call[] = []
   const fetchMock = vi.fn(async (input: string, init: RequestInit = {}) => {
@@ -36,6 +36,7 @@ function fakeApi({ signedIn = true, jobs = [] as TomifinJob[], download = (body:
     }
     if (!session) return Response.json({ error: 'unauthorized', message: 'Your Jellyfin session has ended. Sign in again.' }, { status: 401 })
     if (url === '/api/tomifin/status') return Response.json(status)
+    if (url === '/api/tomifin/vpn') return vpn instanceof Response ? vpn : Response.json(vpn)
     if (url.startsWith('/api/tomifin/search')) return Response.json({ query: new URL(url, 'https://x').searchParams.get('q'), kind: 'video', results })
     if (url === '/api/tomifin/download') return download(body)
     if (url === '/api/tomifin/downloads') return Response.json({ jobs })
@@ -199,6 +200,24 @@ describe('Tomifin Downloader', () => {
 
     fireEvent.click(within(done).getByRole('button', { name: 'Remove' }))
     expect(within(done).getByText('Remove from this list? The files stay in the library.')).toBeInTheDocument()
+  })
+
+  it('shows the VPN status, and says when it is down', async () => {
+    fakeApi()
+    await open()
+    expect(await screen.findByText('VPN connected · London, United Kingdom')).toBeInTheDocument()
+  })
+
+  it('warns when the VPN is down and hides the status when the agent cannot report it', async () => {
+    fakeApi({ vpn: { state: 'down', qbittorrent: 'disconnected', nordvpn: null } })
+    await open()
+    expect(await screen.findByText('VPN down: downloads and searches are paused')).toBeInTheDocument()
+    vi.unstubAllGlobals()
+    fakeApi({ vpn: Response.json({ error: 'recovery-agent-outdated', message: 'old agent' }, { status: 409 }) })
+    document.body.innerHTML = ''
+    await open()
+    await waitFor(() => expect(screen.queryByText(/^VPN /)).not.toBeInTheDocument())
+    expect(screen.getByText(/Signed in as/)).toBeInTheDocument()
   })
 
   it('refreshes the downloads list on its own', async () => {

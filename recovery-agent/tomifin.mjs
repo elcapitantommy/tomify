@@ -184,7 +184,8 @@ export function finishedInLibrary(torrent, destination, id) {
 
 function torrentSize(torrent) { return Math.max(number(torrent?.total_size) || 0, number(torrent?.size) || 0) }
 
-export function createTomifinController({ config, client, stateRoot, now = () => Date.now(), randomId = randomUUID, log = () => {}, intervalMs = 10_000 }) {
+// vpnStatus is the agent's NordVPN status (vpn.mjs), when VPN control is turned on there.
+export function createTomifinController({ config, client, stateRoot, now = () => Date.now(), randomId = randomUUID, log = () => {}, intervalMs = 10_000, vpnStatus = null }) {
   const jobsRoot = resolve(stateRoot, 'tomifin')
   const results = new Map()
   // Search results and info hashes being queued right now, so a double click or retry cannot add a torrent twice.
@@ -357,6 +358,24 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
       }
     },
 
+    // The VPN as Tomifin's page shows it: whether qBittorrent (which is bound to the VPN) has a connection, and what
+    // NordVPN reports when the agent can ask it. No addresses are returned.
+    async vpn() {
+      requireEnabled()
+      const [qbittorrent, nordvpn] = await Promise.all([
+        client.connection().catch(() => 'unknown'),
+        vpnStatus ? vpnStatus().catch(() => null) : null,
+      ])
+      const nord = nordvpn?.control === 'enabled' && nordvpn.state !== 'unavailable'
+        ? { state: ['connected', 'disconnected', 'connecting'].includes(nordvpn.state) ? nordvpn.state : 'unknown', country: text(nordvpn.country).slice(0, 80) || null, city: text(nordvpn.city).slice(0, 80) || null, server: text(nordvpn.server).slice(0, 120) || null }
+        : null
+      const state = qbittorrent === 'disconnected' || nord?.state === 'disconnected' ? 'down'
+        : nord?.state === 'connecting' ? 'connecting'
+        : ['connected', 'firewalled'].includes(qbittorrent) && (!nord || nord.state === 'connected') ? 'connected'
+        : 'unknown'
+      return { state, qbittorrent, nordvpn: nord }
+    },
+
     async search(body) {
       requireEnabled()
       const query = validSearchQuery(body?.query)
@@ -496,7 +515,7 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
 // The agent's /v1/tomifin/* routes. Returns null for any other path. Every route but login needs the Jellyfin
 // session token (body.session) of a Jellyfin administrator, checked with Jellyfin (recovery-agent/jellyfin.mjs).
 export async function handleTomifinRequest(path, body, controller, auth) {
-  const route = String(path || '').match(/^\/v1\/tomifin\/(login|logout|session|status|search|download|downloads|pause|resume|cancel)$/)
+  const route = String(path || '').match(/^\/v1\/tomifin\/(login|logout|session|status|vpn|search|download|downloads|pause|resume|cancel)$/)
   if (!route) return null
   const action = route[1]
   try {
@@ -505,6 +524,7 @@ export async function handleTomifinRequest(path, body, controller, auth) {
     const user = await auth.verify(body?.session)
     if (action === 'session') return { status: 200, body: { user: { name: user.name } } }
     if (action === 'status') return { status: 200, body: controller.status() }
+    if (action === 'vpn') return { status: 200, body: await controller.vpn() }
     if (action === 'search') return { status: 200, body: await controller.search(body) }
     if (action === 'download') return { status: 202, body: await controller.download(body) }
     if (action === 'downloads') return { status: 200, body: await controller.list() }

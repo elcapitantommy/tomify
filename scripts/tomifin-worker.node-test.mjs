@@ -167,6 +167,17 @@ test('agent refusals become clear errors, and an older agent asks for an update'
   }
 })
 
+test('the VPN status is passed through from the agent for a signed-in session', async () => {
+  await withFakes({ agent: () => Response.json({ state: 'connected', qbittorrent: 'connected', nordvpn: null }) }, async (calls) => {
+    const response = await call('/api/tomifin/vpn')
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).state, 'connected')
+    assert.deepEqual(sent(calls[0]), { path: '/v1/tomifin/vpn', body: {}, session: SESSION, authorization: 'Bearer ' + env.RECOVERY_AGENT_TOKEN })
+    assert.equal((await call('/api/tomifin/vpn', { session: null })).status, 401)
+    assert.equal((await call('/api/tomifin/vpn', { method: 'POST' })).status, 404)
+  })
+})
+
 test('downloads can be listed, paused, resumed and cancelled by id only', async () => {
   await withFakes({ agent: (path) => Response.json(path === '/v1/tomifin/downloads' ? { jobs: [{ id: jobId, status: 'downloading', progress: 12.5 }] } : { ok: true }) }, async (calls) => {
     assert.equal((await (await call('/api/tomifin/downloads')).json()).jobs[0].progress, 12.5)

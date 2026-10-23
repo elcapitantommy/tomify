@@ -88,7 +88,7 @@ let jellyfinSettings = null
 try { jellyfinSettings = jellyfinConfig() } catch (error) { process.stderr.write(`Tomifin Downloader sign-in is off: ${error.message}\n`) }
 const jellyfinAuth = createJellyfinAuth(jellyfinSettings)
 if (tomifinSettings.enabled && !jellyfinAuth.configured) process.stderr.write('Tomifin Downloader sign-in is off: set TOMIFY_JELLYFIN_URL.\n')
-const tomifin = createTomifinController({ config: tomifinSettings, client: tomifinSettings.enabled ? qbittorrent : null, stateRoot: usenetStateRoot, log: (message) => process.stderr.write(`${message}\n`) })
+const tomifin = createTomifinController({ config: tomifinSettings, client: tomifinSettings.enabled ? qbittorrent : null, stateRoot: usenetStateRoot, vpnStatus: () => vpn.status(), log: (message) => process.stderr.write(`${message}\n`) })
 
 function safeName(value, fallback) {
   const cleaned = String(value || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '').replace(/[. ]+$/g, '').trim().slice(0, 120)
