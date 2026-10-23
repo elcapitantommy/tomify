@@ -291,6 +291,15 @@ test('the command runs when started through a symlinked release folder, as /opt/
   assert.match(run.stderr, /"result":"failed"/)
 })
 
+test('the importer never asks for setuid or setgid modes, which its unit forbids (RestrictSUIDSGID)', async () => {
+  const source = await readFile(new URL('./family-import.mjs', import.meta.url), 'utf8')
+  const modes = [...source.matchAll(/mode:\s*0o([0-7]+)/g)].map((match) => Number.parseInt(match[1], 8))
+  assert.ok(modes.length > 0)
+  for (const mode of modes) assert.equal(mode & 0o6000, 0, `mode 0o${mode.toString(8)} carries setuid/setgid`)
+  const unit = await readFile(new URL('./family-import/tomifin-family-import.service.example', import.meta.url), 'utf8')
+  assert.match(unit, /^RestrictSUIDSGID=yes$/m)
+})
+
 test('the qBittorrent hook queues only Family torrents with a valid hash', async () => {
   const queue = join(await mkdtemp(join(tmpdir(), 'family-hook-')), 'queue')
   const hook = new URL('./family-import/tomifin-family-import-hook.sh', import.meta.url).pathname
