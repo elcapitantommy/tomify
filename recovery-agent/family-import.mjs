@@ -201,9 +201,11 @@ export function createFamilyImporter({ library, moviesDir = '', stateDir, qbitto
     await rename(temporary, statePath(hash))
   }
 
+  // Folders are created 0775 without the setgid bit: the library's own setgid bit already passes the media-family
+  // group down, and the units' RestrictSUIDSGID=yes refuses any mkdir that asks for setgid (EPERM).
   async function ensureIgnoredFolder(path) {
     if (dryRun) return
-    await mkdir(path, { recursive: true, mode: 0o2775 })
+    await mkdir(path, { recursive: true, mode: 0o775 })
     await writeFile(join(path, '.ignore'), '', { flag: 'a' })
   }
 
@@ -300,7 +302,7 @@ export function createFamilyImporter({ library, moviesDir = '', stateDir, qbitto
     await ensureIgnoredFolder(paths.review)
     const exists = await lstat(folder).then(() => true, () => false)
     if (!exists) {
-      await mkdir(folder, { mode: 0o2775 })
+      await mkdir(folder, { mode: 0o775 })
       for (const file of details.files || []) {
         const target = join(folder, basename(file))
         await link(file, target).catch((failure) => log({ hash, result: 'review-link-failed', file: basename(file), reason: failure.code || failure.message }))
@@ -385,7 +387,7 @@ export function createFamilyImporter({ library, moviesDir = '', stateDir, qbitto
     await ensureIgnoredFolder(paths.publishing)
     const work = join(paths.publishing, `${hash}-${randomUUID()}`)
     const building = join(work, identity.name)
-    await mkdir(building, { recursive: true, mode: 0o2775 })
+    await mkdir(building, { recursive: true, mode: 0o775 })
     try {
       for (const output of outputs) {
         const target = join(building, output.name)
