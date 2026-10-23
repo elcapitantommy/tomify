@@ -204,3 +204,33 @@ describe('PlayerBar across devices', () => {
     expect(within(drawer).getByText('Purple Toupee')).toBeInTheDocument()
   })
 })
+
+describe('SeekBar time labels', () => {
+  beforeEach(() => {
+    useAuth.setState({ session, status: 'signed-in', error: null, isAdmin: false })
+    useLivePlayback.setState({ snapshot: null, devices: [], optimistic: null, serverOffset: 0 })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  function seekBars() { return [...document.querySelectorAll<HTMLElement>('.seek')] }
+
+  it('reserves the same label width while the song plays so the slider stays put', () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true })))
+    usePlayer.setState({ queue: [tracks[0]], currentIndex: 0, playing: false, currentTime: 7, duration: 278, queueOpen: false, nowPlayingOpen: false })
+    render(<PlayerBar/>)
+    const before = seekBars().map(bar => bar.style.getPropertyValue('--seek-time-width'))
+    expect(before.length).toBeGreaterThan(0)
+    expect(before.every(width => width === '4ch')).toBe(true)
+    expect(seekBars()[0].querySelector('.seek-time.elapsed')?.textContent).toBe('0:07')
+    expect(seekBars()[0].querySelector('.seek-time.total')?.textContent).toBe('4:38')
+    act(() => usePlayer.setState({ currentTime: 47 }))
+    expect(seekBars().map(bar => bar.style.getPropertyValue('--seek-time-width'))).toEqual(before)
+  })
+
+  it('widens both labels for songs of ten minutes or more', () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true })))
+    usePlayer.setState({ queue: [tracks[0]], currentIndex: 0, playing: false, currentTime: 5, duration: 754, queueOpen: false, nowPlayingOpen: false })
+    render(<PlayerBar/>)
+    expect(seekBars().every(bar => bar.style.getPropertyValue('--seek-time-width') === '5ch')).toBe(true)
+  })
+})
