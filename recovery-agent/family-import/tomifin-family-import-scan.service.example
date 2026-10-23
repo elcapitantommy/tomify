@@ -14,6 +14,8 @@ EnvironmentFile=/etc/tomify/recovery-agent.env
 Environment=TOMIFIN_IMPORT_LIBRARY=/media/family
 # Clean films go to /media/family/Movies/Title (Year)/, next to the ones already there.
 Environment=TOMIFIN_IMPORT_MOVIES_SUBDIR=Movies
+# TV episodes and season packs go to /media/family/TV/<Series>/Season NN/.
+Environment=TOMIFIN_IMPORT_TV_SUBDIR=TV
 # Only the qBittorrent settings are needed: the agent's other secrets are dropped before the importer starts.
 UnsetEnvironment=TOMIFY_RECOVERY_TOKEN TOMIFY_YOUTUBE_COOKIES TOMIFY_SABNZBD_API_KEY TOMIFY_LAN_TLS_KEY TOMIFY_MEDIA_KEY
 ExecStart=/usr/bin/node /opt/tomify/current/recovery-agent/family-import.mjs --scan

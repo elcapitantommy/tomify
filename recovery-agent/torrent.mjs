@@ -288,14 +288,15 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
     // category defaults to Recovery's; Tomifin Downloader passes its own per destination. subfolder keeps a
     // multi-file torrent in a folder of its own rather than spread over the save path. downloadPath (qBittorrent 4.4
     // and later) keeps unfinished data there and moves it to savePath when the torrent completes.
-    async add(link, { tag, savePath, downloadPath = null, category = config.category, subfolder = false }) {
+    // torrent: the bytes of a .torrent file Tomifin has already fetched and checked; it is uploaded instead of a link.
+    async add(link, { tag, savePath, downloadPath = null, category = config.category, subfolder = false, torrent = null }) {
       // An error marked rejected means qBittorrent certainly did not add the torrent: it was never sent, or
       // qBittorrent answered with a refusal. Any other error (a timeout, a dropped connection) leaves it unknown.
       const rejected = (error) => Object.assign(error instanceof Error ? error : new Error(String(error)), { rejected: true })
       let cookie, fetched
       try {
         // An indexer link is fetched here first: it needs the indexer's API key, and qBittorrent may not reach it.
-        fetched = isIndexerLink(link, config.indexers || []) ? await fetchIndexerTorrent(link, config.indexers, fetchImpl) : null
+        fetched = torrent ? { torrent } : isIndexerLink(link, config.indexers || []) ? await fetchIndexerTorrent(link, config.indexers, fetchImpl) : null
         cookie = await session()
         await ensureCategory(cookie, category, savePath)
         await ensureQueueLimits(cookie)

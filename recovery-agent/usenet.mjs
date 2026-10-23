@@ -368,3 +368,99 @@ export function selectCompletedAudio(files, track) {
   scored.sort((a, b) => b.score - a.score || a.file.name.localeCompare(b.file.name))
   return scored[0]?.file || null
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Tomifin Downloader (films and TV): Newznab search by category and a SABnzbd client that uploads NZB files the agent
+// has fetched and checked itself. Recovery's music search and addurl submission above are unchanged.
+
+// Searches every configured Newznab indexer for films and TV (Newznab categories 2000 Movies, 5000 TV). One failing
+// indexer does not hide the others; the search fails only when all of them do. Error messages never carry a URL or
+// an API key.
+export async function searchNewznabVideo(indexers, query, categories, { fetchImpl = fetch, timeoutMs = 25_000, now = Date.now } = {}) {
+  const settled = await Promise.allSettled(indexers.map(async (indexer) => {
+    const url = apiEndpoint(indexer.url)
+    url.searchParams.set('t', 'search'); url.searchParams.set('q', text(query).slice(0, 200)); url.searchParams.set('cat', categories); url.searchParams.set('limit', '100'); url.searchParams.set('o', 'xml'); url.searchParams.set('apikey', indexer.apiKey)
+    let response
+    try { response = await fetchImpl(url, { redirect: 'error', signal: AbortSignal.timeout(timeoutMs), headers: { accept: 'application/rss+xml, application/xml, text/xml', 'user-agent': 'Tomify/0.1 recovery-agent' } }) }
+    catch { throw new Error(`${indexer.name} could not be reached.`) }
+    if (!response.ok) throw new Error(`${indexer.name} returned HTTP ${response.status}.`)
+    const body = await response.text()
+    if (/<error\b/i.test(body.slice(0, 2000))) throw new Error(`${indexer.name} refused the search.`)
+    return parseNewznabVideoResults(body, indexer, now())
+  }))
+  if (settled.length && settled.every((result) => result.status === 'rejected')) throw settled[0].reason
+  return { results: settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []), failed: settled.filter((result) => result.status === 'rejected').length }
+}
+
+export function parseNewznabVideoResults(xml, indexer, now = Date.now()) {
+  const items = String(xml || '').match(/<item\b[\s\S]*?<\/item>/gi) || []
+  return items.slice(0, 100).map((item) => {
+    const title = text(xmlTag(item, 'title')).replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, 500)
+    const rawGuid = xmlTag(item, 'guid') || xmlTag(item, 'link')
+    let guid = rawGuid
+    try { const parsed = new URL(rawGuid); guid = parsed.searchParams.get('id') || basename(parsed.pathname) } catch { /* An opaque GUID. */ }
+    guid = text(guid).slice(0, 200)
+    if (!title || !guid || !/^[A-Za-z0-9._~-]+$/.test(guid)) return null
+    const size = number(xmlAttr(item, 'size') || xmlTag(item, 'size') || item.match(/<enclosure\s[^>]*length=["'](\d+)/i)?.[1])
+    const posted = Date.parse(xmlAttr(item, 'usenetdate') || xmlTag(item, 'pubDate'))
+    const grabs = number(xmlAttr(item, 'grabs'))
+    return {
+      indexerId: indexer.id, indexerName: indexer.name, guid, title,
+      size: size !== null && size > 0 ? size : null,
+      ageDays: Number.isFinite(posted) ? Math.max(0, Math.floor((now - posted) / 86_400_000)) : null,
+      grabs: grabs !== null && grabs >= 0 ? Math.round(grabs) : null,
+      comments: xmlTag(item, 'comments') || null,
+    }
+  }).filter(Boolean)
+}
+
+// Errors from SABnzbd say whether it certainly did not act (rejected: it answered with a refusal) or whether the
+// outcome is unknown (uncertain: no answer, or one that could not be read).
+function sabError(message, kind) { return Object.assign(new Error(message), { [kind]: true }) }
+function sabMessage(value) { return text(value).replace(/https?:\/\/\S+/g, '[link]').replace(/\/[^\s'"]+/g, '[path]').slice(0, 200) }
+
+export function createSabnzbdClient(config, fetchImpl = fetch) {
+  async function api(mode, parameters = {}, { body = null, timeoutMs = 30_000 } = {}) {
+    if (!config?.apiKey) throw sabError('SABnzbd API key is not configured.', 'rejected')
+    const url = apiEndpoint(config.url)
+    for (const [key, value] of Object.entries({ output: 'json', apikey: config.apiKey, mode, ...parameters })) if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value))
+    let response
+    try { response = await fetchImpl(url, { method: body ? 'POST' : 'GET', body, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) }) }
+    catch { throw sabError('SABnzbd could not be reached.', 'uncertain') }
+    // A 5xx (or a proxy in front answering for SABnzbd) says nothing certain about whether the request was acted on.
+    if (!response.ok) throw sabError(`SABnzbd returned HTTP ${response.status}.`, response.status >= 500 ? 'uncertain' : 'rejected')
+    let payload
+    try { payload = await response.json() } catch { throw sabError('SABnzbd sent an answer that could not be read.', 'uncertain') }
+    if (payload?.status === false) throw sabError(`SABnzbd refused it${payload.error ? `: ${sabMessage(payload.error)}` : '.'}`, 'rejected')
+    return payload
+  }
+  return {
+    async version() { return text((await api('version'))?.version) || null },
+    async categories() {
+      const values = (await api('get_cats'))?.categories
+      return Array.isArray(values) ? values.map(text) : []
+    },
+    // Uploads an NZB the agent has already fetched and checked. name becomes SABnzbd's job name (and folder name), so
+    // Tomifin can find the job again by name even if this answer is lost.
+    async addFile(nzb, { name, category }) {
+      const form = new FormData()
+      form.set('name', new Blob([nzb], { type: 'application/x-nzb' }), `${name}.nzb`)
+      const payload = await api('addfile', { nzbname: name, cat: category, priority: '-100' }, { body: form, timeoutMs: 60_000 })
+      const id = Array.isArray(payload?.nzo_ids) ? text(payload.nzo_ids[0]) : ''
+      if (!id) throw sabError('SABnzbd did not accept the NZB.', 'rejected')
+      return { nzoId: id }
+    },
+    async queue() {
+      const queue = (await api('queue', { limit: '500' }))?.queue || {}
+      return { slots: Array.isArray(queue.slots) ? queue.slots : [], kbPerSec: number(queue.kbpersec), paused: queue.paused === true }
+    },
+    async history(category) {
+      const history = (await api('history', { limit: '500', category }))?.history || {}
+      return Array.isArray(history.slots) ? history.slots : []
+    },
+    async pause(id) { await api('queue', { name: 'pause', value: id }) },
+    async resume(id) { await api('queue', { name: 'resume', value: id }) },
+    async deleteQueued(id, deleteFiles) { await api('queue', { name: 'delete', value: id, del_files: deleteFiles ? '1' : '0' }) },
+    async deleteHistory(id, deleteFiles) { await api('history', { name: 'delete', value: id, del_files: deleteFiles ? '1' : '0' }) },
+  }
+}

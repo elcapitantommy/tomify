@@ -280,7 +280,7 @@ const delay = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise,
 // ---------------------------------------------------------------------------------------------------------------
 // The importer
 
-function ident(key) { return /^usenet-/.test(key) ? { key } : { hash: key } }
+function ident(key) { return /^usenet-/.test(key) ? { key, downloader: 'sabnzbd' } : { hash: key } }
 
 export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_TV_DIR, stateDir, qbittorrent = null, probe = ffprobeReader(), log = (entry) => process.stdout.write(`${JSON.stringify(entry)}\n`), stableMs = 5000, queueRetries = 6, queueRetryMs = 10_000, dryRun = false, now = () => new Date() }) {
   if (!isAbsolute(text(library))) throw new Error('The Family library must be an absolute path.')

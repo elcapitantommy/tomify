@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CircleCheck, Clapperboard, ShieldAlert, ShieldCheck, ShieldQuestion, ExternalLink, FileDown, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Pause, Play, RefreshCw, Search, TriangleAlert, UserRound, Users, X } from 'lucide-react'
-import { DESTINATIONS, formatEta, formatSize, formatSpeed, tomifinApi, TomifinRequestError, type TomifinDestination, type TomifinJob, type TomifinKind, type TomifinResult, type TomifinServiceStatus, type TomifinVpnStatus } from './api'
+import { CircleCheck, Clapperboard, ShieldAlert, ShieldCheck, ShieldQuestion, ExternalLink, FileDown, Link2, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Newspaper, Pause, Play, RefreshCw, Search, TriangleAlert, Upload, UserRound, Users, X } from 'lucide-react'
+import { DESTINATIONS, formatAge, formatEta, formatSize, formatSpeed, readFileBase64, tomifinApi, TomifinRequestError, type TomifinDestination, type TomifinDetected, type TomifinJob, type TomifinKind, type TomifinResult, type TomifinServiceStatus, type TomifinVpnStatus } from './api'
 import { sortResults, type SortKey } from './results'
 
 type TomifinUser = { name: string }
@@ -9,6 +9,12 @@ const IDLE_POLL_MS = 15000
 const KINDS: Array<{ id: TomifinKind; label: string }> = [{ id: 'video', label: 'Films & TV' }, { id: 'movies', label: 'Films' }, { id: 'tv', label: 'TV' }]
 const RESOLUTIONS = ['2160p', '1080p', '720p'] as const
 const STATUS_LABELS: Record<TomifinJob['status'], string> = { queued: 'Queued', downloading: 'Downloading', stalled: 'Stalled', paused: 'Paused', completed: 'Completed', failed: 'Failed' }
+const DETECTED_LABELS: Record<TomifinDetected, string> = { magnet: 'Torrent · Magnet link', torrent: 'Torrent · .torrent file', nzb: 'Usenet · NZB' }
+
+function TypeBadge({ result }: { result: TomifinResult }) {
+  if (result.type === 'usenet') return <span className="tf-chip tf-chip-usenet" title="NZB, downloaded with SABnzbd"><Newspaper aria-hidden/>Usenet · NZB</span>
+  return <span className="tf-chip tf-chip-type" title={result.linkType === 'magnet' ? 'Magnet link' : '.torrent file'}>{result.linkType === 'magnet' ? <Magnet aria-hidden/> : <FileDown aria-hidden/>}Torrent · {result.linkType === 'magnet' ? 'Magnet' : 'File'}</span>
+}
 
 function message(error: unknown) { return error instanceof Error ? error.message : 'Something went wrong.' }
 
@@ -73,15 +79,20 @@ function ResultCard({ result, destination, busy, queued, onQueue }: { result: To
     <li className="tf-result">
       <div className="tf-result-main">
         <div className="tf-badges">
-          <span className="tf-chip tf-chip-type" title={result.linkType === 'magnet' ? 'Magnet link' : '.torrent file'}>{result.linkType === 'magnet' ? <Magnet aria-hidden/> : <FileDown aria-hidden/>}Torrent · {result.linkType === 'magnet' ? 'Magnet' : 'File'}</span>
+          <TypeBadge result={result}/>
           <Quality result={result}/>
         </div>
         <h3 className="tf-result-title">{result.title}</h3>
         <dl className="tf-stats">
           <div><dt>Source</dt><dd>{result.source}{result.detailsUrl && <a className="tf-details" href={result.detailsUrl} target="_blank" rel="noopener noreferrer nofollow" aria-label={`Details for ${result.title}`} title="Details"><ExternalLink aria-hidden/></a>}</dd></div>
           <div><dt>Size</dt><dd>{formatSize(result.size)}</dd></div>
-          <div><dt>Seeders</dt><dd className="tf-seeders">{result.seeders}</dd></div>
-          <div><dt>Leechers</dt><dd>{result.leechers ?? '—'}</dd></div>
+          {result.type === 'usenet' ? <>
+            <div><dt>Age</dt><dd>{formatAge(result.ageDays)}</dd></div>
+            <div><dt>Grabs</dt><dd>{result.grabs ?? '—'}</dd></div>
+          </> : <>
+            <div><dt>Seeders</dt><dd className="tf-seeders">{result.seeders ?? '—'}</dd></div>
+            <div><dt>Leechers</dt><dd>{result.leechers ?? '—'}</dd></div>
+          </>}
         </dl>
       </div>
       <button type="button" className={`tf-button tf-queue${destination ? ' tf-primary' : ''}`} disabled={busy || queued} onClick={() => onQueue(result)}>
@@ -102,6 +113,7 @@ function JobCard({ job, onAction, busy }: { job: TomifinJob; onAction: (job: Tom
       </div>
       <div className="tf-job-meta">
         <span className={`tf-chip tf-chip-${job.destination}`}>{job.destination === 'private' ? <Lock aria-hidden/> : <Users aria-hidden/>}{job.destinationLabel}</span>
+        <span className={`tf-chip ${job.downloader === 'sabnzbd' ? 'tf-chip-usenet' : 'tf-chip-type'}`}>{job.downloader === 'sabnzbd' ? <><Newspaper aria-hidden/>Usenet · SABnzbd</> : <><Magnet aria-hidden/>Torrent · qBittorrent</>}</span>
         {job.message && job.status !== 'paused' && <span className="tf-muted">{job.message}</span>}
       </div>
       <div className="tf-progress" role="progressbar" aria-label={`${job.name} progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={job.progress}><span style={{ width: `${job.progress}%` }}/></div>
@@ -117,13 +129,60 @@ function JobCard({ job, onAction, busy }: { job: TomifinJob; onAction: (job: Tom
         {!confirming && <button type="button" className="tf-button tf-ghost" disabled={busy} onClick={() => setConfirming(true)}><X aria-hidden/>{done || job.status === 'failed' ? 'Remove' : 'Cancel'}</button>}
         {confirming && (
           <div className="tf-confirm" role="group" aria-label="Confirm">
-            <span>{done ? 'Remove from this list? The files stay in the library.' : job.keepsFilesOnCancel ? 'Remove from qBittorrent? Any files already saved are kept.' : 'Cancel and delete the partial download?'}</span>
+            <span>{done ? 'Remove from this list? The files stay in the library.' : job.keepsFilesOnCancel ? `Remove from ${job.downloaderLabel || 'qBittorrent'}? Any files already saved are kept.` : 'Cancel and delete the partial download?'}</span>
             <button type="button" className="tf-button tf-danger" disabled={busy} onClick={() => { setConfirming(false); onAction(job, 'cancel') }}>{done || job.status === 'failed' ? 'Yes, remove' : 'Yes, cancel'}</button>
             <button type="button" className="tf-button tf-ghost" onClick={() => setConfirming(false)}>Keep</button>
           </div>
         )}
       </div>
     </li>
+  )
+}
+
+// Add link: a magnet, a direct .torrent or .nzb link, or an uploaded file. The media server works out what it is and
+// checks it; it then joins the downloads like a search result.
+function AddLink({ destination, disabled, onChecked, onQueue, needDestination }: { destination: TomifinDestination | null; disabled: boolean; onChecked: (result: TomifinResult, detected: TomifinDetected) => void; onQueue: (result: TomifinResult, detected: TomifinDetected) => Promise<boolean>; needDestination: () => void }) {
+  const [link, setLink] = useState('')
+  const [file, setFile] = useState<File | null>(null)
+  const [checked, setChecked] = useState<{ detected: TomifinDetected; result: TomifinResult } | null>(null)
+  const [busy, setBusy] = useState<'check' | 'add' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const fileInput = useRef<HTMLInputElement | null>(null)
+  const reset = () => { setChecked(null); setError(null) }
+  const check = async () => {
+    if (!link.trim() && !file) { setError('Paste a link, or choose a .torrent or .nzb file.'); return null }
+    setError(null)
+    try {
+      const response = await tomifinApi.addLink(file ? { file: { name: file.name, data: await readFileBase64(file) } } : { link: link.trim() })
+      setChecked(response); onChecked(response.result, response.detected)
+      return response
+    } catch (failure) { setError(message(failure)); return null }
+  }
+  const add = async () => {
+    if (!destination) { needDestination(); return }
+    setBusy('add')
+    try {
+      const current = checked || await check()
+      if (current && await onQueue(current.result, current.detected)) { setLink(''); setFile(null); setChecked(null); if (fileInput.current) fileInput.current.value = '' }
+    } finally { setBusy(null) }
+  }
+  return (
+    <section className="tf-panel" aria-labelledby="tf-add-title">
+      <div className="tf-section-head"><h2 id="tf-add-title">Add link</h2><span className="tf-muted">A magnet, a .torrent or .nzb link, or a file.</span></div>
+      <form className="tf-add" onSubmit={(event) => { event.preventDefault(); void add() }}>
+        <div className="tf-input"><Link2 aria-hidden/><input aria-label="Magnet, .torrent or .nzb link" placeholder="magnet:?xt=… or https://…/file.torrent" value={link} disabled={Boolean(file) || disabled} onChange={(event) => { setLink(event.target.value); reset() }} spellCheck={false} autoCapitalize="none" autoComplete="off" maxLength={8000}/></div>
+        <div className="tf-add-actions">
+          <label className="tf-button tf-ghost tf-file" title="Upload a .torrent or .nzb file">
+            <Upload aria-hidden/>{file ? file.name : 'Choose file'}
+            <input ref={fileInput} type="file" accept=".torrent,.nzb,application/x-bittorrent,application/x-nzb" className="tf-visually-hidden" aria-label="Upload a .torrent or .nzb file" disabled={disabled} onChange={(event) => { setFile(event.target.files?.[0] || null); setLink(''); reset() }}/>
+          </label>
+          <button type="button" className="tf-button" disabled={disabled || busy !== null} onClick={() => { setBusy('check'); void check().finally(() => setBusy(null)) }}>{busy === 'check' ? <><LoaderCircle className="tf-spin" aria-hidden/>Checking…</> : 'Check'}</button>
+          <button type="submit" className={`tf-button${destination ? ' tf-primary' : ''}`} disabled={disabled || busy !== null}>{busy === 'add' ? <><LoaderCircle className="tf-spin" aria-hidden/>Adding…</> : destination ? `Add to ${DESTINATIONS[destination].label}` : 'Add'}</button>
+        </div>
+      </form>
+      {checked && <p className="tf-detected" role="status"><CircleCheck aria-hidden/>Detected: <strong>{DETECTED_LABELS[checked.detected]}</strong> · {checked.result.title}{checked.result.size ? ` · ${formatSize(checked.result.size)}` : ''}</p>}
+      {error && <div className="tf-alert tf-alert-error" role="alert"><TriangleAlert aria-hidden/>{error}</div>}
+    </section>
   )
 }
 
@@ -136,7 +195,7 @@ function Downloads({ jobs, loading, error, onRefresh, onAction, busyId }: { jobs
       </div>
       {error && <div className="tf-alert tf-alert-error" role="alert"><TriangleAlert aria-hidden/>{error}</div>}
       {jobs === null && !error && <p className="tf-empty"><LoaderCircle className="tf-spin" aria-hidden/>Loading downloads…</p>}
-      {jobs?.length === 0 && <p className="tf-empty">Nothing queued yet. Search above, pick Family or Private, then queue a result.</p>}
+      {jobs?.length === 0 && <p className="tf-empty">Nothing queued yet. Search above or add a link, pick Family or Private, then queue it.</p>}
       {Boolean(jobs?.length) && <ul className="tf-jobs">{jobs!.map((job) => <JobCard key={job.id} job={job} busy={busyId === job.id} onAction={onAction}/>)}</ul>}
     </section>
   )
@@ -166,6 +225,8 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
   const [sort, setSort] = useState<SortKey>('relevance')
   const [resolution, setResolution] = useState<'any' | typeof RESOLUTIONS[number]>('any')
   const [minSeeders, setMinSeeders] = useState(1)
+  const [typeFilter, setTypeFilter] = useState<'any' | 'torrent' | 'usenet'>('any')
+  const [warnings, setWarnings] = useState<string[]>([])
   const [queuing, setQueuing] = useState<string | null>(null)
   const [queued, setQueued] = useState<Set<string>>(() => new Set())
   const [notice, setNotice] = useState<{ tone: 'success' | 'error' | 'warn'; text: string } | null>(null)
@@ -221,35 +282,38 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
     setSearching(true); setSearchError(null); setNotice(null)
     try {
       const response = await tomifinApi.search(trimmed, kind, controller.signal)
-      setSearched({ query: response.query, results: response.results }); setQueued(new Set())
+      setSearched({ query: response.query, results: response.results }); setQueued(new Set()); setWarnings(response.warnings || [])
     } catch (error) {
       if (!controller.signal.aborted && !failed(error)) setSearchError(message(error))
     } finally { if (searchAbort.current === controller) setSearching(false) }
   }
 
   const queue = async (result: TomifinResult) => {
-    if (!destination) {
-      setNotice({ tone: 'warn', text: 'Choose Family or Private before queuing a download.' })
-      destinationRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
-      return
-    }
+    if (!destination) { needDestination(); return false }
     setQueuing(result.id); setNotice(null)
     try {
       const { job } = await tomifinApi.download(result.id, destination)
       setQueued((current) => new Set(current).add(result.id))
-      setNotice({ tone: 'success', text: `Queued in qBittorrent: “${result.title}” → ${DESTINATIONS[job.destination].label} (${DESTINATIONS[job.destination].path}).` })
+      setNotice({ tone: 'success', text: `Queued in ${result.type === 'usenet' ? 'SABnzbd' : 'qBittorrent'}: “${result.title}” → ${DESTINATIONS[job.destination].label} (${DESTINATIONS[job.destination].path}).` })
       void refresh()
+      return true
     } catch (error) {
-      if (failed(error)) return
+      if (failed(error)) return false
       setNotice({ tone: 'error', text: error instanceof TomifinRequestError && error.code === 'result-expired' ? 'That result has expired. Search again, then queue it.' : `Could not queue “${result.title}”: ${message(error)}` })
+      return false
     } finally { setQueuing(null) }
+  }
+
+  const needDestination = () => {
+    setNotice({ tone: 'warn', text: 'Choose Family or Private before queuing a download.' })
+    destinationRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
   }
 
   const control = async (job: TomifinJob, action: 'pause' | 'resume' | 'cancel') => {
     setBusyJob(job.id)
     try {
       const response = await tomifinApi.control(job.id, action)
-      if (action === 'cancel') setNotice({ tone: 'success', text: response.filesDeleted ? `Cancelled “${job.name}” and deleted its partial download.` : `Removed “${job.name}” from qBittorrent. Its files were kept.` })
+      if (action === 'cancel') setNotice({ tone: 'success', text: response.filesDeleted ? `Cancelled “${job.name}” and deleted its partial download.` : `Removed “${job.name}” from ${job.downloaderLabel || 'qBittorrent'}. Its files were kept.` })
       await refresh()
     } catch (error) { if (!failed(error)) setNotice({ tone: 'error', text: message(error) }) }
     finally { setBusyJob(null) }
@@ -257,9 +321,11 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
 
   const visible = useMemo(() => {
     if (!searched) return []
-    const filtered = searched.results.filter((result) => result.seeders >= minSeeders && (resolution === 'any' || result.quality.resolution === resolution))
+    // The seeders filter applies to torrents only: NZBs have no seeders.
+    const filtered = searched.results.filter((result) => (result.type !== 'torrent' || (result.seeders ?? 0) >= minSeeders) && (typeFilter === 'any' || result.type === typeFilter) && (resolution === 'any' || result.quality.resolution === resolution))
     return sortResults(filtered, sort, searched.query)
-  }, [searched, sort, resolution, minSeeders])
+  }, [searched, sort, resolution, minSeeders, typeFilter])
+  const usenetStatus = status?.downloaders?.usenet
 
   const unavailable = status && !status.available
 
@@ -282,30 +348,35 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
         <div className="tf-segments" role="radiogroup" aria-label="What to search">
           {KINDS.map((entry) => <button key={entry.id} type="button" role="radio" aria-checked={kind === entry.id} className={kind === entry.id ? 'tf-segment tf-segment-on' : 'tf-segment'} onClick={() => setKind(entry.id)}>{entry.label}</button>)}
         </div>
+        {usenetStatus && <p className="tf-sources tf-muted">{usenetStatus.available ? 'Searching torrents and Usenet.' : `Searching torrents only. Usenet is not available${usenetStatus.problem ? `: ${usenetStatus.problem}` : '.'}`}</p>}
       </section>
 
       <div ref={destinationRef}><DestinationPicker value={destination} onChange={(value) => { setDestination(value); setNotice(null) }} status={status}/></div>
+
+      <AddLink destination={destination} disabled={Boolean(unavailable)} needDestination={needDestination} onChecked={() => setNotice(null)} onQueue={(result) => queue(result)}/>
 
       {notice && <div className={`tf-alert tf-alert-${notice.tone}`} role={notice.tone === 'success' ? 'status' : 'alert'}>{notice.tone === 'success' ? <CircleCheck aria-hidden/> : <TriangleAlert aria-hidden/>}{notice.text}</div>}
 
       <section className="tf-panel" aria-labelledby="tf-results-title" aria-busy={searching}>
         <div className="tf-section-head">
           <h2 id="tf-results-title">Results</h2>
-          {searched && <span className="tf-muted">{visible.length} of {searched.results.length} torrent{searched.results.length === 1 ? '' : 's'} for “{searched.query}”</span>}
+          {searched && <span className="tf-muted">{visible.length} of {searched.results.length} result{searched.results.length === 1 ? '' : 's'} for “{searched.query}”</span>}
         </div>
         {searched && searched.results.length > 0 && (
           <div className="tf-filters">
             <label><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value as SortKey)}><option value="relevance">Relevance</option><option value="seeders">Most seeders</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select></label>
             <label><span>Quality</span><select value={resolution} onChange={(event) => setResolution(event.target.value as typeof resolution)}><option value="any">Any</option>{RESOLUTIONS.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
             <label><span>Seeders</span><select value={minSeeders} onChange={(event) => setMinSeeders(Number(event.target.value))}><option value={1}>Any</option><option value={5}>5+</option><option value={20}>20+</option><option value={100}>100+</option></select></label>
+            <label><span>Type</span><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value as typeof typeFilter)}><option value="any">All</option><option value="torrent">Torrent</option><option value="usenet">Usenet</option></select></label>
           </div>
         )}
+        {warnings.map((warning) => <div key={warning} className="tf-alert tf-alert-warn" role="status"><TriangleAlert aria-hidden/>{warning}</div>)}
         {searchError && <div className="tf-alert tf-alert-error" role="alert"><TriangleAlert aria-hidden/>{searchError}</div>}
         {searching && <ul className="tf-results" aria-hidden>{[0, 1, 2].map((index) => <li key={index} className="tf-result tf-skeleton"/>)}</ul>}
-        {!searching && !searched && !searchError && <p className="tf-empty"><Clapperboard aria-hidden/>Search for a film or series to see torrents from Tomify’s sources.</p>}
-        {!searching && searched && searched.results.length === 0 && <p className="tf-empty">No seeded torrents found for “{searched.query}”. Try a shorter title or add the year.</p>}
+        {!searching && !searched && !searchError && <p className="tf-empty"><Clapperboard aria-hidden/>Search for a film or series to see torrents and NZBs from Tomify’s sources.</p>}
+        {!searching && searched && searched.results.length === 0 && <p className="tf-empty">Nothing found for “{searched.query}”. Try a shorter title or add the year.</p>}
         {!searching && searched && searched.results.length > 0 && visible.length === 0 && <p className="tf-empty">No results match these filters.</p>}
-        {!searching && visible.length > 0 && <ul className="tf-results">{visible.map((result) => <ResultCard key={result.id} result={result} destination={destination} busy={queuing === result.id} queued={queued.has(result.id)} onQueue={(value) => void queue(value)}/>)}</ul>}
+        {!searching && visible.length > 0 && <ul className="tf-results">{visible.map((result) => <ResultCard key={result.id} result={result} destination={destination} busy={queuing === result.id} queued={queued.has(result.id)} onQueue={(value) => { void queue(value) }}/>)}</ul>}
       </section>
 
       {!unavailable && <Downloads jobs={jobs} loading={jobsLoading} error={jobsError} onRefresh={() => void refresh()} onAction={(job, action) => void control(job, action)} busyId={busyJob}/>}

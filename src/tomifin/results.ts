@@ -10,11 +10,14 @@ export function relevance(title: string, query: string) {
   return words.filter((word) => name.includes(word)).length / words.length
 }
 
+// Seeders for a torrent; an NZB has none, so it sorts after torrents, by how often it was grabbed.
+function availability(result: TomifinResult) { return result.type === 'torrent' ? 1e9 + (result.seeders ?? 0) : (result.grabs ?? 0) }
+
 export function sortResults(results: TomifinResult[], sort: SortKey, query: string) {
   const sorted = [...results]
-  if (sort === 'seeders') sorted.sort((a, b) => b.seeders - a.seeders)
+  if (sort === 'seeders') sorted.sort((a, b) => availability(b) - availability(a))
   else if (sort === 'size-desc') sorted.sort((a, b) => (b.size ?? -1) - (a.size ?? -1))
   else if (sort === 'size-asc') sorted.sort((a, b) => (a.size ?? Infinity) - (b.size ?? Infinity))
-  else sorted.sort((a, b) => relevance(b.title, query) - relevance(a.title, query) || b.seeders - a.seeders)
+  else sorted.sort((a, b) => relevance(b.title, query) - relevance(a.title, query) || availability(b) - availability(a))
   return sorted
 }
