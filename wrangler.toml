@@ -15,6 +15,8 @@ NAVIDROME_ORIGIN = "https://tomify.tomdixon.uk"
 TOMIFY_DJ_VOICE_MODEL = "aura"
 # Players at home stream straight from the box here (docs/DEPLOYMENT.md). Plain dashboard variables are replaced on deploy, so it lives here.
 TOMIFY_LAN_ORIGIN = "https://lan.tomify.tomdixon.uk:8789"
+# Tomifin Downloader's own address: a second Custom Domain on this Worker (docs/TOMIFIN.md). Only Tomifin is served there.
+TOMIFIN_HOSTNAME = "tomifin.tomdixon.uk"
 
 # Once a day (UTC): refresh imported Spotify playlists and check for new releases.
 # Every five minutes: announce finished Recovery downloads (only when someone has notifications on).
@@ -36,4 +38,5 @@ binding = "AI"
 directory = "./dist/client"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api", "/api/*", "/navidrome", "/navidrome/*"]
+# Everything but hashed assets reaches the Worker first, so it can tell Tomify's address from Tomifin's.
+run_worker_first = ["/*", "!/assets/*"]

@@ -27,12 +27,16 @@ import { releaseMetadataRoute } from './routes/release-metadata.ts'
 import { handleRecoveryRequest } from './routes/recovery.ts'
 import { smartPlaylistsRoute } from './routes/smart-playlists.ts'
 import { systemSettingsRoute } from './routes/system-settings.ts'
+import { tomifinRoute } from './routes/tomifin.ts'
+import { tomifinSiteRoute } from './routes/tomifin-site.ts'
 import { versionRoute } from './routes/version.ts'
 
 // Must match wrangler.toml.
 const RECOVERY_CHECK_CRON = '*/5 * * * *'
 
 const routes: RouteHandler[] = [
+  // First: on Tomifin's own address only Tomifin is served, and Tomify's address no longer serves Tomifin.
+  tomifinSiteRoute,
   catalogueRoute,
   releaseMetadataRoute,
   albumArtworkRoute,
@@ -49,6 +53,7 @@ const routes: RouteHandler[] = [
   systemSettingsRoute,
   inventoryRoute,
   libraryMovesRoute,
+  tomifinRoute,
   versionRoute,
   hlsRoute,
   mediaSessionRoute,

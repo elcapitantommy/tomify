@@ -89,18 +89,41 @@ export function torrentCandidate(value, track, options) {
   }
 }
 
+// Query parameters that carry credentials on torrent sites and indexers (API keys, passkeys, session ids, …).
+const SECRET_PARAMETER = /(api|pass|auth|token|secret|key|sig|sess|sid|cookie|login|user|uid|rss|hash|code|jwt|nonce)/i
+// A value that looks like a generated secret: long hex, or a long run of mixed letters and digits with no separators.
+function secretLooking(value) {
+  const raw = text(value)
+  return /^[a-f0-9]{32,}$/i.test(raw) || (/^[A-Za-z0-9+/=_-]{24,}$/.test(raw) && /[0-9]/.test(raw) && /[A-Za-z]/.test(raw) && !/[-_]/.test(raw))
+}
+
+// A result's details page, for showing as a link. Results come from third-party plugins and indexers, so the link is
+// cleaned before anyone sees it: only public http(s) pages, no user name or password, no fragment, no query parameter
+// that could carry a credential, and nothing at all when a path segment looks like a passkey.
+export function safeDetailsUrl(value) {
+  let url
+  try { url = new URL(text(value)) } catch { return null }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || privateHost(url.hostname)) return null
+  let segments
+  try { segments = url.pathname.split('/').map((segment) => decodeURIComponent(segment)) } catch { return null }
+  if (segments.some(secretLooking)) return null
+  url.hash = ''
+  for (const [name, parameter] of [...url.searchParams]) if (SECRET_PARAMETER.test(name) || secretLooking(parameter)) url.searchParams.delete(name)
+  if (![...url.searchParams].length) url.search = ''
+  return url.toString()
+}
+
 function siteName(value) {
   try { return new URL(text(value)).hostname.replace(/^www\./, '') || null } catch { return null }
 }
 
-// Turns qBittorrent search-plugin and indexer results into Recovery candidates. Only results with at least one seed
-// are kept (sources report -1 when they do not know), the best-seeded come first, the same torrent found by several
-// sources appears once, and links qBittorrent could not be given safely (private hosts other than a configured
-// indexer, credentials, plugin-only URLs) are dropped.
-export function torrentSearchCandidates(results, track, input, options) {
-  const { fields: searchFields, mode: searchMode } = usenetSearchSpec(input, track)
+// Normalises qBittorrent search-plugin and indexer results: only results with at least one seed are kept (sources
+// report -1 when they do not know), the best-seeded come first, the same torrent found by several sources appears
+// once, and links qBittorrent could not be given safely (private hosts other than a configured indexer, credentials,
+// plugin-only URLs) are dropped. Recovery and Tomifin Downloader both build on this.
+export function seededTorrentResults(results, options) {
   const seen = new Set()
-  const candidates = []
+  const found = []
   // Best-seeded first, so where several sources found the same torrent the copy with the most seeds is kept.
   const ranked = (Array.isArray(results) ? results : []).map((result) => ({ result, seeds: number(result?.nbSeeders) ?? -1 })).sort((a, b) => b.seeds - a.seeds).map(({ result }) => result)
   for (const result of ranked) {
@@ -112,20 +135,25 @@ export function torrentSearchCandidates(results, track, input, options) {
     const key = parsed.infoHash || text(result?.infoHash).toLowerCase() || resultId
     if (seen.has(key)) continue
     seen.add(key)
-    let detailsUrl = null
-    try { const details = new URL(text(result?.descrLink)); if (['http:', 'https:'].includes(details.protocol) && !details.username && !details.password) detailsUrl = details.toString() } catch { /* The plugin gave no details page. */ }
+    const detailsUrl = safeDetailsUrl(result?.descrLink)
     const leechers = number(result?.nbLeechers)
     const size = number(result?.fileSize)
     const site = text(result?.siteName).slice(0, 120) || siteName(result?.siteUrl) || siteName(detailsUrl) || 'Torrent search'
     const title = text(result?.fileName).slice(0, 500) || parsed.name || `Torrent ${resultId.slice(0, 12)}`
-    candidates.push({
-      externalId: createHash('sha256').update(`torrent\0${resultId}`).digest('hex'), url: detailsUrl || parsed.displayUrl,
-      title, channel: site, duration: null, thumbnail: null,
-      // providerId stays qbittorrent-search for every search result: the agent labels the job from it.
-      provenance: { providerType: 'torrent', providerId: 'qbittorrent-search', providerName: site, searchSource: text(result?.indexerId) || 'qbittorrent-plugins', resultId, linkType: parsed.type, infoHash: parsed.infoHash, link: parsed.link, displayUrl: parsed.displayUrl, detailsUrl, postedTitle: title, searchMode, searchFields, seeds, peers: leechers !== null && leechers >= 0 ? leechers : null, size: size !== null && size > 0 ? size : null },
-    })
+    found.push({ parsed, resultId, seeds, leechers: leechers !== null && leechers >= 0 ? leechers : null, size: size !== null && size > 0 ? size : null, site, title, detailsUrl, searchSource: text(result?.indexerId) || 'qbittorrent-plugins' })
   }
-  return candidates.slice(0, SEARCH_RESULT_LIMIT)
+  return found
+}
+
+// Turns qBittorrent search-plugin and indexer results into Recovery candidates (see seededTorrentResults).
+export function torrentSearchCandidates(results, track, input, options) {
+  const { fields: searchFields, mode: searchMode } = usenetSearchSpec(input, track)
+  return seededTorrentResults(results, options).slice(0, SEARCH_RESULT_LIMIT).map(({ parsed, resultId, seeds, leechers, size, site, title, detailsUrl, searchSource }) => ({
+    externalId: createHash('sha256').update(`torrent\0${resultId}`).digest('hex'), url: detailsUrl || parsed.displayUrl,
+    title, channel: site, duration: null, thumbnail: null,
+    // providerId stays qbittorrent-search for every search result: the agent labels the job from it.
+    provenance: { providerType: 'torrent', providerId: 'qbittorrent-search', providerName: site, searchSource, resultId, linkType: parsed.type, infoHash: parsed.infoHash, link: parsed.link, displayUrl: parsed.displayUrl, detailsUrl, postedTitle: title, searchMode, searchFields, seeds, peers: leechers, size },
+  }))
 }
 
 export function torrentConfig(env = process.env) {
@@ -225,8 +253,8 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
     return { response, body, label }
   }
 
-  async function ensureCategory(cookie, savePath) {
-    const { response } = await call(cookie, 'torrents/createCategory', { category: config.category, savePath }, 'qBittorrent category')
+  async function ensureCategory(cookie, category, savePath) {
+    const { response } = await call(cookie, 'torrents/createCategory', { category, savePath }, 'qBittorrent category')
     // 409 means the category already exists, which is fine.
     if (!response.ok && response.status !== 409) throw new Error(`qBittorrent category returned HTTP ${response.status}.`)
   }
@@ -237,6 +265,13 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
     data.set('torrents', new Blob([torrent], { type: 'application/x-bittorrent' }), 'tomify.torrent')
     const response = await fetchImpl(`${config.url}/api/v2/torrents/add`, { method: 'POST', headers: cookie ? { cookie } : {}, body: data, signal: AbortSignal.timeout(30_000) })
     return { response, body: await response.text() }
+  }
+
+  async function renamedCall(hash, current, legacy, label) {
+    const cookie = await session()
+    let { response } = await call(cookie, current, { hashes: hash }, label)
+    if (response.status === 404) ({ response } = await call(cookie, legacy, { hashes: hash }, label))
+    if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}.`)
   }
 
   let queueApplied = false
@@ -250,16 +285,26 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
   }
 
   return {
-    async add(link, { tag, savePath }) {
-      // An indexer link is fetched here first: it needs the indexer's API key, and qBittorrent may not reach it.
-      const fetched = isIndexerLink(link, config.indexers || []) ? await fetchIndexerTorrent(link, config.indexers, fetchImpl) : null
-      const cookie = await session()
-      await ensureCategory(cookie, savePath)
-      await ensureQueueLimits(cookie)
-      const form = { urls: fetched?.magnet || link, category: config.category, tags: tag, savepath: savePath }
+    // category defaults to Recovery's; Tomifin Downloader passes its own per destination. subfolder keeps a
+    // multi-file torrent in a folder of its own rather than spread over the save path. downloadPath (qBittorrent 4.4
+    // and later) keeps unfinished data there and moves it to savePath when the torrent completes.
+    async add(link, { tag, savePath, downloadPath = null, category = config.category, subfolder = false }) {
+      // An error marked rejected means qBittorrent certainly did not add the torrent: it was never sent, or
+      // qBittorrent answered with a refusal. Any other error (a timeout, a dropped connection) leaves it unknown.
+      const rejected = (error) => Object.assign(error instanceof Error ? error : new Error(String(error)), { rejected: true })
+      let cookie, fetched
+      try {
+        // An indexer link is fetched here first: it needs the indexer's API key, and qBittorrent may not reach it.
+        fetched = isIndexerLink(link, config.indexers || []) ? await fetchIndexerTorrent(link, config.indexers, fetchImpl) : null
+        cookie = await session()
+        await ensureCategory(cookie, category, savePath)
+        await ensureQueueLimits(cookie)
+      } catch (error) { throw rejected(error) }
+      // contentLayout is qBittorrent 4.3.2 and later; root_folder is the older name for the same choice.
+      const form = { urls: fetched?.magnet || link, category, tags: tag, savepath: savePath, ...(downloadPath ? { useDownloadPath: 'true', downloadPath } : {}), ...(subfolder ? { contentLayout: 'Subfolder', root_folder: 'true' } : {}) }
       const { response, body } = fetched?.torrent ? await upload(cookie, fetched.torrent, form) : await call(cookie, 'torrents/add', form, 'qBittorrent add')
-      if (!response.ok) throw new Error(`qBittorrent add returned HTTP ${response.status}.`)
-      if (/^fails/i.test(text(body))) throw new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).')
+      if (!response.ok) throw rejected(new Error(`qBittorrent add returned HTTP ${response.status}.`))
+      if (/^fails/i.test(text(body))) throw rejected(new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).'))
       return { downloader: 'qbittorrent', remoteId: tag }
     },
     async findByHash(hash) {
@@ -298,7 +343,9 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
     // at once, and returns the raw results in the plugins' shape. Plugins run inside qBittorrent on the media server;
     // the search is refused while qBittorrent reports it is offline, which is what it reports when the VPN interface
     // it is bound to is down, since nothing found could be downloaded.
-    async search(pattern, { timeoutMs = SEARCH_TIMEOUT_MS, pollMs = 1000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+    // category is the search-plugin category and indexerCategories the Torznab categories (default: each indexer's
+    // own, normally 3000 Audio); Tomifin Downloader asks for films and TV instead.
+    async search(pattern, { category = 'music', indexerCategories = null, timeoutMs = SEARCH_TIMEOUT_MS, pollMs = 1000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
       const cookie = await session()
       const get = async (path, params = {}) => {
         const url = new URL(`${config.url}/api/v2/${path}`)
@@ -310,11 +357,11 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
       const transfer = await get('transfer/info')
       if (text(transfer?.connection_status) === 'disconnected') throw new Error('qBittorrent is offline, so torrent search is paused. Check that NordVPN is connected on the media server.')
       const plugins = await get('search/plugins')
-      const indexers = config.indexers || []
+      const indexers = (config.indexers || []).map((indexer) => indexerCategories ? { ...indexer, categories: indexerCategories } : indexer)
       const usePlugins = (Array.isArray(plugins) ? plugins : []).some((plugin) => plugin?.enabled)
       if (!usePlugins && !indexers.length) throw new Error('No torrent search source is set up: qBittorrent has no search plugins enabled and no Prowlarr or Jackett indexer is configured. See docs/RECOVERY.md.')
       const pluginSearch = async () => {
-        const started = await call(cookie, 'search/start', { pattern, plugins: 'enabled', category: 'music' }, 'qBittorrent search')
+        const started = await call(cookie, 'search/start', { pattern, plugins: 'enabled', category }, 'qBittorrent search')
         if (started.response.status === 409) throw new Error('qBittorrent is already running too many searches. Try again in a moment.')
         if (!started.response.ok) throw new Error(`qBittorrent search returned HTTP ${started.response.status}.`)
         const id = number(JSON.parse(started.body || '{}')?.id)
@@ -338,6 +385,19 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
       if (settled.every((result) => result.status === 'rejected')) throw settled[0].reason
       return settled.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
     },
+    // Every torrent in one category, with one login (Tomifin's downloads list).
+    async list(category) {
+      const cookie = await session()
+      const url = new URL(`${config.url}/api/v2/torrents/info`)
+      url.searchParams.set('category', category)
+      const response = await fetchImpl(url, { headers: cookie ? { cookie } : {}, signal: AbortSignal.timeout(30_000) })
+      if (!response.ok) throw new Error(`qBittorrent returned HTTP ${response.status}.`)
+      const torrents = await response.json()
+      return (Array.isArray(torrents) ? torrents : []).filter((torrent) => text(torrent?.category) === category)
+    },
+    // qBittorrent 5 renamed pause and resume to stop and start; the old names answer 404 there, and the new ones on 4.x.
+    async pause(hash) { await renamedCall(hash, 'torrents/stop', 'torrents/pause', 'qBittorrent pause') },
+    async resume(hash) { await renamedCall(hash, 'torrents/start', 'torrents/resume', 'qBittorrent resume') },
     async remove(hash, deleteFiles) {
       const cookie = await session()
       const { response } = await call(cookie, 'torrents/delete', { hashes: hash, deleteFiles: deleteFiles ? 'true' : 'false' }, 'qBittorrent delete')

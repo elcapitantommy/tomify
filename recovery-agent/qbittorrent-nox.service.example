@@ -16,6 +16,8 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/qbittorrent /srv/torrents
+# Tomifin Downloader also writes to the Jellyfin libraries: add them with a drop-in (systemctl edit qbittorrent-nox),
+# ReadWritePaths=/media/family /media/private, rather than here (docs/TOMIFIN.md).
 
 [Install]
 WantedBy=multi-user.target

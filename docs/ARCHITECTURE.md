@@ -35,13 +35,14 @@ Navidrome stays the source of truth for accounts, the library, playlists, favour
 
 ## 2. The PWA
 
+- Tomifin Downloader is a separate app at its own address (`TOMIFIN_HOSTNAME`, a second Custom Domain on the same Worker), built from `tomifin/index.html` and `src/tomifin/` as another Vite entry point. It shares none of Tomify's shell or sign-in: Jellyfin administrators sign in through the recovery agent (`recovery-agent/jellyfin.mjs`), and the session is an HttpOnly cookie; see [TOMIFIN.md](TOMIFIN.md).
 - React 18, TypeScript and Vite, under `src/`. Routes are declared in `src/App.tsx`: Home, Artists, Albums, Search, Playlists (including Spotify import and imported playlists), Favourites, Downloads, Recovery and Settings.
 - `src/lib/navidrome.ts` is the single typed OpenSubsonic client. Signing in creates a salted token (`createAuthSession`); the password is never stored. When the server is the default (`https://tomify.tomdixon.uk`), requests go through the Worker's same-origin `/navidrome` proxy, which avoids CORS.
 - Calls to Tomify's own API (`src/lib/recovery-api.ts`, `catalogue-api.ts`, `completeness-api.ts`, `playlist-shares.ts` and the stores) send the Navidrome username, token and salt as `x-tomify-user`, `x-tomify-token` and `x-tomify-salt` headers.
 - State lives in Zustand stores under `src/stores/`: auth, the player and queue, live playback, album artwork overrides and release metadata.
 - `src/components/PlayerRuntime.tsx` owns one long-lived `<audio>` element. `src/lib/mediaSession.ts` sets lock-screen metadata and controls. `src/lib/sourceResolver.ts` is the seam for offline audio; today it always streams from Navidrome. `src/lib/mediaRoute.ts` decides where a stream URL points (the Worker, or the box on the home network) and which credential it carries; see [Media sessions and LAN-direct streaming](#media-sessions-and-lan-direct-streaming).
 - `src/components/LivePlaybackSync.tsx` publishes this device's playback state to the Worker and picks up commands from the user's other devices.
-- The service worker (Workbox via `vite-plugin-pwa`, configured in `vite.config.ts`) precaches the app shell and caches artwork. Its navigation fallback excludes `/api/` and `/navidrome/`. Audio is not cached.
+- The service worker (Workbox via `vite-plugin-pwa`, configured in `vite.config.ts`) precaches the app shell and caches artwork. Its navigation fallback excludes `/api/`, `/navidrome/` and `/tomifin/`, and Tomifin's page is not precached. Audio is not cached.
 - Back and Forward return to where you were on a page: `src/hooks/useScrollRestoration.ts` (used by `AppShell`) saves the scroll position per history entry and, on Back, waits for the page's data to load before scrolling back (it gives up after 5 seconds or as soon as the user scrolls). New pages start at the top. The Artists, artist and Albums lists cache their data per user (`useLoad` cache key) so they draw immediately, and the Albums and artist release tabs and sort order live in the URL (`?type=`, `?sort=`) so Back shows the same tab.
 - Styles are one global stylesheet, `src/styles.css`. The light theme is generated from it at build time by the Vite plugin in `scripts/light-theme.mjs` (every colour declaration repeated under `:root[data-theme=light]`); `src/stores/theme.ts` and a script in `index.html` set `data-theme` on `<html>`.
 - Recovery and Settings are shown only to Navidrome administrators (`adminRole`). On mobile they sit behind the account button in the top bar.
@@ -54,7 +55,7 @@ The Worker is a normal TypeScript module rooted at `worker/index.ts`. `pnpm buil
 2. typechecks both the app and Worker, then writes the Vite client build to `dist/client/`;
 3. asks Wrangler to bundle `worker/index.ts` unminified into `dist/server/index.js` for the route and D1 SQL tests. Deployment bundles the same entry point with minification enabled.
 
-Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/client/`, applies the cache policy in `public/_headers`, and provides SPA fallback. The `run_worker_first` rules send `/api*` and `/navidrome*` to the Worker before asset lookup. If a non-route request reaches the Worker, it delegates to the `ASSETS` binding.
+Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/client/`, applies the cache policy in `public/_headers`, and provides SPA fallback. The `run_worker_first` rules send every path except the hashed `/assets/*` to the Worker before asset lookup, so it can serve Tomifin's address separately. If a non-route request reaches the Worker, it delegates to the `ASSETS` binding.
 
 | Module | Routes | Purpose |
 | --- | --- | --- |
@@ -71,6 +72,7 @@ Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/
 | `worker/routes/inventory.ts`, `worker/routes/system-settings.ts` | `/api/inventory*`, `/api/library-health*`, `/api/system*`, quality, scan and preflight routes | Administrative library and server operations |
 | `worker/routes/navidrome.ts`, `worker/routes/version.ts` | `/navidrome/*`, `/api/version` | Navidrome proxy and deployed version information |
 | `worker/routes/hls.ts`, `worker/routes/media-session.ts` (+ `worker/features/media-session.ts`) | `/api/hls/*`, `/api/media-session` | Adaptive streaming through the agent; short-lived media tokens and the LAN address |
+| `worker/routes/tomifin.ts`, `worker/routes/tomifin-site.ts` | `/api/tomifin/*`; everything on `TOMIFIN_HOSTNAME` | Tomifin Downloader (Jellyfin administrators only): film and TV torrent search and queuing through the recovery agent; see [TOMIFIN.md](TOMIFIN.md) |
 | `scripts/recovery-metadata.mjs`, `scripts/recovery-artwork.mjs` | (helpers) | MusicBrainz metadata review and artwork resolution for Recovery |
 
 Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configuration falls back to `index.html` for client-side routes.
@@ -131,6 +133,7 @@ Audio elements cannot send headers either, so stream URLs used to carry the Navi
 | `TOMIFY_PARTY_USERNAME` | Dashboard var | Optional | None | `worker/features/party.ts` (a Navidrome account party guests search and see covers with) | Guests search as the host, whose login is stored sealed with `TOMIFY_MEDIA_KEY` while the party runs. Without either, starting a party returns `503`. |
 | `TOMIFY_PARTY_PASSWORD` | Dashboard secret | Optional | None | `worker/features/party.ts` (the party account's password; used only with `TOMIFY_PARTY_USERNAME`) | As above. |
 | `TOMIFY_LAN_ORIGIN` | `wrangler.toml` var | Optional | None | `worker/routes/media-session.ts` (the box's `https://` address on the home network, for example `https://lan.tomify.tomdixon.uk:8789`) | Players always stream through the Worker. |
+| `TOMIFIN_HOSTNAME` | `wrangler.toml` var | Optional | None (set to `tomifin.tomdixon.uk`) | `worker/routes/tomifin-site.ts` (Tomifin Downloader's own address, a second Custom Domain on this Worker) | Tomifin is served at `/tomifin/` on Tomify's address instead. |
 | `TOMIFY_DJ_VOICE_MODEL` | `wrangler.toml` var | Optional | `melotts` (set to `aura`) | `worker/features/dj.ts` | The DJ reads links with MeloTTS, which costs about 8 free neurons a link. Set `aura` to use Aura-2 (about 1,100 a link) first, with MeloTTS as backup. |
 | `TOMIFY_VERSION` | Build-time constant | Required, generated | Current Git short SHA; then `CF_PAGES_COMMIT_SHA`; then `WORKERS_CI_COMMIT_SHA`; then `unknown` | `/api/version` | Reports `unknown` only when Git and both CI fallbacks are unavailable. |
 | `TOMIFY_AGENT_CONTRACT` | Build-time constant | Required, generated | `2` | `/api/version` and the recovery-agent compatibility gate | Build generation supplies it; a missing generated module fails the build. |
@@ -177,7 +180,7 @@ Spotify OAuth tokens are stored encrypted with `SPOTIFY_TOKEN_ENCRYPTION_KEY`. N
 - With `TOMIFY_LAN_PORT`, `TOMIFY_LAN_TLS_CERT`, `TOMIFY_LAN_TLS_KEY` and `TOMIFY_MEDIA_KEY` set, `lan.mjs` also runs an HTTPS listener for players on the home network (LAN-direct streaming): `/lan/ping`, `/navidrome/rest/stream.view` (proxied to Navidrome on the box) and `/api/hls/*` (the same packager as `/v1/hls`). It accepts only media tokens, answers CORS and Private Network Access preflights for `TOMIFY_LAN_ALLOWED_ORIGINS`, and reloads its certificate twice a day. See [DEPLOYMENT.md](DEPLOYMENT.md#lan-direct-streaming).
 - It listens on `127.0.0.1:8788`. A Cloudflare Tunnel run by the `tomify-recovery-cloudflared` Docker container exposes it at `RECOVERY_AGENT_URL`; the Worker never connects to the box directly.
 - `GET /health` is unauthenticated. Every `/v1/*` endpoint requires `Authorization: Bearer $TOMIFY_RECOVERY_TOKEN`, and the agent refuses to start without a token of at least 32 characters (`config.mjs`).
-- Endpoints: `/v1/status`, `/v1/search`, `/v1/acquire`, `/v1/jobs/status`, `/v1/jobs/cancel`, `/v1/jobs/import-remaining`, `/v1/delete`, `/v1/system/vpn/status`, `/v1/system/vpn`, `/v1/system/reboot`. The full contract is in [RECOVERY.md](RECOVERY.md#backend-contract).
+- Endpoints: `/v1/status`, `/v1/search`, `/v1/acquire`, `/v1/jobs/status`, `/v1/jobs/cancel`, `/v1/jobs/import-remaining`, `/v1/delete`, `/v1/system/vpn/status`, `/v1/system/vpn`, `/v1/system/reboot`, and Tomifin Downloader's `/v1/tomifin/*` (`tomifin.mjs`, sign-in in `jellyfin.mjs`). The full contract is in [RECOVERY.md](RECOVERY.md#backend-contract).
 
 | Backend | Code | How it acquires |
 | --- | --- | --- |
@@ -208,6 +211,7 @@ Configuration comes from `/etc/tomify/recovery-agent.env` (see `recovery-agent.e
 | `/srv/music-recovery` | Bind mount of `/srv/music/_Recovery`; the only place the agent writes audio (`TOMIFY_RECOVERY_DIR`) |
 | `/srv/usenet/completed` | Finished SABnzbd downloads, read-only to the agent |
 | `/srv/torrents` | In-progress torrent downloads on the NVMe disk, removed after import |
+| `/media/family`, `/media/private` | Jellyfin's Family and Private libraries; Tomifin Downloader's qBittorrent destinations (`TOMIFY_TOMIFIN_FAMILY_DIR`, `TOMIFY_TOMIFIN_PRIVATE_DIR`) |
 | `/var/lib/tomify-recovery` | Agent state, including job records |
 | `/var/cache/tomify-recovery` | Agent cache |
 | `/opt/tomify/recovery-agent` | Deployed agent code |

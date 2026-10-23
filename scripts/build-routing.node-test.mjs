@@ -78,8 +78,10 @@ async function withStaticAssetsWorker(callback) {
   }
 }
 
-test('generated service worker excludes API and Navidrome navigations from the SPA fallback', () => {
-  assert.equal(serviceWorker.includes('denylist:[/^\\/api\\//,/^\\/navidrome\\//]'), true)
+test('generated service worker excludes API, Navidrome and Tomifin navigations from the SPA fallback', () => {
+  assert.equal(serviceWorker.includes('denylist:[/^\\/api\\//,/^\\/navidrome\\//,/^\\/tomifin(\\/|$)/]'), true)
+  // Tomifin is not precached, so the service worker never serves an old copy of it.
+  assert.equal(serviceWorker.includes('tomifin/index.html'), false)
 })
 
 test('Worker handles the Spotify callback as API and returns JSON for unknown API routes', async () => {
@@ -1087,7 +1089,8 @@ test('Workers Static Assets serves SPA deep links with the intended cache rules 
   const headerRules = await readFile(new URL('../dist/client/_headers', import.meta.url), 'utf8')
   assert.match(config, /directory = "\.\/dist\/client"/)
   assert.match(config, /not_found_handling = "single-page-application"/)
-  for (const route of ['/api', '/api/*', '/navidrome', '/navidrome/*']) assert.ok(config.includes(`"${route}"`))
+  // Every path but hashed assets reaches the Worker first (API, Navidrome, and Tomifin's separate address).
+  assert.match(config, /run_worker_first = \["\/\*", "!\/assets\/\*"\]/)
   assert.match(headerRules, /\/index\.html\s+Cache-Control: no-cache/)
   assert.match(headerRules, /\/sw\.js\s+Cache-Control: no-cache/)
   assert.match(headerRules, /\/assets\/\*\s+Cache-Control: public, max-age=31536000, immutable/)
@@ -1114,6 +1117,16 @@ test('Workers Static Assets serves SPA deep links with the intended cache rules 
     assert.deepEqual(await api.json(), { error: 'not-found' })
     const obsoleteServerAsset = await fetch(`${origin}/server/index.js`)
     assert.match(await obsoleteServerAsset.text(), /<div id="root"><\/div>/)
+    // Tomifin Downloader lives at its own address (TOMIFIN_HOSTNAME); Tomify's address sends its old path there,
+    // which also shows the Worker sees these paths before Static Assets does.
+    for (const path of ['/tomifin', '/tomifin/', '/tomifin/index.html']) {
+      const tomifin = await fetch(`${origin}${path}`, { redirect: 'manual', headers: { accept: 'text/html' } })
+      assert.equal(tomifin.status, 301, path)
+      assert.equal(tomifin.headers.get('location'), 'https://tomifin.tomdixon.uk/', path)
+    }
+    const tomifinApi = await fetch(`${origin}/api/tomifin/status`, { headers: { accept: 'text/html' } })
+    assert.equal(tomifinApi.status, 404)
+    assert.match(tomifinApi.headers.get('content-type') || '', /^application\/json/)
   })
 })
 

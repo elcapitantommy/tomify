@@ -14,7 +14,7 @@ export async function callRecoveryAgent(env: Env, path: string, body: unknown): 
   })
   const payload = await response.json().catch(() => ({})) as any
   if (response.status === 404 && payload.error === 'not-found') throw new RecoveryAgentOutdated()
-  if (!response.ok) throw new Error(payload.message || payload.error || 'Recovery agent request failed.')
+  if (!response.ok) throw new RecoveryAgentError(payload.message || payload.error || 'Recovery agent request failed.', response.status, payload)
   return payload
 }
 
@@ -33,5 +33,17 @@ export class RecoveryAgentOutdated extends Error {
   constructor() {
     super('The recovery agent is out of date. Redeploy it using docs/RECOVERY.md, “Updating the recovery agent”: https://github.com/elcapitantommy/tomify/blob/main/docs/RECOVERY.md#updating-the-recovery-agent')
     this.name = 'RecoveryAgentOutdated'
+  }
+}
+
+// A refusal from the agent, with its status and JSON body for routes that pass the agent's own error code on.
+export class RecoveryAgentError extends Error {
+  status: number
+  payload: any
+  constructor(message: string, status: number, payload: any) {
+    super(message)
+    this.name = 'RecoveryAgentError'
+    this.status = status
+    this.payload = payload
   }
 }
