@@ -12,7 +12,7 @@
 //   node family-import.mjs --scan [--dry-run]               import every finished Family torrent not yet handled
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { createReadStream } from 'node:fs'
+import { createReadStream, realpathSync } from 'node:fs'
 import { link, lstat, mkdir, readdir, readFile, realpath, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -171,7 +171,7 @@ const delay = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise,
 // ---------------------------------------------------------------------------------------------------------------
 // The importer
 
-export function createFamilyImporter({ library, moviesDir = '', stateDir, qbittorrent, probe = ffprobeReader(), log = (entry) => process.stdout.write(`${JSON.stringify(entry)}\n`), stableMs = 5000, dryRun = false, now = () => new Date() }) {
+export function createFamilyImporter({ library, moviesDir = '', stateDir, qbittorrent, probe = ffprobeReader(), log = (entry) => process.stdout.write(`${JSON.stringify(entry)}\n`), stableMs = 5000, queueRetries = 6, queueRetryMs = 10_000, dryRun = false, now = () => new Date() }) {
   if (!isAbsolute(text(library))) throw new Error('The Family library must be an absolute path.')
   if (text(moviesDir) && !MOVIES_DIR.test(text(moviesDir))) throw new Error('The films folder must be one plain folder name inside the Family library.')
   const paths = {}
@@ -430,22 +430,41 @@ export function createFamilyImporter({ library, moviesDir = '', stateDir, qbitto
     return found
   }
 
-  // Hashes queued by the qBittorrent hook. Each queue entry is removed once handled, whatever the outcome; a torrent
-  // that was not ready is picked up again by --scan.
+  // Hashes queued by the qBittorrent hook. A torrent that is not ready yet (qBittorrent can still be moving it out of
+  // its temporary folder when the hook fires) is retried a few times in the same run. Each entry is then removed,
+  // whatever the outcome; one still not ready is picked up again by --scan. A queue that cannot be read or emptied is
+  // an error, never silently skipped: the path unit would otherwise start the importer again and again.
   async function drainQueue() {
     await roots()
     const queue = join(paths.staging, QUEUE)
     const results = []
-    for (const name of await readdir(queue).catch(() => [])) {
+    let names
+    try { names = await readdir(queue) } catch (error) {
+      if (error?.code === 'ENOENT') return results
+      throw new Error(`The import queue ${queue} cannot be read: ${error?.code || error}`)
+    }
+    const remove = async (path) => {
+      if (dryRun) return
+      try { await unlink(path) } catch (error) {
+        if (error?.code !== 'ENOENT') throw new Error(`The queue entry ${path} cannot be removed: ${error?.code || error}`)
+      }
+    }
+    for (const name of names) {
       const path = join(queue, name)
       if (!HASH.test(name)) {
         // Half-written entries from the hook start with a dot; anything else odd is removed.
         const info = await lstat(path).catch(() => null)
-        if (info && (!name.startsWith('.') || Date.now() - info.mtimeMs > 60_000) && !dryRun) await unlink(path).catch(() => {})
+        if (info && (!name.startsWith('.') || Date.now() - info.mtimeMs > 60_000)) await remove(path)
         continue
       }
-      try { results.push(await importTorrent(name)) } catch (error) { log({ hash: name, result: 'failed', reason: error instanceof Error ? error.message : String(error) }); results.push({ hash: name, result: 'failed' }) }
-      if (!dryRun) await unlink(path).catch(() => {})
+      let result
+      for (let attempt = 0; ; attempt += 1) {
+        try { result = await importTorrent(name) } catch (error) { log({ hash: name, result: 'failed', reason: error instanceof Error ? error.message : String(error) }); result = { hash: name, result: 'failed' } }
+        if (result.result !== 'not-ready' || attempt >= queueRetries) break
+        await delay(queueRetryMs)
+      }
+      results.push(result)
+      await remove(path)
     }
     return results
   }
@@ -488,13 +507,23 @@ async function main(argv) {
   const stateDir = text(process.env.TOMIFIN_IMPORT_STATE_DIR) || text(process.env.STATE_DIRECTORY) || '/var/lib/tomifin-import'
   const moviesDir = text(process.env.TOMIFIN_IMPORT_MOVIES_SUBDIR)
   const importer = createFamilyImporter({ library, moviesDir, stateDir, qbittorrent: await qbittorrentForImport(), dryRun, probe: ffprobeReader(text(process.env.TOMIFIN_IMPORT_FFPROBE) || 'ffprobe') })
-  if (hashIndex >= 0) await importer.importTorrent(args[hashIndex + 1])
-  else if (args.includes('--queue')) await importer.drainQueue()
-  else if (args.includes('--scan')) await importer.scan()
+  let mode
+  let results
+  if (hashIndex >= 0) { mode = 'hash'; results = [await importer.importTorrent(args[hashIndex + 1])] }
+  else if (args.includes('--queue')) { mode = 'queue'; results = await importer.drainQueue() }
+  else if (args.includes('--scan')) { mode = 'scan'; results = await importer.scan() }
   else throw new Error('Use --hash <info hash>, --queue or --scan, optionally with --dry-run.')
+  // Always one closing line, so a run that found nothing still shows in the journal.
+  process.stdout.write(`${JSON.stringify({ result: 'done', mode, dryRun: dryRun || undefined, torrents: results.length })}\n`)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+// Run as a command. Node resolves symlinks for the main module, and the agent is installed through the
+// /opt/tomify/current symlink, so compare real paths.
+function isMain() {
+  try { return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1]))).href } catch { return false }
+}
+
+if (isMain()) {
   main(process.argv).catch((error) => {
     process.stderr.write(`${JSON.stringify({ result: 'failed', reason: error instanceof Error ? error.message : String(error) })}\n`)
     process.exitCode = 1

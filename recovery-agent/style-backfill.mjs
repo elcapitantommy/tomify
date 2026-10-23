@@ -5,6 +5,7 @@
 // before without a result, are skipped. Run it with the agent's environment so it uses the same settings:
 //   set -a; . /etc/tomify/recovery-agent.env; set +a
 //   node /opt/tomify/current/recovery-agent/style-backfill.mjs [--dry-run] [--recheck] [--limit N] /srv/music
+import { realpathSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -56,7 +57,10 @@ export async function backfillStyle(options, { tagger = createStyleTagger(), pri
   return totals
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+// Node resolves symlinks for the main module (the agent runs through /opt/tomify/current), so compare real paths.
+const isMain = () => { try { return import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1] ?? ''))).href } catch { return false } }
+
+if (isMain()) {
   try {
     const options = parseArguments(process.argv.slice(2))
     if (!process.env.BPM_PATH && !/^(1|on|true|yes)$/i.test(process.env.STYLE_LOOKUP || '')) throw new Error('Set BPM_PATH and/or STYLE_LOOKUP=on first (see docs/RECOVERY.md "BPM, genre and mood tags").')

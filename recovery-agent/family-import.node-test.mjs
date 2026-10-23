@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { link, lstat, mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -247,6 +250,45 @@ test('the queue is drained, odd entries are removed, and a scan picks up what th
   assert.deepEqual(scanned.map((entry) => [entry.hash, entry.result]), [[OTHER, 'published']])
   assert.deepEqual(await context.make().scan(), [])
   assert.deepEqual((await readdir(context.library)).filter((entry) => !entry.startsWith('.')).sort(), ['Big Buck Bunny (2008)', 'Sintel (2010)'])
+})
+
+test('a queued torrent that is not ready yet is retried in the same run, and an unreadable queue is an error', async () => {
+  const context = await setup()
+  await addTorrent(context, HASH, 'Sintel.2010.720p', { 'Sintel.2010.720p/Sintel.2010.720p.mkv': film }, { state: 'moving' })
+  const queue = join(context.staging, '.tomifin-import-queue')
+  await mkdir(queue)
+  await writeFile(join(queue, HASH), '')
+  let waits = 0
+  const importer = context.make({ queueRetries: 3, queueRetryMs: 1 })
+  const original = context.torrents[HASH].info
+  const drained = importer.drainQueue()
+  // qBittorrent finishes moving the torrent while the importer waits.
+  const timer = setInterval(() => { waits += 1; if (waits === 2) original.state = 'stalledUP' }, 1)
+  const results = await drained
+  clearInterval(timer)
+  assert.deepEqual(results.map((entry) => entry.result), ['published'])
+  assert.deepEqual(await readdir(queue), [])
+
+  const stuck = await setup()
+  await addTorrent(stuck, HASH, 'Sintel.2010.720p', { 'Sintel.2010.720p/Sintel.2010.720p.mkv': film }, { state: 'moving' })
+  await mkdir(join(stuck.staging, '.tomifin-import-queue'))
+  await writeFile(join(stuck.staging, '.tomifin-import-queue', HASH), '')
+  assert.deepEqual((await stuck.make({ queueRetries: 2, queueRetryMs: 1 }).drainQueue()).map((entry) => entry.result), ['not-ready'])
+  assert.deepEqual(await readdir(join(stuck.staging, '.tomifin-import-queue')), [], 'removed after the retries; the scan picks it up later')
+
+  const broken = await setup()
+  await writeFile(join(broken.staging, '.tomifin-import-queue'), 'not a folder')
+  await assert.rejects(broken.make().drainQueue(), /cannot be read/)
+  assert.deepEqual(await (await setup()).make().drainQueue(), [], 'no queue folder yet is fine')
+})
+
+test('the command runs when started through a symlinked release folder, as /opt/tomify/current is', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'family-cli-'))
+  await symlink(dirname(fileURLToPath(import.meta.url)), join(root, 'current'))
+  const run = spawnSync(process.execPath, [join(root, 'current', 'family-import.mjs'), '--scan', '--dry-run'], { env: { PATH: process.env.PATH, TOMIFIN_IMPORT_LIBRARY: join(root, 'missing') }, encoding: 'utf8' })
+  // It must reach main() and say why it stopped, never exit silently.
+  assert.equal(run.status, 1)
+  assert.match(run.stderr, /"result":"failed"/)
 })
 
 test('the qBittorrent hook queues only Family torrents with a valid hash', async () => {
