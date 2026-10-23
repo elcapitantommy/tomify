@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly catch-up for the Tomifin Family importer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Unit=tomifin-family-import-scan.service
+
+[Install]
+WantedBy=timers.target

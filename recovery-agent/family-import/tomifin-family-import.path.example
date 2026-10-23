@@ -1,0 +1,10 @@
+# Starts the Tomifin Family importer whenever qBittorrent's completion hook queues a torrent.
+[Unit]
+Description=Queue for the Tomifin Family importer
+
+[Path]
+DirectoryNotEmpty=/media/family/.downloads/.tomifin-import-queue
+Unit=tomifin-family-import.service
+
+[Install]
+WantedBy=multi-user.target

@@ -15,7 +15,7 @@ import { configuredTorrentIndexers, isIndexerLink } from './torrent-indexers.mjs
 import { JellyfinAuthError } from './jellyfin.mjs'
 
 export const TOMIFIN_DESTINATIONS = Object.freeze({
-  family: Object.freeze({ id: 'family', label: 'Family', env: 'TOMIFY_TOMIFIN_FAMILY_DIR', qbittorrentEnv: 'TOMIFY_TOMIFIN_FAMILY_QBITTORRENT_DIR', category: 'tomifin-family' }),
+  family: Object.freeze({ id: 'family', label: 'Family', env: 'TOMIFY_TOMIFIN_FAMILY_DIR', qbittorrentEnv: 'TOMIFY_TOMIFIN_FAMILY_QBITTORRENT_DIR', importEnv: 'TOMIFY_TOMIFIN_FAMILY_IMPORT_SUBDIR', category: 'tomifin-family' }),
   private: Object.freeze({ id: 'private', label: 'Private', env: 'TOMIFY_TOMIFIN_PRIVATE_DIR', qbittorrentEnv: 'TOMIFY_TOMIFIN_PRIVATE_QBITTORRENT_DIR', category: 'tomifin-private' }),
 })
 
@@ -73,7 +73,12 @@ export function tomifinConfig(env = process.env, { torrentAvailable = false, res
     destinations = Object.fromEntries(Object.values(TOMIFIN_DESTINATIONS).map((definition) => {
       const hostPath = directory(env[definition.env], definition.env)
       const qbittorrentPath = directory(env[definition.qbittorrentEnv], definition.qbittorrentEnv) || hostPath
-      return [definition.id, { id: definition.id, label: definition.label, category: definition.category, hostPath, qbittorrentPath }]
+      // With an importer (Family's, recovery-agent/family-import.mjs), torrents are saved in a hidden subfolder of the
+      // library, keep seeding when finished, and the importer publishes clean hardlinks into the library itself.
+      const subfolder = definition.importEnv ? text(env[definition.importEnv]) : ''
+      if (subfolder && !/^\.[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(subfolder)) throw new Error(`${definition.importEnv} must be one hidden folder name such as .downloads.`)
+      const saveQbittorrentPath = subfolder && qbittorrentPath ? `${qbittorrentPath.replace(/\/+$/, '')}/${subfolder}` : qbittorrentPath
+      return [definition.id, { id: definition.id, label: definition.label, category: definition.category, hostPath, qbittorrentPath, saveQbittorrentPath, imports: Boolean(subfolder) }]
     }))
   } catch (error) { return off(error.message) }
   const { family, private: privateDestination } = destinations
@@ -151,7 +156,7 @@ export function hostContentPath(contentPath, destination) {
 // Where qBittorrent keeps one job's unfinished data, in qBittorrent's view of the filesystem. The folder is named after
 // the job's random id, so nothing else ever writes into it.
 export function stagingPath(destination, id) {
-  return `${destination.qbittorrentPath.replace(/\/+$/, '')}/${STAGING_FOLDER}/${id}`
+  return `${(destination.saveQbittorrentPath || destination.qbittorrentPath).replace(/\/+$/, '')}/${STAGING_FOLDER}/${id}`
 }
 
 // Whether cancelling may delete a torrent's data: only an unfinished download whose data qBittorrent reports is
@@ -173,7 +178,8 @@ export function partialDataDeletable(torrent, destination, id) {
 // Whether a torrent has finished and qBittorrent has moved its data out of the staging folder into the library, so
 // it can be taken out of qBittorrent without touching the files.
 export function finishedInLibrary(torrent, destination, id) {
-  if (!torrent || !destination) return false
+  // A destination with an importer keeps its finished torrents seeding: they are the importer's source.
+  if (!torrent || !destination || destination.imports) return false
   const state = text(torrent.state)
   if (!COMPLETE_STATES.has(state) || state === 'checkingUP' || (number(torrent.progress) || 0) < 1) return false
   const reported = text(torrent.content_path)
@@ -331,7 +337,7 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
     const oversized = torrentSize(torrent) > config.maxBytes
     return {
       id: job.id, name: text(torrent?.name) || job.title, destination: job.destination, destinationLabel: destination?.label || job.destination,
-      status: state.status, message: state.message, progress,
+      status: state.status, message: state.status === 'completed' && destination?.imports ? 'Seeding; the Family importer adds it to the library' : state.message, progress,
       downloadSpeed: torrent ? nonNegative(torrent.dlspeed) : null, uploadSpeed: torrent ? nonNegative(torrent.upspeed) : null,
       downloaded: torrent ? nonNegative(torrent.completed ?? torrent.downloaded) : null, size,
       eta: ['downloading', 'stalled'].includes(state.status) && eta !== null && eta >= 0 && eta < 8640000 ? Math.round(eta) : null,
@@ -423,7 +429,7 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
         await saveJob(job)
         try {
           // Throws unless qBittorrent accepted the torrent, so success is reported only after it acknowledged it.
-          await client.add(parsed.link, { tag: tag(id), savePath: destination.qbittorrentPath, downloadPath: stagingPath(destination, id), category: destination.category, subfolder: true })
+          await client.add(parsed.link, { tag: tag(id), savePath: destination.saveQbittorrentPath || destination.qbittorrentPath, downloadPath: stagingPath(destination, id), category: destination.category, subfolder: true })
         } catch (error) {
           // Only a definite refusal removes the record. When qBittorrent's answer was lost (a timeout, a dropped
           // connection) it may still have taken the torrent, perhaps without showing it yet, so the record is kept

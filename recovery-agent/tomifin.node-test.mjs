@@ -52,7 +52,8 @@ async function controllerWith(client, options = {}) {
 
 test('Tomifin needs both library folders, kept apart from each other and from Recovery', () => {
   assert.equal(config.enabled, true)
-  assert.deepEqual(config.destinations.family, { id: 'family', label: 'Family', category: 'tomifin-family', hostPath: '/media/family', qbittorrentPath: '/media/family' })
+  assert.deepEqual(config.destinations.family, { id: 'family', label: 'Family', category: 'tomifin-family', hostPath: '/media/family', qbittorrentPath: '/media/family', saveQbittorrentPath: '/media/family', imports: false })
+  for (const bad of ['downloads', '../x', '.a/b', '.', '..']) assert.match(tomifinConfig({ ...env, TOMIFY_TOMIFIN_FAMILY_IMPORT_SUBDIR: bad }, { torrentAvailable: true }).problem, /hidden folder name/, bad)
   assert.equal(config.destinations.private.hostPath, '/media/private')
   assert.match(tomifinConfig({}, { torrentAvailable: true }).problem, /TOMIFY_TOMIFIN_FAMILY_DIR/)
   assert.match(tomifinConfig({ ...env, TOMIFY_TOMIFIN_PRIVATE_DIR: '/media/family/private' }, { torrentAvailable: true }).problem, /must be separate/)
@@ -434,6 +435,26 @@ test('a finished torrent qBittorrent will not remove is tried again', async () =
   assert.equal((await controller.list()).jobs[0].status, 'completed')
   assert.equal(client.torrents.length, 0)
   assert.deepEqual(client.calls.filter(([name]) => name === 'remove'), [['remove', hash, false]])
+})
+
+test('with the Family importer, Family torrents are saved in .downloads and keep seeding; Private is unchanged', async () => {
+  const importing = tomifinConfig({ ...env, TOMIFY_TOMIFIN_FAMILY_IMPORT_SUBDIR: '.downloads' }, { torrentAvailable: true })
+  assert.deepEqual([importing.destinations.family.saveQbittorrentPath, importing.destinations.family.imports, importing.destinations.private.imports], ['/media/family/.downloads', true, false])
+  for (const [destination, savePath, removed] of [['family', '/media/family/.downloads', false], ['private', '/media/private', true]]) {
+    const client = fakeClient({ searchResults })
+    const { controller } = await controllerWith(client, { config: importing })
+    const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+    const { job } = await controller.download({ resultId: best.id, destination })
+    const add = client.calls.find(([name]) => name === 'add')[2]
+    assert.deepEqual([add.savePath, add.downloadPath], [savePath, `${savePath}/.tomifin-incomplete/${job.id}`], destination)
+    Object.assign(client.torrents[0], { state: 'stalledUP', progress: 1, content_path: `${savePath}/Big Buck Bunny` })
+    await controller.observe()
+    assert.equal(client.calls.some(([name]) => name === 'remove'), removed, destination)
+    if (!removed) {
+      const [view] = (await controller.list()).jobs
+      assert.deepEqual([view.status, view.message, view.keepsFilesOnCancel], ['completed', 'Seeding; the Family importer adds it to the library', true])
+    }
+  }
 })
 
 test('the VPN status combines qBittorrent\'s connection with NordVPN\'s, without addresses', async () => {
