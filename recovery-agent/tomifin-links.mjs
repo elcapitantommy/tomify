@@ -257,9 +257,33 @@ export function decodeNzbText(bytes) {
   return text
 }
 
-// The one DOCTYPE real NZB files carry: newzBin's public identifier with an external DTD and no internal subset. It
-// declares no entities, and nothing here (or in SABnzbd) loads the DTD, so it is skipped. Any other DOCTYPE is refused.
-const NZB_DOCTYPE = /^\s*<!DOCTYPE\s+nzb\s+PUBLIC\s+"-\/\/newzBin\/\/DTD NZB 1\.[01]\/\/EN"\s+"https?:\/\/www\.newzbin\.com\/DTD\/(?:2003\/nzb|nzb\/nzb-1\.[01]\.dtd)"\s*>/i
+// A DOCTYPE real NZB files carry: <!DOCTYPE nzb PUBLIC "…" "…"> (newzBin's, in its many spellings), or SYSTEM "…",
+// with any quoting, spacing or case. Only the external form is accepted: without an internal subset ([…]) a DOCTYPE
+// cannot declare entities, and nothing here (or in SABnzbd) loads the external DTD, so it is skipped. A DOCTYPE with
+// an internal subset, or for another root element, is refused.
+// The public id is free text; the system id (the DTD's address) must be an http(s) URL or a plain relative name.
+const PUBLIC_ID = `(?:"[^"<>\\[\\]]{0,300}"|'[^'<>\\[\\]]{0,300}')`
+const SYSTEM_PART = `(?:https?://[^\\s"'<>\\[\\]]{1,300}|[A-Za-z0-9._/-]{1,300})`
+const SYSTEM_ID = `(?:"${SYSTEM_PART}"|'${SYSTEM_PART}')`
+const NZB_DOCTYPE = new RegExp(`^<!DOCTYPE\\s+nzb(?:\\s+(?:PUBLIC\\s+${PUBLIC_ID}(?:\\s+${SYSTEM_ID})?|SYSTEM\\s+${SYSTEM_ID}))?\\s*>`, 'i')
+
+// Skips what may come before the root element: whitespace, comments and at most one accepted DOCTYPE.
+function skipProlog(xml, fail) {
+  let rest = xml
+  let doctypes = 0
+  for (;;) {
+    rest = rest.replace(/^\s+/, '')
+    if (rest.startsWith('<!--')) {
+      const end = rest.indexOf('-->', 4)
+      if (end < 0) fail()
+      rest = rest.slice(end + 3)
+      continue
+    }
+    const doctype = rest.match(NZB_DOCTYPE)
+    if (doctype && ++doctypes === 1) { rest = rest.slice(doctype[0].length); continue }
+    return rest
+  }
+}
 
 export function readXml(source, { onOpen, onText, onClose, maxElements = 2_000_000 }) {
   const fail = (message = 'The NZB file is not well-formed XML.') => { throw new LinkError('invalid-nzb', message) }
@@ -270,9 +294,9 @@ export function readXml(source, { onOpen, onText, onClose, maxElements = 2_000_0
     if (encoding && !NZB_ENCODINGS.has(encoding) && !/^utf-?16(?:le|be)?$/.test(encoding)) fail(UNSUPPORTED_ENCODING)
     xml = xml.slice(declaration[0].length)
   }
-  const doctype = xml.match(NZB_DOCTYPE)
-  if (doctype) xml = xml.slice(doctype[0].length)
-  if (/<!DOCTYPE|<!ENTITY|<!\[CDATA\[|<\?/i.test(xml)) fail('The NZB file has a DOCTYPE, entity, CDATA or processing instruction, which are not accepted.')
+  xml = skipProlog(xml, fail)
+  // Comments are skipped by the parser below, so their text is not checked here.
+  if (/<!DOCTYPE|<!ENTITY|<!\[CDATA\[|<\?/i.test(xml.replace(/<!--[\s\S]*?-->/g, ''))) fail('The NZB file has a DOCTYPE, entity, CDATA or processing instruction, which are not accepted.')
   const stack = []
   let roots = 0
   let elements = 0
