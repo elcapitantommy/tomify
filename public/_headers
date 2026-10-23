@@ -1,6 +1,12 @@
 /index.html
   Cache-Control: no-cache
 
+/tomifin/
+  Cache-Control: no-cache
+
+/tomifin/index.html
+  Cache-Control: no-cache
+
 /sw.js
   Cache-Control: no-cache
 

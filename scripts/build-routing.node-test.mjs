@@ -78,8 +78,10 @@ async function withStaticAssetsWorker(callback) {
   }
 }
 
-test('generated service worker excludes API and Navidrome navigations from the SPA fallback', () => {
-  assert.equal(serviceWorker.includes('denylist:[/^\\/api\\//,/^\\/navidrome\\//]'), true)
+test('generated service worker excludes API, Navidrome and Tomifin navigations from the SPA fallback', () => {
+  assert.equal(serviceWorker.includes('denylist:[/^\\/api\\//,/^\\/navidrome\\//,/^\\/tomifin(\\/|$)/]'), true)
+  // Tomifin is not precached, so the service worker never serves an old copy of it.
+  assert.equal(serviceWorker.includes('tomifin/index.html'), false)
 })
 
 test('Worker handles the Spotify callback as API and returns JSON for unknown API routes', async () => {
@@ -1114,6 +1116,18 @@ test('Workers Static Assets serves SPA deep links with the intended cache rules 
     assert.deepEqual(await api.json(), { error: 'not-found' })
     const obsoleteServerAsset = await fetch(`${origin}/server/index.js`)
     assert.match(await obsoleteServerAsset.text(), /<div id="root"><\/div>/)
+    // Tomifin Downloader is its own page: direct navigation and refreshes get its HTML, not Tomify's.
+    const tomifin = await fetch(`${origin}/tomifin/`, { headers: { accept: 'text/html' } })
+    assert.equal(tomifin.status, 200)
+    assert.equal(tomifin.headers.get('cache-control'), 'no-cache')
+    const tomifinHtml = await tomifin.text()
+    assert.match(tomifinHtml, /<title>Tomifin Downloader<\/title>/)
+    assert.doesNotMatch(tomifinHtml, /<title>Tomify<\/title>/)
+    const tomifinWithoutSlash = await fetch(`${origin}/tomifin`, { redirect: 'manual' })
+    assert.ok([200, 307, 308].includes(tomifinWithoutSlash.status), String(tomifinWithoutSlash.status))
+    const tomifinApi = await fetch(`${origin}/api/tomifin/status`, { headers: { accept: 'text/html' } })
+    assert.equal(tomifinApi.status, 401)
+    assert.match(tomifinApi.headers.get('content-type') || '', /^application\/json/)
   })
 })
 

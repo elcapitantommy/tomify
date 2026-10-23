@@ -231,6 +231,10 @@ Icon-only buttons and links need both an `aria-label` and a `title` tooltip (the
 - Torrent recovery from a torrent search (qBittorrent's search plugins and an optional Prowlarr or Jackett, seeded results only) or a pasted magnet or `.torrent` link, downloaded by qBittorrent-nox over the box's VPN (five at a time by default, `TOMIFY_TORRENT_MAX_ACTIVE`) with live speed, seeds and time left, archives unpacked, audio imported, and the torrent removed afterwards (or when the item is deleted).
 - A read-only Library health dashboard for administrators, backed by the incremental recovery-agent inventory. It reports duplicate recordings and similar directory names, partial albums, orphaned provenance files, recovery copies shadowing masters, and imported D1 rows whose files are missing. Results come from the stored atomic inventory; viewing them does not scan or modify either library, while **Scan now** starts the existing background scan. Findings that are legitimate can be marked as fine so they stop being counted. Duplicates can be merged and Recovery copies promoted over their masters from the same page: it shows the planned moves first, moves copies to `_Duplicates` rather than deleting them, relinks matched songs in playlists, and lists recent changes with **Undo** (see docs/RECOVERY.md).
 
+### Tomifin Downloader
+
+`/tomifin/` is a separate page for Navidrome administrators: search films and TV with the same torrent sources Recovery uses, choose **Family** (`/media/family`) or **Private** (`/media/private`), and queue the torrent in the media server's qBittorrent, with live progress, pause, resume and cancel. It needs two settings on the agent and a qBittorrent drop-in; see [docs/TOMIFIN.md](docs/TOMIFIN.md).
+
 ### Deploying
 
 Cloudflare builds and deploys the site on every push to `main`; the recovery agent is deployed separately from the Windows checkout. Both, plus D1 migrations, box dependencies, secrets and backups, are covered in [DEPLOYMENT.md](docs/DEPLOYMENT.md).

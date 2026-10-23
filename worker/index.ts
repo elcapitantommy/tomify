@@ -27,6 +27,7 @@ import { releaseMetadataRoute } from './routes/release-metadata.ts'
 import { handleRecoveryRequest } from './routes/recovery.ts'
 import { smartPlaylistsRoute } from './routes/smart-playlists.ts'
 import { systemSettingsRoute } from './routes/system-settings.ts'
+import { tomifinRoute } from './routes/tomifin.ts'
 import { versionRoute } from './routes/version.ts'
 
 // Must match wrangler.toml.
@@ -49,6 +50,7 @@ const routes: RouteHandler[] = [
   systemSettingsRoute,
   inventoryRoute,
   libraryMovesRoute,
+  tomifinRoute,
   versionRoute,
   hlsRoute,
   mediaSessionRoute,

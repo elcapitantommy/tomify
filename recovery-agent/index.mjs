@@ -31,6 +31,7 @@ import { agentStatusResponse, healthResponse, recoveryAgentPackageVersion } from
 import { createHlsPackager, credentialsFromHeaders, hlsConfig, HlsError, parseHlsPath } from './hls.mjs'
 import { createImportRecovery, importStatePaths, prepareImportStaging, removeImportStaging, runManifestImport } from './manifest.mjs'
 import { createLanHandler, lanConfig, startLanServer } from './lan.mjs'
+import { createTomifinController, handleTomifinRequest, tomifinConfig } from './tomifin.mjs'
 
 let authConfiguration
 try { authConfiguration = validateRecoveryAuthConfig() }
@@ -76,6 +77,12 @@ if (youtubeCookies && inside(youtubeCookies, recoveryRoot)) throw new Error('TOM
 if (usenetDownloadRoot && masterRoot && (inside(usenetDownloadRoot, masterRoot) || inside(masterRoot, usenetDownloadRoot))) throw new Error('TOMIFY_USENET_DOWNLOAD_DIR must be separate from TOMIFY_MASTER_DIR.')
 if (torrentDownloadRoot && masterRoot && (inside(torrentDownloadRoot, masterRoot) || inside(masterRoot, torrentDownloadRoot))) throw new Error('TOMIFY_TORRENT_DOWNLOAD_DIR must be separate from TOMIFY_MASTER_DIR.')
 if (torrentDownloadRoot && (inside(torrentDownloadRoot, recoveryRoot) || inside(recoveryRoot, torrentDownloadRoot))) throw new Error('TOMIFY_TORRENT_DOWNLOAD_DIR must be separate from TOMIFY_RECOVERY_DIR.')
+
+// Tomifin Downloader: films and TV through the same qBittorrent, saved into the Family or Private Jellyfin library.
+// Off, with the reason logged, unless both library folders are configured (recovery-agent/tomifin.mjs).
+const tomifinSettings = tomifinConfig(process.env, { torrentAvailable: torrent.available, reservedPaths: [recoveryRoot, masterRoot, torrentDownloadRoot, usenetDownloadRoot, usenetStateRoot] })
+if (tomifinSettings.problem) process.stderr.write(`Tomifin Downloader is off: ${tomifinSettings.problem}\n`)
+const tomifin = createTomifinController({ config: tomifinSettings, client: tomifinSettings.enabled ? qbittorrent : null, stateRoot: usenetStateRoot, log: (message) => process.stderr.write(`${message}\n`) })
 
 function safeName(value, fallback) {
   const cleaned = String(value || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '').replace(/[. ]+$/g, '').trim().slice(0, 120)
@@ -821,6 +828,8 @@ createServer(async (request, response) => {
     if (request.url === '/v1/system/vpn/status') return send(response, 200, await vpn.status())
     if (request.url === '/v1/system/vpn') return send(response, 200, await vpn.change(body.action))
     if (request.url === '/v1/system/reboot') return send(response, 202, scheduleReboot(body, { config: reboot, spawn }))
+    const tomifinResult = await handleTomifinRequest(request.url, body, tomifin)
+    if (tomifinResult) return send(response, tomifinResult.status, tomifinResult.body)
     return send(response, 404, { error: 'not-found' })
   } catch (error) {
     const message = sanitizeToolError(error instanceof Error ? error.message : 'Recovery agent failed.', [youtubeCookies])
@@ -838,3 +847,4 @@ if (lanSettings.enabled) {
 }
 
 await jobRunner.start()
+tomifin.start()
