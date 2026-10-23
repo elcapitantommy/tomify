@@ -585,3 +585,13 @@ test('without SABnzbd, Usenet stays unavailable even with NZBIndex', async () =>
   assert.deepEqual(context.searches, [])
   await assert.rejects(context.controller.link({ file: { name: 'a.nzb', data: nzb().toString('base64') } }), { code: 'usenet-unavailable' })
 })
+
+test('deduplication keeps distinct non-Latin releases of the same size, and still merges equal ones', async () => {
+  const context = await world({
+    nzbIndex: NZBINDEX,
+    searchXml: newznabXml([{ title: '千と千尋の神隠し 2001 1080p', guid: 'j1', size: 2_000_000_000 }, { title: 'Брат 1997 1080p', guid: 'r1', size: 3_000_000_000 }]),
+    nzbIndexJson: { data: { content: [collection('j2', 'もののけ姫 2001 1080p', 2_005_000_000), collection('r2', 'брат.1997.1080p', 3_010_000_000), collection('e1', '★★★', 4_000_000_000), collection('e2', '☆☆☆', 4_000_000_000)] } },
+  })
+  const titles = (await context.controller.search({ query: 'anime', kind: 'video' })).results.map((result) => result.title).sort()
+  assert.deepEqual(titles, ['Брат 1997 1080p', 'もののけ姫 2001 1080p', '千と千尋の神隠し 2001 1080p', '★★★', '☆☆☆'].sort(), 'different Japanese titles are both kept; the Cyrillic repost is merged; names with no letters or digits never match')
+})

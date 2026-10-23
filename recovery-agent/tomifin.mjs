@@ -155,7 +155,8 @@ function visibleResult(result) {
 // Conservative: the same indexer entry, or the same release name (ignoring case and separators) with sizes within 1 %
 // (providers count a post's size slightly differently). Anything less certain is shown twice rather than hidden.
 function nzbEntryKey(entry) { return `${entry.provider || 'newznab'}\0${entry.indexerId}\0${entry.guid || entry.collectionId}` }
-function releaseName(title) { return text(title).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() }
+// Unicode-aware, so non-Latin titles (Japanese, Cyrillic, …) keep their letters rather than all becoming empty.
+function releaseName(title) { return text(title).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim() }
 function dedupeNzbs(entries) {
   const seen = new Set()
   const kept = []
@@ -163,7 +164,7 @@ function dedupeNzbs(entries) {
     if (seen.has(nzbEntryKey(entry))) continue
     seen.add(nzbEntryKey(entry))
     const name = releaseName(entry.title)
-    if (entry.size && kept.some((other) => other.size && releaseName(other.title) === name && Math.abs(other.size - entry.size) <= Math.max(other.size, entry.size) * 0.01)) continue
+    if (name && entry.size && kept.some((other) => other.size && releaseName(other.title) === name && Math.abs(other.size - entry.size) <= Math.max(other.size, entry.size) * 0.01)) continue
     kept.push(entry)
   }
   return kept
