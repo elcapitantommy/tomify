@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createQbittorrentClient, safeDetailsUrl } from './torrent.mjs'
 import { JellyfinAuthError } from './jellyfin.mjs'
-import { createTomifinController, handleTomifinRequest, hostContentPath, partialDataDeletable, stagingPath, qualityFromTitle, tomifinConfig, tomifinTorrentState, validSearchQuery } from './tomifin.mjs'
+import { UNCONFIRMED_KEEP_MS, createTomifinController, handleTomifinRequest, hostContentPath, partialDataDeletable, stagingPath, qualityFromTitle, tomifinConfig, tomifinTorrentState, validSearchQuery } from './tomifin.mjs'
 
 const hash = '0123456789abcdef0123456789abcdef01234567'
 const other = 'fedcba9876543210fedcba9876543210fedcba98'
@@ -155,7 +155,7 @@ test('a torrent already in qBittorrent is refused rather than taken over', async
 
 test('a failed qBittorrent add is reported and nothing is saved', async () => {
   const client = fakeClient({ searchResults })
-  client.add = async () => { throw new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).') }
+  client.add = async () => { throw Object.assign(new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).'), { rejected: true }) }
   const { controller, stateRoot } = await controllerWith(client)
   const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
   await assert.rejects(controller.download({ resultId: best.id, destination: 'family' }), /refused the torrent/)
@@ -277,11 +277,64 @@ test('an add that fails but reached qBittorrent keeps its record; one that did n
   assert.equal((await controller.list()).jobs.length, 1)
 
   const refusing = fakeClient({ searchResults })
-  refusing.add = async () => { throw new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).') }
+  refusing.add = async () => { throw Object.assign(new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).'), { rejected: true }) }
   const { controller: other, stateRoot: otherRoot } = await controllerWith(refusing)
   const { results: [again] } = await other.search({ query: 'Big Buck Bunny' })
   await assert.rejects(other.download({ resultId: again.id, destination: 'family' }), /refused the torrent/)
   assert.deepEqual(await readdir(join(otherRoot, 'tomifin')), [])
+})
+
+test('an add whose answer was lost keeps its record until the torrent shows up, and is dropped if it never does', async () => {
+  for (const appears of [true, false]) {
+    let clock = Date.parse('2026-10-23T12:00:00Z')
+    const client = fakeClient({ searchResults })
+    const add = client.add.bind(client)
+    let hidden = null
+    // qBittorrent takes the torrent (or not) but the answer never arrives, and it is not listed straight away.
+    client.add = async (link, options) => { if (appears) { await add(link, options); hidden = client.torrents.pop() } throw new Error('The operation was aborted due to timeout') }
+    const { controller, stateRoot } = await controllerWith(client, { now: () => clock })
+    const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+    await assert.rejects(controller.download({ resultId: best.id, destination: 'family' }), (error) => error.code === 'unconfirmed')
+    assert.equal((await readdir(join(stateRoot, 'tomifin'))).length, 1, 'record kept')
+    const [waiting] = (await controller.list()).jobs
+    assert.deepEqual([waiting.status, waiting.message, waiting.keepsFilesOnCancel], ['queued', 'Waiting for qBittorrent to confirm', true])
+    const { results: [again] } = await controller.search({ query: 'Big Buck Bunny' })
+    await assert.rejects(controller.download({ resultId: again.id, destination: 'family' }), /already in your downloads/, 'not queued twice while unconfirmed')
+    clock += 5 * 60_000
+    if (appears) client.torrents.push(hidden)
+    await controller.observe()
+    if (appears) {
+      const saved = JSON.parse(await readFile(join(stateRoot, 'tomifin', `${waiting.id}.json`), 'utf8'))
+      assert.equal(saved.unconfirmedSince, undefined)
+      assert.equal((await controller.list()).jobs[0].message, 'Fetching torrent details')
+      clock += UNCONFIRMED_KEEP_MS * 2
+      await controller.observe()
+      assert.equal((await controller.list()).jobs.length, 1, 'a confirmed download is never dropped')
+    } else {
+      assert.equal((await controller.list()).jobs.length, 1, 'still waiting')
+      clock += UNCONFIRMED_KEEP_MS
+      await controller.observe()
+      assert.deepEqual((await controller.list()).jobs, [])
+      assert.deepEqual(await readdir(join(stateRoot, 'tomifin')), [])
+    }
+    assert.equal(client.calls.some(([name]) => name === 'remove'), false)
+  }
+})
+
+test('the qBittorrent client marks a definite refusal, and leaves a lost answer unmarked', async () => {
+  let answer = () => new Response('Ok.')
+  const fetchImpl = async (input) => {
+    const path = new URL(String(input)).pathname
+    if (path === '/api/v2/auth/login') return new Response('Ok.', { headers: { 'set-cookie': 'SID=abc; path=/' } })
+    if (path === '/api/v2/torrents/add') return answer()
+    return new Response('', { status: 200 })
+  }
+  const client = createQbittorrentClient({ url: 'http://127.0.0.1:8081', username: 'tomify', password: 'secret', category: 'tomify' }, fetchImpl)
+  const options = { tag: 'tomifin-1', savePath: '/media/family', category: 'tomifin-family' }
+  for (const [name, reply, rejected] of [['refused', () => new Response('Fails.'), true], ['error status', () => new Response('', { status: 415 }), true], ['timeout', () => { throw new DOMException('The operation was aborted due to timeout', 'TimeoutError') }, undefined]]) {
+    answer = reply
+    await assert.rejects(client.add(`magnet:?xt=urn:btih:${hash}`, options), (error) => error.rejected === rejected, name)
+  }
 })
 
 test('a double click or retry cannot add the same torrent twice', async () => {

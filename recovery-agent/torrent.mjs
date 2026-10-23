@@ -289,16 +289,22 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
     // multi-file torrent in a folder of its own rather than spread over the save path. downloadPath (qBittorrent 4.4
     // and later) keeps unfinished data there and moves it to savePath when the torrent completes.
     async add(link, { tag, savePath, downloadPath = null, category = config.category, subfolder = false }) {
-      // An indexer link is fetched here first: it needs the indexer's API key, and qBittorrent may not reach it.
-      const fetched = isIndexerLink(link, config.indexers || []) ? await fetchIndexerTorrent(link, config.indexers, fetchImpl) : null
-      const cookie = await session()
-      await ensureCategory(cookie, category, savePath)
-      await ensureQueueLimits(cookie)
+      // An error marked rejected means qBittorrent certainly did not add the torrent: it was never sent, or
+      // qBittorrent answered with a refusal. Any other error (a timeout, a dropped connection) leaves it unknown.
+      const rejected = (error) => Object.assign(error instanceof Error ? error : new Error(String(error)), { rejected: true })
+      let cookie, fetched
+      try {
+        // An indexer link is fetched here first: it needs the indexer's API key, and qBittorrent may not reach it.
+        fetched = isIndexerLink(link, config.indexers || []) ? await fetchIndexerTorrent(link, config.indexers, fetchImpl) : null
+        cookie = await session()
+        await ensureCategory(cookie, category, savePath)
+        await ensureQueueLimits(cookie)
+      } catch (error) { throw rejected(error) }
       // contentLayout is qBittorrent 4.3.2 and later; root_folder is the older name for the same choice.
       const form = { urls: fetched?.magnet || link, category, tags: tag, savepath: savePath, ...(downloadPath ? { useDownloadPath: 'true', downloadPath } : {}), ...(subfolder ? { contentLayout: 'Subfolder', root_folder: 'true' } : {}) }
       const { response, body } = fetched?.torrent ? await upload(cookie, fetched.torrent, form) : await call(cookie, 'torrents/add', form, 'qBittorrent add')
-      if (!response.ok) throw new Error(`qBittorrent add returned HTTP ${response.status}.`)
-      if (/^fails/i.test(text(body))) throw new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).')
+      if (!response.ok) throw rejected(new Error(`qBittorrent add returned HTTP ${response.status}.`))
+      if (/^fails/i.test(text(body))) throw rejected(new Error('qBittorrent refused the torrent link (it may already be in qBittorrent).'))
       return { downloader: 'qbittorrent', remoteId: tag }
     },
     async findByHash(hash) {

@@ -14,7 +14,7 @@ const RESULT_ID = /^[a-f0-9]{64}$/
 const JOB_ROUTE = /^\/api\/tomifin\/downloads\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/(pause|resume|cancel)$/
 const COOKIE = 'tomifin_session'
 const COOKIE_DAYS = 30
-const STATUS_FOR_CODE: Record<string, number> = { unauthorized: 401, 'invalid-login': 401, forbidden: 403, duplicate: 409, 'result-expired': 409, 'not-configured': 503, 'jellyfin-unavailable': 502 }
+const STATUS_FOR_CODE: Record<string, number> = { unauthorized: 401, 'invalid-login': 401, forbidden: 403, duplicate: 409, 'result-expired': 409, unconfirmed: 504, 'not-configured': 503, 'jellyfin-unavailable': 502 }
 
 function invalid(error: string, message: string) { return json({ error, message }, 400) }
 

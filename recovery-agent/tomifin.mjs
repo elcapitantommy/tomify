@@ -32,6 +32,9 @@ const RESULT_TTL_MS = 60 * 60_000
 const RESULT_CACHE_LIMIT = 1000
 // A freshly added magnet can take a moment to appear in qBittorrent's list.
 const MISSING_GRACE_MS = 2 * 60_000
+// How long a download qBittorrent never confirmed or refused (the add timed out, say) is kept while Tomifin waits for
+// the torrent to appear.
+export const UNCONFIRMED_KEEP_MS = 15 * 60_000
 const JOB_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
 const RESULT_ID = /^[a-f0-9]{64}$/
 const TOMIFIN_TAG = /^tomifin-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/
@@ -263,6 +266,21 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
       try { await saveJob(job); jobs.push(job); known.add(id); log(`Tomifin found "${job.title.slice(0, 120)}" in qBittorrent without a record and is tracking it again`) }
       catch (error) { log(`Tomifin could not record "${job.title.slice(0, 120)}": ${error instanceof Error ? error.message : String(error)}`) }
     }
+    // A download whose add was never confirmed: confirmed once its torrent shows up, dropped if it never does.
+    for (const job of [...jobs]) {
+      if (!job.unconfirmedSince) continue
+      if (torrentForJob(torrents, job)) {
+        delete job.unconfirmedSince
+        await saveJob(job).catch(() => {})
+        log(`Tomifin confirmed "${String(job.title).slice(0, 120)}" in qBittorrent`)
+      } else if (now() - Date.parse(job.unconfirmedSince) > UNCONFIRMED_KEEP_MS) {
+        try {
+          await unlink(jobPath(job.id))
+          jobs.splice(jobs.indexOf(job), 1)
+          log(`Tomifin dropped "${String(job.title).slice(0, 120)}": qBittorrent never showed it`)
+        } catch (error) { if (error?.code !== 'ENOENT') log(`Tomifin could not drop an unconfirmed download: ${error.message}`) }
+      }
+    }
     for (const job of jobs) {
       const torrent = torrentForJob(torrents, job)
       if (!torrent || torrentSize(torrent) <= config.maxBytes) continue
@@ -291,6 +309,13 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
 
   function jobView(job, torrent) {
     const destination = config.destinations[job.destination]
+    if (!torrent && job.unconfirmedSince) {
+      return {
+        id: job.id, name: job.title, destination: job.destination, destinationLabel: destination?.label || job.destination,
+        status: 'queued', message: 'Waiting for qBittorrent to confirm', progress: 0, downloadSpeed: null, uploadSpeed: null, downloaded: null, size: job.size || null,
+        eta: null, seeds: null, peers: null, source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, keepsFilesOnCancel: true,
+      }
+    }
     if (!torrent && job.completedAt) {
       return {
         id: job.id, name: job.title, destination: job.destination, destinationLabel: destination?.label || job.destination,
@@ -381,11 +406,19 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
           // Throws unless qBittorrent accepted the torrent, so success is reported only after it acknowledged it.
           await client.add(parsed.link, { tag: tag(id), savePath: destination.qbittorrentPath, downloadPath: stagingPath(destination, id), category: destination.category, subfolder: true })
         } catch (error) {
-          // qBittorrent may have taken the torrent even though the call failed (a timeout, say): keep the record then.
-          const added = await torrentFor(job).catch(() => null)
-          if (!added) {
+          // Only a definite refusal removes the record. When qBittorrent's answer was lost (a timeout, a dropped
+          // connection) it may still have taken the torrent, perhaps without showing it yet, so the record is kept
+          // and the regular check (reconcile) confirms it when the torrent appears, or drops it after a while.
+          if (error?.rejected === true) {
             await unlink(jobPath(id)).catch((failure) => log(`Tomifin could not remove the record of a download qBittorrent refused: ${failure?.message || failure}`))
             throw error
+          }
+          if (!await torrentFor(job).catch(() => null)) {
+            job.unconfirmedSince = new Date(now()).toISOString()
+            await saveJob(job).catch((failure) => log(`Tomifin could not mark a download as unconfirmed: ${failure?.message || failure}`))
+            results.delete(resultId)
+            log(`Tomifin could not confirm "${result.title.slice(0, 120)}" with qBittorrent and will keep checking: ${error instanceof Error ? error.message : String(error)}`)
+            throw new TomifinError('unconfirmed', 'qBittorrent did not confirm the download. It is on your downloads list while Tomifin checks whether it arrived; do not queue it again.')
           }
         }
         results.delete(resultId)
