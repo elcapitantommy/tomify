@@ -1,10 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { lstat, mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readdir, readFile, rename, stat, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createTomifinController, tomifinConfig } from './tomifin.mjs'
-import { DEFAULT_SABNZBD_CATEGORIES, createTomifinUsenet, sabHistoryState, sabQueueState, sabTimeLeft, tomifinUsenetConfig } from './tomifin-usenet.mjs'
+import { DEFAULT_SABNZBD_CATEGORIES, createTomifinUsenet, publishRetryDelay, sabHistoryState, sabQueueState, sabTimeLeft, tomifinUsenetConfig } from './tomifin-usenet.mjs'
 import { createSabnzbdClient, parseNewznabVideoResults } from './usenet.mjs'
 
 const INDEXER_KEY = 'INDEXERSECRETKEY123'
@@ -446,4 +446,34 @@ test('an NZB link or upload becomes a normal SABnzbd job; NZBs are refused when 
   await assert.rejects(off.controller.link({ file: { name: 'a.nzb', data: nzb().toString('base64') } }), (error) => error.code === 'usenet-unavailable' && /SABnzbd is not configured/.test(error.message))
   const magnet = await off.controller.link({ link: `magnet:?xt=urn:btih:${'d'.repeat(40)}&dn=Torrent%20Still%20Works` })
   assert.equal(magnet.detected, 'magnet')
+})
+
+test('a library outage keeps a finished download waiting with growing gaps, never failing it, and it publishes once the library is back', async () => {
+  assert.deepEqual([1, 2, 3, 6, 7, 40].map(publishRetryDelay), [30_000, 60_000, 120_000, 960_000, 1_800_000, 1_800_000])
+  let clock = Date.parse('2026-10-23T10:00:00Z')
+  const context = await world()
+  const usenet = createTomifinUsenet({ config: context.config, tomifin: context.tomifin, stateRoot: context.stateRoot, sab: context.sab, fetchNzb: async () => ({ bytes: nzb() }), fetchImpl: async () => new Response(newznabXml([{ title: 'Sintel.2010.1080p', guid: 'g1' }])), probe: async () => ({ ok: true, duration: 5400 }), stableMs: 0, now: () => clock })
+  const controller = createTomifinController({ config: context.tomifin, client: context.qb, stateRoot: context.stateRoot, usenet, randomId: () => id(1), now: () => clock })
+  const found = await controller.search({ query: 'Sintel', kind: 'video' })
+  await controller.download({ resultId: found.results[0].id, destination: 'private' })
+  await context.sab.finish('SABnzbd_nzo_1', context.completed, { 'Sintel.2010.1080p.mkv': film })
+  // The Private pool drops out (here: its folder disappears) for far longer than 40 attempts' worth of retries.
+  const away = `${context.privateLibrary}-offline`
+  await rename(context.privateLibrary, away)
+  const record = async () => JSON.parse(await readFile(join(context.stateRoot, 'tomifin', `${id(1)}.json`), 'utf8'))
+  for (let round = 0; round < 60; round += 1) {
+    await controller.observe()
+    clock += 31 * 60_000
+  }
+  const waiting = await record()
+  assert.equal(waiting.import.state, 'pending')
+  assert.ok(waiting.import.attempts >= 50, `retried ${waiting.import.attempts} times`)
+  assert.equal(Date.parse(waiting.import.nextAttemptAt) - Date.parse(waiting.import.at), 30 * 60_000, 'retries settle at every 30 minutes')
+  const [view] = (await controller.list()).jobs
+  assert.equal(view.status, 'downloading')
+  assert.match(view.message, /^Waiting to publish to Private/)
+  await rename(away, context.privateLibrary)
+  await controller.observe()
+  assert.equal((await record()).import.state, 'published')
+  assert.equal(await readFile(join(context.privateLibrary, 'Sintel.2010.1080p', 'Sintel.2010.1080p.mkv'), 'utf8'), film)
 })

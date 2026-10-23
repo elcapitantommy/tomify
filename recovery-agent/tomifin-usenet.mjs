@@ -21,8 +21,12 @@ export const DEFAULT_SABNZBD_CATEGORIES = Object.freeze({ family: 'tomifin-famil
 export const NEWZNAB_CATEGORIES = Object.freeze({ video: '2000,5000', movies: '2000', tv: '5000' })
 export const UNCONFIRMED_KEEP_MS = 15 * 60_000
 const MISSING_GRACE_MS = 15 * 60_000
+// Publication that fails for a reason that may pass (a library or pool briefly unmounted, a disk error, SABnzbd's
+// folder not there yet) is retried with growing gaps, up to every 30 minutes, for as long as it takes; only a
+// definite problem with the download itself fails it or holds it for review.
 const RETRY_MS = 30_000
-const MAX_IMPORT_ATTEMPTS = 40
+const MAX_RETRY_MS = 30 * 60_000
+export function publishRetryDelay(attempts) { return Math.min(MAX_RETRY_MS, RETRY_MS * 2 ** Math.min(Math.max(0, attempts - 1), 16)) }
 const CATEGORY = /^[a-z0-9][a-z0-9_.-]{0,63}$/i
 const PRIVATE_REVIEW = '.tomifin-review'
 
@@ -328,8 +332,7 @@ export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.
         return retry(error)
       }
       async function retry(error) {
-        if (attempts >= MAX_IMPORT_ATTEMPTS) await finish('failed', { code: 'import-failed', reason: cleanMessage(message(error)) || 'Publication kept failing.' })
-        else await finish('pending', { reason: cleanMessage(message(error)), nextAttemptAt: new Date(now() + RETRY_MS).toISOString() })
+        await finish('pending', { reason: cleanMessage(message(error)) || 'Publication failed; trying again.', nextAttemptAt: new Date(now() + publishRetryDelay(attempts)).toISOString() })
       }
     },
 
