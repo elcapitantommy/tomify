@@ -184,7 +184,7 @@ Each run logs one JSON line per torrent to the journal (`journalctl -u tomifin-f
 
 ### Permissions
 
-The importer runs as `qbittorrent` with group `media-family`. That is because the kernel only lets a file's owner, or someone allowed to write to it, hardlink it (`fs.protected_hardlinks`), and qBittorrent owns the downloads. Its unit is otherwise locked down: it can write only under `/media/family` and its own state folder, sees an empty `/home`, and can reach only qBittorrent on this machine. qBittorrent's own unit and hardening are not changed. The hook runs inside qBittorrent's existing sandbox and only creates a file in staging.
+The importer runs as `qbittorrent` with group `media-family`. That is because the kernel only lets a file's owner, or someone allowed to write to it, hardlink it (`fs.protected_hardlinks`), and qBittorrent owns the downloads. Its unit is otherwise locked down: it can write only under `/media/family` and its own state folder, sees an empty `/home`, and can reach only qBittorrent on this machine. Its system calls are limited to systemd's `@system-service` set; a call outside it fails with `EPERM` rather than killing the importer (Node 20 tries `io_uring`, which that set leaves out, and `UV_USE_IO_URING=0` turns that off). qBittorrent's own unit and hardening are not changed. The hook runs inside qBittorrent's existing sandbox and only creates a file in staging.
 
 Jellyfin skips `.downloads`, `.review` and `.publishing`: each has a `.ignore` file, and their names start with a dot.
 

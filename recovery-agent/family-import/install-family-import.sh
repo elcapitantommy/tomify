@@ -25,6 +25,7 @@ dry_run() {
     -p EnvironmentFile="$env_file" -p Environment=TOMIFIN_IMPORT_LIBRARY="$library" -p Environment=TOMIFIN_IMPORT_MOVIES_SUBDIR=Movies \
     -p "UnsetEnvironment=TOMIFY_RECOVERY_TOKEN TOMIFY_YOUTUBE_COOKIES TOMIFY_SABNZBD_API_KEY TOMIFY_LAN_TLS_KEY TOMIFY_MEDIA_KEY" \
     -p StateDirectory=tomifin-import -p StateDirectoryMode=0700 \
+    -p SystemCallFilter=@system-service -p SystemCallErrorNumber=EPERM -p Environment=UV_USE_IO_URING=0 -p NoNewPrivileges=yes \
     /usr/bin/node "$agent/family-import.mjs" --scan --dry-run
 }
 

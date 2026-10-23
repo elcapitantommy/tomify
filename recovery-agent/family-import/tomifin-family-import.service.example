@@ -52,6 +52,10 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+# A call outside the filter fails with EPERM instead of killing node. Node 20's libuv tries io_uring, which
+# @system-service leaves out; with EPERM it falls back to its thread pool. UV_USE_IO_URING=0 skips the attempt.
+SystemCallErrorNumber=EPERM
+Environment=UV_USE_IO_URING=0
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any
 IPAddressAllow=localhost
