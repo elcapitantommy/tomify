@@ -385,6 +385,15 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
       if (settled.every((result) => result.status === 'rejected')) throw settled[0].reason
       return settled.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
     },
+    // qBittorrent's own view of its network: connected, firewalled or disconnected. qBittorrent is bound to the VPN
+    // interface, so "disconnected" is what it reports while the VPN is down.
+    async connection() {
+      const cookie = await session()
+      const response = await fetchImpl(`${config.url}/api/v2/transfer/info`, { headers: cookie ? { cookie } : {}, signal: AbortSignal.timeout(15_000) })
+      if (!response.ok) throw new Error(`qBittorrent returned HTTP ${response.status}.`)
+      const status = text((await response.json())?.connection_status).toLowerCase()
+      return ['connected', 'firewalled', 'disconnected'].includes(status) ? status : 'unknown'
+    },
     // Every torrent in one category, with one login (Tomifin's downloads list).
     async list(category) {
       const cookie = await session()

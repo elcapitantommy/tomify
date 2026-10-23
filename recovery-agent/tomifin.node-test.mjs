@@ -18,6 +18,8 @@ function fakeClient({ searchResults = [], existing = [] } = {}) {
   const torrents = [...existing]
   return {
     calls, torrents,
+    connectionStatus: 'connected',
+    async connection() { calls.push(['connection']); if (this.connectionStatus instanceof Error) throw this.connectionStatus; return this.connectionStatus },
     async search(pattern, options) { calls.push(['search', pattern, options]); return searchResults },
     async findByHash(value) { calls.push(['findByHash', value]); return torrents.find((torrent) => torrent.hash === value) || null },
     async add(link, options) {
@@ -434,6 +436,33 @@ test('a finished torrent qBittorrent will not remove is tried again', async () =
   assert.deepEqual(client.calls.filter(([name]) => name === 'remove'), [['remove', hash, false]])
 })
 
+test('the VPN status combines qBittorrent\'s connection with NordVPN\'s, without addresses', async () => {
+  const nord = (extra) => async () => ({ control: 'enabled', state: 'connected', server: 'uk2012.nordvpn.com', country: 'United Kingdom', city: 'London', ip: '203.0.113.7', technology: 'NORDLYNX', ...extra })
+  const cases = [
+    ['connected', null, { state: 'connected', nordvpn: null }],
+    ['connected', nord(), { state: 'connected', nordvpn: { state: 'connected', country: 'United Kingdom', city: 'London', server: 'uk2012.nordvpn.com' } }],
+    ['firewalled', nord(), { state: 'connected' }],
+    ['disconnected', nord(), { state: 'down' }],
+    ['connected', nord({ state: 'disconnected' }), { state: 'down' }],
+    ['unknown', nord({ state: 'connecting' }), { state: 'connecting' }],
+    [new Error('qBittorrent is down'), null, { state: 'unknown', qbittorrent: 'unknown' }],
+    ['connected', async () => ({ control: 'disabled', state: 'unknown' }), { state: 'connected', nordvpn: null }],
+    ['connected', async () => ({ control: 'enabled', state: 'unavailable', message: 'NordVPN did not answer.' }), { state: 'connected', nordvpn: null }],
+    ['connected', async () => { throw new Error('nordvpn missing') }, { state: 'connected', nordvpn: null }],
+  ]
+  for (const [connection, vpnStatus, expected] of cases) {
+    const client = fakeClient()
+    client.connectionStatus = connection
+    const { controller } = await controllerWith(client, { vpnStatus })
+    const result = await controller.vpn()
+    for (const [key, value] of Object.entries(expected)) assert.deepEqual(result[key], value, `${connection} ${key}`)
+    assert.doesNotMatch(JSON.stringify(result), /203\.0\.113|NORDLYNX/)
+  }
+  const route = await handleTomifinRequest('/v1/tomifin/vpn', { session: 'good-session-token' }, (await controllerWith(fakeClient())).controller, fakeAuth)
+  assert.deepEqual(route, { status: 200, body: { state: 'connected', qbittorrent: 'connected', nordvpn: null } })
+  assert.equal((await handleTomifinRequest('/v1/tomifin/vpn', {}, (await controllerWith(fakeClient())).controller, fakeAuth)).body.code, 'unauthorized')
+})
+
 test('details links never carry credentials or point at private hosts', () => {
   assert.equal(safeDetailsUrl('https://yts.test/movies/big-buck-bunny-2008'), 'https://yts.test/movies/big-buck-bunny-2008')
   assert.equal(safeDetailsUrl('https://tracker.test/details.php?id=12345'), 'https://tracker.test/details.php?id=12345')
@@ -497,6 +526,7 @@ test('the qBittorrent client lists a category, pauses with the 5.x names and fal
     if (url.pathname === '/api/v2/torrents/info') return Response.json([{ hash, category: 'tomifin-family' }, { hash: other, category: 'tomify' }])
     if (url.pathname === '/api/v2/torrents/stop' || url.pathname === '/api/v2/torrents/start') return new Response('', { status: modern ? 200 : 404 })
     if (url.pathname === '/api/v2/torrents/pause' || url.pathname === '/api/v2/torrents/resume') return new Response('')
+    if (url.pathname === '/api/v2/transfer/info') return Response.json({ connection_status: 'firewalled' })
     if (url.pathname === '/api/v2/torrents/createCategory') return new Response('', { status: 409 })
     if (url.pathname === '/api/v2/torrents/add') return new Response('Ok.')
     return new Response('', { status: 200 })
@@ -508,6 +538,7 @@ test('the qBittorrent client lists a category, pauses with the 5.x names and fal
   modern = false
   await client.resume(hash)
   assert.deepEqual(calls.filter((call) => /stop|start|pause|resume/.test(call.path)).map((call) => call.path), ['/api/v2/torrents/stop', '/api/v2/torrents/start', '/api/v2/torrents/resume'])
+  assert.equal(await client.connection(), 'firewalled')
   await client.add(`magnet:?xt=urn:btih:${hash}`, { tag: 'tomifin-1', savePath: '/media/family', category: 'tomifin-family', subfolder: true })
   assert.deepEqual(calls.find((call) => call.path === '/api/v2/torrents/createCategory').body, { category: 'tomifin-family', savePath: '/media/family' })
   assert.deepEqual(calls.find((call) => call.path === '/api/v2/torrents/add').body, { urls: `magnet:?xt=urn:btih:${hash}`, category: 'tomifin-family', tags: 'tomifin-1', savepath: '/media/family', contentLayout: 'Subfolder', root_folder: 'true' })

@@ -83,6 +83,7 @@ export const tomifinRoute: RouteHandler = async (request, env, url) => {
   if (!session) return json({ error: 'unauthorized', message: 'Sign in with your Jellyfin account.' }, 401)
 
   if (url.pathname === '/api/tomifin/status' && request.method === 'GET') return agent(env, '/v1/tomifin/status', { session })
+  if (url.pathname === '/api/tomifin/vpn' && request.method === 'GET') return agent(env, '/v1/tomifin/vpn', { session })
 
   if (url.pathname === '/api/tomifin/search' && request.method === 'GET') {
     const query = (url.searchParams.get('q') || '').replace(/\s+/g, ' ').trim()
