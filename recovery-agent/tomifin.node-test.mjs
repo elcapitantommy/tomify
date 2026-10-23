@@ -4,6 +4,7 @@ import { mkdtemp, readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createQbittorrentClient } from './torrent.mjs'
+import { JellyfinAuthError } from './jellyfin.mjs'
 import { createTomifinController, handleTomifinRequest, hostContentPath, qualityFromTitle, tomifinConfig, tomifinTorrentState, validSearchQuery } from './tomifin.mjs'
 
 const hash = '0123456789abcdef0123456789abcdef01234567'
@@ -240,16 +241,33 @@ test('cancelling never deletes files that were already in the library, or a fini
   }
 })
 
-test('the agent routes report Tomifin errors as JSON and ignore other paths', async () => {
+// A Jellyfin sign-in stand-in: the session 'good-session-token' belongs to an administrator.
+const fakeAuth = {
+  async login() { return { token: 'good-session-token', user: { name: 'tom' } } },
+  async logout() { return { signedOut: true } },
+  async verify(session) {
+    if (session !== 'good-session-token') throw new JellyfinAuthError('unauthorized', 'Sign in with your Jellyfin account.')
+    return { name: 'tom', isAdmin: true }
+  },
+}
+
+test('the agent routes need a Jellyfin session, report Tomifin errors as JSON and ignore other paths', async () => {
   const { controller } = await controllerWith(fakeClient({ searchResults }))
-  assert.equal(await handleTomifinRequest('/v1/status', {}, controller), null)
-  assert.equal(await handleTomifinRequest('/v1/tomifin/../status', {}, controller), null)
-  assert.deepEqual((await handleTomifinRequest('/v1/tomifin/status', {}, controller)).body.destinations.map(({ id, available }) => [id, available]), [['family', true], ['private', true]])
-  const refused = await handleTomifinRequest('/v1/tomifin/download', { resultId: 'x', destination: 'family' }, controller)
+  const session = 'good-session-token'
+  const call = (path, body = {}, target = controller) => handleTomifinRequest(path, body, target, fakeAuth)
+  assert.equal(await call('/v1/status'), null)
+  assert.equal(await call('/v1/tomifin/../status'), null)
+  const denied = await call('/v1/tomifin/status', { session: 'someone-else-token' })
+  assert.deepEqual([denied.status, denied.body.code], [400, 'unauthorized'])
+  assert.equal((await call('/v1/tomifin/downloads')).body.code, 'unauthorized')
+  assert.deepEqual((await call('/v1/tomifin/login', { username: 'tom', password: 'x' })).body, { token: session, user: { name: 'tom' } })
+  assert.deepEqual((await call('/v1/tomifin/session', { session })).body, { user: { name: 'tom' } })
+  assert.deepEqual((await call('/v1/tomifin/status', { session })).body.destinations.map(({ id, available }) => [id, available]), [['family', true], ['private', true]])
+  const refused = await call('/v1/tomifin/download', { session, resultId: 'x', destination: 'family' })
   assert.equal(refused.status, 400)
   assert.equal(refused.body.code, 'invalid-result')
   const off = createTomifinController({ config: tomifinConfig({}, { torrentAvailable: true }), client: null, stateRoot: tmpdir() })
-  const unavailable = await handleTomifinRequest('/v1/tomifin/search', { query: 'Big Buck Bunny' }, off)
+  const unavailable = await call('/v1/tomifin/search', { session, query: 'Big Buck Bunny' }, off)
   assert.equal(unavailable.body.code, 'not-configured')
   assert.equal(off.status().available, false)
 })

@@ -1,5 +1,3 @@
-import { useAuth } from '../stores/auth'
-
 export type TomifinDestination = 'family' | 'private'
 export type TomifinKind = 'video' | 'movies' | 'tv'
 export type TomifinStatus = 'queued' | 'downloading' | 'stalled' | 'paused' | 'completed' | 'failed'
@@ -27,16 +25,15 @@ export class TomifinRequestError extends Error {
   constructor(message: string, status: number, code: string) { super(message); this.name = 'TomifinRequestError'; this.status = status; this.code = code }
 }
 
-// The same Navidrome sign-in Tomify uses: the Worker checks it, and the administrator role, on every request.
+// The Jellyfin session lives in an HttpOnly cookie the page cannot read; the browser sends it with each request.
+// x-tomifin marks requests from this page, which the Worker requires for anything that changes state.
 function headers(json: boolean): HeadersInit {
-  const session = useAuth.getState().session
-  if (!session) throw new TomifinRequestError('Sign in to use Tomifin Downloader.', 401, 'unauthorized')
-  return { 'x-tomify-user': session.username, 'x-tomify-token': session.token, 'x-tomify-salt': session.salt, ...(json ? { 'content-type': 'application/json' } : {}) }
+  return { 'x-tomifin': '1', ...(json ? { 'content-type': 'application/json' } : {}) }
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response
-  try { response = await fetch(path, { ...init, headers: { ...headers(Boolean(init.body)), ...init.headers } }) }
+  try { response = await fetch(path, { credentials: 'same-origin', ...init, headers: { ...headers(Boolean(init.body)), ...init.headers } }) }
   catch (error) {
     if (error instanceof TomifinRequestError || (error instanceof DOMException && error.name === 'AbortError')) throw error
     throw new TomifinRequestError('Tomify could not be reached. Check your connection and try again.', 0, 'network')
@@ -47,6 +44,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const tomifinApi = {
+  session: (signal?: AbortSignal) => request<{ user: { name: string } }>('/api/tomifin/session', { signal }),
+  signIn: (username: string, password: string) => request<{ user: { name: string } }>('/api/tomifin/session', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  signOut: () => request<{ signedOut: true }>('/api/tomifin/session', { method: 'DELETE' }),
   status: (signal?: AbortSignal) => request<TomifinServiceStatus>('/api/tomifin/status', { signal }),
   search: (query: string, kind: TomifinKind, signal?: AbortSignal) => request<{ query: string; kind: TomifinKind; results: TomifinResult[] }>(`/api/tomifin/search?${new URLSearchParams({ q: query, kind })}`, { signal }),
   download: (resultId: string, destination: TomifinDestination) => request<{ job: TomifinJob }>('/api/tomifin/download', { method: 'POST', body: JSON.stringify({ resultId, destination }) }),

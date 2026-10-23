@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CircleCheck, Clapperboard, ExternalLink, FileDown, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Pause, Play, RefreshCw, Search, Server, TriangleAlert, UserRound, Users, X } from 'lucide-react'
-import { useAuth } from '../stores/auth'
+import { CircleCheck, Clapperboard, ExternalLink, FileDown, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Pause, Play, RefreshCw, Search, TriangleAlert, UserRound, Users, X } from 'lucide-react'
 import { DESTINATIONS, formatEta, formatSize, formatSpeed, tomifinApi, TomifinRequestError, type TomifinDestination, type TomifinJob, type TomifinKind, type TomifinResult, type TomifinServiceStatus } from './api'
 import { sortResults, type SortKey } from './results'
 
-const DEFAULT_NAVIDROME_URL = import.meta.env.VITE_NAVIDROME_URL || 'https://tomify.tomdixon.uk'
+type TomifinUser = { name: string }
 const ACTIVE_POLL_MS = 3000
 const IDLE_POLL_MS = 15000
 const KINDS: Array<{ id: TomifinKind; label: string }> = [{ id: 'video', label: 'Films & TV' }, { id: 'movies', label: 'Films' }, { id: 'tv', label: 'TV' }]
@@ -13,23 +12,26 @@ const STATUS_LABELS: Record<TomifinJob['status'], string> = { queued: 'Queued', 
 
 function message(error: unknown) { return error instanceof Error ? error.message : 'Something went wrong.' }
 
-function SignIn() {
-  const login = useAuth((state) => state.login)
-  const status = useAuth((state) => state.status)
-  const error = useAuth((state) => state.error)
-  const [server, setServer] = useState(DEFAULT_NAVIDROME_URL)
+function SignIn({ onSignedIn }: { onSignedIn: (user: TomifinUser) => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const submit = async () => {
+    setBusy(true); setError(null)
+    try { const { user } = await tomifinApi.signIn(username, password); setPassword(''); onSignedIn(user) }
+    catch (failure) { setError(message(failure)) }
+    finally { setBusy(false) }
+  }
   return (
     <section className="tf-panel tf-signin" aria-labelledby="tf-signin-title">
       <h2 id="tf-signin-title">Sign in</h2>
-      <p>Use the same Navidrome administrator account you use for Tomify.</p>
-      <form onSubmit={(event) => { event.preventDefault(); void login(server, username, password).catch(() => undefined) }}>
-        <label><span>Music server</span><div className="tf-input"><Server aria-hidden/><input type="url" value={server} onChange={(event) => setServer(event.target.value)} required autoComplete="url"/></div></label>
-        <label><span>Username</span><div className="tf-input"><UserRound aria-hidden/><input value={username} onChange={(event) => setUsername(event.target.value)} required autoComplete="username"/></div></label>
-        <label><span>Password</span><div className="tf-input"><LockKeyhole aria-hidden/><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password"/></div></label>
+      <p>Use your Jellyfin account. Tomifin is for Jellyfin administrators.</p>
+      <form onSubmit={(event) => { event.preventDefault(); void submit() }}>
+        <label><span>Jellyfin username</span><div className="tf-input"><UserRound aria-hidden/><input value={username} onChange={(event) => setUsername(event.target.value)} required autoComplete="username" autoCapitalize="none" spellCheck={false}/></div></label>
+        <label><span>Password</span><div className="tf-input"><LockKeyhole aria-hidden/><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password"/></div></label>
         {error && <div className="tf-alert tf-alert-error" role="alert"><TriangleAlert aria-hidden/>{error}</div>}
-        <button className="tf-button tf-primary tf-wide" disabled={status === 'checking'}>{status === 'checking' ? <><LoaderCircle className="tf-spin" aria-hidden/>Signing in…</> : 'Sign in'}</button>
+        <button className="tf-button tf-primary tf-wide" disabled={busy}>{busy ? <><LoaderCircle className="tf-spin" aria-hidden/>Signing in…</> : 'Sign in'}</button>
       </form>
     </section>
   )
@@ -140,7 +142,7 @@ function Downloads({ jobs, loading, error, onRefresh, onAction, busyId }: { jobs
   )
 }
 
-function Downloader() {
+function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignOut: () => void; onExpired: () => void }) {
   const [status, setStatus] = useState<TomifinServiceStatus | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [destination, setDestination] = useState<TomifinDestination | null>(null)
@@ -161,20 +163,21 @@ function Downloader() {
   const [busyJob, setBusyJob] = useState<string | null>(null)
   const searchAbort = useRef<AbortController | null>(null)
   const destinationRef = useRef<HTMLDivElement | null>(null)
-  const logout = useAuth((state) => state.logout)
+  // A session Jellyfin no longer accepts goes back to the sign-in form; other errors are shown where they happened.
+  const failed = useCallback((error: unknown) => { if (error instanceof TomifinRequestError && (error.status === 401 || error.status === 403)) { onExpired(); return true } return false }, [onExpired])
 
   useEffect(() => {
     const controller = new AbortController()
-    tomifinApi.status(controller.signal).then(setStatus, (error) => { if (!controller.signal.aborted) setStatusError(message(error)) })
+    tomifinApi.status(controller.signal).then(setStatus, (error) => { if (!controller.signal.aborted && !failed(error)) setStatusError(message(error)) })
     return () => controller.abort()
-  }, [])
+  }, [failed])
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setJobsLoading(true)
     try { const { jobs: next } = await tomifinApi.downloads(signal); setJobs(next); setJobsError(null) }
-    catch (error) { if (!signal?.aborted) setJobsError(message(error)) }
+    catch (error) { if (!signal?.aborted && !failed(error)) setJobsError(message(error)) }
     finally { if (!signal?.aborted) setJobsLoading(false) }
-  }, [])
+  }, [failed])
 
   const active = Boolean(jobs?.some((job) => ['queued', 'downloading', 'stalled'].includes(job.status)))
   useEffect(() => {
@@ -197,7 +200,7 @@ function Downloader() {
       const response = await tomifinApi.search(trimmed, kind, controller.signal)
       setSearched({ query: response.query, results: response.results }); setQueued(new Set())
     } catch (error) {
-      if (!controller.signal.aborted) setSearchError(message(error))
+      if (!controller.signal.aborted && !failed(error)) setSearchError(message(error))
     } finally { if (searchAbort.current === controller) setSearching(false) }
   }
 
@@ -214,6 +217,7 @@ function Downloader() {
       setNotice({ tone: 'success', text: `Queued in qBittorrent: “${result.title}” → ${DESTINATIONS[job.destination].label} (${DESTINATIONS[job.destination].path}).` })
       void refresh()
     } catch (error) {
+      if (failed(error)) return
       setNotice({ tone: 'error', text: error instanceof TomifinRequestError && error.code === 'result-expired' ? 'That result has expired. Search again, then queue it.' : `Could not queue “${result.title}”: ${message(error)}` })
     } finally { setQueuing(null) }
   }
@@ -224,7 +228,7 @@ function Downloader() {
       const response = await tomifinApi.control(job.id, action)
       if (action === 'cancel') setNotice({ tone: 'success', text: response.filesDeleted ? `Cancelled “${job.name}” and deleted its partial download.` : `Removed “${job.name}” from qBittorrent. Its files were kept.` })
       await refresh()
-    } catch (error) { setNotice({ tone: 'error', text: message(error) }) }
+    } catch (error) { if (!failed(error)) setNotice({ tone: 'error', text: message(error) }) }
     finally { setBusyJob(null) }
   }
 
@@ -239,7 +243,8 @@ function Downloader() {
   return (
     <>
       <div className="tf-toolbar-user">
-        <button type="button" className="tf-link" onClick={logout}><LogOut aria-hidden/>Sign out</button>
+        <span className="tf-muted">Signed in as <strong>{user.name}</strong></span>
+        <button type="button" className="tf-link" onClick={onSignOut}><LogOut aria-hidden/>Sign out</button>
       </div>
       {statusError && <div className="tf-alert tf-alert-error" role="alert"><TriangleAlert aria-hidden/>{statusError}</div>}
       {unavailable && <div className="tf-alert tf-alert-warn" role="alert"><TriangleAlert aria-hidden/>Tomifin Downloader is not available: {status.problem || 'the media server is not set up for it.'}</div>}
@@ -285,11 +290,14 @@ function Downloader() {
 }
 
 export function TomifinApp() {
-  const session = useAuth((state) => state.session)
-  const isAdmin = useAuth((state) => state.isAdmin)
-  const validate = useAuth((state) => state.validate)
-  const logout = useAuth((state) => state.logout)
-  useEffect(() => { if (session && isAdmin === null) void validate() }, [session, isAdmin, validate])
+  // undefined while the saved session is being checked, null when signed out.
+  const [user, setUser] = useState<TomifinUser | null | undefined>(undefined)
+  useEffect(() => {
+    const controller = new AbortController()
+    tomifinApi.session(controller.signal).then(({ user: current }) => setUser(current), () => { if (!controller.signal.aborted) setUser(null) })
+    return () => controller.abort()
+  }, [])
+  const signOut = () => { void tomifinApi.signOut().catch(() => undefined); setUser(null) }
   return (
     <div className="tf-app">
       <header className="tf-header">
@@ -297,15 +305,9 @@ export function TomifinApp() {
         <h1>TOMIFIN <span>DOWNLOADER</span></h1>
       </header>
       <main className="tf-main">
-        {!session && <SignIn/>}
-        {session && isAdmin === false && (
-          <section className="tf-panel">
-            <h2>Administrators only</h2>
-            <p>Tomifin Downloader is for Navidrome administrators. Ask an administrator, or sign in with another account.</p>
-            <div className="tf-job-actions"><button type="button" className="tf-button" onClick={logout}>Sign out</button></div>
-          </section>
-        )}
-        {session && isAdmin !== false && <Downloader/>}
+        {user === undefined && <p className="tf-empty"><LoaderCircle className="tf-spin" aria-hidden/>Checking your sign-in…</p>}
+        {user === null && <SignIn onSignedIn={setUser}/>}
+        {user && <Downloader user={user} onSignOut={signOut} onExpired={() => setUser(null)}/>}
       </main>
     </div>
   )

@@ -2,28 +2,26 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { tomifinRoute } from '../worker/routes/tomifin.ts'
 
-// The recovery agent and Navidrome are faked here: no request leaves the test and no torrent is ever submitted.
-const NAVIDROME = 'https://navidrome.test'
+// The recovery agent (and the Jellyfin sign-in it checks) is faked here: no request leaves the test and no torrent
+// is ever submitted. The fake agent accepts one session, SESSION, as a Jellyfin administrator.
 const AGENT = 'https://agent.tomifin.test'
+const SESSION = 'c'.repeat(32)
 const resultId = 'a'.repeat(64)
 const jobId = '00000000-0000-4000-8000-000000000001'
-const env = { NAVIDROME_ORIGIN: NAVIDROME, RECOVERY_AGENT_URL: AGENT, RECOVERY_AGENT_TOKEN: 'agent-secret-token-that-is-long-enough' }
-let users = 0
+const env = { RECOVERY_AGENT_URL: AGENT, RECOVERY_AGENT_TOKEN: 'agent-secret-token-that-is-long-enough' }
+const unauthorized = () => Response.json({ error: 'tomifin-error', code: 'unauthorized', message: 'Your Jellyfin session has ended. Sign in again.' }, { status: 400 })
 
-async function withFakes({ admin = true, agent = () => Response.json({}) } = {}, callback) {
+async function withFakes({ agent = () => Response.json({}) } = {}, callback) {
   const originalFetch = globalThis.fetch
   const originalLog = console.log
   const calls = []
   console.log = () => {}
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(String(input))
-    if (url.origin === NAVIDROME) {
-      if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: url.searchParams.get('t') === 'good' ? 'ok' : 'failed' } })
-      if (url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { adminRole: admin } } })
-    }
     if (url.origin === AGENT) {
       const body = JSON.parse(init.body || '{}')
       calls.push({ path: url.pathname, body, authorization: init.headers?.authorization })
+      if (!['/v1/tomifin/login', '/v1/tomifin/logout'].includes(url.pathname) && body.session !== SESSION) return unauthorized()
       return agent(url.pathname, body)
     }
     throw new Error(`Unexpected request to ${url}`)
@@ -31,33 +29,79 @@ async function withFakes({ admin = true, agent = () => Response.json({}) } = {},
   try { await callback(calls) } finally { globalThis.fetch = originalFetch; console.log = originalLog }
 }
 
-// A fresh user each call, so the 30-second sign-in cache never carries over between tests.
-function call(path, { method = 'GET', body, token = 'good' } = {}) {
-  users += 1
-  const headers = { 'x-tomify-user': `tom${users}`, 'x-tomify-token': token, 'x-tomify-salt': 'salt', ...(body ? { 'content-type': 'application/json' } : {}) }
-  const request = new Request(`https://app.tomify.test${path}`, { method, headers, body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body) })
+function call(path, { method = 'GET', body, session = SESSION, page = true, host = 'app.tomify.test' } = {}) {
+  const headers = {
+    ...(page ? { 'x-tomifin': '1' } : {}),
+    ...(session ? { cookie: `theme=dark; tomifin_session=${session}` } : {}),
+    ...(body ? { 'content-type': 'application/json' } : {}),
+  }
+  const request = new Request(`https://${host}${path}`, { method, headers, body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body) })
   return tomifinRoute(request, env, new URL(request.url))
 }
+// What the agent was sent, without the session (checked separately).
+const sent = ({ path, body: { session, ...body }, authorization }) => ({ path, body, session, authorization })
 
 test('Tomifin ignores other paths', async () => {
   assert.equal(await tomifinRoute(new Request('https://app.tomify.test/api/recovery'), env, new URL('https://app.tomify.test/api/recovery')), null)
   assert.equal(await tomifinRoute(new Request('https://app.tomify.test/tomifin/'), env, new URL('https://app.tomify.test/tomifin/')), null)
 })
 
-test('Tomifin requires a signed-in Navidrome administrator for every route', async () => {
+test('signing in with Jellyfin sets an HttpOnly session cookie, and signing out clears it', async () => {
+  const agent = (path, body) => path === '/v1/tomifin/login'
+    ? (body.password === 'right' ? Response.json({ token: SESSION, user: { name: 'tom' } }) : Response.json({ error: 'tomifin-error', code: 'invalid-login', message: 'Jellyfin did not accept that username and password.' }, { status: 400 }))
+    : path === '/v1/tomifin/session' ? Response.json({ user: { name: 'tom' } }) : Response.json({ signedOut: true })
+  await withFakes({ agent }, async (calls) => {
+    const signedIn = await call('/api/tomifin/session', { method: 'POST', session: null, body: { username: ' tom ', password: 'right' } })
+    assert.equal(signedIn.status, 200)
+    assert.deepEqual(await signedIn.json(), { user: { name: 'tom' } })
+    const cookie = signedIn.headers.get('set-cookie')
+    assert.match(cookie, new RegExp(`^tomifin_session=${SESSION}; `))
+    for (const part of ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/api/tomifin']) assert.ok(cookie.includes(part), part)
+    assert.deepEqual(calls[0].body, { username: 'tom', password: 'right' })
+
+    const wrong = await call('/api/tomifin/session', { method: 'POST', session: null, body: { username: 'tom', password: 'wrong' } })
+    assert.deepEqual([wrong.status, (await wrong.json()).error], [401, 'invalid-login'])
+    assert.equal(wrong.headers.get('set-cookie'), null)
+    assert.equal((await call('/api/tomifin/session', { method: 'POST', session: null, body: { username: '', password: 'x' } })).status, 400)
+    assert.equal((await call('/api/tomifin/session', { method: 'POST', session: null, body: { username: 'tom', password: 'x'.repeat(513) } })).status, 400)
+
+    assert.deepEqual(await (await call('/api/tomifin/session')).json(), { user: { name: 'tom' } })
+    assert.equal((await call('/api/tomifin/session', { session: null })).status, 401)
+    const before = calls.length
+    const signedOut = await call('/api/tomifin/session', { method: 'DELETE' })
+    assert.equal(signedOut.status, 200)
+    assert.match(signedOut.headers.get('set-cookie'), /^tomifin_session=; .*Max-Age=0/)
+    assert.deepEqual(calls.slice(before).map(({ path, body }) => [path, body.session]), [['/v1/tomifin/logout', SESSION]])
+  })
+})
+
+test('Tomifin requires a Jellyfin session for every route, and drops one Jellyfin no longer accepts', async () => {
   await withFakes({}, async (calls) => {
     for (const [path, method] of [['/api/tomifin/status', 'GET'], ['/api/tomifin/search?q=Big+Buck+Bunny', 'GET'], ['/api/tomifin/download', 'POST'], ['/api/tomifin/downloads', 'GET'], [`/api/tomifin/downloads/${jobId}/cancel`, 'POST']]) {
-      const response = await call(path, { method, token: 'bad', body: method === 'POST' ? { resultId, destination: 'family' } : undefined })
-      assert.equal(response.status, 401, path)
-      const anonymous = await tomifinRoute(new Request(`https://app.tomify.test${path}`, { method }), env, new URL(`https://app.tomify.test${path}`))
+      const body = method === 'POST' ? { resultId, destination: 'family' } : undefined
+      const anonymous = await call(path, { method, body, session: null })
       assert.equal(anonymous.status, 401, path)
+      const expired = await call(path, { method, body, session: 'd'.repeat(32) })
+      assert.equal(expired.status, 401, path)
+      assert.match(expired.headers.get('set-cookie'), /Max-Age=0/, path)
     }
-    assert.equal(calls.length, 0)
+    assert.equal(calls.filter(({ body }) => body.session === undefined).length, 0)
   })
-  await withFakes({ admin: false }, async (calls) => {
+  await withFakes({ agent: () => Response.json({ error: 'tomifin-error', code: 'forbidden', message: 'Only Jellyfin administrators can use Tomifin Downloader.' }, { status: 400 }) }, async () => {
     const response = await call('/api/tomifin/search?q=Big+Buck+Bunny')
     assert.equal(response.status, 403)
-    assert.match((await response.json()).message, /administrator/)
+    assert.match((await response.json()).message, /administrators/)
+    assert.match(response.headers.get('set-cookie'), /Max-Age=0/)
+  })
+})
+
+test('changes need Tomifin\'s own request header, so another site cannot submit them', async () => {
+  await withFakes({ agent: () => Response.json({ ok: true }) }, async (calls) => {
+    for (const [path, body] of [['/api/tomifin/download', { resultId, destination: 'family' }], [`/api/tomifin/downloads/${jobId}/cancel`, undefined], ['/api/tomifin/session', { username: 'tom', password: 'x' }]]) {
+      const response = await call(path, { method: 'POST', body, page: false })
+      assert.equal(response.status, 403, path)
+    }
+    assert.equal((await call('/api/tomifin/session', { method: 'DELETE', page: false })).status, 403)
     assert.equal(calls.length, 0)
   })
 })
@@ -68,7 +112,7 @@ test('search passes only the query and kind to the agent, and returns its result
     const response = await call('/api/tomifin/search?q=%20Big%20%20Buck%20Bunny%20&kind=movies&savePath=/etc')
     assert.equal(response.status, 200)
     assert.deepEqual((await response.json()).results, results)
-    assert.deepEqual(calls, [{ path: '/v1/tomifin/search', body: { query: 'Big Buck Bunny', kind: 'movies' }, authorization: 'Bearer ' + env.RECOVERY_AGENT_TOKEN }])
+    assert.deepEqual(calls.map(sent), [{ path: '/v1/tomifin/search', body: { query: 'Big Buck Bunny', kind: 'movies' }, session: SESSION, authorization: 'Bearer ' + env.RECOVERY_AGENT_TOKEN }])
     assert.equal((await call('/api/tomifin/search?q=x')).status, 400)
     assert.equal((await call('/api/tomifin/search?q=' + 'x'.repeat(201))).status, 400)
     assert.equal((await call('/api/tomifin/search?q=Bunny&kind=music')).status, 400)
@@ -94,7 +138,7 @@ test('a download needs Family or Private and a search result id, and nothing els
       const response = await call('/api/tomifin/download', { method: 'POST', body: { resultId, destination, savePath: '/etc', link: 'magnet:?xt=urn:btih:x', category: 'tomify' } })
       assert.equal(response.status, 202)
       assert.equal((await response.json()).job.destination, destination)
-      assert.deepEqual(calls.at(-1), { path: '/v1/tomifin/download', body: { resultId, destination }, authorization: 'Bearer ' + env.RECOVERY_AGENT_TOKEN })
+      assert.deepEqual(sent(calls.at(-1)), { path: '/v1/tomifin/download', body: { resultId, destination }, session: SESSION, authorization: 'Bearer ' + env.RECOVERY_AGENT_TOKEN })
     }
   })
 })
@@ -108,8 +152,9 @@ test('agent refusals become clear errors, and an older agent asks for an update'
     outdated: () => Response.json({ error: 'not-found' }, { status: 404 }),
     gateway: () => new Response('Bad gateway', { status: 502 }),
     down: () => { throw new TypeError('fetch failed') },
+    jellyfin: () => Response.json({ error: 'tomifin-error', code: 'jellyfin-unavailable', message: 'Jellyfin could not be reached from the media server.' }, { status: 400 }),
   }
-  const expected = { duplicate: [409, 'duplicate'], expired: [409, 'result-expired'], off: [503, 'not-configured'], qbittorrent: [502, 'agent-error'], outdated: [409, 'recovery-agent-outdated'], gateway: [502, 'agent-error'], down: [502, 'agent-unavailable'] }
+  const expected = { duplicate: [409, 'duplicate'], expired: [409, 'result-expired'], off: [503, 'not-configured'], qbittorrent: [502, 'agent-error'], outdated: [409, 'recovery-agent-outdated'], gateway: [502, 'agent-error'], down: [502, 'agent-unavailable'], jellyfin: [502, 'jellyfin-unavailable'] }
   for (const [name, reply] of Object.entries(replies)) {
     await withFakes({ agent: reply }, async () => {
       const response = await call('/api/tomifin/download', { method: 'POST', body: { resultId, destination: 'family' } })
@@ -117,6 +162,7 @@ test('agent refusals become clear errors, and an older agent asks for an update'
       assert.deepEqual([response.status, body.error], expected[name], name)
       assert.equal(typeof body.message, 'string')
       assert.doesNotMatch(JSON.stringify(body), /agent-secret-token/)
+      assert.equal(response.headers.get('set-cookie'), null, name)
     })
   }
 })
@@ -126,7 +172,7 @@ test('downloads can be listed, paused, resumed and cancelled by id only', async 
     assert.equal((await (await call('/api/tomifin/downloads')).json()).jobs[0].progress, 12.5)
     for (const action of ['pause', 'resume', 'cancel']) {
       assert.equal((await call(`/api/tomifin/downloads/${jobId}/${action}`, { method: 'POST' })).status, 200)
-      assert.deepEqual(calls.at(-1), { path: `/v1/tomifin/${action}`, body: { id: jobId }, authorization: 'Bearer ' + env.RECOVERY_AGENT_TOKEN })
+      assert.deepEqual(sent(calls.at(-1)), { path: `/v1/tomifin/${action}`, body: { id: jobId }, session: SESSION, authorization: 'Bearer ' + env.RECOVERY_AGENT_TOKEN })
     }
     const before = calls.length
     for (const path of ['/api/tomifin/downloads/..%2F..%2Fetc/cancel', '/api/tomifin/downloads/not-a-job/pause', `/api/tomifin/downloads/${jobId}/delete`]) {
@@ -137,13 +183,11 @@ test('downloads can be listed, paused, resumed and cancelled by id only', async 
   })
 })
 
-test('status reports Tomifin off when the recovery agent is not configured', async () => {
+test('Tomifin says so when the recovery agent is not configured', async () => {
   await withFakes({}, async (calls) => {
-    const request = new Request('https://app.tomify.test/api/tomifin/status', { headers: { 'x-tomify-user': 'status-user', 'x-tomify-token': 'good', 'x-tomify-salt': 'salt' } })
-    const response = await tomifinRoute(request, { NAVIDROME_ORIGIN: NAVIDROME }, new URL(request.url))
-    const body = await response.json()
-    assert.equal(body.available, false)
-    assert.deepEqual(body.destinations.map(({ id }) => id), ['family', 'private'])
+    const request = new Request('https://app.tomify.test/api/tomifin/session', { headers: { cookie: `tomifin_session=${SESSION}` } })
+    const response = await tomifinRoute(request, {}, new URL(request.url))
+    assert.deepEqual([response.status, (await response.json()).error], [503, 'not-configured'])
     assert.equal(calls.length, 0)
   })
 })
@@ -176,7 +220,7 @@ test('Tomifin\'s address serves its page for every route, with no caching or fra
   assert.equal(await (await site(`https://${HOST}/tomify-logo-192.png`, {}, { ASSETS: binding })).text(), 'asset /tomify-logo-192.png')
 })
 
-test('Tomifin\'s address serves none of Tomify: other APIs, the service worker and most of the Navidrome proxy', async () => {
+test('Tomifin\'s address serves none of Tomify: other APIs, the service worker and or the Navidrome proxy', async () => {
   const binding = assets()
   for (const path of ['/api/recovery', '/api/version', '/api/system/reboot']) {
     const response = await site(`https://${HOST}${path}`, {}, { ASSETS: binding })
@@ -190,15 +234,13 @@ test('Tomifin\'s address serves none of Tomify: other APIs, the service worker a
   assert.deepEqual(binding.paths, [])
 })
 
-test('Tomifin\'s address answers its API and the sign-in checks through the Navidrome proxy', async () => {
+test('Tomifin\'s address answers its API with the Jellyfin session cookie', async () => {
   await withFakes({ agent: () => Response.json({ available: true, destinations: [] }) }, async (calls) => {
-    const headers = { 'x-tomify-user': 'site-user', 'x-tomify-token': 'good', 'x-tomify-salt': 'salt' }
-    const status = await site(`https://${HOST}/api/tomifin/status`, { headers })
+    const status = await site(`https://${HOST}/api/tomifin/status`, { headers: { cookie: `tomifin_session=${SESSION}` } })
     assert.equal(status.status, 200)
-    assert.equal(calls[0].path, '/v1/tomifin/status')
+    assert.deepEqual(sent(calls[0]).path, '/v1/tomifin/status')
+    assert.equal(calls[0].body.session, SESSION)
     assert.equal((await site(`https://${HOST}/api/tomifin/status`)).status, 401)
-    const ping = await site(`https://${HOST}/navidrome/rest/ping.view?u=tom&t=good&s=salt&f=json`)
-    assert.equal((await ping.json())['subsonic-response'].status, 'ok')
   })
 })
 

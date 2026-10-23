@@ -1,12 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useAuth } from '../stores/auth'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TomifinApp } from './TomifinApp'
 import { formatEta, formatSize } from './api'
 import { sortResults } from './results'
 import type { TomifinJob, TomifinResult } from './api'
 
-const session = { serverUrl: 'https://music.example', username: 'tom', salt: 's', token: 't' }
 const quality = { resolution: '1080p', hdr: null, codec: 'H.264', source: 'BluRay' }
 const results: TomifinResult[] = [
   { id: 'a'.repeat(64), title: 'Big Buck Bunny (2008) 1080p BluRay x264', source: 'yts.test', size: 1_500_000_000, seeders: 40, leechers: 3, type: 'torrent', linkType: 'magnet', detailsUrl: 'https://yts.test/bbb', quality },
@@ -19,13 +17,24 @@ const job = (extra: Partial<TomifinJob> = {}): TomifinJob => ({
 })
 
 type Call = { url: string; method: string; body: unknown; headers: Record<string, string> }
-// Every request the page makes is answered here: nothing reaches Tomify, the media server or qBittorrent.
-function fakeApi({ jobs = [] as TomifinJob[], download = (body: { destination: string }) => new Response(JSON.stringify({ job: job({ destination: body.destination as TomifinJob['destination'], destinationLabel: body.destination === 'private' ? 'Private' : 'Family', status: 'queued', progress: 0 }) }), { status: 202 }), status = { available: true, problem: null, destinations: [{ id: 'family', label: 'Family', available: true }, { id: 'private', label: 'Private', available: true }] } } = {}) {
+// Every request the page makes is answered here: nothing reaches Tomify, Jellyfin, the media server or qBittorrent.
+function fakeApi({ signedIn = true, jobs = [] as TomifinJob[], download = (body: { destination: string }) => new Response(JSON.stringify({ job: job({ destination: body.destination as TomifinJob['destination'], destinationLabel: body.destination === 'private' ? 'Private' : 'Family', status: 'queued', progress: 0 }) }), { status: 202 }), status = { available: true, problem: null, destinations: [{ id: 'family', label: 'Family', available: true }, { id: 'private', label: 'Private', available: true }] } } = {}) {
+  let session = signedIn
   const calls: Call[] = []
   const fetchMock = vi.fn(async (input: string, init: RequestInit = {}) => {
     const url = String(input)
     const body = init.body ? JSON.parse(String(init.body)) : null
     calls.push({ url, method: init.method || 'GET', body, headers: init.headers as Record<string, string> })
+    if (url === '/api/tomifin/session') {
+      if (init.method === 'POST') {
+        if (body.password !== 'right') return Response.json({ error: 'invalid-login', message: 'Jellyfin did not accept that username and password.' }, { status: 401 })
+        session = true
+        return Response.json({ user: { name: body.username } })
+      }
+      if (init.method === 'DELETE') { session = false; return Response.json({ signedOut: true }) }
+      return session ? Response.json({ user: { name: 'tom' } }) : Response.json({ error: 'unauthorized', message: 'Sign in with your Jellyfin account.' }, { status: 401 })
+    }
+    if (!session) return Response.json({ error: 'unauthorized', message: 'Your Jellyfin session has ended. Sign in again.' }, { status: 401 })
     if (url === '/api/tomifin/status') return Response.json(status)
     if (url.startsWith('/api/tomifin/search')) return Response.json({ query: new URL(url, 'https://x').searchParams.get('q'), kind: 'video', results })
     if (url === '/api/tomifin/download') return download(body)
@@ -37,6 +46,11 @@ function fakeApi({ jobs = [] as TomifinJob[], download = (body: { destination: s
   return calls
 }
 
+async function open() {
+  render(<TomifinApp/>)
+  await screen.findByText(/Signed in as/)
+}
+
 async function search(text = 'Big Buck Bunny') {
   fireEvent.change(screen.getByRole('searchbox', { name: 'Search for media' }), { target: { value: text } })
   fireEvent.click(screen.getByRole('button', { name: 'Search' }))
@@ -44,33 +58,51 @@ async function search(text = 'Big Buck Bunny') {
 }
 
 describe('Tomifin Downloader', () => {
-  beforeEach(() => { useAuth.setState({ session, status: 'signed-in', isAdmin: true, error: null }) })
-  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); useAuth.setState({ session: null, status: 'signed-out', isAdmin: null, error: null }) })
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
-  it('loads on its own and asks for Tomify’s sign-in when signed out', () => {
-    fakeApi()
-    useAuth.setState({ session: null, status: 'signed-out', isAdmin: null })
+  it('loads on its own and asks for a Jellyfin sign-in when signed out', async () => {
+    const calls = fakeApi({ signedIn: false })
     render(<TomifinApp/>)
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('TOMIFIN DOWNLOADER')
-    expect(screen.getByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Jellyfin username')).toBeInTheDocument()
     expect(screen.queryByRole('searchbox')).not.toBeInTheDocument()
+    expect(calls.map((call) => call.url)).toEqual(['/api/tomifin/session'])
   })
 
-  it('tells someone who is not an administrator that it is for administrators', () => {
-    const calls = fakeApi()
-    useAuth.setState({ isAdmin: false })
+  it('signs in with Jellyfin, shows a refused sign-in, and signs out', async () => {
+    const calls = fakeApi({ signedIn: false })
     render(<TomifinApp/>)
-    expect(screen.getByRole('heading', { name: 'Administrators only' })).toBeInTheDocument()
-    expect(calls).toHaveLength(0)
+    fireEvent.change(await screen.findByLabelText('Jellyfin username'), { target: { value: 'tom' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'wrong' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Jellyfin did not accept that username and password.')
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'right' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(await screen.findByText(/Signed in as/)).toHaveTextContent('Signed in as tom')
+    const signIn = calls.filter((call) => call.method === 'POST' && call.url === '/api/tomifin/session').at(-1)!
+    expect(signIn.body).toEqual({ username: 'tom', password: 'right' })
+    expect(signIn.headers).toMatchObject({ 'x-tomifin': '1' })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
+    await waitFor(() => expect(calls.some((call) => call.method === 'DELETE' && call.url === '/api/tomifin/session')).toBe(true))
+  })
+
+  it('goes back to the sign-in form when the Jellyfin session ends', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/tomifin/session'
+      ? Response.json({ user: { name: 'tom' } })
+      : Response.json({ error: 'unauthorized', message: 'Your Jellyfin session has ended. Sign in again.' }, { status: 401 })))
+    render(<TomifinApp/>)
+    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
   })
 
   it('searches Tomify’s sources and shows torrents with their source, size, seeders and quality', async () => {
     const calls = fakeApi()
-    render(<TomifinApp/>)
+    await open()
     await search()
     const searchCall = calls.find((call) => call.url.startsWith('/api/tomifin/search'))!
     expect(searchCall.url).toBe('/api/tomifin/search?q=Big+Buck+Bunny&kind=video')
-    expect(searchCall.headers).toMatchObject({ 'x-tomify-user': 'tom', 'x-tomify-token': 't', 'x-tomify-salt': 's' })
+    expect(JSON.stringify(searchCall.headers)).not.toMatch(/token|password/i)
     const card = screen.getByText('Big Buck Bunny (2008) 1080p BluRay x264').closest('li')!
     expect(within(card).getByText('yts.test')).toBeInTheDocument()
     expect(within(card).getByText('1.40 GB')).toBeInTheDocument()
@@ -83,7 +115,7 @@ describe('Tomifin Downloader', () => {
 
   it('filters by quality and sorts by size', async () => {
     fakeApi()
-    render(<TomifinApp/>)
+    await open()
     await search()
     fireEvent.change(screen.getByLabelText('Quality'), { target: { value: '2160p' } })
     expect(screen.queryByText('Big Buck Bunny (2008) 1080p BluRay x264')).not.toBeInTheDocument()
@@ -95,7 +127,7 @@ describe('Tomifin Downloader', () => {
 
   it('will not queue until Family or Private is chosen, and never picks one itself', async () => {
     const calls = fakeApi()
-    render(<TomifinApp/>)
+    await open()
     expect(screen.getByText('No destination selected yet.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /FAMILY/ })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByRole('button', { name: /PRIVATE/ })).toHaveAttribute('aria-pressed', 'false')
@@ -108,7 +140,7 @@ describe('Tomifin Downloader', () => {
   it.each([['family', 'FAMILY', 'Family', '/media/family'], ['private', 'PRIVATE', 'Private', '/media/private']])('queues a %s download only after qBittorrent accepts it', async (destination, button, label, path) => {
     let accept: (response: Response) => void = () => {}
     const calls = fakeApi({ download: () => new Promise((resolve) => { accept = resolve }) as unknown as Response })
-    render(<TomifinApp/>)
+    await open()
     fireEvent.click(screen.getByRole('button', { name: new RegExp(button) }))
     expect(screen.getByRole('button', { name: new RegExp(button) })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByText(/Downloads will be saved to/)).toHaveTextContent(`Downloads will be saved to ${label} (${path}).`)
@@ -124,7 +156,7 @@ describe('Tomifin Downloader', () => {
 
   it('shows why a download could not be queued', async () => {
     fakeApi({ download: () => Response.json({ error: 'duplicate', message: 'This torrent is already in qBittorrent.' }, { status: 409 }) })
-    render(<TomifinApp/>)
+    await open()
     fireEvent.click(screen.getByRole('button', { name: /PRIVATE/ }))
     const card = (await search()).closest('li')!
     fireEvent.click(within(card).getByRole('button', { name: 'Queue to Private' }))
@@ -133,10 +165,10 @@ describe('Tomifin Downloader', () => {
   })
 
   it('shows a search error and an unavailable server clearly', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/tomifin/status'
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/tomifin/session' ? Response.json({ user: { name: 'tom' } }) : url === '/api/tomifin/status'
       ? Response.json({ available: false, problem: 'Set TOMIFY_TOMIFIN_FAMILY_DIR and TOMIFY_TOMIFIN_PRIVATE_DIR to turn Tomifin Downloader on.', destinations: [{ id: 'family', label: 'Family', available: false }, { id: 'private', label: 'Private', available: false }] })
       : Response.json({ error: 'agent-error', message: 'qBittorrent is offline, so torrent search is paused.' }, { status: 502 })))
-    render(<TomifinApp/>)
+    await open()
     expect(await screen.findByText(/Tomifin Downloader is not available: Set TOMIFY_TOMIFIN_FAMILY_DIR/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled()
     expect(screen.getByRole('button', { name: /FAMILY/ })).toBeDisabled()
@@ -144,7 +176,7 @@ describe('Tomifin Downloader', () => {
 
   it('lists downloads with progress, speed, size and time left, and pauses and cancels them', async () => {
     const calls = fakeApi({ jobs: [job(), job({ id: '00000000-0000-4000-8000-000000000002', name: 'Sintel', destination: 'private', destinationLabel: 'Private', status: 'completed', progress: 100, canPause: false, keepsFilesOnCancel: true })] })
-    render(<TomifinApp/>)
+    await open()
     const active = (await screen.findByText('Big Buck Bunny (2008)')).closest('li')!
     expect(within(active).getByText('Downloading')).toBeInTheDocument()
     expect(within(active).getByText('42.3%')).toBeInTheDocument()
@@ -172,7 +204,7 @@ describe('Tomifin Downloader', () => {
   it('refreshes the downloads list on its own', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const calls = fakeApi({ jobs: [job()] })
-    render(<TomifinApp/>)
+    await open()
     await screen.findByText('Big Buck Bunny (2008)')
     const before = calls.filter((call) => call.url === '/api/tomifin/downloads').length
     await act(async () => { await vi.advanceTimersByTimeAsync(3100) })

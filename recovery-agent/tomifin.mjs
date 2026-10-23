@@ -10,6 +10,7 @@ import { lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node
 import { isAbsolute, normalize, resolve, sep } from 'node:path'
 import { parseTorrentLink, seededTorrentResults } from './torrent.mjs'
 import { configuredTorrentIndexers, isIndexerLink } from './torrent-indexers.mjs'
+import { JellyfinAuthError } from './jellyfin.mjs'
 
 export const TOMIFIN_DESTINATIONS = Object.freeze({
   family: Object.freeze({ id: 'family', label: 'Family', env: 'TOMIFY_TOMIFIN_FAMILY_DIR', qbittorrentEnv: 'TOMIFY_TOMIFIN_FAMILY_QBITTORRENT_DIR', category: 'tomifin-family' }),
@@ -376,19 +377,24 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
   return controller
 }
 
-// The agent's /v1/tomifin/* routes. Returns null for any other path.
-export async function handleTomifinRequest(path, body, controller) {
-  const route = String(path || '').match(/^\/v1\/tomifin\/(status|search|download|downloads|pause|resume|cancel)$/)
+// The agent's /v1/tomifin/* routes. Returns null for any other path. Every route but login needs the Jellyfin
+// session token (body.session) of a Jellyfin administrator, checked with Jellyfin (recovery-agent/jellyfin.mjs).
+export async function handleTomifinRequest(path, body, controller, auth) {
+  const route = String(path || '').match(/^\/v1\/tomifin\/(login|logout|session|status|search|download|downloads|pause|resume|cancel)$/)
   if (!route) return null
   const action = route[1]
   try {
+    if (action === 'login') return { status: 200, body: await auth.login(body) }
+    if (action === 'logout') return { status: 200, body: await auth.logout(body?.session) }
+    const user = await auth.verify(body?.session)
+    if (action === 'session') return { status: 200, body: { user: { name: user.name } } }
     if (action === 'status') return { status: 200, body: controller.status() }
     if (action === 'search') return { status: 200, body: await controller.search(body) }
     if (action === 'download') return { status: 202, body: await controller.download(body) }
     if (action === 'downloads') return { status: 200, body: await controller.list() }
     return { status: 200, body: await controller[action](body) }
   } catch (error) {
-    if (error instanceof TomifinError) return { status: 400, body: { error: 'tomifin-error', code: error.code, message: error.message } }
+    if (error instanceof TomifinError || error instanceof JellyfinAuthError) return { status: 400, body: { error: 'tomifin-error', code: error.code, message: error.message } }
     throw error
   }
 }

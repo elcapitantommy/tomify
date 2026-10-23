@@ -32,6 +32,7 @@ import { createHlsPackager, credentialsFromHeaders, hlsConfig, HlsError, parseHl
 import { createImportRecovery, importStatePaths, prepareImportStaging, removeImportStaging, runManifestImport } from './manifest.mjs'
 import { createLanHandler, lanConfig, startLanServer } from './lan.mjs'
 import { createTomifinController, handleTomifinRequest, tomifinConfig } from './tomifin.mjs'
+import { createJellyfinAuth, jellyfinConfig } from './jellyfin.mjs'
 
 let authConfiguration
 try { authConfiguration = validateRecoveryAuthConfig() }
@@ -82,6 +83,11 @@ if (torrentDownloadRoot && (inside(torrentDownloadRoot, recoveryRoot) || inside(
 // Off, with the reason logged, unless both library folders are configured (recovery-agent/tomifin.mjs).
 const tomifinSettings = tomifinConfig(process.env, { torrentAvailable: torrent.available, reservedPaths: [recoveryRoot, masterRoot, torrentDownloadRoot, usenetDownloadRoot, usenetStateRoot] })
 if (tomifinSettings.problem) process.stderr.write(`Tomifin Downloader is off: ${tomifinSettings.problem}\n`)
+// Tomifin signs in with Jellyfin accounts (administrators only), checked against Jellyfin on the box.
+let jellyfinSettings = null
+try { jellyfinSettings = jellyfinConfig() } catch (error) { process.stderr.write(`Tomifin Downloader sign-in is off: ${error.message}\n`) }
+const jellyfinAuth = createJellyfinAuth(jellyfinSettings)
+if (tomifinSettings.enabled && !jellyfinAuth.configured) process.stderr.write('Tomifin Downloader sign-in is off: set TOMIFY_JELLYFIN_URL.\n')
 const tomifin = createTomifinController({ config: tomifinSettings, client: tomifinSettings.enabled ? qbittorrent : null, stateRoot: usenetStateRoot, log: (message) => process.stderr.write(`${message}\n`) })
 
 function safeName(value, fallback) {
@@ -828,7 +834,7 @@ createServer(async (request, response) => {
     if (request.url === '/v1/system/vpn/status') return send(response, 200, await vpn.status())
     if (request.url === '/v1/system/vpn') return send(response, 200, await vpn.change(body.action))
     if (request.url === '/v1/system/reboot') return send(response, 202, scheduleReboot(body, { config: reboot, spawn }))
-    const tomifinResult = await handleTomifinRequest(request.url, body, tomifin)
+    const tomifinResult = await handleTomifinRequest(request.url, body, tomifin, jellyfinAuth)
     if (tomifinResult) return send(response, tomifinResult.status, tomifinResult.body)
     return send(response, 404, { error: 'not-found' })
   } catch (error) {

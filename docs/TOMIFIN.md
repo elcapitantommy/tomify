@@ -11,7 +11,7 @@ Tomifin Downloader is its own web app at its own address, **`https://tomifin.tom
 
 ## Using it
 
-1. Open `https://tomifin.tomdixon.uk/` and sign in with your Navidrome account, the same one you use for Tomify. Being a different address, it keeps its own sign-in, saved in that browser. Only Navidrome administrators can use it, as with Recovery.
+1. Open `https://tomifin.tomdixon.uk/` and sign in with your Jellyfin account. Only Jellyfin administrators can use it; anyone else is refused. The sign-in lasts 30 days in that browser, or until you press **Sign out**, change your password or end the session in Jellyfin (Dashboard → Devices).
 2. Search for a title. **Films & TV** searches both; **Films** and **TV** narrow it.
 3. Press **FAMILY** or **PRIVATE**. Nothing is selected until you choose, the choice is not remembered between visits, and the page shows where downloads will go.
 4. Press **Queue to Family** (or **Private**) on a result. Tomifin says it is queued only once qBittorrent has accepted the torrent; otherwise it shows qBittorrent's or the server's reason.
@@ -26,38 +26,51 @@ Tomifin Downloader is its own web app at its own address, **`https://tomifin.tom
 
 ```text
  https://tomifin.tomdixon.uk/ (tomifin/index.html, src/tomifin/)
-     │  x-tomify-* Navidrome login headers
+     │  tomifin_session cookie (HttpOnly) + x-tomifin header
      ▼
  Worker  worker/routes/tomifin-site.ts  (TOMIFIN_HOSTNAME: serves only Tomifin on that address)
-         worker/routes/tomifin.ts       (/api/tomifin/*: administrator check, input validation)
+         worker/routes/tomifin.ts       (/api/tomifin/*: session cookie, input validation)
      │  RECOVERY_AGENT_URL + RECOVERY_AGENT_TOKEN (the existing Cloudflare Tunnel)
      ▼
- Recovery agent  recovery-agent/tomifin.mjs   (/v1/tomifin/*)
+ Recovery agent  recovery-agent/jellyfin.mjs  (checks the session with Jellyfin on the box)
+                recovery-agent/tomifin.mjs   (/v1/tomifin/*)
      │  the existing qBittorrent client in recovery-agent/torrent.mjs
      ▼
  qBittorrent-nox (over NordVPN)  ──►  /media/family or /media/private  ──►  Jellyfin
 ```
 
-Nothing new runs: no extra service, port, tunnel or credential. The address is a second Custom Domain on the existing Worker, so the recovery agent token, Navidrome origin and every other setting are shared rather than copied. The page is a second Vite entry point in the same Workers Static Assets, the API is one more Worker route, and the work happens in the recovery agent that already talks to qBittorrent.
+Nothing new runs: no extra service, port, tunnel or credential. The address is a second Custom Domain on the existing Worker, so the recovery agent token and every other setting are shared rather than copied. Sign-in goes through the agent to Jellyfin on the box (`TOMIFY_JELLYFIN_URL`), so Jellyfin does not need to be reachable from the internet and no Jellyfin API key is needed. The page is a second Vite entry point in the same Workers Static Assets, the API is one more Worker route, and the work happens in the recovery agent that already talks to qBittorrent.
 
 On Tomifin's address the Worker (`tomifin-site.ts`) serves only:
 
 - the Tomifin page, for every path (so direct links and refreshes work), with `Cache-Control: no-cache`, `X-Frame-Options: DENY`, `noindex` and `no-referrer`;
 - `/api/tomifin/*`;
-- `/navidrome/rest/ping.view` and `getUser.view` through the existing Navidrome proxy, which signing in needs (login check and administrator role);
 - its hashed `/assets/` and icons.
 
-Every other Tomify API, the rest of the Navidrome proxy (streams included), Tomify's service worker and manifest answer `404` there. On Tomify's address `/tomifin*` redirects to Tomifin's and `/api/tomifin/*` answers `404`. For the Worker to see these paths before Static Assets, `run_worker_first` in `wrangler.toml` is now every path except `/assets/*`; Tomify's other requests are handed to Static Assets unchanged. Without `TOMIFIN_HOSTNAME` (for example `pnpm dev`) Tomifin is at `/tomifin/` as a development fallback.
+Every other Tomify API, the Navidrome proxy, Tomify's service worker and manifest answer `404` there. On Tomify's address `/tomifin*` redirects to Tomifin's and `/api/tomifin/*` answers `404`. For the Worker to see these paths before Static Assets, `run_worker_first` in `wrangler.toml` is now every path except `/assets/*`; Tomify's other requests are handed to Static Assets unchanged. Without `TOMIFIN_HOSTNAME` (for example `pnpm dev`) Tomifin is at `/tomifin/` as a development fallback.
 
 | Worker route | Agent route | What it does |
 | --- | --- | --- |
+| `POST /api/tomifin/session` `{ username, password }` | `/v1/tomifin/login` | Signs in with Jellyfin and sets the session cookie |
+| `GET /api/tomifin/session` | `/v1/tomifin/session` | Who is signed in |
+| `DELETE /api/tomifin/session` | `/v1/tomifin/logout` | Signs out and ends the Jellyfin session |
 | `GET /api/tomifin/status` | `/v1/tomifin/status` | Whether Tomifin is set up, and which destinations are available |
 | `GET /api/tomifin/search?q=…&kind=video\|movies\|tv` | `/v1/tomifin/search` | Searches the torrent sources |
 | `POST /api/tomifin/download` `{ resultId, destination }` | `/v1/tomifin/download` | Queues one search result in qBittorrent |
 | `GET /api/tomifin/downloads` | `/v1/tomifin/downloads` | Tomifin's downloads with live qBittorrent figures |
 | `POST /api/tomifin/downloads/<id>/pause` (`resume`, `cancel`) | `/v1/tomifin/pause` (`resume`, `cancel`) | Controls one download |
 
-All routes need a signed-in Navidrome administrator (`authenticate()` and `isNavidromeAdmin()`, as for Recovery); others get `401` or `403`.
+### Signing in
+
+Tomifin uses Jellyfin accounts, and only Jellyfin administrators (`Policy.IsAdministrator`, not disabled) may use it.
+
+1. The page posts the username and password to `POST /api/tomifin/session`. The Worker passes them to the agent, which calls Jellyfin's `/Users/AuthenticateByName` on the box. The password is not stored or logged anywhere.
+2. If the account is not an administrator, the agent closes the session Jellyfin just opened (`/Sessions/Logout`) and the page says Tomifin is for administrators (`403`). A wrong password gets `401`.
+3. Otherwise the Worker keeps Jellyfin's access token in a cookie, `tomifin_session` (`HttpOnly; Secure; SameSite=Strict; Path=/api/tomifin`, 30 days). Page scripts cannot read it.
+4. On every request the agent checks the token with Jellyfin's `/Users/Me` (cached for 30 seconds) and that the user is still an administrator. If Jellyfin no longer accepts it, the Worker clears the cookie and the page shows the sign-in form again.
+5. Every request that changes something (sign-in, sign-out, queue, pause, resume, cancel) must carry the `x-tomifin: 1` header, which another site cannot add, so a cross-site form cannot act with your cookie.
+
+Without `TOMIFY_JELLYFIN_URL` on the agent, sign-in answers that Jellyfin sign-in is not set up.
 
 ### How a search result reaches qBittorrent
 
@@ -122,22 +135,26 @@ Tomifin stays off, and logs `Tomifin Downloader is off: …` when the agent star
    # TOMIFY_TOMIFIN_PRIVATE_QBITTORRENT_DIR=/data/private
    # Largest torrent Tomifin will queue (default 200 GiB):
    # TOMIFY_TOMIFIN_MAX_BYTES=214748364800
+   # Jellyfin on the box, for signing in (loopback HTTP or HTTPS):
+   TOMIFY_JELLYFIN_URL=http://127.0.0.1:8096
    ```
 
-5. **Add the address.** In the Cloudflare dashboard: Workers & Pages → **tomify** → Settings → Domains & Routes → Add → **Custom domain** → `tomifin.tomdixon.uk`. Cloudflare creates the DNS record and certificate. Do this before or straight after merging, because once deployed, Tomify's `/tomifin/` path redirects there. To use a different name, change `TOMIFIN_HOSTNAME` in `wrangler.toml` (a dashboard variable would be replaced on the next deploy). If you want a second gate in front of it, Cloudflare Access can protect just that hostname; Tomifin still needs its own Navidrome administrator sign-in.
+   Use the address the agent can reach Jellyfin at; `8096` is Jellyfin's default port. Any other plain-HTTP address is refused, so the password never crosses the network unencrypted.
 
-6. **Deploy the agent, then the site.** Deploy the agent with `scripts/deploy-agent.ps1` (or `.sh`) as usual ([Updating the recovery agent](DEPLOYMENT.md#updating-the-recovery-agent)), check `journalctl -u tomify-recovery -n 20` has no `Tomifin Downloader is off` line, then merge so Cloudflare deploys the site. The site works before the agent is updated: Tomifin then says the media server needs the latest agent, and Recovery is unaffected (the agent contract stays `2`).
+5. **Add the address.** In the Cloudflare dashboard: Workers & Pages → **tomify** → Settings → Domains & Routes → Add → **Custom domain** → `tomifin.tomdixon.uk`. Cloudflare creates the DNS record and certificate. Do this before or straight after merging, because once deployed, Tomify's `/tomifin/` path redirects there. To use a different name, change `TOMIFIN_HOSTNAME` in `wrangler.toml` (a dashboard variable would be replaced on the next deploy). If you want a second gate in front of it, Cloudflare Access can protect just that hostname; Tomifin still needs its own Jellyfin administrator sign-in.
 
-7. **Jellyfin.** Tomifin does not call Jellyfin, and this repository has no Jellyfin integration or API key to reuse. New files appear when Jellyfin next scans: turn on **Real time monitoring** on both libraries (Dashboard → Libraries → library → Manage library), or rely on the scheduled **Scan media library** task.
+6. **Deploy the agent, then the site.** Deploy the agent with `scripts/deploy-agent.ps1` (or `.sh`) as usual ([Updating the recovery agent](DEPLOYMENT.md#updating-the-recovery-agent)), check `journalctl -u tomify-recovery -n 20` has no `Tomifin Downloader is off` or `sign-in is off` line, then merge so Cloudflare deploys the site. The site works before the agent is updated: Tomifin then says the media server needs the latest agent, and Recovery is unaffected (the agent contract stays `2`).
+
+7. **Jellyfin.** Tomifin calls Jellyfin only to sign in; it does not change libraries or start scans. New files appear when Jellyfin next scans: turn on **Real time monitoring** on both libraries (Dashboard → Libraries → library → Manage library), or rely on the scheduled **Scan media library** task.
 
 ## Security
 
-- **Access:** every `/api/tomifin/*` route requires a Navidrome administrator, checked by the Worker on each request. Pause, resume and cancel act only on a torrent carrying that job's own `tomifin-` tag, so Recovery's torrents and anything added to qBittorrent by hand are never touched.
+- **Access:** every `/api/tomifin/*` route except sign-in requires a Jellyfin administrator's session, checked with Jellyfin by the agent (see [Signing in](#signing-in)). Removing someone's administrator role or disabling them in Jellyfin locks them out within 30 seconds. Pause, resume and cancel act only on a torrent carrying that job's own `tomifin-` tag, so Recovery's torrents and anything added to qBittorrent by hand are never touched.
 - **Paths:** the browser sends `family` or `private`, never a path. Paths come only from the agent's environment, are checked to be separate at start-up, and a content path qBittorrent reports is accepted only strictly inside the destination folder. Job ids are UUIDs; other ids are refused before any file is touched.
 - **SSRF and links:** the browser cannot supply a link. Only links produced by the agent's own search are queued, and they pass the same checks as Recovery (magnet info hash, public host, no embedded credentials; only a configured indexer may be on a private address). Search input is trimmed and limited to 200 characters.
-- **Credentials:** qBittorrent's password, indexer API keys, tracker passkeys and `RECOVERY_AGENT_TOKEN` stay on the box and in the Worker. Responses carry no links, paths beyond the two library names, or tokens.
-- **Logs:** the agent logs the number of search results and the title and library of each queued or removed download; the Worker logs the Navidrome user and library. Neither logs links, search terms or credentials.
-- **Separate address:** Tomifin's origin is separate from Tomify's, so browser storage, sign-in and service workers are not shared, and Tomify's APIs are not exposed on Tomifin's address (see [How it fits together](#how-it-fits-together)). Tomify's service worker never serves or precaches Tomifin's page.
+- **Credentials:** the Jellyfin password is passed straight to Jellyfin and never stored; the session token lives only in the HttpOnly cookie and the agent's 30-second memory cache. qBittorrent's password, indexer API keys, tracker passkeys and `RECOVERY_AGENT_TOKEN` stay on the box and in the Worker. Responses carry no links, paths beyond the two library names, or tokens.
+- **Logs:** the agent logs the number of search results and the title and library of each queued or removed download; the Worker logs who signed in and the library of each queued download. Neither logs links, search terms or credentials.
+- **Separate address:** Tomifin's origin is separate from Tomify's, so browser storage, cookies and service workers are not shared, and Tomify's APIs are not exposed on Tomifin's address (see [How it fits together](#how-it-fits-together)). Tomify's service worker never serves or precaches Tomifin's page.
 
 ## Limitations
 

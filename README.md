@@ -233,7 +233,7 @@ Icon-only buttons and links need both an `aria-label` and a `title` tooltip (the
 
 ### Tomifin Downloader
 
-Tomifin Downloader is a separate app at its own address (`https://tomifin.tomdixon.uk/`, served by the same Worker) for Navidrome administrators: search films and TV with the same torrent sources Recovery uses, choose **Family** (`/media/family`) or **Private** (`/media/private`), and queue the torrent in the media server's qBittorrent, with live progress, pause, resume and cancel. It needs the custom domain added to the Worker, two settings on the agent and a qBittorrent drop-in; see [docs/TOMIFIN.md](docs/TOMIFIN.md).
+Tomifin Downloader is a separate app at its own address (`https://tomifin.tomdixon.uk/`, served by the same Worker) for Jellyfin administrators, who sign in with their Jellyfin account: search films and TV with the same torrent sources Recovery uses, choose **Family** (`/media/family`) or **Private** (`/media/private`), and queue the torrent in the media server's qBittorrent, with live progress, pause, resume and cancel. It needs the custom domain added to the Worker, three settings on the agent and a qBittorrent drop-in; see [docs/TOMIFIN.md](docs/TOMIFIN.md).
 
 ### Deploying
 

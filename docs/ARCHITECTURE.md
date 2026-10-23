@@ -35,7 +35,7 @@ Navidrome stays the source of truth for accounts, the library, playlists, favour
 
 ## 2. The PWA
 
-- Tomifin Downloader is a separate app at its own address (`TOMIFIN_HOSTNAME`, a second Custom Domain on the same Worker), built from `tomifin/index.html` and `src/tomifin/` as another Vite entry point. It reuses the auth store's code but not Tomify's shell; see [TOMIFIN.md](TOMIFIN.md).
+- Tomifin Downloader is a separate app at its own address (`TOMIFIN_HOSTNAME`, a second Custom Domain on the same Worker), built from `tomifin/index.html` and `src/tomifin/` as another Vite entry point. It shares none of Tomify's shell or sign-in: Jellyfin administrators sign in through the recovery agent (`recovery-agent/jellyfin.mjs`), and the session is an HttpOnly cookie; see [TOMIFIN.md](TOMIFIN.md).
 - React 18, TypeScript and Vite, under `src/`. Routes are declared in `src/App.tsx`: Home, Artists, Albums, Search, Playlists (including Spotify import and imported playlists), Favourites, Downloads, Recovery and Settings.
 - `src/lib/navidrome.ts` is the single typed OpenSubsonic client. Signing in creates a salted token (`createAuthSession`); the password is never stored. When the server is the default (`https://tomify.tomdixon.uk`), requests go through the Worker's same-origin `/navidrome` proxy, which avoids CORS.
 - Calls to Tomify's own API (`src/lib/recovery-api.ts`, `catalogue-api.ts`, `completeness-api.ts`, `playlist-shares.ts` and the stores) send the Navidrome username, token and salt as `x-tomify-user`, `x-tomify-token` and `x-tomify-salt` headers.
@@ -72,7 +72,7 @@ Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/
 | `worker/routes/inventory.ts`, `worker/routes/system-settings.ts` | `/api/inventory*`, `/api/library-health*`, `/api/system*`, quality, scan and preflight routes | Administrative library and server operations |
 | `worker/routes/navidrome.ts`, `worker/routes/version.ts` | `/navidrome/*`, `/api/version` | Navidrome proxy and deployed version information |
 | `worker/routes/hls.ts`, `worker/routes/media-session.ts` (+ `worker/features/media-session.ts`) | `/api/hls/*`, `/api/media-session` | Adaptive streaming through the agent; short-lived media tokens and the LAN address |
-| `worker/routes/tomifin.ts`, `worker/routes/tomifin-site.ts` | `/api/tomifin/*`; everything on `TOMIFIN_HOSTNAME` | Tomifin Downloader (administrators only): film and TV torrent search and queuing through the recovery agent; see [TOMIFIN.md](TOMIFIN.md) |
+| `worker/routes/tomifin.ts`, `worker/routes/tomifin-site.ts` | `/api/tomifin/*`; everything on `TOMIFIN_HOSTNAME` | Tomifin Downloader (Jellyfin administrators only): film and TV torrent search and queuing through the recovery agent; see [TOMIFIN.md](TOMIFIN.md) |
 | `scripts/recovery-metadata.mjs`, `scripts/recovery-artwork.mjs` | (helpers) | MusicBrainz metadata review and artwork resolution for Recovery |
 
 Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configuration falls back to `index.html` for client-side routes.
@@ -180,7 +180,7 @@ Spotify OAuth tokens are stored encrypted with `SPOTIFY_TOKEN_ENCRYPTION_KEY`. N
 - With `TOMIFY_LAN_PORT`, `TOMIFY_LAN_TLS_CERT`, `TOMIFY_LAN_TLS_KEY` and `TOMIFY_MEDIA_KEY` set, `lan.mjs` also runs an HTTPS listener for players on the home network (LAN-direct streaming): `/lan/ping`, `/navidrome/rest/stream.view` (proxied to Navidrome on the box) and `/api/hls/*` (the same packager as `/v1/hls`). It accepts only media tokens, answers CORS and Private Network Access preflights for `TOMIFY_LAN_ALLOWED_ORIGINS`, and reloads its certificate twice a day. See [DEPLOYMENT.md](DEPLOYMENT.md#lan-direct-streaming).
 - It listens on `127.0.0.1:8788`. A Cloudflare Tunnel run by the `tomify-recovery-cloudflared` Docker container exposes it at `RECOVERY_AGENT_URL`; the Worker never connects to the box directly.
 - `GET /health` is unauthenticated. Every `/v1/*` endpoint requires `Authorization: Bearer $TOMIFY_RECOVERY_TOKEN`, and the agent refuses to start without a token of at least 32 characters (`config.mjs`).
-- Endpoints: `/v1/status`, `/v1/search`, `/v1/acquire`, `/v1/jobs/status`, `/v1/jobs/cancel`, `/v1/jobs/import-remaining`, `/v1/delete`, `/v1/system/vpn/status`, `/v1/system/vpn`, `/v1/system/reboot`, and Tomifin Downloader's `/v1/tomifin/*` (`tomifin.mjs`). The full contract is in [RECOVERY.md](RECOVERY.md#backend-contract).
+- Endpoints: `/v1/status`, `/v1/search`, `/v1/acquire`, `/v1/jobs/status`, `/v1/jobs/cancel`, `/v1/jobs/import-remaining`, `/v1/delete`, `/v1/system/vpn/status`, `/v1/system/vpn`, `/v1/system/reboot`, and Tomifin Downloader's `/v1/tomifin/*` (`tomifin.mjs`, sign-in in `jellyfin.mjs`). The full contract is in [RECOVERY.md](RECOVERY.md#backend-contract).
 
 | Backend | Code | How it acquires |
 | --- | --- | --- |

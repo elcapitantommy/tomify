@@ -1,17 +1,14 @@
 import type { Env, RouteHandler } from '../env.ts'
 import { json } from '../lib/http.ts'
-import { navidromeRoute } from './navidrome.ts'
 import { tomifinRoute } from './tomifin.ts'
 
 // Tomifin Downloader has its own address (TOMIFIN_HOSTNAME, for example tomifin.tomdixon.uk), served by this same
-// Worker as a second custom domain. On that host the Worker serves only Tomifin: its page, its API, the sign-in
-// checks it needs from the Navidrome proxy and its icons. Tomify's own pages and APIs are not reachable there, and
+// Worker as a second custom domain. On that host the Worker serves only Tomifin: its page, its API (which signs in
+// with Jellyfin through the recovery agent) and its icons. Tomify's own pages and APIs are not reachable there, and
 // Tomifin is not reachable from Tomify's address.
 
 // Files from dist/client the Tomifin page uses besides its hashed /assets/ (which Static Assets serves directly).
 const TOMIFIN_FILES = new Set(['/tomify-logo-192.png', '/apple-touch-icon-180.png', '/favicon.ico', '/favicon.svg'])
-// Signing in checks the login and the administrator role through the Navidrome proxy; nothing else is proxied.
-const TOMIFIN_NAVIDROME = /^\/navidrome\/rest\/(ping|getUser)(\.view)?$/
 // Where Vite puts the page in dist/client.
 const TOMIFIN_PAGE = '/tomifin/'
 
@@ -47,11 +44,8 @@ export const tomifinSiteRoute: RouteHandler = async (request, env, url, ctx) => 
   }
 
   if (url.pathname === '/api/tomifin' || url.pathname.startsWith('/api/tomifin/')) return (await tomifinRoute(request, env, url, ctx))!
-  if (url.pathname === '/api' || url.pathname.startsWith('/api/')) return json({ error: 'not-found' }, 404)
-  if (url.pathname === '/navidrome' || url.pathname.startsWith('/navidrome/')) {
-    if (!TOMIFIN_NAVIDROME.test(url.pathname) || url.searchParams.has('mt')) return json({ error: 'not-found' }, 404)
-    return (await navidromeRoute(request, env, url, ctx))!
-  }
+  // Tomify's APIs and its Navidrome proxy are not part of Tomifin.
+  if (['/api', '/navidrome'].some((prefix) => url.pathname === prefix || url.pathname.startsWith(prefix + '/'))) return json({ error: 'not-found' }, 404)
   if (request.method !== 'GET' && request.method !== 'HEAD') return new Response(null, { status: 405, headers: { allow: 'GET, HEAD' } })
   if (url.pathname.startsWith('/assets/') || TOMIFIN_FILES.has(url.pathname)) return env.ASSETS ? env.ASSETS.fetch(request as never) as unknown as Response : new Response(null, { status: 404 })
   // Tomify's service worker, manifest and other files are not part of Tomifin.
