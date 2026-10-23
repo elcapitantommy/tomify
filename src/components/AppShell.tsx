@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Album, ArrowLeft, CircleUserRound, Download, Heart, Home, LifeBuoy, ListMusic, LogOut, Search, Settings, UsersRound, X, BarChart3, PartyPopper, Compass, Radio, History as HistoryIcon } from 'lucide-react'
 import { PlayerBar } from './Player'
+import { MiniPlayerHost } from './MiniPlayer'
 import { PlayerRuntime } from './PlayerRuntime'
 import { LivePlaybackSync } from './LivePlaybackSync'
 import { DjRuntime } from './DjPanel'
@@ -86,7 +87,7 @@ export function AppShell() {
     {accountOpen && <AccountSheet isAdmin={isAdmin} onClose={() => setAccountOpen(false)} onLogout={logout}/>}
     <main className="content" key={location.pathname}><Outlet/></main>
     <nav className="mobile-nav">{mobile.map((item) => <NavItem {...item} key={item.to}/>)}</nav>
-    <LivePlaybackSync/><PlayerRuntime/><DjRuntime/><RadioRuntime/><PartyRuntime/><LiveRadioRuntime/><PlayerBar/><KeyboardShortcuts/><LongTrackResume/>
+    <LivePlaybackSync/><PlayerRuntime/><DjRuntime/><RadioRuntime/><PartyRuntime/><LiveRadioRuntime/><PlayerBar/><MiniPlayerHost/><KeyboardShortcuts/><LongTrackResume/>
   </div>
 }
 function AccountSheet({ isAdmin, onClose, onLogout }: { isAdmin: boolean; onClose(): void; onLogout(): void }) {

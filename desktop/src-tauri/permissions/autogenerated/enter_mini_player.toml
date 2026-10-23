@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-enter-mini-player"
+description = "Enables the enter_mini_player command without any pre-configured scope."
+commands.allow = ["enter_mini_player"]
+
+[[permission]]
+identifier = "deny-enter-mini-player"
+description = "Denies the enter_mini_player command without any pre-configured scope."
+commands.deny = ["enter_mini_player"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-exit-mini-player"
+description = "Enables the exit_mini_player command without any pre-configured scope."
+commands.allow = ["exit_mini_player"]
+
+[[permission]]
+identifier = "deny-exit-mini-player"
+description = "Denies the exit_mini_player command without any pre-configured scope."
+commands.deny = ["exit_mini_player"]

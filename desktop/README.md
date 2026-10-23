@@ -1,0 +1,44 @@
+# Tomify for Windows
+
+A small [Tauri](https://tauri.app) app that shows the hosted Tomify site (https://app.tomify.tomdixon.uk) in its own window: no address bar or tabs, its own taskbar icon and Start menu entry, and starting it again brings the open window forward instead of a second player. It uses the Edge WebView2 engine that ships with Windows 10 and 11.
+
+The app is still the website. Every Tomify deploy reaches it the next time it loads, so the app only needs reinstalling when something in this folder changes.
+
+## Getting the installer
+
+GitHub Actions builds it (`.github/workflows/desktop.yml`) whenever `desktop/` changes on `main` or in a pull request, and on demand: **Actions → Windows app → Run workflow**. Open the finished run and download **Tomify-windows-installer** from its Artifacts section. Inside are:
+
+- `Tomify_<version>_x64-setup.exe`: recommended. Installs for your user only, no admin prompt.
+- `Tomify_<version>_x64_en-US.msi`: the same app as a Windows Installer package.
+
+The installers are not code-signed, so Windows SmartScreen says "Windows protected your PC" the first time: choose **More info → Run anyway**.
+
+Sign in once in the app: it keeps its own sign-in, downloads and settings, separate from Edge or Chrome.
+
+## What is different from the browser
+
+- **Mini player.** The pop-out button in the player bar shrinks the app's own window to the mini player at the bottom right of the screen, always on top. Drag it by anything that isn't a control; the expand button (top right) puts the full window back where it was. Reloading Tomify also puts it back.
+- **Media keys.** The app turns on Chromium's hardware media key handling, so the keyboard's play/pause, next and previous keys and the Windows media overlay drive Tomify's Media Session controls.
+- **Links to other sites** (MusicBrainz, Radio Browser) open in your normal browser.
+- **What the site can ask the app to do** is limited to switching the mini player on and off and dragging it (`src-tauri/capabilities/tomify-site.json`), and only from https://app.tomify.tomdixon.uk.
+
+Things the WebView2 engine doesn't do, so they stay browser-only: Web Push notifications, and casting with AirPlay or Chromecast.
+
+## Building it yourself
+
+On Windows with [Rust](https://rustup.rs) and Node.js 22:
+
+```powershell
+cd desktop
+npx --yes @tauri-apps/cli@2.12.4 build
+```
+
+The installers land in `desktop/src-tauri/target/release/bundle/`. `npx --yes @tauri-apps/cli@2.12.4 dev` runs it without installing. `cargo test` in `desktop/src-tauri` runs the Rust tests; `scripts/desktop-app.node-test.mjs` (part of `pnpm test`) checks the app's settings agree with each other and with the site.
+
+## Files
+
+- `src-tauri/src/main.rs`: the window, the mini player commands, single instance and opening other sites in the browser.
+- `src-tauri/tauri.conf.json`: name, version and installer settings. Bump `version` here and in `Cargo.toml` together.
+- `src-tauri/icons/`: made from `public/pwa-512x512.png` (the rounded Tomify tile) with `npx @tauri-apps/cli@2.12.4 icon ../public/pwa-512x512.png -o src-tauri/icons`.
+- `offline/index.html`: required by Tauri's build; the app never shows it, because the window opens the site directly.
+- The site side is `src/lib/desktop-app.ts` and the `compact` mode in `src/stores/miniPlayer.ts`.

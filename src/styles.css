@@ -458,3 +458,9 @@ body.mini-player-window{min-width:0;min-height:0;margin:0;background:var(--panel
 .queue-section-label{display:block;margin:10px 8px 4px;font-size:.67rem;text-transform:uppercase;letter-spacing:.14em;color:#686e68;font-weight:700}
 .queue-now{margin-bottom:6px}
 .queue-empty{margin:12px 8px;color:var(--muted);font-size:.8rem}
+/* Windows app: its own window shrinks to the mini player (components/MiniPlayer.tsx). */
+.desktop-mini-player{position:fixed;inset:0;z-index:1000;background:var(--panel)}
+.desktop-mini-player .mini-player{padding-right:40px}
+.desktop-mini-expand{position:absolute;top:8px;right:8px;padding:4px;border:0;background:none;color:var(--muted)}
+.desktop-mini-expand:hover{color:var(--text)}
+.desktop-mini-expand svg{width:18px;height:18px}
