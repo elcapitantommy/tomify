@@ -12,7 +12,7 @@
 //   cleanup  SABnzbd's output is never deleted unless TOMIFY_TOMIFIN_USENET_CLEANUP=true and publication was verified.
 import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
-import { createSabnzbdClient, newznabDownloadUrl, searchNewznabVideo, validateCompletedPath } from './usenet.mjs'
+import { createSabnzbdClient, newznabDownloadUrl, nzbIndexDownloadUrl, searchNewznabVideo, searchNzbIndexVideo, validateCompletedPath } from './usenet.mjs'
 import { createFamilyImporter, DEFAULT_TV_DIR, ffprobeReader } from './family-import.mjs'
 import { PublishError, ensureIgnoredFolder, publishPrivateDownload, strictlyWithin } from './media-publish.mjs'
 import { LinkError, createLinkFetcher, parseNzb } from './tomifin-links.mjs'
@@ -38,12 +38,13 @@ export class TomifinUsenetError extends Error {
   constructor(code, text) { super(text); this.name = 'TomifinUsenetError'; this.code = code }
 }
 
-// Tomifin's Usenet settings: the existing Recovery indexers, SABnzbd and its completed folder, plus Tomifin's own
-// SABnzbd categories and publication choices. Usenet stays off (with a reason) without disturbing torrents.
-export function tomifinUsenetConfig(env = process.env, { indexers = [], downloader = null, downloadRoot = null, tomifin = null } = {}) {
-  const off = (problem) => ({ available: false, problem })
+// Tomifin's Usenet settings: SABnzbd and its completed folder (needed to download any NZB, including an added link or
+// upload), Recovery's search providers (NZBIndex, anonymous by default, and any Newznab indexers; needed only to
+// search), plus Tomifin's own SABnzbd categories and publication choices. Usenet stays off (with a reason) without
+// disturbing torrents; search can be off while added NZBs still work.
+export function tomifinUsenetConfig(env = process.env, { indexers = [], nzbIndex = null, downloader = null, downloadRoot = null, tomifin = null } = {}) {
+  const off = (problem) => ({ available: false, problem, search: { available: false, providers: [], problem } })
   if (!tomifin?.enabled) return off(tomifin?.problem || 'Tomifin Downloader is off.')
-  if (!indexers.length) return off('No Newznab indexer is configured (TOMIFY_NEWZNAB_INDEXERS_JSON).')
   if (!downloader) return off('SABnzbd is not configured (TOMIFY_SABNZBD_URL and TOMIFY_SABNZBD_API_KEY).')
   if (downloader.type !== 'sabnzbd') return off('Tomifin\'s Usenet downloads need SABnzbd; NZBGet is not supported.')
   if (!downloader.apiKey) return off('TOMIFY_SABNZBD_API_KEY is not set.')
@@ -61,8 +62,10 @@ export function tomifinUsenetConfig(env = process.env, { indexers = [], download
   for (const destination of Object.values(tomifin.destinations)) {
     if (strictlyWithin(root, destination.hostPath) || root === destination.hostPath || strictlyWithin(destination.hostPath, root)) return off('TOMIFY_USENET_DOWNLOAD_DIR must be outside the Family and Private libraries.')
   }
+  const providers = [...(nzbIndex ? [nzbIndex.name] : []), ...indexers.map((indexer) => indexer.name)]
+  const search = { available: providers.length > 0, providers, problem: providers.length ? null : 'No Usenet search provider is configured (NZBIndex or TOMIFY_NEWZNAB_INDEXERS_JSON); added NZB links and files still work.' }
   return {
-    available: true, problem: null, indexers, sab: downloader, root, sabRoot: downloader.downloadRoot || null, categories, publish,
+    available: true, problem: null, search, indexers, nzbIndex: nzbIndex || null, sab: downloader, root, sabRoot: downloader.downloadRoot || null, categories, publish,
     cleanup: text(env.TOMIFY_TOMIFIN_USENET_CLEANUP).toLowerCase() === 'true',
     moviesDir: text(env.TOMIFIN_IMPORT_MOVIES_SUBDIR), tvDir: text(env.TOMIFIN_IMPORT_TV_SUBDIR) || DEFAULT_TV_DIR,
   }
@@ -161,23 +164,41 @@ export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.
 
   const backend = {
     get available() { return available },
-    status() { return { available, problem: available ? null : (config?.problem || 'Usenet downloads are not set up on the media server.') } },
+    get searchAvailable() { return available && Boolean(config.search?.available) },
+    status() {
+      const problem = available ? null : (config?.problem || 'Usenet downloads are not set up on the media server.')
+      return { available, problem, search: available ? { available: Boolean(config.search?.available), providers: config.search?.providers || [], problem: config.search?.problem || null } : { available: false, providers: [], problem } }
+    },
     categoryFor,
 
-    // Newznab results for films and/or TV, as plain entries; the controller gives them ids.
+    // NZBIndex and Newznab results for films and/or TV, searched at once, as plain entries; the controller gives them
+    // ids. A provider that fails is named in failedNames; the others' results are kept. Throws only if all fail.
     async search(query, kind) {
       requireUsenet()
-      return searchNewznabVideo(config.indexers, query, NEWZNAB_CATEGORIES[kind] || NEWZNAB_CATEGORIES.video, { fetchImpl })
+      if (!config.search?.available) throw new TomifinUsenetError('usenet-unavailable', config.search?.problem || 'No Usenet search provider is configured.')
+      const searches = []
+      // Newznab first, so a release both list keeps Newznab's entry (it has grabs and a details page).
+      if (config.indexers.length) searches.push({ names: config.indexers.map((indexer) => indexer.name), run: searchNewznabVideo(config.indexers, query, NEWZNAB_CATEGORIES[kind] || NEWZNAB_CATEGORIES.video, { fetchImpl }) })
+      if (config.nzbIndex) searches.push({ names: [config.nzbIndex.name], run: searchNzbIndexVideo(config.nzbIndex, query, { fetchImpl }).then((results) => ({ results, failedNames: [] })) })
+      const settled = await Promise.allSettled(searches.map((entry) => entry.run))
+      if (settled.every((entry) => entry.status === 'rejected')) throw settled[0].reason
+      const failedNames = settled.flatMap((entry, index) => entry.status === 'rejected' ? searches[index].names : entry.value.failedNames || [])
+      // Interleaved, so one provider's long list does not crowd out the others before the result limit.
+      const batches = settled.filter((entry) => entry.status === 'fulfilled').map((entry) => entry.value.results)
+      const results = []
+      for (let index = 0; batches.some((batch) => index < batch.length); index += 1) for (const batch of batches) if (index < batch.length) results.push(batch[index])
+      return { results, failed: failedNames.length, failedNames }
     },
 
     // Fetches and checks the NZB of a search result. The download link carries the indexer's API key, so it is built
     // here from the configured indexer and never stored or shown.
     async prepare(result) {
       requireUsenet()
-      const indexer = config.indexers.find((entry) => entry.id === result.indexerId)
-      if (!indexer) throw new TomifinUsenetError('result-expired', 'That indexer is no longer configured. Search again.')
+      const nzbIndex = result.provider === 'nzbindex' ? config.nzbIndex : null
+      const indexer = nzbIndex || config.indexers.find((entry) => entry.id === result.indexerId)
+      if (!indexer || (result.provider === 'nzbindex' && result.indexerId !== nzbIndex?.id)) throw new TomifinUsenetError('result-expired', 'That indexer is no longer configured. Search again.')
       let fetched
-      try { fetched = await fetchLink(newznabDownloadUrl(indexer, result.guid), { maxBytes: 32 * 1024 * 1024 }) }
+      try { fetched = await fetchLink(nzbIndex ? nzbIndexDownloadUrl(nzbIndex, result.collectionId) : newznabDownloadUrl(indexer, result.guid), { maxBytes: 32 * 1024 * 1024 }) }
       catch (error) { throw new TomifinUsenetError(error instanceof LinkError && error.code === 'auth-required' ? 'indexer-refused' : 'indexer-unavailable', `${indexer.name} could not supply the NZB${error instanceof LinkError ? `: ${error.message.replace(/^The link/, 'the link').replace(/\.$/, '')}` : ''}.`) }
       if (!fetched.bytes) throw new TomifinUsenetError('invalid-nzb', `${indexer.name} did not return an NZB file.`)
       try { return { bytes: fetched.bytes, nzb: parseNzb(fetched.bytes, { fallbackName: result.title }) } }

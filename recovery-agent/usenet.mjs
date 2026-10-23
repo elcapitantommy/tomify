@@ -389,7 +389,41 @@ export async function searchNewznabVideo(indexers, query, categories, { fetchImp
     return parseNewznabVideoResults(body, indexer, now())
   }))
   if (settled.length && settled.every((result) => result.status === 'rejected')) throw settled[0].reason
-  return { results: settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []), failed: settled.filter((result) => result.status === 'rejected').length }
+  const failedNames = indexers.filter((_indexer, index) => settled[index].status === 'rejected').map((indexer) => indexer.name)
+  return { results: settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []), failed: failedNames.length, failedNames }
+}
+
+// NZBIndex for Tomifin: a free-text search of complete collections (NZBIndex has no categories), anonymous unless
+// TOMIFY_NZBINDEX_API_KEY is set. Results carry the collection id for the agent only; no URL is built here.
+export async function searchNzbIndexVideo(config, query, { fetchImpl = fetch, timeoutMs = 25_000, now = Date.now } = {}) {
+  const url = new URL('/api/search', config.apiUrl)
+  url.searchParams.set('q', text(query).slice(0, 200)); url.searchParams.set('max', '100'); url.searchParams.set('sort', 'agedesc'); url.searchParams.set('complete', '1')
+  if (text(config.apiKey)) url.searchParams.set('key', text(config.apiKey))
+  let response
+  try { response = await fetchImpl(url, { redirect: 'error', signal: AbortSignal.timeout(timeoutMs), headers: { accept: 'application/json', 'user-agent': 'Tomify/0.1 recovery-agent' } }) }
+  catch { throw new Error(`${config.name} could not be reached.`) }
+  if (!response.ok) throw new Error(`${config.name} returned HTTP ${response.status}.`)
+  let payload
+  try { payload = await response.json() } catch { throw new Error(`${config.name} sent an answer that could not be read.`) }
+  return parseNzbIndexVideoResults(payload, config, now())
+}
+
+export function parseNzbIndexVideoResults(payload, config, now = Date.now()) {
+  if (payload?.error) throw new Error(`${config.name} refused the search.`)
+  const collections = Array.isArray(payload?.data?.content) ? payload.data.content : []
+  return collections.filter((collection) => collection?.complete !== false && !isNonInitialMultipart(collection?.name)).slice(0, 100).map((collection) => {
+    const collectionId = text(collection?.id)
+    const title = text(collection?.name).replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, 500)
+    if (!title || !collectionId || collectionId.length > 500 || !/^[a-zA-Z0-9_-]+$/.test(collectionId)) return null
+    const size = number(collection?.size)
+    const posted = number(collection?.posted)
+    return {
+      provider: 'nzbindex', indexerId: config.id, indexerName: config.name, collectionId, title,
+      size: size !== null && size > 0 ? size : null,
+      ageDays: posted !== null && posted > 0 ? Math.max(0, Math.floor((now - posted * 1000) / 86_400_000)) : null,
+      grabs: null, comments: null,
+    }
+  }).filter(Boolean)
 }
 
 export function parseNewznabVideoResults(xml, indexer, now = Date.now()) {
@@ -405,7 +439,7 @@ export function parseNewznabVideoResults(xml, indexer, now = Date.now()) {
     const posted = Date.parse(xmlAttr(item, 'usenetdate') || xmlTag(item, 'pubDate'))
     const grabs = number(xmlAttr(item, 'grabs'))
     return {
-      indexerId: indexer.id, indexerName: indexer.name, guid, title,
+      provider: 'newznab', indexerId: indexer.id, indexerName: indexer.name, guid, title,
       size: size !== null && size > 0 ? size : null,
       ageDays: Number.isFinite(posted) ? Math.max(0, Math.floor((now - posted) / 86_400_000)) : null,
       grabs: grabs !== null && grabs >= 0 ? Math.round(grabs) : null,

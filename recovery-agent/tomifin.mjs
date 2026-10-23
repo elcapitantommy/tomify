@@ -152,14 +152,21 @@ function visibleResult(result) {
 
 // NZB results found on several indexers are merged only when the posted title and the exact size are identical; the
 // same cleaned-up name with a different size is a different release.
+// Conservative: the same indexer entry, or the same release name (ignoring case and separators) with sizes within 1 %
+// (providers count a post's size slightly differently). Anything less certain is shown twice rather than hidden.
+function nzbEntryKey(entry) { return `${entry.provider || 'newznab'}\0${entry.indexerId}\0${entry.guid || entry.collectionId}` }
+function releaseName(title) { return text(title).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() }
 function dedupeNzbs(entries) {
   const seen = new Set()
-  return entries.filter((entry) => {
-    const keys = [`guid\0${entry.indexerId}\0${entry.guid}`, ...(entry.size ? [`post\0${entry.title}\0${entry.size}`] : [])]
-    if (keys.some((key) => seen.has(key))) return false
-    keys.forEach((key) => seen.add(key))
-    return true
-  })
+  const kept = []
+  for (const entry of entries) {
+    if (seen.has(nzbEntryKey(entry))) continue
+    seen.add(nzbEntryKey(entry))
+    const name = releaseName(entry.title)
+    if (entry.size && kept.some((other) => other.size && releaseName(other.title) === name && Math.abs(other.size - entry.size) <= Math.max(other.size, entry.size) * 0.01)) continue
+    kept.push(entry)
+  }
+  return kept
 }
 
 // Only links qBittorrent can certainly use: magnets, .torrent files and download links from a configured Prowlarr or
@@ -536,7 +543,7 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
         available: Boolean(config?.enabled && client), problem: config?.enabled ? null : (config?.problem || 'Tomifin Downloader is not configured on the media server.'),
         destinations: Object.values(TOMIFIN_DESTINATIONS).map(({ id, label }) => ({ id, label, available: Boolean(config?.enabled && config.destinations[id]) })),
         kinds: Object.keys(TOMIFIN_SEARCH_KINDS),
-        downloaders: { torrent: { available: Boolean(config?.enabled && client) }, usenet: { available: Boolean(config?.enabled && usenetStatus.available), problem: usenetStatus.available ? null : usenetStatus.problem } },
+        downloaders: { torrent: { available: Boolean(config?.enabled && client) }, usenet: { available: Boolean(config?.enabled && usenetStatus.available), problem: usenetStatus.available ? null : usenetStatus.problem, search: { available: Boolean(config?.enabled && usenetStatus.available && usenetStatus.search?.available), providers: usenetStatus.search?.providers || [], problem: usenetStatus.search?.problem || usenetStatus.problem || null } } },
       }
     },
 
@@ -574,23 +581,24 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
         detailsUrl: result.detailsUrl, quality: qualityFromTitle(result.title),
         link: result.parsed.link, infoHash: result.parsed.infoHash,
       })))
-      const usenetSearch = usenetReady() ? usenet.search(query, kindId) : null
+      const usenetSearch = usenetReady() && usenet.searchAvailable ? usenet.search(query, kindId) : null
       const [torrents, nzbs] = await Promise.allSettled([torrentSearch, usenetSearch || Promise.resolve(null)])
       if (torrents.status === 'rejected' && (!usenetSearch || nzbs.status === 'rejected')) throw torrents.reason
       const warnings = []
       if (torrents.status === 'rejected') warnings.push(`Torrent search failed: ${torrents.reason instanceof Error ? torrents.reason.message : 'unknown error'}`)
       if (usenetSearch && nzbs.status === 'rejected') warnings.push(`Usenet search failed: ${nzbs.reason instanceof Error ? nzbs.reason.message : 'unknown error'}`)
-      if (nzbs.status === 'fulfilled' && nzbs.value?.failed) warnings.push(`${nzbs.value.failed} Usenet indexer${nzbs.value.failed === 1 ? '' : 's'} did not answer.`)
+      if (nzbs.status === 'fulfilled' && nzbs.value?.failed) warnings.push(nzbs.value.failedNames?.length ? `Usenet search: ${nzbs.value.failedNames.join(', ')} did not answer.` : `${nzbs.value.failed} Usenet indexer${nzbs.value.failed === 1 ? '' : 's'} did not answer.`)
       const usenetResults = nzbs.status === 'fulfilled' && nzbs.value ? dedupeNzbs(nzbs.value.results).slice(0, RESULT_LIMIT).map((entry) => ({
-        id: createHash('sha256').update(`tomifin-usenet\0${entry.indexerId}\0${entry.guid}`).digest('hex'),
+        id: createHash('sha256').update(`tomifin-usenet\0${nzbEntryKey(entry)}`).digest('hex'),
         title: entry.title, source: entry.indexerName, size: entry.size, ageDays: entry.ageDays, grabs: entry.grabs, seeders: null, leechers: null,
-        type: 'usenet', linkType: 'nzb', detailsUrl: safeDetailsUrl(entry.comments), quality: qualityFromTitle(entry.title),
-        indexerId: entry.indexerId, guid: entry.guid, guidKey: `${entry.indexerId}\0${entry.guid}`,
+        // NZBIndex's details page names its collection id, which stays on the agent, so it gets no link.
+        type: 'usenet', linkType: 'nzb', detailsUrl: entry.provider === 'nzbindex' ? null : safeDetailsUrl(entry.comments), quality: qualityFromTitle(entry.title),
+        provider: entry.provider || 'newznab', indexerId: entry.indexerId, guid: entry.guid || null, collectionId: entry.collectionId || null, guidKey: nzbEntryKey(entry),
       })) : []
       const found = [...(torrents.status === 'fulfilled' ? torrents.value : []), ...usenetResults]
       rememberResults(found)
       log(`Tomifin search (${kindId}) returned ${found.length} result${found.length === 1 ? '' : 's'} (${usenetResults.length} Usenet)`)
-      return { query, kind: kindId, results: found.map(visibleResult), warnings, usenet: usenetReady() }
+      return { query, kind: kindId, results: found.map(visibleResult), warnings, usenet: Boolean(usenetReady() && usenet.searchAvailable) }
     },
 
     // Add link: checks one pasted magnet, .torrent or .nzb link, or an uploaded file, and turns it into a result the
