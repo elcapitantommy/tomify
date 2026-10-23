@@ -123,6 +123,20 @@ test('running again changes nothing, and a dry run writes nothing', async () => 
   assert.equal((await stat(join(context.library, 'Sintel (2010)', 'Sintel (2010).mkv'))).nlink, 2)
 })
 
+test('films can be published into a folder such as Movies, which must already exist inside the library', async () => {
+  const context = await setup()
+  await addTorrent(context, HASH, 'Sintel.2010.720p', { 'Sintel.2010.720p/Sintel.2010.720p.mkv': film })
+  assert.throws(() => context.make({ moviesDir: '../elsewhere' }), /one plain folder name/)
+  assert.throws(() => context.make({ moviesDir: '.hidden' }), /one plain folder name/)
+  await assert.rejects(context.make({ moviesDir: 'Movies' }).importTorrent(HASH), /does not exist/)
+  await mkdir(join(context.library, 'Movies'))
+  const result = await context.make({ moviesDir: 'Movies' }).importTorrent(HASH)
+  assert.equal(result.result, 'published')
+  assert.deepEqual(result.published, [join(context.library, 'Movies', 'Sintel (2010)', 'Sintel (2010).mkv')])
+  assert.equal((await stat(join(context.library, 'Movies', 'Sintel (2010)', 'Sintel (2010).mkv'))).nlink, 2)
+  assert.equal(await lstat(join(context.library, 'Sintel (2010)')).then(() => true, () => false), false)
+})
+
 test('a film already published by hand (the same inode) is recorded, not duplicated', async () => {
   const context = await setup()
   await addTorrent(context, HASH, 'Toy.Story.2.1999.1080p.BrRip.x264-YIFY', { 'Toy.Story.2.1999.1080p.BrRip.x264-YIFY/Toy.Story.2.1999.1080p.BrRip.x264-YIFY.mp4': film })

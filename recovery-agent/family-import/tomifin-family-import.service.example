@@ -5,7 +5,6 @@
 # It runs as qbittorrent because the kernel only lets a file's owner (or someone who may also write to it) hardlink
 # it (fs.protected_hardlinks), and qBittorrent owns the downloaded files. Everything else is locked down: it can
 # write only to the Family library and its own state folder, and reach only qBittorrent on this machine.
-# Adjust the paths marked ADJUST to the box (see docs/TOMIFIN.md).
 [Unit]
 Description=Tomifin Family importer
 After=qbittorrent-nox.service
@@ -19,16 +18,20 @@ SupplementaryGroups=media-family
 # The agent's settings, for TOMIFY_QBITTORRENT_URL and its login (not copied anywhere).
 EnvironmentFile=/etc/tomify/recovery-agent.env
 Environment=TOMIFIN_IMPORT_LIBRARY=/media/family
-# ADJUST: where the recovery agent's code is installed, and node.
-ExecStart=/usr/bin/node /opt/tomify/recovery-agent/family-import.mjs --queue
+# Clean films go to /media/family/Movies/Title (Year)/, next to the ones already there.
+Environment=TOMIFIN_IMPORT_MOVIES_SUBDIR=Movies
+# Only the qBittorrent settings are needed: the agent's other secrets are dropped before the importer starts.
+UnsetEnvironment=TOMIFY_RECOVERY_TOKEN TOMIFY_YOUTUBE_COOKIES TOMIFY_SABNZBD_API_KEY TOMIFY_LAN_TLS_KEY TOMIFY_MEDIA_KEY
+# The deployed agent release (the same code tomify-recovery.service runs).
+ExecStart=/usr/bin/node /opt/tomify/current/recovery-agent/family-import.mjs --queue
 StateDirectory=tomifin-import
 StateDirectoryMode=0700
 UMask=0002
 Nice=10
 IOSchedulingClass=idle
 
-# ADJUST: if /media/family is bind-mounted only inside qBittorrent's own unit (BindPaths=), repeat that here, e.g.
-# BindPaths=/home/tom/jellyfin-server/media/family:/media/family
+# /media/family is the host's fstab bind mount of /home/tom/jellyfin-server/media/family, so it stays visible while
+# the rest of /home is hidden.
 ProtectSystem=strict
 ProtectHome=tmpfs
 ReadWritePaths=/media/family

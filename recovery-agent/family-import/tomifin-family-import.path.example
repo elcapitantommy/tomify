@@ -1,6 +1,4 @@
 # Starts the Tomifin Family importer whenever qBittorrent's completion hook queues a torrent.
-# ADJUST: the host path of the queue folder if /media/family exists only inside qBittorrent's unit
-# (for example /home/tom/jellyfin-server/media/family/.downloads/.tomifin-import-queue).
 [Unit]
 Description=Queue for the Tomifin Family importer
 

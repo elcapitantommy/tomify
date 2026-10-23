@@ -20,6 +20,8 @@ import { pathToFileURL } from 'node:url'
 export const STAGING = '.downloads'
 export const REVIEW = '.review'
 export const PUBLISHING = '.publishing'
+// A films folder inside the library, such as Movies; never hidden, never a path.
+const MOVIES_DIR = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/
 export const QUEUE = '.tomifin-import-queue'
 export const FAMILY_CATEGORY = 'tomifin-family'
 const HASH = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/
@@ -169,8 +171,9 @@ const delay = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise,
 // ---------------------------------------------------------------------------------------------------------------
 // The importer
 
-export function createFamilyImporter({ library, stateDir, qbittorrent, probe = ffprobeReader(), log = (entry) => process.stdout.write(`${JSON.stringify(entry)}\n`), stableMs = 5000, dryRun = false, now = () => new Date() }) {
+export function createFamilyImporter({ library, moviesDir = '', stateDir, qbittorrent, probe = ffprobeReader(), log = (entry) => process.stdout.write(`${JSON.stringify(entry)}\n`), stableMs = 5000, dryRun = false, now = () => new Date() }) {
   if (!isAbsolute(text(library))) throw new Error('The Family library must be an absolute path.')
+  if (text(moviesDir) && !MOVIES_DIR.test(text(moviesDir))) throw new Error('The films folder must be one plain folder name inside the Family library.')
   const paths = {}
 
   async function roots() {
@@ -179,6 +182,11 @@ export function createFamilyImporter({ library, stateDir, qbittorrent, probe = f
     paths.staging = await realpath(join(paths.library, STAGING)).catch(() => { throw new ImportError('no-staging', `${join(library, STAGING)} does not exist.`) })
     if (!strictlyWithin(paths.staging, paths.library)) throw new ImportError('bad-staging', 'The staging folder must be inside the Family library.')
     paths.review = join(paths.library, REVIEW)
+    paths.movies = paths.library
+    if (text(moviesDir)) {
+      paths.movies = await realpath(join(paths.library, text(moviesDir))).catch(() => { throw new ImportError('no-movies', `${join(library, text(moviesDir))} does not exist.`) })
+      if (!strictlyWithin(paths.movies, paths.library)) throw new ImportError('bad-movies', 'The films folder must be inside the Family library.')
+    }
     paths.publishing = join(paths.library, PUBLISHING)
     return paths
   }
@@ -347,9 +355,9 @@ export function createFamilyImporter({ library, stateDir, qbittorrent, probe = f
     }
 
     const { identity, outputs } = planned
-    const destination = join(paths.library, identity.name)
+    const destination = join(paths.movies, identity.name)
     const base = { hash, name: text(torrent.name).slice(0, 300), title: identity.title, year: identity.year }
-    await sameFilesystem(paths.library)
+    await sameFilesystem(paths.movies)
 
     const exists = await lstat(destination).then(() => true, () => false)
     if (exists) {
@@ -478,7 +486,8 @@ async function main(argv) {
   const hashIndex = args.indexOf('--hash')
   const library = text(process.env.TOMIFIN_IMPORT_LIBRARY) || '/media/family'
   const stateDir = text(process.env.TOMIFIN_IMPORT_STATE_DIR) || text(process.env.STATE_DIRECTORY) || '/var/lib/tomifin-import'
-  const importer = createFamilyImporter({ library, stateDir, qbittorrent: await qbittorrentForImport(), dryRun, probe: ffprobeReader(text(process.env.TOMIFIN_IMPORT_FFPROBE) || 'ffprobe') })
+  const moviesDir = text(process.env.TOMIFIN_IMPORT_MOVIES_SUBDIR)
+  const importer = createFamilyImporter({ library, moviesDir, stateDir, qbittorrent: await qbittorrentForImport(), dryRun, probe: ffprobeReader(text(process.env.TOMIFIN_IMPORT_FFPROBE) || 'ffprobe') })
   if (hashIndex >= 0) await importer.importTorrent(args[hashIndex + 1])
   else if (args.includes('--queue')) await importer.drainQueue()
   else if (args.includes('--scan')) await importer.scan()

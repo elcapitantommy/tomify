@@ -158,8 +158,8 @@ With `TOMIFY_TOMIFIN_FAMILY_IMPORT_SUBDIR=.downloads`, Family downloads no longe
 
 ```text
 /media/family/.downloads/Toy.Story.2.1999.1080p.BrRip.x264-YIFY/…          qBittorrent's files (seeding, never changed)
-/media/family/Toy Story 2 (1999)/Toy Story 2 (1999).mp4                    hardlink to the film
-/media/family/Toy Story 2 (1999)/Toy Story 2 (1999).en.srt                 hardlink to the English subtitles
+/media/family/Movies/Toy Story 2 (1999)/Toy Story 2 (1999).mp4             hardlink to the film
+/media/family/Movies/Toy Story 2 (1999)/Toy Story 2 (1999).en.srt          hardlink to the English subtitles
 ```
 
 Private is not affected: it keeps saving straight into its library and finished Private torrents still leave qBittorrent.
@@ -173,7 +173,7 @@ Private is not affected: it keeps saving straight into its library and finished 
 5. It ignores samples, trailers, artwork, `.txt`, `.nfo`, `.url` and every other non-video, non-`.srt` file. The main film is the largest video, and it must be the only large one (a second video of 40 % or more of its size, such as CD1/CD2 or two cuts, is ambiguous). `ffprobe` must read it, find a video stream and report at least 20 minutes.
 6. It reads `Title (Year)` from the torrent name and the film's file name, dropping dots, resolution, source, codec, audio, HDR and release-group tags. If neither gives a clear year with a title before it and only tags after, if the two disagree, or if it looks like a TV episode, it does not guess.
 7. Subtitles (`.srt`) are named after the film. A language suffix (`.en`, `.fr`, …, plus `.forced` or `.sdh`) is added only when exactly one language is named by the subtitle's own file or folder name; otherwise it is plain `Title (Year).srt`. Where two would get the same name, the larger is kept and the other is logged as skipped.
-8. It checks the library is on the same filesystem as staging, hardlinks every file into a hidden, Jellyfin-ignored folder `/media/family/.publishing/<hash>-<random>/Title (Year)/`, checks each link shares the source's inode, and then renames that folder into `/media/family/Title (Year)` in one step. Jellyfin never sees a half-built film, and a rename onto a folder that appeared meanwhile fails instead of replacing it.
+8. It checks the library is on the same filesystem as staging, hardlinks every file into a hidden, Jellyfin-ignored folder `/media/family/.publishing/<hash>-<random>/Title (Year)/`, checks each link shares the source's inode, and then renames that folder into `/media/family/Movies/Title (Year)` in one step (`TOMIFIN_IMPORT_MOVIES_SUBDIR=Movies` in the unit; without it, films go to `/media/family/Title (Year)`). Jellyfin never sees a half-built film, and a rename onto a folder that appeared meanwhile fails instead of replacing it.
 9. It records the outcome in `/var/lib/tomifin-import/<hash>.json` (paths, inodes and sizes). Running again for the same torrent, from a repeated hook, the queue or the scan, changes nothing. A destination that already holds the same film (same inode, or the same SHA-256) counts as already imported, which is how a film published by hand is recognised.
 
 Anything doubtful goes to `/media/family/.review/<hash>/` instead: hardlinks of the torrent's video and subtitle files plus `reason.json` saying why. That covers ambiguous names, several large videos, unreadable or too-short video, unsafe paths, empty files, and a destination that already exists with different contents, which is never overwritten. Nothing is ever moved, renamed or deleted in staging, and no existing library file is ever replaced. Review folders are left for you; delete one once it is dealt with, and remove the torrent's `/var/lib/tomifin-import/<hash>.json` to let the importer try it again.
@@ -188,7 +188,14 @@ Jellyfin skips `.downloads`, `.review` and `.publishing`: each has a `.ignore` f
 
 ### Installing it
 
-The unit files in `recovery-agent/family-import/` are templates: check each `ADJUST` line against the box before installing (where the agent's code lives, the path to `node`, and whether `/media/family` is a system-wide mount or only bind-mounted inside qBittorrent's unit).
+The unit files in `recovery-agent/family-import/` match the media server as it is set up:
+
+- qBittorrent is `qbittorrent-nox.service`, user `qbittorrent` in group `media-family`, with a `family-library.conf` drop-in giving it `ReadWritePaths=/media/family` and `UMask=0002`. Neither is changed.
+- The Family library is `/home/tom/jellyfin-server/media/family` (`tom:media-family`, mode `2775`), bind-mounted system-wide at `/media/family` by `/etc/fstab`. Clean films live in its `Movies` folder. Jellyfin's container mounts the whole library read-only at `/media/family`, which is why staging, review and publishing are hidden and carry `.ignore`.
+- The agent's code is the deployed release at `/opt/tomify/current/recovery-agent`, run with `/usr/bin/node`. `ffprobe` comes from the `ffmpeg` package. `fs.protected_hardlinks` is `1`.
+- The importer reads qBittorrent's address and login from the agent's `/etc/tomify/recovery-agent.env` (read by systemd, not by the importer's user). The agent's other secrets are removed with `UnsetEnvironment=` before it starts.
+
+`recovery-agent/family-import/install-family-import.sh` does steps 2 to 5 (`sudo bash /opt/tomify/current/recovery-agent/family-import/install-family-import.sh install`) and, after step 7, steps 6 and 8 (`… enable`). The steps by hand:
 
 1. `sudo apt install ffmpeg` if `ffprobe` is missing.
 2. Create the folders, owned by qBittorrent and the Family group:
@@ -198,7 +205,7 @@ The unit files in `recovery-agent/family-import/` are templates: check each `ADJ
    ```
 3. Install the hook: `sudo install -D -m 0755 recovery-agent/family-import/tomifin-family-import-hook.sh /usr/local/lib/tomifin/tomifin-family-import-hook.sh`.
 4. Install the units (without `.example`) into `/etc/systemd/system/`, then `sudo systemctl daemon-reload`.
-5. **Dry run first:** `sudo systemd-run --wait --pipe -p User=qbittorrent -p SupplementaryGroups=media-family -p EnvironmentFile=/etc/tomify/recovery-agent.env /usr/bin/node /opt/tomify/recovery-agent/family-import.mjs --scan --dry-run`. Check every line it prints; nothing is written.
+5. **Dry run first:** `sudo systemd-run --wait --pipe -p User=qbittorrent -p SupplementaryGroups=media-family -p EnvironmentFile=/etc/tomify/recovery-agent.env -p Environment=TOMIFIN_IMPORT_MOVIES_SUBDIR=Movies -p StateDirectory=tomifin-import /usr/bin/node /opt/tomify/current/recovery-agent/family-import.mjs --scan --dry-run`. Check every line it prints; nothing is written.
 6. Add `TOMIFY_TOMIFIN_FAMILY_IMPORT_SUBDIR=.downloads` to `/etc/tomify/recovery-agent.env` and redeploy the agent, so new Family downloads go to staging.
 7. In qBittorrent → Options → Downloads, turn on **Run external program on torrent finished** with `/usr/local/lib/tomifin/tomifin-family-import-hook.sh "%I" "%L"`.
 8. `sudo systemctl enable --now tomifin-family-import.path tomifin-family-import-scan.timer`.
