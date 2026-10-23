@@ -1,0 +1,54 @@
+# Tomifin Family importer: publishes finished Family torrents from /media/family/.downloads into the Jellyfin
+# library as hardlinks (docs/TOMIFIN.md, "Family import"). Started by tomifin-family-import.path when qBittorrent's
+# hook queues a torrent, and by tomifin-family-import.timer as a catch-up.
+#
+# It runs as qbittorrent because the kernel only lets a file's owner (or someone who may also write to it) hardlink
+# it (fs.protected_hardlinks), and qBittorrent owns the downloaded files. Everything else is locked down: it can
+# write only to the Family library and its own state folder, and reach only qBittorrent on this machine.
+# Adjust the paths marked ADJUST to the box (see docs/TOMIFIN.md).
+[Unit]
+Description=Tomifin Family importer
+After=qbittorrent-nox.service
+ConditionPathIsDirectory=/media/family/.downloads
+
+[Service]
+Type=oneshot
+User=qbittorrent
+Group=qbittorrent
+SupplementaryGroups=media-family
+# The agent's settings, for TOMIFY_QBITTORRENT_URL and its login (not copied anywhere).
+EnvironmentFile=/etc/tomify/recovery-agent.env
+Environment=TOMIFIN_IMPORT_LIBRARY=/media/family
+# ADJUST: where the recovery agent's code is installed, and node.
+ExecStart=/usr/bin/node /opt/tomify/recovery-agent/family-import.mjs --queue
+StateDirectory=tomifin-import
+StateDirectoryMode=0700
+UMask=0002
+Nice=10
+IOSchedulingClass=idle
+
+# ADJUST: if /media/family is bind-mounted only inside qBittorrent's own unit (BindPaths=), repeat that here, e.g.
+# BindPaths=/home/tom/jellyfin-server/media/family:/media/family
+ProtectSystem=strict
+ProtectHome=tmpfs
+ReadWritePaths=/media/family
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
