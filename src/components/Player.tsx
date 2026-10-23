@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Airplay, Car, Cast, Check, ChevronDown, Info, ListMusic, Maximize2, MicVocal, MonitorSpeaker, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react'
 import { Artwork } from './Artwork'
 import { ItemArtists } from './ArtistLinks'
@@ -136,11 +136,17 @@ export function Transport({ large = false }: { large?: boolean }) {
   return <div className={`transport ${large ? 'large' : ''}`}><button className={view.shuffle ? 'active' : ''} onClick={shuffle} aria-label="Shuffle" title="Shuffle"><Shuffle/></button><button onClick={previous} aria-label="Previous track" title="Previous track"><SkipBack fill="currentColor"/></button><button className="play-pause" onClick={togglePlaying} aria-label={view.playing ? 'Pause' : 'Play'} title={view.playing ? 'Pause' : 'Play'}>{view.playing ? <Pause fill="currentColor"/> : <Play fill="currentColor"/>}</button><button onClick={next} aria-label="Next track" title="Next track"><SkipForward fill="currentColor"/></button><button className={view.repeat !== 'off' ? 'active' : ''} onClick={repeat} aria-label={`Repeat ${view.repeat}`} title={`Repeat ${view.repeat}`}>{view.repeat === 'one' ? <Repeat1/> : <Repeat/>}</button></div>
 }
 
+/** Characters to reserve for each seek-bar time label: enough for the longer of the song length and 0:00. */
+function seekTimeWidth(total: string) { return Math.max(4, total.length) }
+
 export function SeekBar() {
   const player = usePlayer()
   const view = usePlaybackView()
   const seek = (value: number) => view.remote ? view.command('seek', value) : player.seekTo(value)
-  return <div className="seek"><span>{formatDuration(view.currentTime)}</span><input aria-label="Seek" type="range" min="0" max={view.duration || 1} value={Math.min(view.currentTime, view.duration || 1)} onChange={(event) => seek(Number(event.target.value))}/><span>{formatDuration(view.duration)}</span></div>
+  const total = formatDuration(view.duration)
+  // Both time labels get the same fixed width (sized for the song's length) so the slider doesn't resize as the digits tick over.
+  const style = { '--seek-time-width': `${seekTimeWidth(total)}ch` } as CSSProperties
+  return <div className="seek" style={style}><span className="seek-time elapsed">{formatDuration(view.currentTime)}</span><input aria-label="Seek" type="range" min="0" max={view.duration || 1} value={Math.min(view.currentTime, view.duration || 1)} onChange={(event) => seek(Number(event.target.value))}/><span className="seek-time total">{total}</span></div>
 }
 
 export function PlayerBar() {
