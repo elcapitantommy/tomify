@@ -37,7 +37,12 @@ test('jellyfinConfig accepts loopback HTTP or HTTPS and refuses anything else', 
   assert.equal(jellyfinConfig({}), null)
   assert.deepEqual(jellyfinConfig({ TOMIFY_JELLYFIN_URL: 'http://127.0.0.1:8096/' }), { url: 'http://127.0.0.1:8096' })
   assert.deepEqual(jellyfinConfig({ TOMIFY_JELLYFIN_URL: 'https://jellyfin.example.com' }), { url: 'https://jellyfin.example.com' })
-  assert.throws(() => jellyfinConfig({ TOMIFY_JELLYFIN_URL: 'http://192.168.1.5:8096' }), /HTTPS/)
+  assert.throws(() => jellyfinConfig({ TOMIFY_JELLYFIN_URL: 'http://192.168.1.5:8096' }, { localAddresses: () => ['127.0.0.1', '192.168.1.81'] }), /HTTPS/)
+  // Jellyfin in Docker published on the box's own LAN address: plain HTTP stays on this machine.
+  assert.deepEqual(jellyfinConfig({ TOMIFY_JELLYFIN_URL: 'http://192.168.1.81:8096' }, { localAddresses: () => ['127.0.0.1', '192.168.1.81', 'fe80::1'] }), { url: 'http://192.168.1.81:8096' })
+  assert.deepEqual(jellyfinConfig({ TOMIFY_JELLYFIN_URL: 'http://[fe80::1]:8096' }, { localAddresses: () => ['fe80::1'] }), { url: 'http://[fe80::1]:8096' })
+  assert.deepEqual(jellyfinConfig({ TOMIFY_JELLYFIN_URL: 'http://localhost:8096' }), { url: 'http://localhost:8096' })
+  assert.throws(() => jellyfinConfig({ TOMIFY_JELLYFIN_URL: 'http://jellyfin.example.com' }, { localAddresses: () => ['192.168.1.81'] }), /HTTPS/)
   assert.throws(() => jellyfinConfig({ TOMIFY_JELLYFIN_URL: 'https://user:pass@jellyfin.example.com' }), /username or password/)
   assert.throws(() => jellyfinConfig({ TOMIFY_JELLYFIN_URL: 'not a url' }), /must be a URL/)
 })

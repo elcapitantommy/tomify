@@ -1,8 +1,10 @@
-// Jellyfin sign-in for Tomifin Downloader. The agent talks to Jellyfin on the box (TOMIFY_JELLYFIN_URL, loopback
-// HTTP or HTTPS), so Jellyfin need not be reachable from the internet. Only Jellyfin administrators may use Tomifin.
+// Jellyfin sign-in for Tomifin Downloader. The agent talks to Jellyfin on the box (TOMIFY_JELLYFIN_URL: HTTPS, or
+// plain HTTP to an address of this machine itself, such as 127.0.0.1 or the box's own LAN address that a Docker
+// container publishes Jellyfin on), so Jellyfin need not be reachable from the internet. Only Jellyfin administrators may use Tomifin.
 // The agent never stores a password: it hands Jellyfin's access token back to the Worker, which keeps it in an
 // HttpOnly cookie, and checks that token with Jellyfin (cached for 30 seconds) on every Tomifin request.
 import { randomUUID } from 'node:crypto'
+import { networkInterfaces } from 'node:os'
 
 const CHECK_CACHE_MS = 30_000
 const CACHE_LIMIT = 200
@@ -14,13 +16,20 @@ export class JellyfinAuthError extends Error {
 
 function text(value) { return String(value ?? '').trim() }
 
-export function jellyfinConfig(env = process.env) {
+// The IP addresses of this machine's own network interfaces. Traffic to them never leaves the machine.
+function ownAddresses() {
+  return Object.values(networkInterfaces()).flat().filter(Boolean).map((entry) => entry.address.toLowerCase())
+}
+
+export function jellyfinConfig(env = process.env, { localAddresses = ownAddresses } = {}) {
   const raw = text(env.TOMIFY_JELLYFIN_URL)
   if (!raw) return null
   let url
   try { url = new URL(raw) } catch { throw new Error('TOMIFY_JELLYFIN_URL must be a URL.') }
-  const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) throw new Error('TOMIFY_JELLYFIN_URL must use HTTPS (or loopback HTTP).')
+  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  // Plain HTTP is allowed only to this machine itself, so the password never crosses the network unencrypted.
+  const local = ['localhost', '::1'].includes(host) || /^127\./.test(host) || localAddresses().includes(host)
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) throw new Error('TOMIFY_JELLYFIN_URL must use HTTPS, or plain HTTP to an address of this machine (127.0.0.1 or its own LAN address).')
   if (url.username || url.password) throw new Error('TOMIFY_JELLYFIN_URL must not contain a username or password.')
   return { url: url.toString().replace(/\/$/, '') }
 }

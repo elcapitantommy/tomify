@@ -144,7 +144,7 @@ Tomifin stays off, and logs `Tomifin Downloader is off: …` when the agent star
    TOMIFY_JELLYFIN_URL=http://127.0.0.1:8096
    ```
 
-   Use the address the agent can reach Jellyfin at; `8096` is Jellyfin's default port. Any other plain-HTTP address is refused, so the password never crosses the network unencrypted.
+   Use the address the agent can reach Jellyfin at; `8096` is Jellyfin's default port. If Jellyfin runs in Docker on the box and publishes its port on the box's LAN address only (`docker ps` shows, say, `192.168.1.81:8096->8096/tcp`), use that address: `TOMIFY_JELLYFIN_URL=http://192.168.1.81:8096`. Plain HTTP is accepted only to an address of the box itself (loopback or one of its own interfaces), so the password never crosses the network unencrypted; Jellyfin on another machine needs its HTTPS address.
 
 5. **Add the address.** In the Cloudflare dashboard: Workers & Pages → **tomify** → Settings → Domains & Routes → Add → **Custom domain** → `tomifin.tomdixon.uk`. Cloudflare creates the DNS record and certificate. Do this before or straight after merging, because once deployed, Tomify's `/tomifin/` path redirects there. To use a different name, change `TOMIFIN_HOSTNAME` in `wrangler.toml` (a dashboard variable would be replaced on the next deploy). If you want a second gate in front of it, Cloudflare Access can protect just that hostname; Tomifin still needs its own Jellyfin administrator sign-in.
 
