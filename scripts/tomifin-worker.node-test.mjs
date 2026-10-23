@@ -227,7 +227,14 @@ test('Tomifin\'s address serves none of Tomify: other APIs, the service worker a
     assert.equal(response.status, 404, path)
     assert.deepEqual(await response.json(), { error: 'not-found' })
   }
-  for (const path of ['/sw.js', '/push-sw.js', '/manifest.webmanifest', '/server/index.js']) assert.equal((await site(`https://${HOST}${path}`, {}, { ASSETS: binding })).status, 404, path)
+  const removal = await site(`https://${HOST}/sw.js`, {}, { ASSETS: binding })
+  assert.equal(removal.status, 200)
+  assert.match(removal.headers.get('content-type'), /javascript/)
+  assert.equal(removal.headers.get('cache-control'), 'no-store')
+  const script = await removal.text()
+  for (const part of ['skipWaiting', 'caches.delete', 'registration.unregister', 'client.navigate']) assert.ok(script.includes(part), part)
+  assert.doesNotMatch(script, /importScripts|precache|workbox/i, 'nothing of Tomify\'s service worker')
+  for (const path of ['/push-sw.js', '/manifest.webmanifest', '/server/index.js', '/workbox-dcde9eb3.js']) assert.equal((await site(`https://${HOST}${path}`, {}, { ASSETS: binding })).status, 404, path)
   for (const path of ['/navidrome/rest/stream.view', '/navidrome/rest/getPlaylists.view', '/navidrome/app/']) assert.equal((await site(`https://${HOST}${path}`)).status, 404, path)
   assert.equal((await site(`https://${HOST}/navidrome/rest/ping.view?mt=token`)).status, 404)
   assert.equal((await site(`https://${HOST}/`, { method: 'POST' }, { ASSETS: binding })).status, 405)
@@ -242,6 +249,29 @@ test('Tomifin\'s address answers its API with the Jellyfin session cookie', asyn
     assert.equal(calls[0].body.session, SESSION)
     assert.equal((await site(`https://${HOST}/api/tomifin/status`)).status, 401)
   })
+})
+
+test('the service worker on Tomifin\'s address removes itself, its caches and reloads open tabs', async () => {
+  const script = await (await site(`https://${HOST}/sw.js`)).text()
+  const listeners = {}
+  const done = []
+  const deleted = []
+  const navigated = []
+  const self = {
+    addEventListener: (name, listener) => { listeners[name] = listener },
+    skipWaiting: () => done.push('skipWaiting'),
+    registration: { unregister: async () => { done.push('unregister'); return true } },
+    clients: { matchAll: async () => [{ url: 'https://tomifin.tomdixon.uk/', navigate: (url) => navigated.push(url) }] },
+  }
+  const caches = { keys: async () => ['workbox-precache-v2', 'artwork'], delete: async (key) => { deleted.push(key); return true } }
+  new Function('self', 'caches', script)(self, caches)
+  listeners.install({})
+  let pending
+  listeners.activate({ waitUntil: (promise) => { pending = promise } })
+  await pending
+  assert.deepEqual(done, ['skipWaiting', 'unregister'])
+  assert.deepEqual(deleted, ['workbox-precache-v2', 'artwork'])
+  assert.deepEqual(navigated, ['https://tomifin.tomdixon.uk/'])
 })
 
 test('Tomify\'s address no longer serves Tomifin, and without TOMIFIN_HOSTNAME nothing changes', async () => {

@@ -48,8 +48,9 @@ On Tomifin's address the Worker (`tomifin-site.ts`) serves only:
 - the Tomifin page, for every path (so direct links and refreshes work), with `Cache-Control: no-cache`, `X-Frame-Options: DENY`, `noindex` and `no-referrer`;
 - `/api/tomifin/*`;
 - its hashed `/assets/` and icons.
+- `/sw.js`, answered with a small worker that removes itself. If Tomify's app was ever served on this address (for example when the custom domain went live before the Worker that knows about it was deployed), the browser would otherwise keep Tomify's service worker there and go on showing Tomify's cached sign-in page. The browser re-fetches `/sw.js` when that page loads, gets this worker, which deletes the cached files, unregisters and reloads the tab onto Tomifin. The Tomifin page itself also unregisters any service worker left on its address.
 
-Every other Tomify API, the Navidrome proxy, Tomify's service worker and manifest answer `404` there. On Tomify's address `/tomifin*` redirects to Tomifin's and `/api/tomifin/*` answers `404`. For the Worker to see these paths before Static Assets, `run_worker_first` in `wrangler.toml` is now every path except `/assets/*`; Tomify's other requests are handed to Static Assets unchanged. Without `TOMIFIN_HOSTNAME` (for example `pnpm dev`) Tomifin is at `/tomifin/` as a development fallback.
+Every other Tomify API, the Navidrome proxy, Tomify's push worker and manifest answer `404` there. On Tomify's address `/tomifin*` redirects to Tomifin's and `/api/tomifin/*` answers `404`. For the Worker to see these paths before Static Assets, `run_worker_first` in `wrangler.toml` is now every path except `/assets/*`; Tomify's other requests are handed to Static Assets unchanged. Without `TOMIFIN_HOSTNAME` (for example `pnpm dev`) Tomifin is at `/tomifin/` as a development fallback.
 
 | Worker route | Agent route | What it does |
 | --- | --- | --- |
