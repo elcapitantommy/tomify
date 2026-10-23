@@ -2,11 +2,12 @@ import type { Env, RouteHandler } from '../env.ts'
 import { callRecoveryAgent, RecoveryAgentError, RecoveryAgentOutdated } from '../lib/agent.ts'
 import { json } from '../lib/http.ts'
 
-// Tomifin Downloader's API: films and TV searched through Recovery's torrent sources and queued in the same
-// qBittorrent, saved into the Family or Private Jellyfin library. The recovery agent does the work
-// (recovery-agent/tomifin.mjs) and checks the Jellyfin sign-in (recovery-agent/jellyfin.mjs); this route keeps the
-// Jellyfin session in an HttpOnly cookie, validates every input and passes only those fields on. The browser never
-// sees a torrent link, a path or a credential other than its own session cookie.
+// Tomifin Downloader's API: films and TV searched through Recovery's torrent sources and Newznab indexers and queued
+// in the same qBittorrent or SABnzbd, saved into the Family or Private Jellyfin library. The recovery agent does the
+// work (recovery-agent/tomifin.mjs) and checks the Jellyfin sign-in (recovery-agent/jellyfin.mjs); this route keeps
+// the Jellyfin session in an HttpOnly cookie, validates every input and passes only those fields on. The browser
+// never sees a torrent or NZB link, a path or a credential other than its own session cookie. An added link is sent
+// once, to be checked, and is never sent back.
 
 const DESTINATIONS = new Set(['family', 'private'])
 const KINDS = new Set(['video', 'movies', 'tv'])
@@ -14,7 +15,13 @@ const RESULT_ID = /^[a-f0-9]{64}$/
 const JOB_ROUTE = /^\/api\/tomifin\/downloads\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/(pause|resume|cancel)$/
 const COOKIE = 'tomifin_session'
 const COOKIE_DAYS = 30
-const STATUS_FOR_CODE: Record<string, number> = { unauthorized: 401, 'invalid-login': 401, forbidden: 403, duplicate: 409, 'result-expired': 409, unconfirmed: 504, 'not-configured': 503, 'jellyfin-unavailable': 502 }
+const STATUS_FOR_CODE: Record<string, number> = {
+  unauthorized: 401, 'invalid-login': 401, forbidden: 403, duplicate: 409, 'result-expired': 409, busy: 409, unconfirmed: 504, 'not-configured': 503, 'usenet-unavailable': 503,
+  'jellyfin-unavailable': 502, 'sabnzbd-refused': 502, 'indexer-unavailable': 502, 'indexer-refused': 502, 'too-large': 413,
+}
+// An added link (a magnet can be long) and an uploaded .torrent or .nzb file (10 MiB, base64).
+const MAX_LINK_LENGTH = 8000
+const MAX_UPLOAD_BASE64 = Math.ceil((10 * 1024 * 1024) / 3) * 4 + 4
 
 function invalid(error: string, message: string) { return json({ error, message }, 400) }
 
@@ -103,6 +110,24 @@ export const tomifinRoute: RouteHandler = async (request, env, url) => {
     const response = await agent(env, '/v1/tomifin/download', { session, resultId, destination }, 202)
     if (response.ok) console.log(`Tomifin: queued a download for ${destination}`)
     return response
+  }
+
+  if (url.pathname === '/api/tomifin/link' && request.method === 'POST') {
+    const body = await request.json().catch(() => null) as { link?: unknown, file?: { name?: unknown, data?: unknown } | null } | null
+    const link = typeof body?.link === 'string' ? body.link.trim() : ''
+    const file = body?.file && typeof body.file === 'object' ? body.file : null
+    if (Boolean(link) === Boolean(file)) return invalid('invalid-link', 'Paste one link, or choose one .torrent or .nzb file.')
+    if (link) {
+      if (link.length > MAX_LINK_LENGTH) return invalid('invalid-link', 'The link is too long.')
+      if (!/^(?:magnet:\?|https?:\/\/)/i.test(link)) return invalid('invalid-link', 'Paste a magnet link, or an http(s) link to a .torrent or .nzb file.')
+      return agent(env, '/v1/tomifin/link', { session, link })
+    }
+    const name = typeof file?.name === 'string' ? file.name.slice(0, 255) : ''
+    const data = typeof file?.data === 'string' ? file.data : ''
+    if (!data) return invalid('invalid-link', 'That file could not be read.')
+    if (data.length > MAX_UPLOAD_BASE64) return json({ error: 'too-large', message: 'That file is too large to upload (10 MiB at most).' }, 413)
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return invalid('invalid-link', 'That file could not be read.')
+    return agent(env, '/v1/tomifin/link', { session, file: { name, data } })
   }
 
   if (url.pathname === '/api/tomifin/downloads' && request.method === 'GET') return agent(env, '/v1/tomifin/downloads', { session })

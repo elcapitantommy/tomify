@@ -564,3 +564,96 @@ test('the qBittorrent client lists a category, pauses with the 5.x names and fal
   assert.deepEqual(calls.find((call) => call.path === '/api/v2/torrents/createCategory').body, { category: 'tomifin-family', savePath: '/media/family' })
   assert.deepEqual(calls.find((call) => call.path === '/api/v2/torrents/add').body, { urls: `magnet:?xt=urn:btih:${hash}`, category: 'tomifin-family', tags: 'tomifin-1', savepath: '/media/family', contentLayout: 'Subfolder', root_folder: 'true' })
 })
+
+// ---------------------------------------------------------------------------------------------------------------
+// Add link: pasted magnets and .torrent files become normal qBittorrent jobs.
+
+function bencodeValue(value) {
+  if (Buffer.isBuffer(value)) return Buffer.concat([Buffer.from(`${value.length}:`), value])
+  if (typeof value === 'string') return bencodeValue(Buffer.from(value))
+  if (Number.isInteger(value)) return Buffer.from(`i${value}e`)
+  if (Array.isArray(value)) return Buffer.concat([Buffer.from('l'), ...value.map(bencodeValue), Buffer.from('e')])
+  return Buffer.concat([Buffer.from('d'), ...Object.keys(value).sort().flatMap((key) => [bencodeValue(key), bencodeValue(value[key])]), Buffer.from('e')])
+}
+const linkedTorrent = bencodeValue({ announce: 'https://tracker.test/PASSKEY123456/announce', info: { length: 1_000_000, name: 'Sintel.2010.1080p.mkv', 'piece length': 262144, pieces: Buffer.alloc(80, 7) } })
+const linkedMagnet = `magnet:?xt=urn:btih:${hash}&dn=Sintel%202010&tr=https%3A%2F%2Ftracker.test%2FPASSKEY123456%2Fannounce`
+
+test('a pasted magnet is checked, shown without its trackers, and queued in qBittorrent for the chosen library', async () => {
+  for (const [destination, category] of [['family', 'tomifin-family'], ['private', 'tomifin-private']]) {
+    const logs = []
+    const client = fakeClient()
+    const { controller, stateRoot } = await controllerWith(client, { log: (line) => logs.push(line) })
+    const checked = await controller.link({ link: `  ${linkedMagnet}  ` })
+    assert.equal(checked.detected, 'magnet')
+    assert.deepEqual([checked.result.type, checked.result.linkType, checked.result.title, checked.result.source], ['torrent', 'magnet', 'Sintel 2010', 'Added link'])
+    assert.match(checked.result.id, /^[a-f0-9]{64}$/)
+    assert.ok(!/PASSKEY|tracker\.test|magnet:/.test(JSON.stringify(checked)), 'no link, trackers or passkeys go back to the browser')
+    const queued = await controller.download({ resultId: checked.result.id, destination })
+    assert.equal(queued.job.destination, destination)
+    const add = client.calls.find((call) => call[0] === 'add')
+    assert.equal(add[1], linkedMagnet)
+    assert.equal(add[2].category, category)
+    assert.equal(add[2].tag, 'tomifin-00000000-0000-4000-8000-000000000001')
+    const record = JSON.parse(await readFile(join(stateRoot, 'tomifin', '00000000-0000-4000-8000-000000000001.json'), 'utf8'))
+    assert.deepEqual([record.downloader, record.origin, record.infoHash], ['qbittorrent', 'link', hash])
+    assert.ok(!/PASSKEY|magnet:/.test(JSON.stringify(record)), 'the record keeps no link or trackers')
+    assert.ok(!/PASSKEY|tracker\.test|magnet:|Sintel/.test(logs.join('\n')), 'the logs name no link, tracker or title')
+    await assert.rejects(controller.link({ link: linkedMagnet }), { code: 'duplicate' })
+  }
+})
+
+test('an uploaded or linked .torrent file is checked here and uploaded to qBittorrent as bytes', async () => {
+  const client = fakeClient()
+  const fetched = []
+  const fetchLink = async (url) => { fetched.push(url); return { bytes: linkedTorrent } }
+  const { controller } = await controllerWith(client, { fetchLink })
+  const checked = await controller.link({ link: 'https://files.test/download.php?id=1' })
+  assert.deepEqual([checked.detected, checked.result.linkType, checked.result.title, checked.result.size], ['torrent', 'torrent-file', 'Sintel.2010.1080p.mkv', 1_000_000])
+  assert.ok(!/PASSKEY|files\.test/.test(JSON.stringify(checked)))
+  await controller.download({ resultId: checked.result.id, destination: 'family' })
+  const add = client.calls.find((call) => call[0] === 'add')
+  assert.equal(add[1], null, 'no link is passed on: qBittorrent gets the checked file')
+  assert.ok(Buffer.from(add[2].torrent).equals(linkedTorrent))
+  assert.deepEqual(fetched, ['https://files.test/download.php?id=1'])
+  const upload = await controllerWith(fakeClient())
+  const viaFile = await upload.controller.link({ file: { name: 'renamed.nzb', data: linkedTorrent.toString('base64') } })
+  assert.equal(viaFile.detected, 'torrent', 'the content decides, not the file name')
+})
+
+test('bad links, oversized torrents and qBittorrent failures are reported without adding twice', async () => {
+  const { controller } = await controllerWith(fakeClient())
+  for (const link of ['magnet:?xt=urn:btih:1234', 'magnet:?dn=x', 'ftp://files.test/a.torrent', 'https://user:pass@files.test/a.torrent', 'not a link']) {
+    await assert.rejects(controller.link({ link }), (error) => ['invalid-link', 'unsafe-link'].includes(error.code), link)
+  }
+  await assert.rejects(controller.link({}), { code: 'invalid-link' })
+  await assert.rejects(controller.link({ link: linkedMagnet, file: { name: 'a.torrent', data: linkedTorrent.toString('base64') } }), { code: 'invalid-link' })
+  const small = await controllerWith(fakeClient(), { config: tomifinConfig({ ...env, TOMIFY_TOMIFIN_MAX_BYTES: '1000' }, { torrentAvailable: true }) })
+  await assert.rejects(small.controller.link({ file: { name: 'a.torrent', data: linkedTorrent.toString('base64') } }), { code: 'too-large' })
+  const off = await controllerWith(fakeClient())
+  await assert.rejects(off.controller.link({ file: { name: 'a.nzb', data: Buffer.from('<nzb><file subject="a"><groups><group>a.b</group></groups><segments><segment bytes="1" number="1">a@b</segment></segments></file></nzb>').toString('base64') } }), { code: 'usenet-unavailable' })
+
+  const refusing = fakeClient()
+  refusing.add = async () => { throw Object.assign(new Error('qBittorrent refused the torrent link.'), { rejected: true }) }
+  const refused = await controllerWith(refusing)
+  const checked = await refused.controller.link({ link: linkedMagnet })
+  await assert.rejects(refused.controller.download({ resultId: checked.result.id, destination: 'private' }), /refused/)
+  assert.deepEqual(await readdir(join(refused.stateRoot, 'tomifin')), [])
+
+  const lost = fakeClient()
+  lost.add = async () => { throw new Error('qBittorrent could not be reached.') }
+  const unsure = await controllerWith(lost)
+  const again = await unsure.controller.link({ link: linkedMagnet })
+  await assert.rejects(unsure.controller.download({ resultId: again.result.id, destination: 'family' }), { code: 'unconfirmed' })
+  await assert.rejects(unsure.controller.link({ link: linkedMagnet }), { code: 'duplicate' }, 'an unconfirmed link cannot be added again')
+})
+
+test('the agent route for Add link needs a session', async () => {
+  const { controller } = await controllerWith(fakeClient())
+  const signedOut = await handleTomifinRequest('/v1/tomifin/link', { link: linkedMagnet }, controller, fakeAuth)
+  assert.equal(signedOut.body.code, 'unauthorized')
+  const signedIn = await handleTomifinRequest('/v1/tomifin/link', { session: 'good-session-token', link: linkedMagnet }, controller, fakeAuth)
+  assert.equal(signedIn.status, 200)
+  assert.equal(signedIn.body.detected, 'magnet')
+  const bad = await handleTomifinRequest('/v1/tomifin/link', { session: 'good-session-token', link: 'magnet:?xt=urn:btih:zz' }, controller, fakeAuth)
+  assert.deepEqual([bad.status, bad.body.code], [400, 'invalid-link'])
+})

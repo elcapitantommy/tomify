@@ -1,18 +1,21 @@
 // Tomifin Downloader: search the torrent sources Recovery already uses (qBittorrent's search plugins and any
-// Prowlarr or Jackett indexers) for films and TV, and queue a chosen result in the same qBittorrent for the Family or
-// Private Jellyfin library. While it downloads, a torrent's data is kept in a hidden folder of its own inside the
-// library (.tomifin-incomplete/<job id>), and qBittorrent moves it into the library when it finishes. Nothing is
-// imported or post-processed: Jellyfin picks the files up.
+// Prowlarr or Jackett indexers) and, when set up, its Newznab indexers, for films and TV, and queue a chosen result
+// for the Family or Private Jellyfin library: torrents in the same qBittorrent, NZBs in the same SABnzbd
+// (tomifin-usenet.mjs). While a torrent downloads, its data is kept in a hidden folder of its own inside the library
+// (.tomifin-incomplete/<job id>), and qBittorrent moves it into the library when it finishes.
 //
-// The browser never sees or sends a torrent link. A search keeps its results here for an hour and the browser names
-// one by id, so only links this agent's own search produced reach qBittorrent. Destinations come only from the
-// agent's environment and are chosen by name ("family" or "private").
+// The browser never sees or sends a link. A search keeps its results here for an hour and the browser names one by
+// id, so only links this agent's own search produced reach a downloader. A pasted link or uploaded file (Add link) is
+// checked here (tomifin-links.mjs) and becomes such a result too. Destinations come only from the agent's environment
+// and are chosen by name ("family" or "private"); the agent decides the downloader.
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { isAbsolute, normalize, resolve, sep } from 'node:path'
-import { parseTorrentLink, seededTorrentResults } from './torrent.mjs'
+import { parseTorrentLink, safeDetailsUrl, seededTorrentResults } from './torrent.mjs'
 import { configuredTorrentIndexers, isIndexerLink } from './torrent-indexers.mjs'
 import { JellyfinAuthError } from './jellyfin.mjs'
+import { LinkError, createLinkFetcher, inspectSubmission } from './tomifin-links.mjs'
+import { TomifinUsenetError } from './tomifin-usenet.mjs'
 
 export const TOMIFIN_DESTINATIONS = Object.freeze({
   family: Object.freeze({ id: 'family', label: 'Family', env: 'TOMIFY_TOMIFIN_FAMILY_DIR', qbittorrentEnv: 'TOMIFY_TOMIFIN_FAMILY_QBITTORRENT_DIR', importEnv: 'TOMIFY_TOMIFIN_FAMILY_IMPORT_SUBDIR', category: 'tomifin-family' }),
@@ -30,6 +33,8 @@ export const DEFAULT_TOMIFIN_MAX_BYTES = 200 * 1024 ** 3
 const RESULT_LIMIT = 50
 const RESULT_TTL_MS = 60 * 60_000
 const RESULT_CACHE_LIMIT = 1000
+// Added links keep their checked .torrent or NZB file in memory until queued, so only a few are kept.
+const LINK_RESULT_LIMIT = 20
 // A freshly added magnet can take a moment to appear in qBittorrent's list.
 const MISSING_GRACE_MS = 2 * 60_000
 // How long a download qBittorrent never confirmed or refused (the add timed out, say) is kept while Tomifin waits for
@@ -132,6 +137,31 @@ export function tomifinTorrentState(torrent, { createdAt, now = Date.now(), maxB
 
 function tag(id) { return `tomifin-${id}` }
 
+// What a log line may say about a download: a searched result's title, but nothing from an added link (its name can
+// come from the link itself).
+function logName(job) { return job?.origin === 'link' ? `an added ${job.linkType === 'nzb' ? 'NZB' : job.linkType === 'magnet' ? 'magnet' : 'torrent'} (${String(job.id).slice(0, 8)})` : `"${String(job?.title).slice(0, 120)}"` }
+
+// The fields of a result the browser may see. Links, hashes, GUIDs and files stay here.
+function visibleResult(result) {
+  return {
+    id: result.id, title: result.title, source: result.source, size: result.size ?? null, type: result.type, linkType: result.linkType,
+    seeders: result.type === 'torrent' ? result.seeders ?? null : null, leechers: result.type === 'torrent' ? result.leechers ?? null : null,
+    grabs: result.grabs ?? null, ageDays: result.ageDays ?? null, detailsUrl: result.detailsUrl ?? null, quality: result.quality, origin: result.origin || 'search',
+  }
+}
+
+// NZB results found on several indexers are merged only when the posted title and the exact size are identical; the
+// same cleaned-up name with a different size is a different release.
+function dedupeNzbs(entries) {
+  const seen = new Set()
+  return entries.filter((entry) => {
+    const keys = [`guid\0${entry.indexerId}\0${entry.guid}`, ...(entry.size ? [`post\0${entry.title}\0${entry.size}`] : [])]
+    if (keys.some((key) => seen.has(key))) return false
+    keys.forEach((key) => seen.add(key))
+    return true
+  })
+}
+
 // Only links qBittorrent can certainly use: magnets, .torrent files and download links from a configured Prowlarr or
 // Jackett. Plugin results that point at a web page (which only the plugin itself could turn into a torrent) are left
 // out rather than offered as a download that would fail.
@@ -191,9 +221,12 @@ export function finishedInLibrary(torrent, destination, id) {
 function torrentSize(torrent) { return Math.max(number(torrent?.total_size) || 0, number(torrent?.size) || 0) }
 
 // vpnStatus is the agent's NordVPN status (vpn.mjs), when VPN control is turned on there.
-export function createTomifinController({ config, client, stateRoot, now = () => Date.now(), randomId = randomUUID, log = () => {}, intervalMs = 10_000, vpnStatus = null }) {
+// usenet: the Usenet backend (createTomifinUsenet), or null when Usenet is not set up. fetchLink: how added links are
+// fetched (createLinkFetcher), with the configured indexers' hosts as the only private hosts allowed.
+export function createTomifinController({ config, client, stateRoot, usenet = null, fetchLink = createLinkFetcher(), now = () => Date.now(), randomId = randomUUID, log = () => {}, intervalMs = 10_000, vpnStatus = null }) {
   const jobsRoot = resolve(stateRoot, 'tomifin')
   const results = new Map()
+  const usenetReady = () => Boolean(usenet?.available)
   // Search results and info hashes being queued right now, so a double click or retry cannot add a torrent twice.
   const queuing = new Set()
 
@@ -246,7 +279,13 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
       results.set(result.id, { ...result, expiresAt })
     }
     while (results.size > RESULT_CACHE_LIMIT) results.delete(results.keys().next().value)
+    const links = [...results.values()].filter((value) => value.origin === 'link')
+    for (const value of links.slice(0, Math.max(0, links.length - LINK_RESULT_LIMIT))) results.delete(value.id)
   }
+
+  async function deleteJob(id) { await unlink(jobPath(id)).catch((error) => { if (error?.code !== 'ENOENT') throw error }) }
+  const store = { saveJob, deleteJob }
+  const isUsenetJob = (job) => job.downloader === 'sabnzbd'
 
   // Every torrent in Tomifin's two categories, from one torrents/info call per destination.
   async function tomifinTorrents() {
@@ -279,12 +318,12 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
       if (torrentForJob(torrents, job)) {
         delete job.unconfirmedSince
         await saveJob(job).catch(() => {})
-        log(`Tomifin confirmed "${String(job.title).slice(0, 120)}" in qBittorrent`)
+        log(`Tomifin confirmed ${logName(job)} in qBittorrent`)
       } else if (now() - Date.parse(job.unconfirmedSince) > UNCONFIRMED_KEEP_MS) {
         try {
           await unlink(jobPath(job.id))
           jobs.splice(jobs.indexOf(job), 1)
-          log(`Tomifin dropped "${String(job.title).slice(0, 120)}": qBittorrent never showed it`)
+          log(`Tomifin dropped ${logName(job)}: qBittorrent never showed it`)
         } catch (error) { if (error?.code !== 'ENOENT') log(`Tomifin could not drop an unconfirmed download: ${error.message}`) }
       }
     }
@@ -296,19 +335,19 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
       try {
         await client.pause(text(torrent.hash).toLowerCase())
         torrent.state = 'stoppedDL'
-        log(`Tomifin stopped "${String(job.title).slice(0, 120)}": it is larger than the download limit`)
+        log(`Tomifin stopped ${logName(job)}: it is larger than the download limit`)
       } catch (error) { log(`Tomifin could not stop an oversized torrent: ${error instanceof Error ? error.message : String(error)}`) }
     }
     for (const job of jobs) {
       const torrent = torrentForJob(torrents, job)
       if (!torrent || !finishedInLibrary(torrent, config.destinations[job.destination], job.id)) continue
       // The record is updated first, so a removal that fails is simply tried again next time.
-      Object.assign(job, { completedAt: new Date(now()).toISOString(), title: text(torrent.name).slice(0, 500) || job.title, size: torrentSize(torrent) || job.size })
+      Object.assign(job, { completedAt: new Date(now()).toISOString(), title: (job.origin === 'link' ? job.title : text(torrent.name).slice(0, 500)) || job.title, size: torrentSize(torrent) || job.size })
       try {
         await saveJob(job)
         await client.remove(text(torrent.hash).toLowerCase(), false)
         torrents.splice(torrents.indexOf(torrent), 1)
-        log(`Tomifin finished "${String(job.title).slice(0, 120)}" and removed it from qBittorrent; the files stay in ${config.destinations[job.destination].label}`)
+        log(`Tomifin finished ${logName(job)} and removed it from qBittorrent; the files stay in ${config.destinations[job.destination].label}`)
       } catch (error) { log(`Tomifin could not remove a finished torrent from qBittorrent: ${error instanceof Error ? error.message : String(error)}`) }
     }
     jobs.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
@@ -318,14 +357,14 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
     const destination = config.destinations[job.destination]
     if (!torrent && job.unconfirmedSince) {
       return {
-        id: job.id, name: job.title, destination: job.destination, destinationLabel: destination?.label || job.destination,
+        id: job.id, name: job.title, destination: job.destination, destinationLabel: destination?.label || job.destination, downloader: 'qbittorrent', downloaderLabel: 'qBittorrent', type: 'torrent',
         status: 'queued', message: 'Waiting for qBittorrent to confirm', progress: 0, downloadSpeed: null, uploadSpeed: null, downloaded: null, size: job.size || null,
         eta: null, seeds: null, peers: null, source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, keepsFilesOnCancel: true,
       }
     }
     if (!torrent && job.completedAt) {
       return {
-        id: job.id, name: job.title, destination: job.destination, destinationLabel: destination?.label || job.destination,
+        id: job.id, name: job.title, destination: job.destination, destinationLabel: destination?.label || job.destination, downloader: 'qbittorrent', downloaderLabel: 'qBittorrent', type: 'torrent',
         status: 'completed', message: 'In the library', progress: 100, downloadSpeed: null, uploadSpeed: null, downloaded: job.size || null, size: job.size || null,
         eta: null, seeds: null, peers: null, source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, keepsFilesOnCancel: true,
       }
@@ -336,7 +375,7 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
     const size = nonNegative(torrent?.total_size) || nonNegative(torrent?.size) || job.size || null
     const oversized = torrentSize(torrent) > config.maxBytes
     return {
-      id: job.id, name: text(torrent?.name) || job.title, destination: job.destination, destinationLabel: destination?.label || job.destination,
+      id: job.id, name: (job.origin === 'link' ? job.title : text(torrent?.name)) || job.title || text(torrent?.name), destination: job.destination, destinationLabel: destination?.label || job.destination, downloader: 'qbittorrent', downloaderLabel: 'qBittorrent', type: 'torrent',
       status: state.status, message: state.status === 'completed' && destination?.imports ? 'Seeding; the Family importer adds it to the library' : state.message, progress,
       downloadSpeed: torrent ? nonNegative(torrent.dlspeed) : null, uploadSpeed: torrent ? nonNegative(torrent.upspeed) : null,
       downloaded: torrent ? nonNegative(torrent.completed ?? torrent.downloaded) : null, size,
@@ -355,12 +394,149 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
     return torrent && torrentHasTag(torrent, tag(job.id)) ? torrent : null
   }
 
+  // Usenet errors and link errors carry their own code and a message that is safe to show.
+  function asTomifinError(error) {
+    if (error instanceof TomifinUsenetError || error instanceof LinkError) return new TomifinError(error.code, error.message)
+    return error
+  }
+
+  // The torrent to give qBittorrent for a result: a link from this agent's search (parsed again rather than trusting
+  // the cached copy), or the magnet or checked .torrent file of an added link.
+  function torrentPayload(result) {
+    if (result.origin === 'link') return { link: result.link || null, torrent: result.torrent || null, infoHash: result.infoHash, type: result.linkType === 'magnet' ? 'magnet' : 'file' }
+    const parsed = parseTorrentLink(result.link)
+    return { link: parsed.link, torrent: null, infoHash: parsed.infoHash, type: parsed.type }
+  }
+
+  async function downloadTorrent(result, destination, resultId) {
+    const payload = torrentPayload(result)
+    const keys = [`result:${resultId}`, ...(payload.infoHash ? [`hash:${payload.infoHash}`] : [])]
+    if (keys.some((key) => queuing.has(key))) throw new TomifinError('duplicate', 'This torrent is already being queued.')
+    for (const key of keys) queuing.add(key)
+    try {
+      // A retry of a result already queued (even one whose record outlived the search) is refused, not added twice.
+      if ((await savedJobs()).some((job) => job.resultId === resultId || (payload.infoHash && job.infoHash === payload.infoHash))) throw new TomifinError('duplicate', 'This torrent is already in your downloads.')
+      if (payload.infoHash && await client.findByHash(payload.infoHash)) throw new TomifinError('duplicate', 'This torrent is already in qBittorrent.')
+      const id = randomId()
+      const job = {
+        id, version: 1, downloader: 'qbittorrent', createdAt: new Date(now()).toISOString(), destination: destination.id, title: result.title, source: result.source,
+        size: result.size || null, infoHash: payload.infoHash, linkType: payload.type, resultId, ...(result.origin === 'link' ? { origin: 'link' } : {}),
+      }
+      // The record is written before qBittorrent hears about the torrent, so a torrent can never be downloading
+      // without Tomifin knowing about it. If the record cannot be written, nothing is added.
+      await saveJob(job)
+      try {
+        // Throws unless qBittorrent accepted the torrent, so success is reported only after it acknowledged it.
+        await client.add(payload.link, { tag: tag(id), savePath: destination.saveQbittorrentPath || destination.qbittorrentPath, downloadPath: stagingPath(destination, id), category: destination.category, subfolder: true, ...(payload.torrent ? { torrent: payload.torrent } : {}) })
+      } catch (error) {
+        // Only a definite refusal removes the record. When qBittorrent's answer was lost (a timeout, a dropped
+        // connection) it may still have taken the torrent, perhaps without showing it yet, so the record is kept
+        // and the regular check (reconcile) confirms it when the torrent appears, or drops it after a while.
+        if (error?.rejected === true) {
+          await unlink(jobPath(id)).catch((failure) => log(`Tomifin could not remove the record of a download qBittorrent refused: ${failure?.message || failure}`))
+          throw error
+        }
+        if (!await torrentFor(job).catch(() => null)) {
+          job.unconfirmedSince = new Date(now()).toISOString()
+          await saveJob(job).catch((failure) => log(`Tomifin could not mark a download as unconfirmed: ${failure?.message || failure}`))
+          results.delete(resultId)
+          log(`Tomifin could not confirm ${logName(job)} with qBittorrent and will keep checking: ${error instanceof Error ? error.message : String(error)}`)
+          throw new TomifinError('unconfirmed', 'qBittorrent did not confirm the download. It is on your downloads list while Tomifin checks whether it arrived; do not queue it again.')
+        }
+      }
+      results.delete(resultId)
+      log(`Tomifin queued ${logName(job)} in qBittorrent for ${destination.label}`)
+      return { job: jobView(job, null) }
+    } finally {
+      for (const key of keys) queuing.delete(key)
+    }
+  }
+
+  async function downloadUsenet(result, destination, resultId) {
+    if (!usenetReady()) throw new TomifinError('usenet-unavailable', usenet?.status().problem || 'Usenet downloads are not set up on the media server.')
+    const keys = [`result:${resultId}`, ...(result.guidKey ? [`guid:${result.guidKey}`] : [])]
+    if (keys.some((key) => queuing.has(key))) throw new TomifinError('duplicate', 'This NZB is already being queued.')
+    for (const key of keys) queuing.add(key)
+    try {
+      let jobs = await savedJobs()
+      if (jobs.some((job) => job.resultId === resultId || (result.guidKey && job.guidKey === result.guidKey))) throw new TomifinError('duplicate', 'This NZB is already in your downloads.')
+      // Fetched and checked here: the indexer's download link (with its API key) never leaves the agent.
+      const prepared = result.nzb ? { bytes: result.nzb, nzb: result.parsed } : await usenet.prepare(result).catch((error) => { throw asTomifinError(error) })
+      if (prepared.nzb.size > config.maxBytes) throw new TomifinError('too-large', 'This NZB is larger than the download limit (TOMIFY_TOMIFIN_MAX_BYTES).')
+      // The strongest identity available: the message-ids it downloads, however the NZB file is formatted.
+      const identityKey = `nzb:${prepared.nzb.identity}`
+      if (queuing.has(identityKey)) throw new TomifinError('duplicate', 'This NZB is already being queued.')
+      queuing.add(identityKey)
+      keys.push(identityKey)
+      jobs = await savedJobs()
+      if (jobs.some((job) => job.nzbIdentity === prepared.nzb.identity)) throw new TomifinError('duplicate', 'This NZB is already in your downloads.')
+      await usenet.ensureCategories().catch((error) => { throw asTomifinError(error) })
+      const id = randomId()
+      const job = {
+        id, version: 2, downloader: 'sabnzbd', createdAt: new Date(now()).toISOString(), destination: destination.id, title: result.title, source: result.source,
+        size: prepared.nzb.size || result.size || null, resultId, guidKey: result.guidKey || null, nzbIdentity: prepared.nzb.identity, category: usenet.categoryFor(destination.id),
+        linkType: 'nzb', ...(result.origin === 'link' ? { origin: 'link' } : {}),
+      }
+      // Written before SABnzbd hears about it, as for torrents.
+      await saveJob(job)
+      try {
+        const { nzoId } = await usenet.submit(job, prepared.bytes)
+        job.remoteId = nzoId
+        await saveJob(job).catch((failure) => log(`Tomifin could not save SABnzbd's id for ${logName(job)}: ${failure?.message || failure}`))
+      } catch (error) {
+        if (error?.rejected === true) {
+          await deleteJob(id).catch((failure) => log(`Tomifin could not remove the record of a download SABnzbd refused: ${failure?.message || failure}`))
+          throw new TomifinError('sabnzbd-refused', error.message || 'SABnzbd refused the NZB.')
+        }
+        // Unknown outcome: never submitted again blindly. The job is found by its name (tomifin-<id>) once SABnzbd
+        // shows it, or dropped after a while if it never does.
+        const remoteId = await usenet.locate(job).catch(() => null)
+        if (remoteId) { job.remoteId = remoteId; await saveJob(job).catch(() => {}) }
+        else {
+          job.unconfirmedSince = new Date(now()).toISOString()
+          await saveJob(job).catch((failure) => log(`Tomifin could not mark a download as unconfirmed: ${failure?.message || failure}`))
+          results.delete(resultId)
+          log(`Tomifin could not confirm ${logName(job)} with SABnzbd and will keep checking`)
+          throw new TomifinError('unconfirmed', 'SABnzbd did not confirm the download. It is on your downloads list while Tomifin checks whether it arrived; do not queue it again.')
+        }
+      }
+      results.delete(resultId)
+      log(`Tomifin queued ${logName(job)} in SABnzbd for ${destination.label}`)
+      return { job: usenet.view(job, null, destination) }
+    } finally {
+      for (const key of keys) queuing.delete(key)
+    }
+  }
+
+  // Tomifin's jobs and both downloaders' current state, in step (reconciled) and ready to show.
+  async function current() {
+    const jobs = await savedJobs()
+    const torrentJobs = jobs.filter((job) => !isUsenetJob(job))
+    const usenetJobs = jobs.filter(isUsenetJob)
+    const [torrents, snapshot] = await Promise.all([tomifinTorrents(), usenetReady() ? usenet.snapshot() : null])
+    await reconcile(torrentJobs, torrents)
+    if (usenetReady()) await usenet.reconcile(usenetJobs, snapshot, store)
+    return { torrentJobs, usenetJobs, torrents, snapshot }
+  }
+
+  function usenetView(job, snapshot) {
+    const destination = config.destinations[job.destination]
+    if (usenet) return usenet.view(job, snapshot, destination)
+    return {
+      id: job.id, name: job.title, destination: job.destination, destinationLabel: destination?.label || job.destination, downloader: 'sabnzbd', downloaderLabel: 'SABnzbd', type: 'usenet',
+      status: 'failed', message: 'Usenet downloads are not set up on the media server.', progress: 0, downloadSpeed: null, uploadSpeed: null, downloaded: null, size: job.size || null,
+      eta: null, seeds: null, peers: null, source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, keepsFilesOnCancel: true,
+    }
+  }
+
   const controller = {
     status() {
+      const usenetStatus = usenet ? usenet.status() : { available: false, problem: 'Usenet downloads are not set up on the media server.' }
       return {
         available: Boolean(config?.enabled && client), problem: config?.enabled ? null : (config?.problem || 'Tomifin Downloader is not configured on the media server.'),
         destinations: Object.values(TOMIFIN_DESTINATIONS).map(({ id, label }) => ({ id, label, available: Boolean(config?.enabled && config.destinations[id]) })),
         kinds: Object.keys(TOMIFIN_SEARCH_KINDS),
+        downloaders: { torrent: { available: Boolean(config?.enabled && client) }, usenet: { available: Boolean(config?.enabled && usenetStatus.available), problem: usenetStatus.available ? null : usenetStatus.problem } },
       }
     },
 
@@ -382,24 +558,61 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
       return { state, qbittorrent, nordvpn: nord }
     },
 
+    // Torrents and (when set up) NZBs at once, in one list. Either source failing leaves the other's results, with a
+    // warning; the search fails only when every source does.
     async search(body) {
       requireEnabled()
       const query = validSearchQuery(body?.query)
       const kindId = text(body?.kind || 'video').toLowerCase()
       if (!Object.hasOwn(TOMIFIN_SEARCH_KINDS, kindId)) throw new TomifinError('invalid-kind', 'Choose films, TV or both.')
       const kind = TOMIFIN_SEARCH_KINDS[kindId]
-      const raw = await client.search(query, { category: kind.plugin, indexerCategories: kind.indexers })
-      const found = seededTorrentResults(raw).filter((result) => qbittorrentReady(result.parsed)).slice(0, RESULT_LIMIT).map((result) => ({
+      const torrentSearch = client.search(query, { category: kind.plugin, indexerCategories: kind.indexers }).then((raw) => seededTorrentResults(raw).filter((result) => qbittorrentReady(result.parsed)).slice(0, RESULT_LIMIT).map((result) => ({
         id: createHash('sha256').update(`tomifin\0${result.resultId}`).digest('hex'),
         title: result.title, source: result.site, size: result.size, seeders: result.seeds, leechers: result.leechers,
         // Only torrents reach this list: qBittorrent-ready magnet links and .torrent file links.
         type: 'torrent', linkType: result.parsed.type === 'magnet' ? 'magnet' : 'torrent-file',
         detailsUrl: result.detailsUrl, quality: qualityFromTitle(result.title),
         link: result.parsed.link, infoHash: result.parsed.infoHash,
-      }))
+      })))
+      const usenetSearch = usenetReady() ? usenet.search(query, kindId) : null
+      const [torrents, nzbs] = await Promise.allSettled([torrentSearch, usenetSearch || Promise.resolve(null)])
+      if (torrents.status === 'rejected' && (!usenetSearch || nzbs.status === 'rejected')) throw torrents.reason
+      const warnings = []
+      if (torrents.status === 'rejected') warnings.push(`Torrent search failed: ${torrents.reason instanceof Error ? torrents.reason.message : 'unknown error'}`)
+      if (usenetSearch && nzbs.status === 'rejected') warnings.push(`Usenet search failed: ${nzbs.reason instanceof Error ? nzbs.reason.message : 'unknown error'}`)
+      if (nzbs.status === 'fulfilled' && nzbs.value?.failed) warnings.push(`${nzbs.value.failed} Usenet indexer${nzbs.value.failed === 1 ? '' : 's'} did not answer.`)
+      const usenetResults = nzbs.status === 'fulfilled' && nzbs.value ? dedupeNzbs(nzbs.value.results).slice(0, RESULT_LIMIT).map((entry) => ({
+        id: createHash('sha256').update(`tomifin-usenet\0${entry.indexerId}\0${entry.guid}`).digest('hex'),
+        title: entry.title, source: entry.indexerName, size: entry.size, ageDays: entry.ageDays, grabs: entry.grabs, seeders: null, leechers: null,
+        type: 'usenet', linkType: 'nzb', detailsUrl: safeDetailsUrl(entry.comments), quality: qualityFromTitle(entry.title),
+        indexerId: entry.indexerId, guid: entry.guid, guidKey: `${entry.indexerId}\0${entry.guid}`,
+      })) : []
+      const found = [...(torrents.status === 'fulfilled' ? torrents.value : []), ...usenetResults]
       rememberResults(found)
-      log(`Tomifin search (${kindId}) returned ${found.length} result${found.length === 1 ? '' : 's'}`)
-      return { query, kind: kindId, results: found.map(({ link: _link, infoHash: _infoHash, ...visible }) => visible) }
+      log(`Tomifin search (${kindId}) returned ${found.length} result${found.length === 1 ? '' : 's'} (${usenetResults.length} Usenet)`)
+      return { query, kind: kindId, results: found.map(visibleResult), warnings, usenet: usenetReady() }
+    },
+
+    // Add link: checks one pasted magnet, .torrent or .nzb link, or an uploaded file, and turns it into a result the
+    // page can queue like any other. The type is worked out here from the content; the browser's word is not asked.
+    async link(body) {
+      requireEnabled()
+      let parsed
+      try { parsed = await inspectSubmission({ link: body?.link, file: body?.file }, { fetchLink, maxBytes: config.maxBytes }) }
+      catch (error) { throw asTomifinError(error) }
+      if (parsed.kind === 'nzb' && !usenetReady()) throw new TomifinError('usenet-unavailable', `This is an NZB, but Usenet downloads are not set up on the media server${usenet?.status().problem ? `: ${usenet.status().problem}` : '.'}`)
+      const jobs = await savedJobs()
+      if (parsed.kind === 'nzb' ? jobs.some((job) => job.nzbIdentity === parsed.identity) : jobs.some((job) => job.infoHash === parsed.id)) throw new TomifinError('duplicate', 'This is already in your downloads.')
+      if (parsed.kind !== 'nzb' && await client.findByHash(parsed.id)) throw new TomifinError('duplicate', 'This torrent is already in qBittorrent.')
+      const fallback = parsed.kind === 'nzb' ? 'NZB download' : `Torrent ${parsed.id.slice(0, 12)}`
+      const title = parsed.name || fallback
+      const common = { id: createHash('sha256').update(`tomifin-link\0${randomUUID()}`).digest('hex'), origin: 'link', title, source: 'Added link', size: parsed.size || null, detailsUrl: null, quality: qualityFromTitle(title), ageDays: null, grabs: null }
+      const result = parsed.kind === 'magnet' ? { ...common, type: 'torrent', linkType: 'magnet', link: parsed.link, infoHash: parsed.id, seeders: null, leechers: null }
+        : parsed.kind === 'torrent' ? { ...common, type: 'torrent', linkType: 'torrent-file', torrent: parsed.bytes, infoHash: parsed.id, seeders: null, leechers: null }
+        : { ...common, type: 'usenet', linkType: 'nzb', nzb: parsed.bytes, parsed: { identity: parsed.identity, size: parsed.size, name: parsed.name } }
+      rememberResults([result])
+      log(`Tomifin checked an added ${parsed.kind === 'nzb' ? 'NZB' : parsed.kind}`)
+      return { detected: parsed.kind, result: visibleResult(result) }
     },
 
     async download(body) {
@@ -409,61 +622,27 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
       if (!RESULT_ID.test(resultId)) throw new TomifinError('invalid-result', 'Choose a search result to download.')
       const result = results.get(resultId)
       if (!result || result.expiresAt <= now()) throw new TomifinError('result-expired', 'That search result has expired. Search again, then choose it.')
-      if (result.size && result.size > config.maxBytes) throw new TomifinError('too-large', 'This torrent is larger than the download limit (TOMIFY_TOMIFIN_MAX_BYTES).')
-      // Parse the link again rather than trusting the cached copy.
-      const parsed = parseTorrentLink(result.link)
-      const keys = [`result:${resultId}`, ...(parsed.infoHash ? [`hash:${parsed.infoHash}`] : [])]
-      if (keys.some((key) => queuing.has(key))) throw new TomifinError('duplicate', 'This torrent is already being queued.')
-      for (const key of keys) queuing.add(key)
-      try {
-        // A retry of a result already queued (even one whose record outlived the search) is refused, not added twice.
-        if ((await savedJobs()).some((job) => job.resultId === resultId || (parsed.infoHash && job.infoHash === parsed.infoHash))) throw new TomifinError('duplicate', 'This torrent is already in your downloads.')
-        if (parsed.infoHash && await client.findByHash(parsed.infoHash)) throw new TomifinError('duplicate', 'This torrent is already in qBittorrent.')
-        const id = randomId()
-        const job = {
-          id, version: 1, createdAt: new Date(now()).toISOString(), destination: destination.id, title: result.title, source: result.source,
-          size: result.size || null, infoHash: parsed.infoHash, linkType: parsed.type, resultId,
-        }
-        // The record is written before qBittorrent hears about the torrent, so a torrent can never be downloading
-        // without Tomifin knowing about it. If the record cannot be written, nothing is added.
-        await saveJob(job)
-        try {
-          // Throws unless qBittorrent accepted the torrent, so success is reported only after it acknowledged it.
-          await client.add(parsed.link, { tag: tag(id), savePath: destination.saveQbittorrentPath || destination.qbittorrentPath, downloadPath: stagingPath(destination, id), category: destination.category, subfolder: true })
-        } catch (error) {
-          // Only a definite refusal removes the record. When qBittorrent's answer was lost (a timeout, a dropped
-          // connection) it may still have taken the torrent, perhaps without showing it yet, so the record is kept
-          // and the regular check (reconcile) confirms it when the torrent appears, or drops it after a while.
-          if (error?.rejected === true) {
-            await unlink(jobPath(id)).catch((failure) => log(`Tomifin could not remove the record of a download qBittorrent refused: ${failure?.message || failure}`))
-            throw error
-          }
-          if (!await torrentFor(job).catch(() => null)) {
-            job.unconfirmedSince = new Date(now()).toISOString()
-            await saveJob(job).catch((failure) => log(`Tomifin could not mark a download as unconfirmed: ${failure?.message || failure}`))
-            results.delete(resultId)
-            log(`Tomifin could not confirm "${result.title.slice(0, 120)}" with qBittorrent and will keep checking: ${error instanceof Error ? error.message : String(error)}`)
-            throw new TomifinError('unconfirmed', 'qBittorrent did not confirm the download. It is on your downloads list while Tomifin checks whether it arrived; do not queue it again.')
-          }
-        }
-        results.delete(resultId)
-        log(`Tomifin queued "${result.title.slice(0, 120)}" for ${destination.label}`)
-        return { job: jobView(job, null) }
-      } finally {
-        for (const key of keys) queuing.delete(key)
-      }
+      if (result.size && result.size > config.maxBytes) throw new TomifinError('too-large', `This ${result.type === 'usenet' ? 'NZB' : 'torrent'} is larger than the download limit (TOMIFY_TOMIFIN_MAX_BYTES).`)
+      // The downloader follows from the result: never from anything the browser sends.
+      return result.type === 'usenet' ? downloadUsenet(result, destination, resultId) : downloadTorrent(result, destination, resultId)
     },
 
     async list() {
       requireEnabled()
-      const jobs = await savedJobs()
-      const torrents = await tomifinTorrents()
-      await reconcile(jobs, torrents)
-      return { jobs: jobs.map((job) => jobView(job, torrentForJob(torrents, job))) }
+      const { torrentJobs, usenetJobs, torrents, snapshot } = await current()
+      if (usenetReady()) usenet.process(usenetJobs, snapshot, store)
+      const views = [...torrentJobs.map((job) => jobView(job, torrentForJob(torrents, job))), ...usenetJobs.map((job) => usenetView(job, snapshot))]
+      return { jobs: views.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))) }
     },
+
     async pause(body) {
       requireEnabled()
       const job = await loadJob(body?.id)
+      if (isUsenetJob(job)) {
+        if (!usenetReady()) throw new TomifinError('usenet-unavailable', 'Usenet downloads are not set up on the media server.')
+        await usenet.pause(job).catch((error) => { throw asTomifinError(error) })
+        return { job: usenetView(job, await usenet.snapshot()) }
+      }
       const torrent = await torrentFor(job)
       if (!torrent) throw new TomifinError('not-in-qbittorrent', 'The torrent is no longer in qBittorrent.')
       await client.pause(text(torrent.hash).toLowerCase())
@@ -473,6 +652,11 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
     async resume(body) {
       requireEnabled()
       const job = await loadJob(body?.id)
+      if (isUsenetJob(job)) {
+        if (!usenetReady()) throw new TomifinError('usenet-unavailable', 'Usenet downloads are not set up on the media server.')
+        await usenet.resume(job).catch((error) => { throw asTomifinError(error) })
+        return { job: usenetView(job, await usenet.snapshot()) }
+      }
       const torrent = await torrentFor(job)
       if (!torrent) throw new TomifinError('not-in-qbittorrent', 'The torrent is no longer in qBittorrent.')
       if (torrentSize(torrent) > config.maxBytes) throw new TomifinError('too-large', 'This torrent is larger than the download limit (TOMIFY_TOMIFIN_MAX_BYTES), so it cannot be resumed.')
@@ -480,27 +664,35 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
       return { job: jobView(job, { ...torrent, state: 'queuedDL' }) }
     },
 
-    // Takes the download out of qBittorrent and off the list. Downloaded data is deleted only for an unfinished
-    // download whose data is still in that job's own staging folder (see partialDataDeletable); otherwise every file
-    // is left where it is.
+    // Takes the download out of its downloader and off the list. Downloaded data is deleted only for an unfinished
+    // download, and only in that job's own staging folder (see partialDataDeletable, and SABnzbd's own job folder);
+    // otherwise every file is left where it is. Published library files are never touched.
     async cancel(body) {
       requireEnabled()
       const job = await loadJob(body?.id)
+      if (isUsenetJob(job)) {
+        const outcome = usenet ? await usenet.cancel(job).catch((error) => { throw asTomifinError(error) }) : { filesDeleted: false, removed: false }
+        await deleteJob(job.id)
+        log(`Tomifin removed ${logName(job)} from SABnzbd (${outcome.filesDeleted ? 'partial download deleted' : 'files kept'})`)
+        return { cancelled: true, filesDeleted: outcome.filesDeleted, downloaderRemoved: outcome.removed }
+      }
       const torrent = await torrentFor(job)
       let filesDeleted = false
       if (torrent) {
         filesDeleted = job.recovered !== true && partialDataDeletable(torrent, config.destinations[job.destination], job.id)
         await client.remove(text(torrent.hash).toLowerCase(), filesDeleted)
       }
-      await unlink(jobPath(job.id)).catch((error) => { if (error?.code !== 'ENOENT') throw error })
-      log(`Tomifin removed "${String(job.title).slice(0, 120)}" (${filesDeleted ? 'partial download deleted' : 'files kept'})`)
+      await deleteJob(job.id)
+      log(`Tomifin removed ${logName(job)} (${filesDeleted ? 'partial download deleted' : 'files kept'})`)
       return { cancelled: true, filesDeleted, torrentRemoved: Boolean(torrent) }
     },
 
-    // Runs every few seconds: records torrents that lost their job record and stops oversized ones (see reconcile).
+    // Runs every few seconds: keeps both downloaders and the records in step (see reconcile) and starts publishing
+    // finished Usenet downloads.
     async observe() {
       if (!config?.enabled || !client) return
-      await reconcile(await savedJobs(), await tomifinTorrents())
+      const { usenetJobs, snapshot } = await current()
+      if (usenetReady()) await usenet.process(usenetJobs, snapshot, store)
     },
 
     start() {
@@ -521,7 +713,7 @@ export function createTomifinController({ config, client, stateRoot, now = () =>
 // The agent's /v1/tomifin/* routes. Returns null for any other path. Every route but login needs the Jellyfin
 // session token (body.session) of a Jellyfin administrator, checked with Jellyfin (recovery-agent/jellyfin.mjs).
 export async function handleTomifinRequest(path, body, controller, auth) {
-  const route = String(path || '').match(/^\/v1\/tomifin\/(login|logout|session|status|vpn|search|download|downloads|pause|resume|cancel)$/)
+  const route = String(path || '').match(/^\/v1\/tomifin\/(login|logout|session|status|vpn|search|link|download|downloads|pause|resume|cancel)$/)
   if (!route) return null
   const action = route[1]
   try {
@@ -532,6 +724,7 @@ export async function handleTomifinRequest(path, body, controller, auth) {
     if (action === 'status') return { status: 200, body: controller.status() }
     if (action === 'vpn') return { status: 200, body: await controller.vpn() }
     if (action === 'search') return { status: 200, body: await controller.search(body) }
+    if (action === 'link') return { status: 200, body: await controller.link(body) }
     if (action === 'download') return { status: 202, body: await controller.download(body) }
     if (action === 'downloads') return { status: 200, body: await controller.list() }
     return { status: 200, body: await controller[action](body) }

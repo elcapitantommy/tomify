@@ -3,12 +3,16 @@ export type TomifinKind = 'video' | 'movies' | 'tv'
 export type TomifinStatus = 'queued' | 'downloading' | 'stalled' | 'paused' | 'completed' | 'failed'
 
 export interface TomifinQuality { resolution: string | null; hdr: string | null; codec: string | null; source: string | null }
+export type TomifinResultType = 'torrent' | 'usenet'
+// Torrents carry seeders and leechers; NZBs carry no swarm figures, only the indexer's age and grab count.
 export interface TomifinResult {
-  id: string; title: string; source: string; size: number | null; seeders: number; leechers: number | null
-  type: 'torrent'; linkType: 'magnet' | 'torrent-file'; detailsUrl: string | null; quality: TomifinQuality
+  id: string; title: string; source: string; size: number | null; seeders: number | null; leechers: number | null
+  type: TomifinResultType; linkType: 'magnet' | 'torrent-file' | 'nzb'; detailsUrl: string | null; quality: TomifinQuality
+  grabs?: number | null; ageDays?: number | null; origin?: 'search' | 'link'
 }
 export interface TomifinJob {
   id: string; name: string; destination: TomifinDestination; destinationLabel: string; status: TomifinStatus; message: string | null
+  downloader?: 'qbittorrent' | 'sabnzbd'; downloaderLabel?: string; type?: TomifinResultType
   progress: number; downloadSpeed: number | null; uploadSpeed: number | null; downloaded: number | null; size: number | null; eta: number | null
   seeds: number | null; peers: number | null; source: string | null; createdAt: string; canPause: boolean; canResume: boolean; keepsFilesOnCancel: boolean
 }
@@ -17,7 +21,12 @@ export interface TomifinVpnStatus {
   qbittorrent: 'connected' | 'firewalled' | 'disconnected' | 'unknown'
   nordvpn: { state: 'connected' | 'disconnected' | 'connecting' | 'unknown'; country: string | null; city: string | null; server: string | null } | null
 }
-export interface TomifinServiceStatus { available: boolean; problem: string | null; destinations: Array<{ id: TomifinDestination; label: string; available: boolean }> }
+export interface TomifinServiceStatus {
+  available: boolean; problem: string | null; destinations: Array<{ id: TomifinDestination; label: string; available: boolean }>
+  downloaders?: { torrent: { available: boolean }; usenet: { available: boolean; problem: string | null } }
+}
+export type TomifinDetected = 'magnet' | 'torrent' | 'nzb'
+export type TomifinLinkInput = { link: string } | { file: { name: string; data: string } }
 
 export const DESTINATIONS: Record<TomifinDestination, { label: string; path: string }> = {
   family: { label: 'Family', path: '/media/family' },
@@ -54,7 +63,9 @@ export const tomifinApi = {
   signOut: () => request<{ signedOut: true }>('/api/tomifin/session', { method: 'DELETE' }),
   status: (signal?: AbortSignal) => request<TomifinServiceStatus>('/api/tomifin/status', { signal }),
   vpn: (signal?: AbortSignal) => request<TomifinVpnStatus>('/api/tomifin/vpn', { signal }),
-  search: (query: string, kind: TomifinKind, signal?: AbortSignal) => request<{ query: string; kind: TomifinKind; results: TomifinResult[] }>(`/api/tomifin/search?${new URLSearchParams({ q: query, kind })}`, { signal }),
+  search: (query: string, kind: TomifinKind, signal?: AbortSignal) => request<{ query: string; kind: TomifinKind; results: TomifinResult[]; warnings?: string[]; usenet?: boolean }>(`/api/tomifin/search?${new URLSearchParams({ q: query, kind })}`, { signal }),
+  // Checks a pasted link or an uploaded file on the media server; it comes back as a result to queue like any other.
+  addLink: (input: TomifinLinkInput) => request<{ detected: TomifinDetected; result: TomifinResult }>('/api/tomifin/link', { method: 'POST', body: JSON.stringify(input) }),
   download: (resultId: string, destination: TomifinDestination) => request<{ job: TomifinJob }>('/api/tomifin/download', { method: 'POST', body: JSON.stringify({ resultId, destination }) }),
   downloads: (signal?: AbortSignal) => request<{ jobs: TomifinJob[] }>('/api/tomifin/downloads', { signal }),
   control: (id: string, action: 'pause' | 'resume' | 'cancel') => request<{ job?: TomifinJob; cancelled?: boolean; filesDeleted?: boolean }>(`/api/tomifin/downloads/${encodeURIComponent(id)}/${action}`, { method: 'POST' }),
@@ -80,4 +91,22 @@ export function formatEta(seconds: number | null | undefined) {
   const hours = Math.floor(minutes / 60)
   if (hours < 48) return `${hours} hr ${minutes % 60} min`
   return `${Math.round(hours / 24)} days`
+}
+
+export function formatAge(days: number | null | undefined) {
+  if (days == null || !Number.isFinite(days) || days < 0) return '—'
+  if (days < 1) return 'Today'
+  if (days < 60) return `${Math.round(days)} day${Math.round(days) === 1 ? '' : 's'}`
+  if (days < 730) return `${Math.round(days / 30)} months`
+  return `${Math.round(days / 365)} years`
+}
+
+// A chosen .torrent or .nzb file as base64, for Add link.
+export function readFileBase64(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ''))
+    reader.onerror = () => reject(new Error('That file could not be read.'))
+    reader.readAsDataURL(file)
+  })
 }

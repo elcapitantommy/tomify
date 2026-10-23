@@ -16,9 +16,16 @@ const job = (extra: Partial<TomifinJob> = {}): TomifinJob => ({
   createdAt: '2026-10-23T10:00:00Z', canPause: true, canResume: false, keepsFilesOnCancel: false, ...extra,
 })
 
+const usenetResult: TomifinResult = { id: 'c'.repeat(64), title: 'Big Buck Bunny 2008 1080p WEB-DL', source: 'NZBgeek', size: 2_000_000_000, seeders: null, leechers: null, grabs: 120, ageDays: 400, type: 'usenet', linkType: 'nzb', detailsUrl: null, quality }
+const linked = (body: unknown) => {
+  const input = body as { link?: string; file?: { name: string } }
+  const nzb = Boolean(input.file?.name.endsWith('.nzb') || input.link?.endsWith('.nzb'))
+  return { detected: nzb ? 'nzb' : 'magnet', result: nzb ? { ...usenetResult, id: 'd'.repeat(64), title: 'Sintel 2010', origin: 'link' } : { ...results[0], id: 'e'.repeat(64), title: 'Sintel 2010', source: 'Pasted link', origin: 'link' } }
+}
+
 type Call = { url: string; method: string; body: unknown; headers: Record<string, string> }
 // Every request the page makes is answered here: nothing reaches Tomify, Jellyfin, the media server or qBittorrent.
-function fakeApi({ vpn = { state: 'connected', qbittorrent: 'connected', nordvpn: { state: 'connected', country: 'United Kingdom', city: 'London', server: 'uk2012.nordvpn.com' } } as unknown, signedIn = true, jobs = [] as TomifinJob[], download = (body: { destination: string }) => new Response(JSON.stringify({ job: job({ destination: body.destination as TomifinJob['destination'], destinationLabel: body.destination === 'private' ? 'Private' : 'Family', status: 'queued', progress: 0 }) }), { status: 202 }), status = { available: true, problem: null, destinations: [{ id: 'family', label: 'Family', available: true }, { id: 'private', label: 'Private', available: true }] } } = {}) {
+function fakeApi({ vpn = { state: 'connected', qbittorrent: 'connected', nordvpn: { state: 'connected', country: 'United Kingdom', city: 'London', server: 'uk2012.nordvpn.com' } } as unknown, signedIn = true, jobs = [] as TomifinJob[], download = (body: { destination: string }) => new Response(JSON.stringify({ job: job({ destination: body.destination as TomifinJob['destination'], destinationLabel: body.destination === 'private' ? 'Private' : 'Family', status: 'queued', progress: 0 }) }), { status: 202 }), status = { available: true, problem: null, destinations: [{ id: 'family', label: 'Family', available: true }, { id: 'private', label: 'Private', available: true }] } as unknown, searchResults = results as TomifinResult[], searchExtra = {} as Record<string, unknown>, link = (body: unknown) => Response.json(linked(body)) as Response } = {}) {
   let session = signedIn
   const calls: Call[] = []
   const fetchMock = vi.fn(async (input: string, init: RequestInit = {}) => {
@@ -37,7 +44,8 @@ function fakeApi({ vpn = { state: 'connected', qbittorrent: 'connected', nordvpn
     if (!session) return Response.json({ error: 'unauthorized', message: 'Your Jellyfin session has ended. Sign in again.' }, { status: 401 })
     if (url === '/api/tomifin/status') return Response.json(status)
     if (url === '/api/tomifin/vpn') return vpn instanceof Response ? vpn : Response.json(vpn)
-    if (url.startsWith('/api/tomifin/search')) return Response.json({ query: new URL(url, 'https://x').searchParams.get('q'), kind: 'video', results })
+    if (url.startsWith('/api/tomifin/search')) return Response.json({ query: new URL(url, 'https://x').searchParams.get('q'), kind: 'video', results: searchResults, ...searchExtra })
+    if (url === '/api/tomifin/link') return link(body)
     if (url === '/api/tomifin/download') return download(body)
     if (url === '/api/tomifin/downloads') return Response.json({ jobs })
     if (/\/api\/tomifin\/downloads\/.+\/(pause|resume|cancel)$/.test(url)) return Response.json(url.endsWith('cancel') ? { cancelled: true, filesDeleted: true } : { job: job() })
@@ -111,7 +119,7 @@ describe('Tomifin Downloader', () => {
     expect(within(card).getByText('Torrent · Magnet')).toBeInTheDocument()
     expect(within(card).getByText('1080p')).toBeInTheDocument()
     expect(screen.getByText('Torrent · File')).toBeInTheDocument()
-    expect(screen.getByText('2 of 2 torrents for “Big Buck Bunny”')).toBeInTheDocument()
+    expect(screen.getByText('2 of 2 results for “Big Buck Bunny”')).toBeInTheDocument()
   })
 
   it('filters by quality and sorts by size', async () => {
@@ -200,6 +208,80 @@ describe('Tomifin Downloader', () => {
 
     fireEvent.click(within(done).getByRole('button', { name: 'Remove' }))
     expect(within(done).getByText('Remove from this list? The files stay in the library.')).toBeInTheDocument()
+  })
+
+  it('shows Usenet results beside torrents, labelled, without seeders', async () => {
+    fakeApi({ searchResults: [...results, usenetResult], searchExtra: { usenet: true, warnings: ['One Usenet indexer did not answer.'] } })
+    await open()
+    await search()
+    const card = screen.getByText('Big Buck Bunny 2008 1080p WEB-DL').closest('li')!
+    expect(within(card).getByText('Usenet · NZB')).toBeInTheDocument()
+    expect(within(card).getByText('NZBgeek')).toBeInTheDocument()
+    expect(within(card).getByText('120')).toBeInTheDocument()
+    expect(within(card).queryByText(/Seeders/)).not.toBeInTheDocument()
+    expect(screen.getByText(/One Usenet indexer did not answer/)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'usenet' } })
+    expect(screen.queryByText('Big Buck Bunny (2008) 1080p BluRay x264')).not.toBeInTheDocument()
+    expect(screen.getByText('Big Buck Bunny 2008 1080p WEB-DL')).toBeInTheDocument()
+  })
+
+  it('queues a Usenet result in SABnzbd with only its result id and destination', async () => {
+    const calls = fakeApi({ searchResults: [usenetResult], searchExtra: { usenet: true } })
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: /FAMILY/ }))
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search for media' }), { target: { value: 'Big Buck Bunny' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    const card = (await screen.findByText('Big Buck Bunny 2008 1080p WEB-DL')).closest('li')!
+    fireEvent.click(within(card).getByRole('button', { name: 'Queue to Family' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Queued in SABnzbd: “Big Buck Bunny 2008 1080p WEB-DL” → Family (/media/family).')
+    expect(calls.find((call) => call.url === '/api/tomifin/download')!.body).toEqual({ resultId: 'c'.repeat(64), destination: 'family' })
+  })
+
+  it('checks a pasted magnet link, shows what it is, and adds it to the chosen library', async () => {
+    const calls = fakeApi()
+    await open()
+    const field = screen.getByRole('textbox', { name: 'Magnet, .torrent or .nzb link' })
+    fireEvent.change(field, { target: { value: 'magnet:?xt=urn:btih:' + 'a'.repeat(40) + '&dn=Sintel' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Choose Family or Private before queuing a download.')
+    expect(calls.some((call) => call.url === '/api/tomifin/link')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Check' }))
+    expect(await screen.findByText('Torrent · Magnet link')).toBeInTheDocument()
+    expect(calls.find((call) => call.url === '/api/tomifin/link')!.body).toEqual({ link: 'magnet:?xt=urn:btih:' + 'a'.repeat(40) + '&dn=Sintel' })
+    expect(calls.find((call) => call.url === '/api/tomifin/link')!.headers).toMatchObject({ 'x-tomifin': '1' })
+    fireEvent.click(screen.getByRole('button', { name: /PRIVATE/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Private' }))
+    await waitFor(() => expect(calls.find((call) => call.url === '/api/tomifin/download')?.body).toEqual({ resultId: 'e'.repeat(64), destination: 'private' }))
+    await waitFor(() => expect(field).toHaveValue(''))
+  })
+
+  it('uploads an .nzb file and detects it as Usenet', async () => {
+    const calls = fakeApi()
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: /FAMILY/ }))
+    const file = new File(['<nzb/>'], 'sintel.nzb', { type: 'application/x-nzb' })
+    fireEvent.change(screen.getByLabelText('Upload a .torrent or .nzb file'), { target: { files: [file] } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Family' }))
+    await waitFor(() => expect(calls.find((call) => call.url === '/api/tomifin/download')?.body).toEqual({ resultId: 'd'.repeat(64), destination: 'family' }))
+    const sent = calls.find((call) => call.url === '/api/tomifin/link')!.body as { file: { name: string; data: string } }
+    expect(sent.file.name).toBe('sintel.nzb')
+    expect(atob(sent.file.data)).toBe('<nzb/>')
+  })
+
+  it('shows why a link was refused', async () => {
+    fakeApi({ link: () => Response.json({ error: 'unsafe-link', message: 'That link points at a private network address.' }, { status: 400 }) })
+    await open()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Magnet, .torrent or .nzb link' }), { target: { value: 'http://192.168.1.2/a.torrent' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('That link points at a private network address.')
+  })
+
+  it('lists SABnzbd downloads beside qBittorrent ones and says which downloader cancel removes from', async () => {
+    fakeApi({ jobs: [job(), job({ id: '00000000-0000-4000-8000-000000000003', name: 'Sintel', downloader: 'sabnzbd', downloaderLabel: 'SABnzbd', type: 'usenet', status: 'completed', progress: 100, canPause: false, keepsFilesOnCancel: true })] })
+    await open()
+    const usenet = (await screen.findByText('Sintel')).closest('li')!
+    expect(within(usenet).getByText(/SABnzbd/)).toBeInTheDocument()
+    expect(within(usenet).getByText('Completed')).toBeInTheDocument()
   })
 
   it('shows the VPN status, and says when it is down', async () => {

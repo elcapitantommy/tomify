@@ -32,6 +32,9 @@ import { createHlsPackager, credentialsFromHeaders, hlsConfig, HlsError, parseHl
 import { createImportRecovery, importStatePaths, prepareImportStaging, removeImportStaging, runManifestImport } from './manifest.mjs'
 import { createLanHandler, lanConfig, startLanServer } from './lan.mjs'
 import { createTomifinController, handleTomifinRequest, tomifinConfig } from './tomifin.mjs'
+import { createTomifinUsenet, tomifinUsenetConfig } from './tomifin-usenet.mjs'
+import { createLinkFetcher } from './tomifin-links.mjs'
+import { ffprobeReader } from './family-import.mjs'
 import { createJellyfinAuth, jellyfinConfig } from './jellyfin.mjs'
 
 let authConfiguration
@@ -88,7 +91,15 @@ let jellyfinSettings = null
 try { jellyfinSettings = jellyfinConfig() } catch (error) { process.stderr.write(`Tomifin Downloader sign-in is off: ${error.message}\n`) }
 const jellyfinAuth = createJellyfinAuth(jellyfinSettings)
 if (tomifinSettings.enabled && !jellyfinAuth.configured) process.stderr.write('Tomifin Downloader sign-in is off: set TOMIFY_JELLYFIN_URL.\n')
-const tomifin = createTomifinController({ config: tomifinSettings, client: tomifinSettings.enabled ? qbittorrent : null, stateRoot: usenetStateRoot, vpnStatus: () => vpn.status(), log: (message) => process.stderr.write(`${message}\n`) })
+// Usenet for Tomifin reuses Recovery's Newznab indexers, SABnzbd and its completed folder (recovery-agent/tomifin-usenet.mjs).
+// Without them Tomifin reports Usenet as unavailable and torrents carry on as before.
+const tomifinUsenetSettings = tomifinUsenetConfig(process.env, { indexers: newznabIndexers, downloader: usenetDownloader, downloadRoot: usenetDownloadRoot, tomifin: tomifinSettings })
+if (tomifinSettings.enabled && tomifinUsenetSettings.problem) process.stderr.write(`Tomifin Usenet downloads are off: ${tomifinUsenetSettings.problem}\n`)
+const tomifinLog = (message) => process.stderr.write(`${message}\n`)
+const tomifinUsenet = createTomifinUsenet({ config: tomifinUsenetSettings, tomifin: tomifinSettings, stateRoot: usenetStateRoot, probe: ffprobeReader(ffprobe), log: tomifinLog })
+// Added links may reach a private address only when it is exactly a configured indexer's host.
+const tomifinTrustedHosts = [...(torrentDownloader?.indexers || []), ...newznabIndexers].map((indexer) => { try { return new URL(indexer.url).host } catch { return '' } }).filter(Boolean)
+const tomifin = createTomifinController({ config: tomifinSettings, client: tomifinSettings.enabled ? qbittorrent : null, usenet: tomifinUsenet, fetchLink: createLinkFetcher({ trustedHosts: tomifinTrustedHosts }), stateRoot: usenetStateRoot, vpnStatus: () => vpn.status(), log: tomifinLog })
 
 function safeName(value, fallback) {
   const cleaned = String(value || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '').replace(/[. ]+$/g, '').trim().slice(0, 120)
@@ -152,7 +163,8 @@ async function withAnonymousFallback(operation) {
 
 // The library health report carries every cached MusicBrainz tracklist and every imported path from D1, so it may be
 // larger than any other request.
-const largeBodyRoutes = new Set(['/v1/inventory/report'])
+// Tomifin's Add link can carry an uploaded .torrent or .nzb file (10 MiB at most, base64).
+const largeBodyRoutes = new Set(['/v1/inventory/report', '/v1/tomifin/link'])
 
 async function parseBody(request) {
   const chunks = []

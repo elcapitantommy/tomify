@@ -295,3 +295,32 @@ test('Tomify\'s address no longer serves Tomifin, and without TOMIFIN_HOSTNAME n
   assert.equal(await site('https://app.tomify.tomdixon.uk/tomifinder'), null)
   assert.equal(await site(`https://${HOST}/`, {}, { TOMIFIN_HOSTNAME: '' }), null)
 })
+
+test('Add link sends exactly one link or file to the agent, needs the page header, and maps link refusals', async () => {
+  const magnet = 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Sintel'
+  const detected = { detected: 'magnet', result: { id: resultId, title: 'Sintel', source: 'Added link', size: null, type: 'torrent', linkType: 'magnet', seeders: null, leechers: null, quality: {} } }
+  await withFakes({ agent: () => Response.json(detected) }, async (calls) => {
+    assert.equal((await call('/api/tomifin/link', { method: 'POST', body: { link: magnet }, page: false })).status, 403)
+    assert.equal(calls.length, 0)
+    for (const body of [{}, { link: '' }, { link: 'ftp://files.test/a.torrent' }, { link: 'javascript:alert(1)' }, { link: magnet, file: { name: 'a.torrent', data: 'ZA==' } }, { file: { name: 'a.torrent', data: 'not base64!' } }, { file: { name: 'a.torrent', data: '' } }, { link: `https://files.test/${'a'.repeat(9000)}` }]) {
+      const response = await call('/api/tomifin/link', { method: 'POST', body })
+      assert.equal(response.status, 400, JSON.stringify(body).slice(0, 80))
+      assert.equal((await response.json()).error, 'invalid-link')
+    }
+    assert.equal(calls.length, 0)
+    const response = await call('/api/tomifin/link', { method: 'POST', body: { link: `  ${magnet} `, destination: 'family', savePath: '/etc' } })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), detected)
+    assert.deepEqual(sent(calls.at(-1)), { path: '/v1/tomifin/link', body: { link: magnet }, session: SESSION, authorization: 'Bearer ' + env.RECOVERY_AGENT_TOKEN })
+    await call('/api/tomifin/link', { method: 'POST', body: { file: { name: 'sintel.torrent', data: 'ZGU=' } } })
+    assert.deepEqual(sent(calls.at(-1)).body, { file: { name: 'sintel.torrent', data: 'ZGU=' } })
+  })
+  const refusals = { 'unsafe-link': 400, 'invalid-link': 400, 'auth-required': 400, 'too-large': 413, 'usenet-unavailable': 503, duplicate: 409, 'sabnzbd-refused': 502 }
+  for (const [code, status] of Object.entries(refusals)) {
+    await withFakes({ agent: () => Response.json({ error: 'tomifin-error', code, message: `Refused: ${code}` }, { status: 400 }) }, async () => {
+      const response = await call('/api/tomifin/link', { method: 'POST', body: { link: 'https://files.test/a.torrent' } })
+      const body = await response.json()
+      assert.deepEqual([response.status, body.error, body.message], [status, code, `Refused: ${code}`], code)
+    })
+  }
+})

@@ -96,6 +96,7 @@ svg { width: 18px; height: 18px; flex: none }
 .tf-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 999px; background: #232723; border: 1px solid #333833; color: #d6dcd6; font-size: .72rem; font-weight: 700; letter-spacing: .02em }
 .tf-chip svg { width: 13px; height: 13px }
 .tf-chip-type { background: #1f2a12; border-color: #3d5520; color: var(--accent) }
+.tf-chip-usenet { background: #14222b; border-color: #27485a; color: #8fd3ff }
 .tf-chip-warn { background: #2a2111; border-color: #5c4622; color: var(--warn) }
 .tf-chip-family { background: #1f2a12; border-color: #3d5520; color: var(--accent) }
 .tf-chip-private { background: #211a33; border-color: #45386b; color: var(--private) }
@@ -127,6 +128,14 @@ svg { width: 18px; height: 18px; flex: none }
 .tf-job-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center }
 .tf-confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .88rem; color: #c1c7c1 }
 
+.tf-add { display: grid; gap: 10px }
+.tf-add-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end }
+.tf-file { position: relative; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.tf-file:focus-within { outline: 3px solid var(--accent); outline-offset: 2px }
+.tf-detected { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 0 0; font-size: .92rem; overflow-wrap: anywhere }
+.tf-detected svg { color: var(--accent) }
+.tf-sources { margin: 10px 0 0; font-size: .85rem }
+
 .tf-signin { max-width: 460px; width: 100%; margin: 0 auto }
 .tf-signin form { display: grid; gap: 14px; margin-top: 8px }
 .tf-signin label { display: grid; gap: 6px; font-weight: 600; font-size: .88rem; color: #c1c7c1 }
@@ -147,4 +156,5 @@ svg { width: 18px; height: 18px; flex: none }
   .tf-filters label { flex: 1 1 140px; justify-content: space-between }
   .tf-filters select { flex: 1 }
   .tf-job-actions .tf-button { flex: 1 }
+  .tf-add-actions .tf-button { flex: 1 1 140px }
 }

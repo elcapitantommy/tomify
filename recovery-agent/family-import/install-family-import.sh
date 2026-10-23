@@ -22,7 +22,7 @@ id qbittorrent >/dev/null && getent group media-family >/dev/null
 
 dry_run() {
   systemd-run --quiet --wait --pipe --collect -p User=qbittorrent -p Group=qbittorrent -p SupplementaryGroups=media-family \
-    -p EnvironmentFile="$env_file" -p Environment=TOMIFIN_IMPORT_LIBRARY="$library" -p Environment=TOMIFIN_IMPORT_MOVIES_SUBDIR=Movies \
+    -p EnvironmentFile="$env_file" -p Environment=TOMIFIN_IMPORT_LIBRARY="$library" -p Environment=TOMIFIN_IMPORT_MOVIES_SUBDIR=Movies -p Environment=TOMIFIN_IMPORT_TV_SUBDIR=TV \
     -p "UnsetEnvironment=TOMIFY_RECOVERY_TOKEN TOMIFY_YOUTUBE_COOKIES TOMIFY_SABNZBD_API_KEY TOMIFY_LAN_TLS_KEY TOMIFY_MEDIA_KEY" \
     -p StateDirectory=tomifin-import -p StateDirectoryMode=0700 \
     -p SystemCallFilter=@system-service -p SystemCallErrorNumber=EPERM -p Environment=UV_USE_IO_URING=0 -p NoNewPrivileges=yes \
