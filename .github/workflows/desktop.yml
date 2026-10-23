@@ -1,0 +1,53 @@
+name: Windows app
+
+# Builds the Tomify for Windows installers (desktop/). Download them from the run's
+# "Artifacts" section: Tomify-windows-installer holds the .exe (recommended) and the .msi.
+on:
+  push:
+    branches: [main]
+    paths: ['desktop/**', '.github/workflows/desktop.yml']
+  pull_request:
+    paths: ['desktop/**', '.github/workflows/desktop.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Use stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Test
+        working-directory: desktop/src-tauri
+        run: cargo test --locked
+
+      - name: Build installers
+        run: npx --yes @tauri-apps/cli@2.12.4 build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tomify-windows-installer
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Tomify",
+  "version": "0.1.0",
+  "identifier": "uk.tomdixon.tomify",
+  "build": {
+    "frontendDist": "../offline"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "publisher": "Tom Dixon",
+    "shortDescription": "Tomify music player",
+    "category": "Music",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": { "installMode": "currentUser" }
+    }
+  }
+}
