@@ -284,6 +284,16 @@ describe('Tomifin Downloader', () => {
     expect(within(usenet).getByText('Completed')).toBeInTheDocument()
   })
 
+  it.each([
+    [{ available: true, problem: null, search: { available: true, providers: ['NZBIndex', 'NZBgeek'], problem: null } }, 'Searching torrents and Usenet (NZBIndex, NZBgeek).'],
+    [{ available: true, problem: null, search: { available: false, providers: [], problem: 'No Usenet search provider is configured.' } }, 'Searching torrents only. Usenet search is off, but added NZB links and files still download with SABnzbd.'],
+    [{ available: false, problem: 'SABnzbd is not configured.', search: { available: false, providers: [], problem: 'SABnzbd is not configured.' } }, 'Searching torrents only. Usenet is not available: SABnzbd is not configured.'],
+  ])('says where searches go and whether NZBs can be added (%#)', async (usenet, line) => {
+    fakeApi({ status: { available: true, problem: null, destinations: [{ id: 'family', label: 'Family', available: true }, { id: 'private', label: 'Private', available: true }], downloaders: { torrent: { available: true }, usenet } } })
+    await open()
+    expect(await screen.findByText(line)).toBeInTheDocument()
+  })
+
   it('shows the VPN status, and says when it is down', async () => {
     fakeApi()
     await open()

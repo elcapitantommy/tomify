@@ -10,6 +10,10 @@ import { createSabnzbdClient, parseNewznabVideoResults } from './usenet.mjs'
 const INDEXER_KEY = 'INDEXERSECRETKEY123'
 const SAB_KEY = 'SABSECRETKEY456'
 const indexers = [{ id: 'geek', name: 'NZBgeek', url: 'https://api.nzbgeek.test', apiKey: INDEXER_KEY }]
+// Recovery's NZBIndex settings (nzbIndexConfig), pointed at a fake host. Anonymous unless a key is set.
+const NZBINDEX = { type: 'nzbindex', id: 'nzbindex', name: 'NZBIndex', apiKey: '', apiUrl: 'https://api.nzbindex.test', siteUrl: 'https://www.nzbindex.test' }
+const NZBINDEX_KEY = 'NZBINDEXSECRET789'
+const collection = (id, name, size = 2_000_000_000, extra = {}) => ({ id, name, size, posted: Math.floor(Date.parse('2024-01-01T00:00:00Z') / 1000), complete: true, fileCount: 40, poster: 'p@example.test', groups: ['alt.binaries.movies'], ...extra })
 const sabDownloader = { type: 'sabnzbd', url: 'http://127.0.0.1:8080', apiKey: SAB_KEY, category: 'tomify-music' }
 const film = 'x'.repeat(3000)
 const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
@@ -79,7 +83,7 @@ function fakeQbittorrent({ searchResults = [] } = {}) {
   }
 }
 
-async function world({ env = {}, sab = fakeSab(), searchXml = newznabXml([{ title: 'Sintel.2010.1080p.BluRay.x264-GRP', guid: 'g1' }]), nzbFor = () => nzb(), downloader = sabDownloader, qbSearch = [], fetchLink = null, probe = async () => ({ ok: true, duration: 5400 }) } = {}) {
+async function world({ env = {}, newznab = indexers, nzbIndex = null, nzbIndexJson = null, failing = [], sab = fakeSab(), searchXml = newznabXml([{ title: 'Sintel.2010.1080p.BluRay.x264-GRP', guid: 'g1' }]), nzbFor = () => nzb(), downloader = sabDownloader, qbSearch = [], fetchLink = null, probe = async () => ({ ok: true, duration: 5400 }) } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'tomifin-usenet-'))
   const family = join(root, 'family')
   const privateLibrary = join(root, 'private')
@@ -87,11 +91,16 @@ async function world({ env = {}, sab = fakeSab(), searchXml = newznabXml([{ titl
   const stateRoot = join(root, 'state')
   for (const folder of [family, privateLibrary, join(completed, 'tomifin-family'), join(completed, 'tomifin-private'), stateRoot]) await mkdir(folder, { recursive: true })
   const tomifin = tomifinConfig({ TOMIFY_TOMIFIN_FAMILY_DIR: family, TOMIFY_TOMIFIN_PRIVATE_DIR: privateLibrary, TOMIFY_TOMIFIN_FAMILY_IMPORT_SUBDIR: '.downloads' }, { torrentAvailable: true })
-  const config = tomifinUsenetConfig(env, { indexers, downloader, downloadRoot: completed, tomifin })
+  const config = tomifinUsenetConfig(env, { indexers: newznab, nzbIndex, downloader, downloadRoot: completed, tomifin })
   const logs = []
   const fetched = []
   const searches = []
-  const fetchImpl = async (url) => { searches.push(String(url)); return new Response(searchXml, { status: 200 }) }
+  const fetchImpl = async (url) => {
+    searches.push(String(url))
+    const isNzbIndex = new URL(String(url)).host === 'api.nzbindex.test'
+    if (failing.includes(isNzbIndex ? 'nzbindex' : 'newznab')) throw new TypeError('fetch failed')
+    return isNzbIndex ? Response.json(nzbIndexJson || { data: { content: [] } }) : new Response(searchXml, { status: 200 })
+  }
   const fetchNzb = async (url) => { fetched.push(url); return { bytes: nzbFor(url) } }
   const usenet = createTomifinUsenet({ config, tomifin, stateRoot, sab, fetchImpl, fetchNzb, probe, stableMs: 0, log: (line) => logs.push(line) })
   const qb = fakeQbittorrent({ searchResults: qbSearch })
@@ -137,7 +146,13 @@ test('Usenet settings reuse Recovery\'s indexers and SABnzbd, and stay off with 
   const tomifin = context.tomifin
   const base = { indexers, downloader: sabDownloader, downloadRoot: context.completed, tomifin }
   const problem = (env, options = {}) => tomifinUsenetConfig(env, { ...base, ...options }).problem
-  assert.match(problem({}, { indexers: [] }), /Newznab indexer/)
+  const noSearch = tomifinUsenetConfig({}, { ...base, indexers: [] })
+  assert.equal(noSearch.available, true, 'SABnzbd alone is enough to download added NZBs')
+  assert.equal(noSearch.search.available, false)
+  assert.match(noSearch.search.problem, /No Usenet search provider/)
+  const withNzbIndex = tomifinUsenetConfig({}, { ...base, indexers: [], nzbIndex: NZBINDEX })
+  assert.deepEqual([withNzbIndex.search.available, withNzbIndex.search.providers], [true, ['NZBIndex']])
+  assert.deepEqual(tomifinUsenetConfig({}, { ...base, nzbIndex: NZBINDEX }).search.providers, ['NZBIndex', 'NZBgeek'])
   assert.match(problem({}, { downloader: null }), /SABnzbd is not configured/)
   assert.match(problem({}, { downloader: { ...sabDownloader, type: 'nzbget' } }), /NZBGet is not supported/)
   assert.match(problem({}, { downloader: { ...sabDownloader, apiKey: '' } }), /API_KEY/)
@@ -476,4 +491,107 @@ test('a library outage keeps a finished download waiting with growing gaps, neve
   await controller.observe()
   assert.equal((await record()).import.state, 'published')
   assert.equal(await readFile(join(context.privateLibrary, 'Sintel.2010.1080p', 'Sintel.2010.1080p.mkv'), 'utf8'), film)
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// NZBIndex (Recovery's anonymous provider) beside or instead of Newznab
+
+test('NZBIndex alone is enough to search and queue through SABnzbd, keeping collection ids server-side', async () => {
+  const nzbIndexJson = { data: { content: [
+    collection('abc123DEF', 'Sintel.2010.1080p.BluRay.x264-GRP [01/45] - "sintel.part01.rar"'),
+    collection('frag9', 'Sintel.2010.1080p.BluRay.x264-GRP [07/45]'),
+    collection('broken', 'Sintel.2010.720p', 1_000_000_000, { complete: false }),
+  ] } }
+  const context = await world({ newznab: [], nzbIndex: { ...NZBINDEX, apiKey: NZBINDEX_KEY }, nzbIndexJson })
+  assert.deepEqual(context.controller.status().downloaders.usenet.search, { available: true, providers: ['NZBIndex'], problem: null })
+  const { found, result, queued } = await searchAndQueue(context, 'private')
+  assert.equal(found.results.length, 1, 'fragments and incomplete collections are left out')
+  assert.deepEqual([result.source, result.type, result.detailsUrl, result.grabs], ['NZBIndex', 'usenet', null, null])
+  assert.equal(result.ageDays > 600, true)
+  const search = new URL(context.searches[0])
+  assert.deepEqual([search.pathname, search.searchParams.get('q'), search.searchParams.get('complete'), search.searchParams.get('key')], ['/api/search', 'Sintel', '1', NZBINDEX_KEY])
+  assert.equal(context.fetched[0], `https://api.nzbindex.test/api/download/abc123DEF.nzb?key=${NZBINDEX_KEY}`, 'the NZB comes from the existing NZBIndex download endpoint')
+  assert.deepEqual(context.sab.calls.find((call) => call[0] === 'addFile').slice(1, 3), [`tomifin-${id(1)}`, 'tomifin-private'])
+  const record = await readFile(join(context.stateRoot, 'tomifin', `${id(1)}.json`), 'utf8')
+  const browser = JSON.stringify([found, queued, await context.controller.list(), context.controller.status()])
+  for (const secret of ['abc123DEF', NZBINDEX_KEY, 'api.nzbindex', 'nzbindex.test', 'part1of2', '<nzb', 'collection']) assert.ok(!browser.includes(secret), `browser: ${secret}`)
+  for (const secret of [NZBINDEX_KEY, 'api.nzbindex', '<nzb']) assert.ok(!record.includes(secret) && !context.logs.join('\n').includes(secret), `record/logs: ${secret}`)
+})
+
+test('Newznab alone still works, and NZBIndex plus Newznab are searched together and merged', async () => {
+  const newznabOnly = await world()
+  assert.deepEqual(newznabOnly.controller.status().downloaders.usenet.search.providers, ['NZBgeek'])
+  await searchAndQueue(newznabOnly)
+  assert.match(newznabOnly.fetched[0], /api\.nzbgeek\.test\/api\?t=get&id=g1/)
+
+  const both = await world({
+    nzbIndex: NZBINDEX,
+    searchXml: newznabXml([{ title: 'Sintel.2010.1080p.BluRay.x264-GRP', guid: 'g1', size: 2_000_000_000 }, { title: 'Sintel.2010.2160p.WEB-DL', guid: 'g2', size: 9_000_000_000 }]),
+    nzbIndexJson: { data: { content: [collection('same1', 'sintel 2010 1080p bluray x264 grp', 2_010_000_000), collection('own1', 'Sintel.2010.720p.HDTV', 800_000_000), collection('near1', 'Sintel.2010.1080p.BluRay.x264-GRP', 2_500_000_000)] } },
+  })
+  const found = await both.controller.search({ query: 'Sintel', kind: 'video' })
+  assert.deepEqual(new Set(both.searches.map((url) => new URL(url).host)), new Set(['api.nzbgeek.test', 'api.nzbindex.test']))
+  const usenet = found.results.filter((result) => result.type === 'usenet')
+  assert.deepEqual(usenet.map((result) => [result.source, result.title]).sort(), [
+    ['NZBIndex', 'Sintel.2010.1080p.BluRay.x264-GRP'],
+    ['NZBIndex', 'Sintel.2010.720p.HDTV'],
+    ['NZBgeek', 'Sintel.2010.1080p.BluRay.x264-GRP'],
+    ['NZBgeek', 'Sintel.2010.2160p.WEB-DL'],
+  ], 'the same release within 1 % in size is shown once; a different size is kept')
+  const fromIndex = usenet.find((result) => result.title === 'Sintel.2010.720p.HDTV')
+  await both.controller.download({ resultId: fromIndex.id, destination: 'family' })
+  assert.match(both.fetched.at(-1), /^https:\/\/api\.nzbindex\.test\/api\/download\/own1\.nzb$/, 'anonymous: no key parameter')
+})
+
+test('one Usenet provider failing keeps the others\' results, with a short warning', async () => {
+  const nzbIndexJson = { data: { content: [collection('own1', 'Sintel.2010.720p.HDTV')] } }
+  const indexDown = await world({ nzbIndex: NZBINDEX, nzbIndexJson, failing: ['nzbindex'] })
+  const a = await indexDown.controller.search({ query: 'Sintel', kind: 'video' })
+  assert.deepEqual(a.results.map((result) => result.source), ['NZBgeek'])
+  assert.deepEqual(a.warnings, ['Usenet search: NZBIndex did not answer.'])
+  const geekDown = await world({ nzbIndex: NZBINDEX, nzbIndexJson, failing: ['newznab'] })
+  const b = await geekDown.controller.search({ query: 'Sintel', kind: 'video' })
+  assert.deepEqual(b.results.map((result) => result.source), ['NZBIndex'])
+  assert.deepEqual(b.warnings, ['Usenet search: NZBgeek did not answer.'])
+  const allDown = await world({ nzbIndex: NZBINDEX, failing: ['newznab', 'nzbindex'], qbSearch: [{ fileName: 'Sintel 2010 720p', fileUrl: `magnet:?xt=urn:btih:${'c'.repeat(40)}`, fileSize: 1, nbSeeders: 3, siteUrl: 'https://yts.test' }] })
+  const c = await allDown.controller.search({ query: 'Sintel', kind: 'video' })
+  assert.deepEqual(c.results.map((result) => result.type), ['torrent'])
+  assert.equal(c.warnings.length, 1)
+  assert.match(c.warnings[0], /^Usenet search failed: /)
+  assert.ok(!JSON.stringify(c).includes('nzbindex.test') && !JSON.stringify(c).includes(INDEXER_KEY))
+})
+
+test('with SABnzbd but no search provider, added NZB links and uploads still download', async () => {
+  const context = await world({ newznab: [], nzbIndex: null, qbSearch: [] })
+  const status = context.controller.status().downloaders.usenet
+  assert.deepEqual([status.available, status.search.available], [true, false])
+  const found = await context.controller.search({ query: 'Sintel', kind: 'video' })
+  assert.deepEqual([found.usenet, found.results, context.searches], [false, [], []])
+  const checked = await context.controller.link({ file: { name: 'sintel.nzb', data: nzb('upload', 'Sintel Upload').toString('base64') } })
+  assert.equal(checked.detected, 'nzb')
+  await context.controller.download({ resultId: checked.result.id, destination: 'family' })
+  assert.deepEqual(context.sab.calls.find((call) => call[0] === 'addFile').slice(1, 3), [`tomifin-${id(1)}`, 'tomifin-family'])
+  assert.ok(!JSON.stringify(checked).includes('<nzb') && !context.logs.join('\n').includes('<nzb'))
+})
+
+test('without SABnzbd, Usenet stays unavailable even with NZBIndex', async () => {
+  const context = await world({ downloader: null, nzbIndex: NZBINDEX })
+  const status = context.controller.status().downloaders.usenet
+  assert.equal(status.available, false)
+  assert.equal(status.search.available, false)
+  assert.match(status.problem, /SABnzbd is not configured/)
+  const found = await context.controller.search({ query: 'Sintel', kind: 'video' })
+  assert.equal(found.usenet, false)
+  assert.deepEqual(context.searches, [])
+  await assert.rejects(context.controller.link({ file: { name: 'a.nzb', data: nzb().toString('base64') } }), { code: 'usenet-unavailable' })
+})
+
+test('deduplication keeps distinct non-Latin releases of the same size, and still merges equal ones', async () => {
+  const context = await world({
+    nzbIndex: NZBINDEX,
+    searchXml: newznabXml([{ title: '千と千尋の神隠し 2001 1080p', guid: 'j1', size: 2_000_000_000 }, { title: 'Брат 1997 1080p', guid: 'r1', size: 3_000_000_000 }]),
+    nzbIndexJson: { data: { content: [collection('j2', 'もののけ姫 2001 1080p', 2_005_000_000), collection('r2', 'брат.1997.1080p', 3_010_000_000), collection('e1', '★★★', 4_000_000_000), collection('e2', '☆☆☆', 4_000_000_000)] } },
+  })
+  const titles = (await context.controller.search({ query: 'anime', kind: 'video' })).results.map((result) => result.title).sort()
+  assert.deepEqual(titles, ['Брат 1997 1080p', 'もののけ姫 2001 1080p', '千と千尋の神隠し 2001 1080p', '★★★', '☆☆☆'].sort(), 'different Japanese titles are both kept; the Cyrillic repost is merged; names with no letters or digits never match')
 })

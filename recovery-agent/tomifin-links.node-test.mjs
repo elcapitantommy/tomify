@@ -26,6 +26,15 @@ const nzbXml = ({ head = '<head><meta type="name">Sintel 2010 1080p</meta></head
   </file>
 </nzb>`
 
+// NZBs as real tools write them: newzBin's public DOCTYPE, and often ISO-8859-1.
+const NEWZBIN_DOCTYPE = '<!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd">'
+const latin1Nzb = (encoding = 'iso-8859-1') => Buffer.from(nzbXml({ prolog: `<?xml version="1.0" encoding="${encoding}" ?>\n${NEWZBIN_DOCTYPE}`, head: '<head><meta type="name">Amélie 2001 1080p</meta></head>' }), 'latin1')
+const utf16 = (value, endian) => {
+  const body = Buffer.from(value, 'utf16le')
+  if (endian === 'be') body.swap16()
+  return Buffer.concat([Buffer.from(endian === 'be' ? [0xfe, 0xff] : [0xff, 0xfe]), body])
+}
+
 const code = (expected) => (error) => error instanceof LinkError && error.code === expected
 
 test('magnet links: v1 hex, v1 base32, v2 and hybrid', () => {
@@ -107,7 +116,10 @@ test('NZB files: name, size, segments and a stable identity from the message ids
 test('NZB files with entities, a DOCTYPE, passwords, compression or bad structure are refused', () => {
   const cases = [
     ['<?xml version="1.0"?><!DOCTYPE nzb [<!ENTITY x "y">]><nzb/>', 'invalid-nzb'],
-    [nzbXml({ prolog: '<?xml version="1.0"?><!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd">' }), 'invalid-nzb'],
+    [nzbXml({ prolog: '<?xml version="1.0"?><!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd" [<!ENTITY x "y">]>' }), 'invalid-nzb'],
+    [nzbXml({ prolog: '<?xml version="1.0"?><!DOCTYPE nzb SYSTEM "file:///etc/passwd">' }), 'invalid-nzb'],
+    [nzbXml({ prolog: '<?xml version="1.0"?><!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://evil.test/nzb.dtd">' }), 'invalid-nzb'],
+    [nzbXml({ prolog: '<?xml version="1.0"?><!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd"><!DOCTYPE nzb SYSTEM "x">' }), 'invalid-nzb'],
     [nzbXml({ head: '<head><meta type="name">&xxe;</meta></head>' }), 'invalid-nzb'],
     [nzbXml({ head: '<head><meta type="name">a & b</meta></head>' }), 'invalid-nzb'],
     [nzbXml({ head: '<head><meta type="password">hunter2</meta></head>' }), 'password-protected'],
@@ -235,4 +247,35 @@ test('uploads: exactly one of a link or a file, read from the content', async ()
   await assert.rejects(inspectSubmission({ link: 'magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056', file: { name: 'a', data: 'ZA==' } }, { fetchLink }), code('invalid-link'))
   await assert.rejects(inspectSubmission({ file: { name: 'a', data: 'not base64!' } }, { fetchLink }), code('invalid-link'))
   await assert.rejects(inspectSubmission({ file: { name: 'a', data: 'A'.repeat(15 * 1024 * 1024) } }, { fetchLink }), code('too-large'))
+})
+
+test('real-world NZB encodings are read: ISO-8859-1/Windows-1252, UTF-8 with a BOM, UTF-16 with a BOM, and newzBin\'s DOCTYPE', async () => {
+  for (const encoding of ['iso-8859-1', 'ISO-8859-1', 'windows-1252', 'latin1', 'us-ascii', 'utf8']) {
+    const bytes = encoding === 'us-ascii' || encoding === 'utf8' ? Buffer.from(nzbXml({ prolog: `<?xml version="1.0" encoding="${encoding}"?>` })) : latin1Nzb(encoding)
+    const parsed = parseNzb(bytes)
+    assert.equal(parsed.kind, 'nzb', encoding)
+    if (bytes.includes(0xe9)) assert.equal(parsed.name, 'Amélie 2001 1080p', `${encoding}: é read as one character`)
+  }
+  const plain = parseNzb(Buffer.from(nzbXml()))
+  assert.equal(parseNzb(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(nzbXml())])).identity, plain.identity, 'UTF-8 BOM')
+  assert.equal(parseNzb(Buffer.from(nzbXml({ prolog: `<?xml version="1.0" encoding="utf-8"?>\n${NEWZBIN_DOCTYPE}` }))).identity, plain.identity, 'newzBin DOCTYPE')
+  for (const endian of ['le', 'be']) {
+    const bytes = utf16(nzbXml({ prolog: '<?xml version="1.0" encoding="UTF-16"?>', head: '<head><meta type="name">Amélie 2001 1080p</meta></head>' }), endian)
+    assert.equal(detectPayload(bytes), 'nzb', endian)
+    assert.equal(parseNzb(bytes).name, 'Amélie 2001 1080p', endian)
+    assert.equal(parseNzb(bytes).identity, plain.identity, endian)
+  }
+  const fetchLink = async () => { throw new Error('no network') }
+  const uploaded = await inspectSubmission({ file: { name: 'b8bacfc2.nzb', data: latin1Nzb().toString('base64') } }, { fetchLink })
+  assert.deepEqual([uploaded.kind, uploaded.name], ['nzb', 'Amélie 2001 1080p'])
+})
+
+test('other encodings, and encodings that contradict the bytes, are still refused', () => {
+  for (const encoding of ['shift_jis', 'ebcdic-cp-us', 'utf-32', 'x-unknown']) {
+    assert.throws(() => parseNzb(Buffer.from(nzbXml({ prolog: `<?xml version="1.0" encoding="${encoding}"?>` }))), (error) => error.code === 'invalid-nzb' && /unsupported character encoding/.test(error.message), encoding)
+  }
+  assert.throws(() => parseNzb(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), latin1Nzb()])), code('invalid-nzb'), 'a UTF-8 BOM with ISO-8859-1 declared')
+  assert.throws(() => parseNzb(utf16(nzbXml({ prolog: '<?xml version="1.0" encoding="iso-8859-1"?>' }), 'le')), code('invalid-nzb'), 'UTF-16 bytes declared as ISO-8859-1')
+  assert.throws(() => parseNzb(Buffer.from(nzbXml({ head: '<head><meta type="name">Amélie</meta></head>' }), 'latin1')), (error) => /not valid UTF-8/.test(error.message), 'undeclared non-UTF-8 bytes')
+  assert.throws(() => parseNzb(Buffer.from(`<?xml version="1.0" encoding="iso-8859-1"?>${NEWZBIN_DOCTYPE}<!DOCTYPE x [<!ENTITY a "b">]><nzb/>`, 'latin1')), code('invalid-nzb'), 'protections apply whatever the encoding')
 })

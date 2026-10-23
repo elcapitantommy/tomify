@@ -201,6 +201,14 @@ function Downloads({ jobs, loading, error, onRefresh, onAction, busyId }: { jobs
   )
 }
 
+// One line saying where searches go, and whether added NZBs can still be downloaded when Usenet search is off.
+function usenetSources(usenet: NonNullable<TomifinServiceStatus['downloaders']>['usenet']) {
+  if (!usenet.available) return `Searching torrents only. Usenet is not available${usenet.problem ? `: ${usenet.problem}` : '.'}`
+  if (usenet.search && !usenet.search.available) return 'Searching torrents only. Usenet search is off, but added NZB links and files still download with SABnzbd.'
+  const providers = usenet.search?.providers?.length ? ` (${usenet.search.providers.join(', ')})` : ''
+  return `Searching torrents and Usenet${providers}.`
+}
+
 const VPN_POLL_MS = 30_000
 
 // The VPN qBittorrent downloads through, as one line in the toolbar.
@@ -348,7 +356,7 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
         <div className="tf-segments" role="radiogroup" aria-label="What to search">
           {KINDS.map((entry) => <button key={entry.id} type="button" role="radio" aria-checked={kind === entry.id} className={kind === entry.id ? 'tf-segment tf-segment-on' : 'tf-segment'} onClick={() => setKind(entry.id)}>{entry.label}</button>)}
         </div>
-        {usenetStatus && <p className="tf-sources tf-muted">{usenetStatus.available ? 'Searching torrents and Usenet.' : `Searching torrents only. Usenet is not available${usenetStatus.problem ? `: ${usenetStatus.problem}` : '.'}`}</p>}
+        {usenetStatus && <p className="tf-sources tf-muted">{usenetSources(usenetStatus)}</p>}
       </section>
 
       <div ref={destinationRef}><DestinationPicker value={destination} onChange={(value) => { setDestination(value); setNotice(null) }} status={status}/></div>

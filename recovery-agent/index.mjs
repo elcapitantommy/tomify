@@ -91,10 +91,12 @@ let jellyfinSettings = null
 try { jellyfinSettings = jellyfinConfig() } catch (error) { process.stderr.write(`Tomifin Downloader sign-in is off: ${error.message}\n`) }
 const jellyfinAuth = createJellyfinAuth(jellyfinSettings)
 if (tomifinSettings.enabled && !jellyfinAuth.configured) process.stderr.write('Tomifin Downloader sign-in is off: set TOMIFY_JELLYFIN_URL.\n')
-// Usenet for Tomifin reuses Recovery's Newznab indexers, SABnzbd and its completed folder (recovery-agent/tomifin-usenet.mjs).
-// Without them Tomifin reports Usenet as unavailable and torrents carry on as before.
-const tomifinUsenetSettings = tomifinUsenetConfig(process.env, { indexers: newznabIndexers, downloader: usenetDownloader, downloadRoot: usenetDownloadRoot, tomifin: tomifinSettings })
+// Usenet for Tomifin reuses Recovery's SABnzbd and its completed folder, and searches Recovery's NZBIndex and Newznab
+// indexers (recovery-agent/tomifin-usenet.mjs). Without SABnzbd, Tomifin reports Usenet as unavailable and torrents
+// carry on as before.
+const tomifinUsenetSettings = tomifinUsenetConfig(process.env, { indexers: newznabIndexers, nzbIndex, downloader: usenetDownloader, downloadRoot: usenetDownloadRoot, tomifin: tomifinSettings })
 if (tomifinSettings.enabled && tomifinUsenetSettings.problem) process.stderr.write(`Tomifin Usenet downloads are off: ${tomifinUsenetSettings.problem}\n`)
+else if (tomifinSettings.enabled && tomifinUsenetSettings.search?.problem) process.stderr.write(`Tomifin Usenet search is off: ${tomifinUsenetSettings.search.problem}\n`)
 const tomifinLog = (message) => process.stderr.write(`${message}\n`)
 const tomifinUsenet = createTomifinUsenet({ config: tomifinUsenetSettings, tomifin: tomifinSettings, stateRoot: usenetStateRoot, probe: ffprobeReader(ffprobe), log: tomifinLog })
 // Added links may reach a private address only when it is exactly a configured indexer's host.

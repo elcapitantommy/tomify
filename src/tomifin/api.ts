@@ -23,7 +23,7 @@ export interface TomifinVpnStatus {
 }
 export interface TomifinServiceStatus {
   available: boolean; problem: string | null; destinations: Array<{ id: TomifinDestination; label: string; available: boolean }>
-  downloaders?: { torrent: { available: boolean }; usenet: { available: boolean; problem: string | null } }
+  downloaders?: { torrent: { available: boolean }; usenet: { available: boolean; problem: string | null; search?: { available: boolean; providers: string[]; problem: string | null } } }
 }
 export type TomifinDetected = 'magnet' | 'torrent' | 'nzb'
 export type TomifinLinkInput = { link: string } | { file: { name: string; data: string } }

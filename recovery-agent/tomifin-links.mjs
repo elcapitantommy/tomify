@@ -221,15 +221,57 @@ function checkText(value) {
 
 // A small, strict XML reader: elements, attributes, text and comments only. Anything that could declare or expand
 // entities (a DOCTYPE), processing instructions after the declaration, CDATA and malformed nesting are refused.
+// The encodings NZB files are found in: UTF-8 (with or without a BOM), plain ASCII, ISO-8859-1/Windows-1252 (common:
+// older tools and some indexers declare it), ISO-8859-15, and UTF-16 with a BOM. Each maps to a WHATWG decoder label.
+const NZB_ENCODINGS = new Map([
+  ['utf-8', 'utf-8'], ['utf8', 'utf-8'], ['us-ascii', 'utf-8'], ['ascii', 'utf-8'],
+  ['iso-8859-1', 'latin1'], ['iso8859-1', 'latin1'], ['latin1', 'latin1'], ['latin-1', 'latin1'], ['windows-1252', 'latin1'], ['cp1252', 'latin1'],
+  ['iso-8859-15', 'iso-8859-15'], ['latin-9', 'iso-8859-15'],
+])
+const UNSUPPORTED_ENCODING = 'The NZB file uses an unsupported character encoding (UTF-8, ASCII, ISO-8859-1/Windows-1252, ISO-8859-15 or UTF-16 are accepted).'
+
+// Bytes to text, from the BOM or the XML declaration's encoding (UTF-8 when there is neither). UTF-8 must be valid.
+export function decodeNzbText(bytes) {
+  const data = Buffer.from(bytes)
+  const fail = (message = UNSUPPORTED_ENCODING) => { throw new LinkError('invalid-nzb', message) }
+  const decode = (label, body, fatal = false) => { try { return new TextDecoder(label, { fatal, ignoreBOM: true }).decode(body) } catch { return fail(fatal ? 'The NZB file is not valid UTF-8 text.' : UNSUPPORTED_ENCODING) } }
+  let text
+  let assumed
+  if (data[0] === 0xff && data[1] === 0xfe) { text = decode('utf-16le', data.subarray(2)); assumed = 'utf-16' }
+  else if (data[0] === 0xfe && data[1] === 0xff) {
+    // Swapped to little-endian, which every Node build can decode.
+    const body = Buffer.from(data.subarray(2, data.length - (data.length % 2)))
+    body.swap16()
+    text = decode('utf-16le', body); assumed = 'utf-16'
+  } else {
+    const bom = data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf
+    const body = bom ? data.subarray(3) : data
+    const declared = body.subarray(0, 256).toString('latin1').match(/^\s*<\?xml\s[^?<>]*?encoding\s*=\s*["']([^"']{1,40})["']/i)?.[1]?.toLowerCase()
+    const label = declared ? NZB_ENCODINGS.get(declared) : 'utf-8'
+    if (!label || (bom && label !== 'utf-8')) fail()
+    text = decode(label, body, label === 'utf-8')
+    assumed = label
+  }
+  const declared = text.match(/^\s*<\?xml\s[^?<>]*?encoding\s*=\s*["']([^"']{1,40})["']/i)?.[1]?.toLowerCase()
+  if (assumed === 'utf-16' && declared && !/^utf-?16(?:le|be)?$/.test(declared)) fail()
+  return text
+}
+
+// The one DOCTYPE real NZB files carry: newzBin's public identifier with an external DTD and no internal subset. It
+// declares no entities, and nothing here (or in SABnzbd) loads the DTD, so it is skipped. Any other DOCTYPE is refused.
+const NZB_DOCTYPE = /^\s*<!DOCTYPE\s+nzb\s+PUBLIC\s+"-\/\/newzBin\/\/DTD NZB 1\.[01]\/\/EN"\s+"https?:\/\/www\.newzbin\.com\/DTD\/(?:2003\/nzb|nzb\/nzb-1\.[01]\.dtd)"\s*>/i
+
 export function readXml(source, { onOpen, onText, onClose, maxElements = 2_000_000 }) {
   const fail = (message = 'The NZB file is not well-formed XML.') => { throw new LinkError('invalid-nzb', message) }
   let xml = source.startsWith('﻿') ? source.slice(1) : source
-  const declaration = xml.match(/^<\?xml\s[^?<>]*\?>/)
+  const declaration = xml.match(/^\s*<\?xml\s[^?<>]*\?>/)
   if (declaration) {
-    const encoding = declaration[0].match(/encoding\s*=\s*["']([^"']*)["']/i)?.[1]
-    if (encoding && !/^(?:utf-8|us-ascii)$/i.test(encoding)) fail('The NZB file uses an unsupported character encoding.')
+    const encoding = declaration[0].match(/encoding\s*=\s*["']([^"']*)["']/i)?.[1]?.toLowerCase()
+    if (encoding && !NZB_ENCODINGS.has(encoding) && !/^utf-?16(?:le|be)?$/.test(encoding)) fail(UNSUPPORTED_ENCODING)
     xml = xml.slice(declaration[0].length)
   }
+  const doctype = xml.match(NZB_DOCTYPE)
+  if (doctype) xml = xml.slice(doctype[0].length)
   if (/<!DOCTYPE|<!ENTITY|<!\[CDATA\[|<\?/i.test(xml)) fail('The NZB file has a DOCTYPE, entity, CDATA or processing instruction, which are not accepted.')
   const stack = []
   let roots = 0
@@ -290,7 +332,7 @@ export function parseNzb(bytes, { maxBytes = MAX_NZB_FILE_BYTES, fallbackName = 
   if (!bytes?.length || bytes.length > maxBytes) throw new LinkError('too-large', 'The NZB file is empty or too large.')
   if (COMPRESSED.some((signature) => startsWith(bytes, signature))) throw new LinkError('invalid-nzb', 'Compressed NZB files are not accepted.')
   let source
-  try { source = new TextDecoder('utf-8', { fatal: true }).decode(bytes) } catch { throw new LinkError('invalid-nzb', 'The NZB file is not valid UTF-8 text.') }
+  source = decodeNzbText(bytes)
   let rootName = null
   const meta = {}
   let metaType = null
@@ -348,7 +390,12 @@ export function parseNzb(bytes, { maxBytes = MAX_NZB_FILE_BYTES, fallbackName = 
 export function detectPayload(bytes) {
   if (!bytes?.length) return null
   if (bytes[0] === 0x64) return 'torrent'
-  const head = Buffer.from(bytes.subarray(0, 4096)).toString('utf8').replace(/^﻿/, '').trimStart()
+  const raw = Buffer.from(bytes.subarray(0, 8192))
+  let head
+  if (raw[0] === 0xff && raw[1] === 0xfe) head = raw.subarray(2, raw.length - (raw.length % 2)).toString('utf16le')
+  else if (raw[0] === 0xfe && raw[1] === 0xff) { const swapped = Buffer.from(raw.subarray(2, raw.length - (raw.length % 2))); swapped.swap16(); head = swapped.toString('utf16le') }
+  else head = raw.toString('latin1')
+  head = head.replace(/^\ufeff/, '').replace(/^\u00ef\u00bb\u00bf/, '').trimStart()
   if (head.startsWith('<')) return /<(?:[A-Za-z_][\w.-]*:)?nzb[\s>]/i.test(head) ? 'nzb' : /<html|<!doctype\s+html/i.test(head) ? 'html' : 'xml'
   return null
 }
