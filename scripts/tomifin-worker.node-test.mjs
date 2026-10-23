@@ -147,3 +147,68 @@ test('status reports Tomifin off when the recovery agent is not configured', asy
     assert.equal(calls.length, 0)
   })
 })
+
+// Tomifin's own address, served by the same Worker.
+const { tomifinSiteRoute } = await import('../worker/routes/tomifin-site.ts')
+const HOST = 'tomifin.tomdixon.uk'
+const PAGE = '<!doctype html><title>Tomifin Downloader</title>'
+function assets() {
+  const paths = []
+  return { paths, fetch: async (request) => { const path = new URL(request.url).pathname; paths.push(path); return new Response(path === '/tomifin/' ? PAGE : `asset ${path}`, { headers: { 'content-type': path === '/tomifin/' ? 'text/html' : 'application/octet-stream' } }) } }
+}
+function site(url, init = {}, extra = {}) {
+  const request = new Request(url, init)
+  return tomifinSiteRoute(request, { ...env, TOMIFIN_HOSTNAME: HOST, ...extra }, new URL(request.url))
+}
+
+test('Tomifin\'s address serves its page for every route, with no caching or framing', async () => {
+  const binding = assets()
+  for (const path of ['/', '/downloads', '/some/deep/link', '/index.html']) {
+    const response = await site(`https://${HOST}${path}`, {}, { ASSETS: binding })
+    assert.equal(response.status, 200, path)
+    assert.equal(await response.text(), PAGE, path)
+    assert.equal(response.headers.get('cache-control'), 'no-cache')
+    assert.equal(response.headers.get('x-frame-options'), 'DENY')
+    assert.match(response.headers.get('x-robots-tag'), /noindex/)
+  }
+  assert.ok(binding.paths.every((path) => path === '/tomifin/'))
+  assert.equal(await (await site(`https://${HOST}/assets/tomifin-abc.js`, {}, { ASSETS: binding })).text(), 'asset /assets/tomifin-abc.js')
+  assert.equal(await (await site(`https://${HOST}/tomify-logo-192.png`, {}, { ASSETS: binding })).text(), 'asset /tomify-logo-192.png')
+})
+
+test('Tomifin\'s address serves none of Tomify: other APIs, the service worker and most of the Navidrome proxy', async () => {
+  const binding = assets()
+  for (const path of ['/api/recovery', '/api/version', '/api/system/reboot']) {
+    const response = await site(`https://${HOST}${path}`, {}, { ASSETS: binding })
+    assert.equal(response.status, 404, path)
+    assert.deepEqual(await response.json(), { error: 'not-found' })
+  }
+  for (const path of ['/sw.js', '/push-sw.js', '/manifest.webmanifest', '/server/index.js']) assert.equal((await site(`https://${HOST}${path}`, {}, { ASSETS: binding })).status, 404, path)
+  for (const path of ['/navidrome/rest/stream.view', '/navidrome/rest/getPlaylists.view', '/navidrome/app/']) assert.equal((await site(`https://${HOST}${path}`)).status, 404, path)
+  assert.equal((await site(`https://${HOST}/navidrome/rest/ping.view?mt=token`)).status, 404)
+  assert.equal((await site(`https://${HOST}/`, { method: 'POST' }, { ASSETS: binding })).status, 405)
+  assert.deepEqual(binding.paths, [])
+})
+
+test('Tomifin\'s address answers its API and the sign-in checks through the Navidrome proxy', async () => {
+  await withFakes({ agent: () => Response.json({ available: true, destinations: [] }) }, async (calls) => {
+    const headers = { 'x-tomify-user': 'site-user', 'x-tomify-token': 'good', 'x-tomify-salt': 'salt' }
+    const status = await site(`https://${HOST}/api/tomifin/status`, { headers })
+    assert.equal(status.status, 200)
+    assert.equal(calls[0].path, '/v1/tomifin/status')
+    assert.equal((await site(`https://${HOST}/api/tomifin/status`)).status, 401)
+    const ping = await site(`https://${HOST}/navidrome/rest/ping.view?u=tom&t=good&s=salt&f=json`)
+    assert.equal((await ping.json())['subsonic-response'].status, 'ok')
+  })
+})
+
+test('Tomify\'s address no longer serves Tomifin, and without TOMIFIN_HOSTNAME nothing changes', async () => {
+  const moved = await site('https://app.tomify.tomdixon.uk/tomifin/')
+  assert.equal(moved.status, 301)
+  assert.equal(moved.headers.get('location'), `https://${HOST}/`)
+  assert.equal((await site('https://app.tomify.tomdixon.uk/api/tomifin/status')).status, 404)
+  assert.equal(await site('https://app.tomify.tomdixon.uk/albums/1'), null)
+  assert.equal(await site('https://app.tomify.tomdixon.uk/api/recovery'), null)
+  assert.equal(await site('https://app.tomify.tomdixon.uk/tomifinder'), null)
+  assert.equal(await site(`https://${HOST}/`, {}, { TOMIFIN_HOSTNAME: '' }), null)
+})

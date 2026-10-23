@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, CircleCheck, Clapperboard, ExternalLink, FileDown, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Pause, Play, RefreshCw, Search, Server, TriangleAlert, UserRound, Users, X } from 'lucide-react'
+import { CircleCheck, Clapperboard, ExternalLink, FileDown, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Pause, Play, RefreshCw, Search, Server, TriangleAlert, UserRound, Users, X } from 'lucide-react'
 import { useAuth } from '../stores/auth'
 import { DESTINATIONS, formatEta, formatSize, formatSpeed, tomifinApi, TomifinRequestError, type TomifinDestination, type TomifinJob, type TomifinKind, type TomifinResult, type TomifinServiceStatus } from './api'
 import { sortResults, type SortKey } from './results'
@@ -239,7 +239,6 @@ function Downloader() {
   return (
     <>
       <div className="tf-toolbar-user">
-        <a className="tf-link" href="/"><ArrowLeft aria-hidden/>Back to Tomify</a>
         <button type="button" className="tf-link" onClick={logout}><LogOut aria-hidden/>Sign out</button>
       </div>
       {statusError && <div className="tf-alert tf-alert-error" role="alert"><TriangleAlert aria-hidden/>{statusError}</div>}
@@ -303,7 +302,7 @@ export function TomifinApp() {
           <section className="tf-panel">
             <h2>Administrators only</h2>
             <p>Tomifin Downloader is for Navidrome administrators. Ask an administrator, or sign in with another account.</p>
-            <div className="tf-job-actions"><a className="tf-button" href="/">Back to Tomify</a><button type="button" className="tf-button tf-ghost" onClick={logout}>Sign out</button></div>
+            <div className="tf-job-actions"><button type="button" className="tf-button" onClick={logout}>Sign out</button></div>
           </section>
         )}
         {session && isAdmin !== false && <Downloader/>}

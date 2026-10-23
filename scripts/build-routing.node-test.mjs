@@ -1089,7 +1089,8 @@ test('Workers Static Assets serves SPA deep links with the intended cache rules 
   const headerRules = await readFile(new URL('../dist/client/_headers', import.meta.url), 'utf8')
   assert.match(config, /directory = "\.\/dist\/client"/)
   assert.match(config, /not_found_handling = "single-page-application"/)
-  for (const route of ['/api', '/api/*', '/navidrome', '/navidrome/*']) assert.ok(config.includes(`"${route}"`))
+  // Every path but hashed assets reaches the Worker first (API, Navidrome, and Tomifin's separate address).
+  assert.match(config, /run_worker_first = \["\/\*", "!\/assets\/\*"\]/)
   assert.match(headerRules, /\/index\.html\s+Cache-Control: no-cache/)
   assert.match(headerRules, /\/sw\.js\s+Cache-Control: no-cache/)
   assert.match(headerRules, /\/assets\/\*\s+Cache-Control: public, max-age=31536000, immutable/)
@@ -1116,17 +1117,15 @@ test('Workers Static Assets serves SPA deep links with the intended cache rules 
     assert.deepEqual(await api.json(), { error: 'not-found' })
     const obsoleteServerAsset = await fetch(`${origin}/server/index.js`)
     assert.match(await obsoleteServerAsset.text(), /<div id="root"><\/div>/)
-    // Tomifin Downloader is its own page: direct navigation and refreshes get its HTML, not Tomify's.
-    const tomifin = await fetch(`${origin}/tomifin/`, { headers: { accept: 'text/html' } })
-    assert.equal(tomifin.status, 200)
-    assert.equal(tomifin.headers.get('cache-control'), 'no-cache')
-    const tomifinHtml = await tomifin.text()
-    assert.match(tomifinHtml, /<title>Tomifin Downloader<\/title>/)
-    assert.doesNotMatch(tomifinHtml, /<title>Tomify<\/title>/)
-    const tomifinWithoutSlash = await fetch(`${origin}/tomifin`, { redirect: 'manual' })
-    assert.ok([200, 307, 308].includes(tomifinWithoutSlash.status), String(tomifinWithoutSlash.status))
+    // Tomifin Downloader lives at its own address (TOMIFIN_HOSTNAME); Tomify's address sends its old path there,
+    // which also shows the Worker sees these paths before Static Assets does.
+    for (const path of ['/tomifin', '/tomifin/', '/tomifin/index.html']) {
+      const tomifin = await fetch(`${origin}${path}`, { redirect: 'manual', headers: { accept: 'text/html' } })
+      assert.equal(tomifin.status, 301, path)
+      assert.equal(tomifin.headers.get('location'), 'https://tomifin.tomdixon.uk/', path)
+    }
     const tomifinApi = await fetch(`${origin}/api/tomifin/status`, { headers: { accept: 'text/html' } })
-    assert.equal(tomifinApi.status, 401)
+    assert.equal(tomifinApi.status, 404)
     assert.match(tomifinApi.headers.get('content-type') || '', /^application\/json/)
   })
 })

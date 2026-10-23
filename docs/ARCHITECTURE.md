@@ -35,7 +35,7 @@ Navidrome stays the source of truth for accounts, the library, playlists, favour
 
 ## 2. The PWA
 
-- Tomifin Downloader is a second, separate page at `/tomifin/` (`tomifin/index.html`, `src/tomifin/`), built as another Vite entry point. It shares the saved sign-in (`src/stores/auth.ts`) but not the app shell; see [TOMIFIN.md](TOMIFIN.md).
+- Tomifin Downloader is a separate app at its own address (`TOMIFIN_HOSTNAME`, a second Custom Domain on the same Worker), built from `tomifin/index.html` and `src/tomifin/` as another Vite entry point. It reuses the auth store's code but not Tomify's shell; see [TOMIFIN.md](TOMIFIN.md).
 - React 18, TypeScript and Vite, under `src/`. Routes are declared in `src/App.tsx`: Home, Artists, Albums, Search, Playlists (including Spotify import and imported playlists), Favourites, Downloads, Recovery and Settings.
 - `src/lib/navidrome.ts` is the single typed OpenSubsonic client. Signing in creates a salted token (`createAuthSession`); the password is never stored. When the server is the default (`https://tomify.tomdixon.uk`), requests go through the Worker's same-origin `/navidrome` proxy, which avoids CORS.
 - Calls to Tomify's own API (`src/lib/recovery-api.ts`, `catalogue-api.ts`, `completeness-api.ts`, `playlist-shares.ts` and the stores) send the Navidrome username, token and salt as `x-tomify-user`, `x-tomify-token` and `x-tomify-salt` headers.
@@ -55,7 +55,7 @@ The Worker is a normal TypeScript module rooted at `worker/index.ts`. `pnpm buil
 2. typechecks both the app and Worker, then writes the Vite client build to `dist/client/`;
 3. asks Wrangler to bundle `worker/index.ts` unminified into `dist/server/index.js` for the route and D1 SQL tests. Deployment bundles the same entry point with minification enabled.
 
-Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/client/`, applies the cache policy in `public/_headers`, and provides SPA fallback. The `run_worker_first` rules send `/api*` and `/navidrome*` to the Worker before asset lookup. If a non-route request reaches the Worker, it delegates to the `ASSETS` binding.
+Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/client/`, applies the cache policy in `public/_headers`, and provides SPA fallback. The `run_worker_first` rules send every path except the hashed `/assets/*` to the Worker before asset lookup, so it can serve Tomifin's address separately. If a non-route request reaches the Worker, it delegates to the `ASSETS` binding.
 
 | Module | Routes | Purpose |
 | --- | --- | --- |
@@ -72,7 +72,7 @@ Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/
 | `worker/routes/inventory.ts`, `worker/routes/system-settings.ts` | `/api/inventory*`, `/api/library-health*`, `/api/system*`, quality, scan and preflight routes | Administrative library and server operations |
 | `worker/routes/navidrome.ts`, `worker/routes/version.ts` | `/navidrome/*`, `/api/version` | Navidrome proxy and deployed version information |
 | `worker/routes/hls.ts`, `worker/routes/media-session.ts` (+ `worker/features/media-session.ts`) | `/api/hls/*`, `/api/media-session` | Adaptive streaming through the agent; short-lived media tokens and the LAN address |
-| `worker/routes/tomifin.ts` | `/api/tomifin/*` | Tomifin Downloader (administrators only): film and TV torrent search and queuing through the recovery agent; see [TOMIFIN.md](TOMIFIN.md) |
+| `worker/routes/tomifin.ts`, `worker/routes/tomifin-site.ts` | `/api/tomifin/*`; everything on `TOMIFIN_HOSTNAME` | Tomifin Downloader (administrators only): film and TV torrent search and queuing through the recovery agent; see [TOMIFIN.md](TOMIFIN.md) |
 | `scripts/recovery-metadata.mjs`, `scripts/recovery-artwork.mjs` | (helpers) | MusicBrainz metadata review and artwork resolution for Recovery |
 
 Unknown `/api/*` paths return a JSON `404`. Cloudflare's Static Assets configuration falls back to `index.html` for client-side routes.
@@ -133,6 +133,7 @@ Audio elements cannot send headers either, so stream URLs used to carry the Navi
 | `TOMIFY_PARTY_USERNAME` | Dashboard var | Optional | None | `worker/features/party.ts` (a Navidrome account party guests search and see covers with) | Guests search as the host, whose login is stored sealed with `TOMIFY_MEDIA_KEY` while the party runs. Without either, starting a party returns `503`. |
 | `TOMIFY_PARTY_PASSWORD` | Dashboard secret | Optional | None | `worker/features/party.ts` (the party account's password; used only with `TOMIFY_PARTY_USERNAME`) | As above. |
 | `TOMIFY_LAN_ORIGIN` | `wrangler.toml` var | Optional | None | `worker/routes/media-session.ts` (the box's `https://` address on the home network, for example `https://lan.tomify.tomdixon.uk:8789`) | Players always stream through the Worker. |
+| `TOMIFIN_HOSTNAME` | `wrangler.toml` var | Optional | None (set to `tomifin.tomdixon.uk`) | `worker/routes/tomifin-site.ts` (Tomifin Downloader's own address, a second Custom Domain on this Worker) | Tomifin is served at `/tomifin/` on Tomify's address instead. |
 | `TOMIFY_DJ_VOICE_MODEL` | `wrangler.toml` var | Optional | `melotts` (set to `aura`) | `worker/features/dj.ts` | The DJ reads links with MeloTTS, which costs about 8 free neurons a link. Set `aura` to use Aura-2 (about 1,100 a link) first, with MeloTTS as backup. |
 | `TOMIFY_VERSION` | Build-time constant | Required, generated | Current Git short SHA; then `CF_PAGES_COMMIT_SHA`; then `WORKERS_CI_COMMIT_SHA`; then `unknown` | `/api/version` | Reports `unknown` only when Git and both CI fallbacks are unavailable. |
 | `TOMIFY_AGENT_CONTRACT` | Build-time constant | Required, generated | `2` | `/api/version` and the recovery-agent compatibility gate | Build generation supplies it; a missing generated module fails the build. |

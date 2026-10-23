@@ -30,6 +30,8 @@ export interface Env {
   // Optional: a Navidrome account party guests search with. Without it they search as the host (needs TOMIFY_MEDIA_KEY).
   TOMIFY_PARTY_USERNAME?: string
   TOMIFY_PARTY_PASSWORD?: string
+  // Optional: Tomifin Downloader's own hostname (a second custom domain on this Worker). Unset, it stays at /tomifin/.
+  TOMIFIN_HOSTNAME?: string
 }
 
 // `ctx` lets a route finish work after answering (waitUntil).
