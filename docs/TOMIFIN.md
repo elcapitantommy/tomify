@@ -28,7 +28,12 @@ Tomifin Downloader is its own web app at its own address, **`https://tomifin.tom
 
 For a Usenet download, cancelling an unfinished one removes it from SABnzbd's queue, and SABnzbd deletes only that job's own unfinished folder; removing a finished one removes Tomifin's record and SABnzbd's history entry, keeping SABnzbd's files and the library copy. A download SABnzbd is still unpacking cannot be cancelled until it has finished.
 
-A torrent whose real size only becomes known once its details arrive (a magnet, usually) is stopped as soon as it turns out to be larger than the download limit (`TOMIFY_TOMIFIN_MAX_BYTES`, 200 GiB by default). It shows as failed, cannot be resumed, and can be cancelled.
+A torrent whose real size only becomes known once its details arrive (a magnet, usually) is stopped as soon as it turns out to be larger than the download limit (`TOMIFY_TOMIFIN_MAX_BYTES`, 200 GiB by default). It shows as failed, cannot be resumed or retried, and can be cancelled.
+
+**Retry** appears on a failed download its downloader can try again, and nothing is deleted or added twice:
+
+- a **torrent** qBittorrent reports as failed (`error` or `missingFiles`, for example after the library was briefly unmounted or the disk filled up) is checked on disk again (`torrents/recheck`) and started, in the same folders. It is offered only while every folder qBittorrent reports for it (save path, download path and content path) is inside that library, and never for a torrent over the download limit or one that is no longer in qBittorrent (search for it again instead);
+- a **Usenet** download SABnzbd marked as failed for missing articles or a failed repair or unpack is retried in SABnzbd (`mode=retry`), which puts the same job back in its queue and reuses what it already downloaded. Tomifin follows SABnzbd's new id, keeps the job named `tomifin-<id>` (renaming it in SABnzbd if needed), and takes away its own failure note in the review folder. A password-protected download, one SABnzbd no longer has, and one that failed while being published (held for review) cannot be retried.
 
 ## How it fits together
 
@@ -76,7 +81,7 @@ Every other Tomify API, the Navidrome proxy, Tomify's push worker and manifest a
 | `POST /api/tomifin/link` `{ link }` or `{ file: { name, data } }` | `/v1/tomifin/link` | Checks one added magnet, `.torrent` or `.nzb` and returns it as a result to queue (new) |
 | `POST /api/tomifin/download` `{ resultId, destination }` | `/v1/tomifin/download` | Queues one result in qBittorrent or SABnzbd (the agent decides which) |
 | `GET /api/tomifin/downloads` | `/v1/tomifin/downloads` | Tomifin's downloads with live qBittorrent and SABnzbd figures |
-| `POST /api/tomifin/downloads/<id>/pause` (`resume`, `cancel`) | `/v1/tomifin/pause` (`resume`, `cancel`) | Controls one download |
+| `POST /api/tomifin/downloads/<id>/pause` (`resume`, `retry`, `cancel`) | `/v1/tomifin/pause` (`resume`, `retry`, `cancel`) | Controls one download |
 
 ### Signing in
 
@@ -86,7 +91,7 @@ Tomifin uses Jellyfin accounts, and only Jellyfin administrators (`Policy.IsAdmi
 2. If the account is not an administrator, the agent closes the session Jellyfin just opened (`/Sessions/Logout`) and the page says Tomifin is for administrators (`403`). A wrong password gets `401`.
 3. Otherwise the Worker keeps Jellyfin's access token in a cookie, `tomifin_session` (`HttpOnly; Secure; SameSite=Strict; Path=/api/tomifin`, 30 days). Page scripts cannot read it.
 4. On every request the agent checks the token with Jellyfin's `/Users/Me` (cached for 30 seconds) and that the user is still an administrator. If Jellyfin no longer accepts it, the Worker clears the cookie and the page shows the sign-in form again.
-5. Every request that changes something (sign-in, sign-out, add link, queue, pause, resume, cancel) must carry the `x-tomifin: 1` header, which another site cannot add, so a cross-site form cannot act with your cookie.
+5. Every request that changes something (sign-in, sign-out, add link, queue, pause, resume, retry, cancel) must carry the `x-tomifin: 1` header, which another site cannot add, so a cross-site form cannot act with your cookie.
 
 Without `TOMIFY_JELLYFIN_URL` on the agent, sign-in answers that Jellyfin sign-in is not set up.
 
@@ -301,7 +306,7 @@ The unit files in `recovery-agent/family-import/` match the media server as it i
 
 ## Security
 
-- **Access:** every `/api/tomifin/*` route except sign-in requires a Jellyfin administrator's session, checked with Jellyfin by the agent (see [Signing in](#signing-in)). Removing someone's administrator role or disabling them in Jellyfin locks them out within 30 seconds. Pause, resume and cancel act only on a torrent carrying that job's own `tomifin-` tag, so Recovery's torrents and anything added to qBittorrent by hand are never touched.
+- **Access:** every `/api/tomifin/*` route except sign-in requires a Jellyfin administrator's session, checked with Jellyfin by the agent (see [Signing in](#signing-in)). Removing someone's administrator role or disabling them in Jellyfin locks them out within 30 seconds. Pause, resume, retry and cancel act only on a torrent carrying that job's own `tomifin-` tag, so Recovery's torrents and anything added to qBittorrent by hand are never touched.
 - **Paths:** the browser sends `family` or `private`, never a path. Paths come only from the agent's environment, are checked to be separate at start-up, and a content path qBittorrent reports is accepted only strictly inside the destination folder. Cancelling deletes data only from inside that job's own staging folder. Job ids are UUIDs; other ids are refused before any file is touched.
 - **SSRF and links:** search results are queued by id only, and an added link is fetched only under the rules in [Add link](#add-link) (public addresses or an exact configured indexer host, checked on every redirect, size and time limits, content-based detection). Only links produced by the agent's own search or checked by Add link are queued; search links pass the same checks as Recovery (magnet info hash, public host, no embedded credentials; only a configured indexer may be on a private address). Search input is trimmed and limited to 200 characters. A result's details-page link (`safeDetailsUrl()` in `torrent.mjs`) is shown only if it is a public http(s) page with no user name or password; its fragment and any query parameter that could carry a credential (names like `apikey`, `passkey`, `token`, `sid`, or a value that looks like a generated key) are removed, and a link with a key-like path segment is dropped altogether. Recovery's results use the same cleaning.
 - **Credentials:** the Jellyfin password is passed straight to Jellyfin and never stored; the session token lives only in the HttpOnly cookie and the agent's 30-second memory cache. qBittorrent's password, SABnzbd's API key, indexer API keys and NZB download links, tracker passkeys and `RECOVERY_AGENT_TOKEN` stay on the box and in the Worker. Job records keep no links, NZB contents or keys. Responses carry no links, paths beyond the two library names, or tokens.

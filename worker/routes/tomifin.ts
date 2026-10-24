@@ -12,11 +12,11 @@ import { json } from '../lib/http.ts'
 const DESTINATIONS = new Set(['family', 'private'])
 const KINDS = new Set(['video', 'movies', 'tv'])
 const RESULT_ID = /^[a-f0-9]{64}$/
-const JOB_ROUTE = /^\/api\/tomifin\/downloads\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/(pause|resume|cancel)$/
+const JOB_ROUTE = /^\/api\/tomifin\/downloads\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/(pause|resume|retry|cancel)$/
 const COOKIE = 'tomifin_session'
 const COOKIE_DAYS = 30
 const STATUS_FOR_CODE: Record<string, number> = {
-  unauthorized: 401, 'invalid-login': 401, forbidden: 403, duplicate: 409, 'result-expired': 409, busy: 409, unconfirmed: 504, 'not-configured': 503, 'usenet-unavailable': 503,
+  unauthorized: 401, 'invalid-login': 401, forbidden: 403, duplicate: 409, 'result-expired': 409, busy: 409, 'not-retryable': 409, unconfirmed: 504, 'not-configured': 503, 'usenet-unavailable': 503,
   'jellyfin-unavailable': 502, 'sabnzbd-refused': 502, 'indexer-unavailable': 502, 'indexer-refused': 502, 'too-large': 413,
 }
 // An added link (a magnet can be long) and an uploaded .torrent or .nzb file (10 MiB, base64).
@@ -136,6 +136,7 @@ export const tomifinRoute: RouteHandler = async (request, env, url) => {
   if (job && request.method === 'POST') {
     const response = await agent(env, `/v1/tomifin/${job[2]}`, { session, id: job[1] })
     if (response.ok && job[2] === 'cancel') console.log(`Tomifin: cancelled download ${job[1]}`)
+    if (response.ok && job[2] === 'retry') console.log(`Tomifin: retried download ${job[1]}`)
     return response
   }
 

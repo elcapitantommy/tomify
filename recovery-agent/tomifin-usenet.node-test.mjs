@@ -51,6 +51,21 @@ function fakeSab({ categories = ['*', 'tomify-music', 'tomifin-family', 'tomifin
     async resume(value) { calls.push(['resume', value]); const slot = state.queue.find((entry) => entry.nzo_id === value); if (slot) slot.status = 'Downloading' },
     async deleteQueued(value, deleteFiles) { calls.push(['deleteQueued', value, deleteFiles]); state.queue = state.queue.filter((entry) => entry.nzo_id !== value) },
     async deleteHistory(value, deleteFiles) { calls.push(['deleteHistory', value, deleteFiles]); state.history = state.history.filter((entry) => entry.nzo_id !== value) },
+    // Puts a failed history job back in the queue under a new id, as SABnzbd's retry does. state.nextRetry can make it
+    // refuse ('reject'), lose its answer after retrying ('lost'), or give the queue entry another name ('renamed').
+    async retry(value) {
+      calls.push(['retry', value])
+      const behaviour = state.nextRetry
+      state.nextRetry = null
+      if (behaviour === 'reject') throw Object.assign(new Error('SABnzbd refused it: No such item'), { rejected: true })
+      const slot = state.history.find((entry) => entry.nzo_id === value)
+      state.history = state.history.filter((entry) => entry !== slot)
+      const nzoId = `SABnzbd_nzo_${++count}`
+      state.queue.push({ nzo_id: nzoId, filename: behaviour === 'renamed' ? `_FAILED_${slot.name}` : slot.name, cat: slot.category, status: 'Downloading', mb: '1000', mbleft: '900', percentage: '10', timeleft: '0:05:00' })
+      if (behaviour === 'lost') throw Object.assign(new Error('SABnzbd could not be reached.'), { uncertain: true })
+      return nzoId
+    },
+    async rename(value, name) { calls.push(['rename', value, name]); const slot = state.queue.find((entry) => entry.nzo_id === value); if (slot) slot.filename = name },
     // Moves a queued job to history as SABnzbd does once it has downloaded, unpacked and post-processed it.
     async finish(nzoId, root, files, { status = 'Completed', fail = '' } = {}) {
       const slot = state.queue.find((entry) => entry.nzo_id === nzoId)
@@ -205,6 +220,14 @@ test('Newznab video results keep their GUIDs but no API key, and SABnzbd uploads
   await assert.rejects(lost.addFile(nzb(), { name: 'x', category: 'y' }), (error) => error.uncertain === true)
   const broken = createSabnzbdClient(sabDownloader, async () => new Response('oops', { status: 502 }))
   await assert.rejects(broken.addFile(nzb(), { name: 'x', category: 'y' }), (error) => error.uncertain === true, 'a 5xx is not a certain refusal')
+  // Retry answers with the new job's id; rename keeps Tomifin's job name.
+  const retrying = createSabnzbdClient(sabDownloader, async (url) => { requests.push({ url: String(url) }); return Response.json(String(url).includes('mode=retry') ? { nzo_id: 'SABnzbd_nzo_9' } : { status: true }) })
+  assert.equal(await retrying.retry('SABnzbd_nzo_1'), 'SABnzbd_nzo_9')
+  await retrying.rename('SABnzbd_nzo_9', `tomifin-${id(1)}`)
+  const [retry, rename] = requests.slice(-2).map((request) => new URL(request.url).searchParams)
+  assert.deepEqual([retry.get('mode'), retry.get('value')], ['retry', 'SABnzbd_nzo_1'])
+  assert.deepEqual([rename.get('mode'), rename.get('name'), rename.get('value'), rename.get('value2')], ['queue', 'rename', 'SABnzbd_nzo_9', `tomifin-${id(1)}`])
+  await assert.rejects(createSabnzbdClient(sabDownloader, async () => Response.json({ status: false, error: 'No such item' })).retry('x'), (error) => error.rejected === true)
 })
 
 test('one search returns torrents and NZBs together, with opaque ids and no indexer details', async () => {
@@ -415,6 +438,66 @@ test('cancelling a failed download deletes only its own SABnzbd folder; a recove
   assert.deepEqual(jobs.map((job) => [job.id, job.destination, job.keepsFilesOnCancel]), [[id(42), 'private', true]], 'only Tomifin-named jobs in Tomifin categories are adopted')
   assert.deepEqual(await recovered.controller.cancel({ id: id(42) }), { cancelled: true, filesDeleted: false, downloaderRemoved: true })
   assert.deepEqual(recovered.sab.calls.find((call) => call[0] === 'deleteQueued'), ['deleteQueued', 'SABnzbd_nzo_7', false])
+})
+
+test('a failed SABnzbd download can be retried in SABnzbd, keeps its job and publishes when it finishes', async () => {
+  const context = await world()
+  await searchAndQueue(context)
+  await context.sab.finish('SABnzbd_nzo_1', context.completed, { 'a.rar': 'rar' }, { status: 'Failed', fail: 'Download failed - Not on your server(s)' })
+  const [failed] = (await settle(context)).jobs
+  assert.deepEqual([failed.status, failed.canRetry], ['failed', true])
+  const note = join(context.family, '.review', `usenet-${id(1)}`)
+  assert.equal(JSON.parse(await readFile(join(note, 'reason.json'), 'utf8')).code, 'download-failed')
+  const { job } = await context.controller.retry({ id: id(1) })
+  assert.deepEqual(context.sab.calls.filter((call) => call[0] === 'retry'), [['retry', 'SABnzbd_nzo_1']])
+  assert.deepEqual([job.status, job.canRetry], ['downloading', false])
+  assert.equal(await lstat(note).catch(() => null), null, 'the old failure note is cleared')
+  assert.equal(context.sab.calls.some((call) => call[0] === 'rename'), false, 'the name was already right')
+  const record = JSON.parse(await readFile(join(context.root, 'state', 'tomifin', `${id(1)}.json`), 'utf8'))
+  assert.deepEqual([record.failure, record.remoteId, record.retries], [undefined, 'SABnzbd_nzo_2', 1])
+  const [again] = (await settle(context)).jobs
+  assert.equal(again.status, 'downloading', 'not marked failed again while SABnzbd downloads it')
+  await context.sab.finish('SABnzbd_nzo_2', context.completed, { 'Sintel.2010.1080p.BluRay.x264-GRP.mkv': film })
+  const [view] = (await settle(context)).jobs
+  assert.equal(view.status, 'completed', view.message)
+  await assert.rejects(context.controller.retry({ id: id(1) }), { code: 'not-retryable' })
+})
+
+test('a retried SABnzbd job keeps its tomifin name; a refused retry stays failed; password-protected ones cannot be retried', async () => {
+  const renamed = await world()
+  await searchAndQueue(renamed)
+  await renamed.sab.finish('SABnzbd_nzo_1', renamed.completed, {}, { status: 'Failed', fail: 'Unpacking failed, CRC error' })
+  await settle(renamed)
+  renamed.sab.state.nextRetry = 'renamed'
+  await renamed.controller.retry({ id: id(1) })
+  assert.deepEqual(renamed.sab.calls.find((call) => call[0] === 'rename'), ['rename', 'SABnzbd_nzo_2', `tomifin-${id(1)}`])
+
+  const refused = await world()
+  await searchAndQueue(refused)
+  await refused.sab.finish('SABnzbd_nzo_1', refused.completed, {}, { status: 'Failed', fail: 'Download failed - Not on your server(s)' })
+  await settle(refused)
+  refused.sab.state.nextRetry = 'reject'
+  await assert.rejects(refused.controller.retry({ id: id(1) }), { code: 'sabnzbd-refused' })
+  const [still] = (await refused.controller.list()).jobs
+  assert.deepEqual([still.status, still.canRetry], ['failed', true])
+
+  const lost = await world()
+  await searchAndQueue(lost)
+  await lost.sab.finish('SABnzbd_nzo_1', lost.completed, {}, { status: 'Failed', fail: 'Download failed - Not on your server(s)' })
+  await settle(lost)
+  lost.sab.state.nextRetry = 'lost'
+  await lost.controller.retry({ id: id(1) })
+  const [found] = (await settle(lost)).jobs
+  assert.equal(found.status, 'downloading', 'a retry whose answer was lost is found again by name')
+  assert.equal(lost.sab.calls.filter((call) => call[0] === 'retry').length, 1, 'never sent twice')
+
+  const locked = await world()
+  await searchAndQueue(locked)
+  await locked.sab.finish('SABnzbd_nzo_1', locked.completed, {}, { status: 'Failed', fail: 'Unpacking failed, archive requires a password' })
+  const [view] = (await settle(locked)).jobs
+  assert.deepEqual([view.status, view.canRetry], ['failed', false])
+  await assert.rejects(locked.controller.retry({ id: id(1) }), /password-protected/)
+  assert.equal(locked.sab.calls.some((call) => call[0] === 'retry'), false)
 })
 
 test('a job SABnzbd forgets becomes failed after a while; an unconfirmed one is dropped', async () => {
