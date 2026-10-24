@@ -10,12 +10,15 @@
 // and are chosen by name ("family" or "private"); the agent decides the downloader.
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
-import { isAbsolute, normalize, resolve, sep } from 'node:path'
+import { isAbsolute, join, normalize, resolve, sep } from 'node:path'
 import { parseTorrentLink, safeDetailsUrl, seededTorrentResults } from './torrent.mjs'
 import { configuredTorrentIndexers, isIndexerLink } from './torrent-indexers.mjs'
 import { JellyfinAuthError } from './jellyfin.mjs'
 import { LinkError, createLinkFetcher, inspectSubmission } from './tomifin-links.mjs'
-import { TomifinUsenetError } from './tomifin-usenet.mjs'
+import { TomifinUsenetError, publishRetryDelay } from './tomifin-usenet.mjs'
+import { FINISHED_STATES, FinaliseError, STAGING_FOLDER, inspectStaged, publishStagedItem, readyForFinalisation, removeEmptyStaging, stagedContent, stagingPath } from './tomifin-finalise.mjs'
+
+export { STAGING_FOLDER, stagingPath }
 
 export const TOMIFIN_DESTINATIONS = Object.freeze({
   family: Object.freeze({ id: 'family', label: 'Family', env: 'TOMIFY_TOMIFIN_FAMILY_DIR', qbittorrentEnv: 'TOMIFY_TOMIFIN_FAMILY_QBITTORRENT_DIR', importEnv: 'TOMIFY_TOMIFIN_FAMILY_IMPORT_SUBDIR', category: 'tomifin-family' }),
@@ -43,9 +46,9 @@ export const UNCONFIRMED_KEEP_MS = 15 * 60_000
 const JOB_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
 const RESULT_ID = /^[a-f0-9]{64}$/
 const TOMIFIN_TAG = /^tomifin-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/
-// The hidden folder inside each library that holds unfinished downloads, one folder per job.
-export const STAGING_FOLDER = '.tomifin-incomplete'
-const COMPLETE_STATES = new Set(['uploading', 'stalledUP', 'queuedUP', 'forcedUP', 'pausedUP', 'stoppedUP', 'checkingUP'])
+// The hidden folder inside each library that holds unfinished downloads (STAGING_FOLDER, one folder per job) and
+// the qBittorrent states of a finished torrent come from tomifin-finalise.mjs.
+const COMPLETE_STATES = FINISHED_STATES
 const PAUSED_STATES = new Set(['pausedDL', 'stoppedDL'])
 const FAILED_STATES = new Set(['error', 'missingFiles'])
 
@@ -191,12 +194,6 @@ export function hostContentPath(contentPath, destination) {
   return within(mapped, destination.hostPath) && mapped !== destination.hostPath ? mapped : null
 }
 
-// Where qBittorrent keeps one job's unfinished data, in qBittorrent's view of the filesystem. The folder is named after
-// the job's random id, so nothing else ever writes into it.
-export function stagingPath(destination, id) {
-  return `${(destination.saveQbittorrentPath || destination.qbittorrentPath).replace(/\/+$/, '')}/${STAGING_FOLDER}/${id}`
-}
-
 // Whether cancelling may delete a torrent's data: only an unfinished download whose data qBittorrent reports is
 // strictly inside that job's own staging folder. Anything in the library itself (a finished download, one being
 // moved there, or one an older qBittorrent saved straight into the library) is always kept.
@@ -223,7 +220,8 @@ export function finishedInLibrary(torrent, destination, id) {
   const reported = text(torrent.content_path)
   if (!reported || !isAbsolute(reported)) return false
   const content = normalize(reported)
-  return within(content, destination.qbittorrentPath) && content !== normalize(destination.qbittorrentPath) && !within(content, normalize(stagingPath(destination, id)))
+  // Never anything inside a staging folder (this job's or another's): that is finished by Tomifin itself (finaliseStaged).
+  return within(content, destination.qbittorrentPath) && content !== normalize(destination.qbittorrentPath) && !within(content, normalize(join(destination.saveQbittorrentPath || destination.qbittorrentPath, STAGING_FOLDER)))
 }
 
 // Whether a failed torrent may be tried again: only one qBittorrent itself reports as failed (an error, or files
@@ -242,8 +240,15 @@ function torrentSize(torrent) { return Math.max(number(torrent?.total_size) || 0
 // vpnStatus is the agent's NordVPN status (vpn.mjs), when VPN control is turned on there.
 // usenet: the Usenet backend (createTomifinUsenet), or null when Usenet is not set up. fetchLink: how added links are
 // fetched (createLinkFetcher), with the configured indexers' hosts as the only private hosts allowed.
-export function createTomifinController({ config, client, stateRoot, usenet = null, fetchLink = createLinkFetcher(), now = () => Date.now(), randomId = randomUUID, log = () => {}, intervalMs = 10_000, vpnStatus = null }) {
+// refreshLibrary: asks Jellyfin to scan its libraries after Tomifin has published a finished torrent (see
+// createJellyfinLibraryRefresh in jellyfin.mjs), or null.
+export function createTomifinController({ config, client, stateRoot, usenet = null, fetchLink = createLinkFetcher(), now = () => Date.now(), randomId = randomUUID, log = () => {}, intervalMs = 10_000, vpnStatus = null, refreshLibrary = null }) {
   const jobsRoot = resolve(stateRoot, 'tomifin')
+  // Torrent jobs being finished right now, which cancel leaves alone until done.
+  const finalising = new Set()
+  // One reconciliation at a time: the regular check, the start-up check and the downloads list all reconcile, and
+  // two at once could try to finish the same torrent twice.
+  let reconciling = Promise.resolve()
   const results = new Map()
   const usenetReady = () => Boolean(usenet?.available)
   // Search results and info hashes being queued right now, so a double click or retry cannot add a torrent twice.
@@ -359,17 +364,119 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
     }
     for (const job of jobs) {
       const torrent = torrentForJob(torrents, job)
-      if (!torrent || !finishedInLibrary(torrent, config.destinations[job.destination], job.id)) continue
-      // The record is updated first, so a removal that fails is simply tried again next time.
-      Object.assign(job, { completedAt: new Date(now()).toISOString(), title: (job.origin === 'link' ? job.title : text(torrent.name).slice(0, 500)) || job.title, size: torrentSize(torrent) || job.size })
-      try {
-        await saveJob(job)
-        await client.remove(text(torrent.hash).toLowerCase(), false)
-        torrents.splice(torrents.indexOf(torrent), 1)
-        log(`Tomifin finished ${logName(job)} and removed it from qBittorrent; the files stay in ${config.destinations[job.destination].label}`)
-      } catch (error) { log(`Tomifin could not remove a finished torrent from qBittorrent: ${error instanceof Error ? error.message : String(error)}`) }
+      const destination = config.destinations[job.destination]
+      if (!destination) continue
+      if (torrent && finishedInLibrary(torrent, destination, job.id)) {
+        // The record is updated first, so a removal that fails is simply tried again next time.
+        Object.assign(job, { completedAt: new Date(now()).toISOString(), title: (job.origin === 'link' ? job.title : text(torrent.name).slice(0, 500)) || job.title, size: torrentSize(torrent) || job.size })
+        // qBittorrent moved it after all, so anything Tomifin noted while it was still in staging no longer applies.
+        delete job.finalise
+        try {
+          await saveJob(job)
+          await client.remove(text(torrent.hash).toLowerCase(), false)
+          torrents.splice(torrents.indexOf(torrent), 1)
+          log(`Tomifin finished ${logName(job)} and removed it from qBittorrent; the files stay in ${destination.label}`)
+        } catch (error) { log(`Tomifin could not remove a finished torrent from qBittorrent: ${error instanceof Error ? error.message : String(error)}`) }
+        continue
+      }
+      // Finished, but qBittorrent left the data in the job's staging folder: Tomifin publishes it itself.
+      if (torrent && !destination.imports && readyForFinalisation(torrent) && job.finalise?.state !== 'published') { await finaliseStaged(job, torrent, torrents); continue }
+      // Already out of qBittorrent, but not yet (or not completely) published, for instance after an interruption.
+      // (Also a held one whose torrent was taken out of qBittorrent by hand: every check is made again first.)
+      if (!torrent && job.finalise?.item && job.finalise.state !== 'published') await publishFinalised(job)
     }
+    await cleanStaging(jobs, torrents)
     jobs.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+  }
+
+  const failureMessage = (error) => error instanceof FinaliseError || error instanceof Error ? error.message : String(error)
+  // Whether a stored finalise step may run now: not while it waits for its backoff (unless asked to, by Retry).
+  function due(job, force) { return force || !job.finalise?.nextAttemptAt || Date.parse(job.finalise.nextAttemptAt) <= now() }
+
+  // Records a problem with finishing a job, so its view can say what happened and the next attempt waits a while.
+  // Logged only when the reason changes, so a problem that lasts does not fill the log every 10 seconds.
+  async function recordProblem(job, state, error, extra = {}) {
+    const attempts = (job.finalise?.state === state ? job.finalise.attempts || 0 : 0) + 1
+    const reason = failureMessage(error).slice(0, 500)
+    const changed = job.finalise?.state !== state || job.finalise?.reason !== reason
+    job.finalise = { ...job.finalise, ...extra, state, code: error?.code || 'error', reason, attempts, at: new Date(now()).toISOString(), nextAttemptAt: new Date(now() + publishRetryDelay(attempts)).toISOString() }
+    await saveJob(job).catch((failure) => log(`Tomifin could not save the state of ${logName(job)}: ${failureMessage(failure)}`))
+    if (changed) log(`Tomifin could not finish ${logName(job)} (${state}): ${reason}`)
+  }
+
+  // A finished torrent whose data is still in its own staging folder. Everything is checked first, with the torrent
+  // left seeding in qBittorrent if anything is wrong ("held"). Then the step about to happen is recorded, the torrent
+  // is taken out of qBittorrent (keeping its files) and its content is published into the library. Each step is
+  // recorded before it runs, so an interruption anywhere is picked up again on the next check.
+  async function finaliseStaged(job, torrent, torrents, { force = false } = {}) {
+    if (finalising.has(job.id) || !due(job, force)) return
+    finalising.add(job.id)
+    const destination = config.destinations[job.destination]
+    try {
+      let staged, plan
+      try {
+        staged = stagedContent(torrent, destination, job.id)
+        if (!staged) return
+        plan = await inspectStaged(destination, job.id, staged)
+      } catch (error) {
+        // Once qBittorrent's paths have passed, the name is kept, so publishing can resume (after every check is made
+        // again) if the torrent is later taken out of qBittorrent by hand.
+        await recordProblem(job, 'held', error, staged ? { item: staged.top } : {})
+        return
+      }
+      Object.assign(job, { title: (job.origin === 'link' ? job.title : text(torrent.name).slice(0, 500)) || job.title, size: torrentSize(torrent) || job.size })
+      job.finalise = { state: 'removing', item: plan.top, kind: plan.kind, startedAt: new Date(now()).toISOString() }
+      await saveJob(job)
+      try { await client.remove(text(torrent.hash).toLowerCase(), false) }
+      catch (error) { await recordProblem(job, 'remove-failed', error); return }
+      torrents.splice(torrents.indexOf(torrent), 1)
+      job.finalise = { ...job.finalise, state: 'publishing', removedAt: new Date(now()).toISOString(), attempts: 0, nextAttemptAt: null, reason: null, code: null }
+      await saveJob(job)
+      log(`Tomifin took finished ${logName(job)} out of qBittorrent (files kept) to move it into ${destination.label}`)
+    } catch (error) {
+      log(`Tomifin could not finish ${logName(job)}: ${failureMessage(error)}`)
+      return
+    } finally { finalising.delete(job.id) }
+    await publishFinalised(job, { force: true })
+  }
+
+  // Publishes the staged content of a job that is already out of qBittorrent. Failures keep the files in staging and
+  // are tried again with growing gaps; Retry tries at once.
+  async function publishFinalised(job, { force = false } = {}) {
+    if (finalising.has(job.id) || !due(job, force)) return
+    finalising.add(job.id)
+    const destination = config.destinations[job.destination]
+    try {
+      const outcome = await publishStagedItem(destination, job.id, job.finalise.item, { reserved: ['publishing', 'publish-failed'].includes(job.finalise.state) })
+      job.finalise = { state: 'published', item: job.finalise.item, kind: job.finalise.kind, at: new Date(now()).toISOString() }
+      job.completedAt = job.completedAt || new Date(now()).toISOString()
+      await saveJob(job)
+      log(`Tomifin ${outcome === 'already-published' ? 'found' : 'moved'} ${logName(job)} in the ${destination.label} library`)
+      if (refreshLibrary) Promise.resolve().then(() => refreshLibrary()).catch((error) => log(`Tomifin could not ask Jellyfin to scan the library: ${failureMessage(error)}`))
+    } catch (error) {
+      await recordProblem(job, job.finalise.state === 'held' ? 'held' : 'publish-failed', error)
+    } finally { finalising.delete(job.id) }
+  }
+
+  // Removes the empty staging folders of known torrent jobs that qBittorrent no longer has. Folders of unknown jobs,
+  // and anything holding a file, are never touched; nothing else in .tomifin-incomplete is looked at.
+  async function cleanStaging(jobs, torrents) {
+    for (const job of jobs) {
+      const destination = config.destinations[job.destination]
+      if (!destination || job.stagingClear || job.unconfirmedSince || finalising.has(job.id) || torrentForJob(torrents, job)) continue
+      // A just-queued magnet may not be listed yet; and an unpublished download's files must stay.
+      if (!(now() - Date.parse(job.createdAt) > MISSING_GRACE_MS)) continue
+      if (job.finalise && job.finalise.state !== 'published') continue
+      try {
+        // Asked once more by tag, across every category, so a torrent moved to another category is not missed.
+        if (await torrentFor(job)) continue
+        const outcome = await removeEmptyStaging(destination, job.id)
+        if (outcome === 'kept') continue
+        job.stagingClear = true
+        await saveJob(job)
+        if (outcome === 'removed') log(`Tomifin removed the empty staging folder of ${logName(job)}`)
+      } catch (error) { log(`Tomifin could not check the staging folder of ${logName(job)}: ${failureMessage(error)}`) }
+    }
   }
 
   function jobView(job, torrent) {
@@ -381,6 +488,24 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
         eta: null, seeds: null, peers: null, source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, canRetry: false, keepsFilesOnCancel: true,
       }
     }
+    const finalise = job.finalise
+    if (finalise && finalise.state !== 'published' && (!torrent || ['removing', 'publishing', 'publish-failed', 'remove-failed', 'held'].includes(finalise.state))) {
+      const label = destination?.label || job.destination
+      const held = finalise.state === 'held'
+      const failed = held || finalise.state === 'publish-failed'
+      const reason = finalise.reason ? `: ${finalise.reason}` : '.'
+      const message = held ? `Finished, but not moved into ${label}${reason} It keeps seeding in qBittorrent, and Tomifin checks again regularly.`
+        : finalise.state === 'publish-failed' ? `Finished and out of qBittorrent, but not yet moved into ${label}${reason} The files are kept in its staging folder, and Tomifin tries again.`
+        : finalise.state === 'remove-failed' ? `Finished; waiting to take it out of qBittorrent${reason} Tomifin tries again.`
+        : `Finished; moving into ${label}`
+      const size = nonNegative(torrent?.total_size) || nonNegative(torrent?.size) || job.size || null
+      return {
+        id: job.id, name: job.title, destination: job.destination, destinationLabel: label, downloader: 'qbittorrent', downloaderLabel: 'qBittorrent', type: 'torrent',
+        status: failed ? 'failed' : 'downloading', message, progress: 100, downloadSpeed: null, uploadSpeed: torrent ? nonNegative(torrent.upspeed) : null, downloaded: size, size,
+        eta: null, seeds: torrent ? nonNegative(torrent.num_seeds) : null, peers: torrent ? nonNegative(torrent.num_leechs) : null, source: job.source || null, createdAt: job.createdAt,
+        canPause: false, canResume: false, canRetry: failed || finalise.state === 'remove-failed', retryHint: 'Check again and move it into the library', keepsFilesOnCancel: true,
+      }
+    }
     if (!torrent && job.completedAt) {
       return {
         id: job.id, name: job.title, destination: job.destination, destinationLabel: destination?.label || job.destination, downloader: 'qbittorrent', downloaderLabel: 'qBittorrent', type: 'torrent',
@@ -388,8 +513,10 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
         eta: null, seeds: null, peers: null, source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, canRetry: false, keepsFilesOnCancel: true,
       }
     }
-    const state = tomifinTorrentState(torrent, { createdAt: job.createdAt, now: now(), maxBytes: config.maxBytes })
-    const progress = state.status === 'completed' ? 100 : Math.max(0, Math.min(100, Math.floor((number(torrent?.progress) || 0) * 1000) / 10))
+    let state = tomifinTorrentState(torrent, { createdAt: job.createdAt, now: now(), maxBytes: config.maxBytes })
+    // Finished but still in its staging folder: not in the library yet, whatever qBittorrent says.
+    if (state.status === 'completed' && destination && !destination.imports && !finishedInLibrary(torrent, destination, job.id)) state = { status: 'downloading', message: `Finished; moving into ${destination.label}` }
+    const progress = state.status === 'completed' || readyForFinalisation(torrent) ? 100 : Math.max(0, Math.min(100, Math.floor((number(torrent?.progress) || 0) * 1000) / 10))
     const eta = number(torrent?.eta)
     const size = nonNegative(torrent?.total_size) || nonNegative(torrent?.size) || job.size || null
     const oversized = torrentSize(torrent) > config.maxBytes
@@ -529,7 +656,13 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
   }
 
   // Tomifin's jobs and both downloaders' current state, in step (reconciled) and ready to show.
-  async function current() {
+  function current() {
+    const run = reconciling.then(reconcileNow, reconcileNow)
+    reconciling = run.catch(() => {})
+    return run
+  }
+
+  async function reconcileNow() {
     const jobs = await savedJobs()
     const torrentJobs = jobs.filter((job) => !isUsenetJob(job))
     const usenetJobs = jobs.filter(isUsenetJob)
@@ -698,6 +831,15 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
         return { job: usenetView(job, await usenet.snapshot()) }
       }
       const torrent = await torrentFor(job)
+      // A finished download Tomifin could not move into the library: check again and move it now.
+      if (job.finalise && job.finalise.state !== 'published') {
+        if (finalising.has(job.id)) throw new TomifinError('busy', 'Tomifin is moving this download right now.')
+        if (torrent && readyForFinalisation(torrent)) await finaliseStaged(job, torrent, [torrent], { force: true })
+        else if (!torrent && job.finalise.item) await publishFinalised(job, { force: true })
+        else throw new TomifinError('not-retryable', 'This download cannot be moved into the library from here.')
+        log(`Tomifin checked ${logName(job)} again`)
+        return { job: jobView(job, await torrentFor(job).catch(() => null)) }
+      }
       if (!torrent) throw new TomifinError('not-in-qbittorrent', 'The torrent is no longer in qBittorrent, so it cannot be retried. Search for it again.')
       if (torrentSize(torrent) > config.maxBytes) throw new TomifinError('too-large', 'This torrent is larger than the download limit (TOMIFY_TOMIFIN_MAX_BYTES), so it cannot be retried.')
       if (!torrentRetryable(torrent, config.destinations[job.destination], config.maxBytes)) throw new TomifinError('not-retryable', FAILED_STATES.has(text(torrent.state)) ? 'qBittorrent keeps this torrent outside its library folder, so Tomifin will not retry it.' : 'Only a failed download can be retried.')
@@ -720,6 +862,7 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
         log(`Tomifin removed ${logName(job)} from SABnzbd (${outcome.filesDeleted ? 'partial download deleted' : 'files kept'})`)
         return { cancelled: true, filesDeleted: outcome.filesDeleted, downloaderRemoved: outcome.removed }
       }
+      if (finalising.has(job.id)) throw new TomifinError('busy', 'Tomifin is moving this download into the library right now. Try again in a moment.')
       const torrent = await torrentFor(job)
       let filesDeleted = false
       if (torrent) {
@@ -742,11 +885,15 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
     start() {
       if (!config?.enabled || !client) return () => {}
       let running = false
-      const timer = setInterval(() => {
+      const check = () => {
         if (running) return
         running = true
         controller.observe().catch((error) => log(`Tomifin check failed: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { running = false })
-      }, intervalMs)
+      }
+      // Once at start-up (so downloads that finished while the agent was stopped are picked up straight away), then
+      // every intervalMs.
+      check()
+      const timer = setInterval(check, intervalMs)
       timer.unref?.()
       return () => clearInterval(timer)
     },

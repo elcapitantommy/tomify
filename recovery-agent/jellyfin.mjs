@@ -109,3 +109,24 @@ export function createJellyfinAuth(config, { fetchImpl = fetch, now = () => Date
     },
   }
 }
+
+// Asks Jellyfin to scan its libraries (POST /Library/Refresh) after Tomifin has published something, so it shows up
+// without waiting for Jellyfin's own schedule. Off unless TOMIFY_JELLYFIN_API_KEY holds an API key made in Jellyfin's
+// dashboard (Administration → API Keys). The key stays in the agent: it is sent only to TOMIFY_JELLYFIN_URL and never
+// logged. Several publications close together lead to one scan, delayMs after the first.
+export function createJellyfinLibraryRefresh(config, { apiKey = process.env.TOMIFY_JELLYFIN_API_KEY, fetchImpl = fetch, delayMs = 10_000, log = () => {} } = {}) {
+  const key = text(apiKey)
+  if (!config || !key) return null
+  if (!/^[A-Za-z0-9]{16,128}$/.test(key)) { log('Jellyfin library scans after Tomifin downloads are off: TOMIFY_JELLYFIN_API_KEY is not a Jellyfin API key.'); return null }
+  let pending = null
+  return function refreshLibrary() {
+    if (pending) return pending
+    pending = new Promise((done) => setTimeout(done, delayMs)).then(async () => {
+      pending = null
+      const response = await fetchImpl(`${config.url}/Library/Refresh`, { method: 'POST', signal: AbortSignal.timeout(15_000), headers: { authorization: header({ token: key }) } })
+      if (!response.ok) throw new Error(`Jellyfin answered HTTP ${response.status} to the library scan.`)
+      log('Tomifin asked Jellyfin to scan its libraries')
+    })
+    return pending
+  }
+}

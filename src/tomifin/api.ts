@@ -17,6 +17,8 @@ export interface TomifinJob {
   seeds: number | null; peers: number | null; source: string | null; createdAt: string; canPause: boolean; canResume: boolean; keepsFilesOnCancel: boolean
   // A failed download its downloader can try again (an older agent leaves this out).
   canRetry?: boolean
+  // What Retry does for this job, when it is not the downloader's own retry (a finished torrent Tomifin moves itself).
+  retryHint?: string
 }
 export interface TomifinVpnStatus {
   state: 'connected' | 'connecting' | 'down' | 'unknown'
