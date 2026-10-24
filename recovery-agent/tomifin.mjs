@@ -226,6 +226,17 @@ export function finishedInLibrary(torrent, destination, id) {
   return within(content, destination.qbittorrentPath) && content !== normalize(destination.qbittorrentPath) && !within(content, normalize(stagingPath(destination, id)))
 }
 
+// Whether a failed torrent may be tried again: only one qBittorrent itself reports as failed (an error, or files
+// missing), not one stopped for being larger than the download limit, and only while every folder qBittorrent reports
+// for it is inside its own library (so a retry never writes anywhere else). Nothing is deleted by a retry.
+export function torrentRetryable(torrent, destination, maxBytes = DEFAULT_TOMIFIN_MAX_BYTES) {
+  if (!torrent || !destination || !FAILED_STATES.has(text(torrent.state)) || torrentSize(torrent) > maxBytes) return false
+  const inside = (value) => isAbsolute(value) && within(normalize(value).replace(/(.)\/+$/, '$1'), destination.qbittorrentPath)
+  const savePath = text(torrent.save_path)
+  if (!savePath || !inside(savePath)) return false
+  return [text(torrent.download_path), text(torrent.content_path)].every((value) => !value || inside(value))
+}
+
 function torrentSize(torrent) { return Math.max(number(torrent?.total_size) || 0, number(torrent?.size) || 0) }
 
 // vpnStatus is the agent's NordVPN status (vpn.mjs), when VPN control is turned on there.
@@ -367,14 +378,14 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
       return {
         id: job.id, name: job.title, destination: job.destination, destinationLabel: destination?.label || job.destination, downloader: 'qbittorrent', downloaderLabel: 'qBittorrent', type: 'torrent',
         status: 'queued', message: 'Waiting for qBittorrent to confirm', progress: 0, downloadSpeed: null, uploadSpeed: null, downloaded: null, size: job.size || null,
-        eta: null, seeds: null, peers: null, source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, keepsFilesOnCancel: true,
+        eta: null, seeds: null, peers: null, source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, canRetry: false, keepsFilesOnCancel: true,
       }
     }
     if (!torrent && job.completedAt) {
       return {
         id: job.id, name: job.title, destination: job.destination, destinationLabel: destination?.label || job.destination, downloader: 'qbittorrent', downloaderLabel: 'qBittorrent', type: 'torrent',
         status: 'completed', message: 'In the library', progress: 100, downloadSpeed: null, uploadSpeed: null, downloaded: job.size || null, size: job.size || null,
-        eta: null, seeds: null, peers: null, source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, keepsFilesOnCancel: true,
+        eta: null, seeds: null, peers: null, source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, canRetry: false, keepsFilesOnCancel: true,
       }
     }
     const state = tomifinTorrentState(torrent, { createdAt: job.createdAt, now: now(), maxBytes: config.maxBytes })
@@ -392,6 +403,7 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
       source: job.source || null, createdAt: job.createdAt,
       canPause: Boolean(torrent) && !oversized && ['queued', 'downloading', 'stalled'].includes(state.status),
       canResume: Boolean(torrent) && !oversized && state.status === 'paused',
+      canRetry: state.status === 'failed' && torrentRetryable(torrent, destination, config.maxBytes),
       // Only an unfinished download still in its own staging folder has its data deleted on cancel.
       keepsFilesOnCancel: job.recovered === true || !partialDataDeletable(torrent, destination, job.id),
     }
@@ -533,7 +545,7 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
     return {
       id: job.id, name: job.title, destination: job.destination, destinationLabel: destination?.label || job.destination, downloader: 'sabnzbd', downloaderLabel: 'SABnzbd', type: 'usenet',
       status: 'failed', message: 'Usenet downloads are not set up on the media server.', progress: 0, downloadSpeed: null, uploadSpeed: null, downloaded: null, size: job.size || null,
-      eta: null, seeds: null, peers: null, source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, keepsFilesOnCancel: true,
+      eta: null, seeds: null, peers: null, source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, canRetry: false, keepsFilesOnCancel: true,
     }
   }
 
@@ -673,6 +685,29 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
       return { job: jobView(job, { ...torrent, state: 'queuedDL' }) }
     },
 
+    // Tries a failed download again in its own downloader. A torrent qBittorrent reports as failed (an error, or files
+    // missing) is checked on disk again and started, in the same folders; SABnzbd retries a failed job from its
+    // history (tomifin-usenet.mjs). Nothing is deleted, and nothing is added twice.
+    async retry(body) {
+      requireEnabled()
+      const job = await loadJob(body?.id)
+      if (isUsenetJob(job)) {
+        if (!usenetReady()) throw new TomifinError('usenet-unavailable', 'Usenet downloads are not set up on the media server.')
+        await usenet.retry(job, store).catch((error) => { throw asTomifinError(error) })
+        log(`Tomifin asked SABnzbd to retry ${logName(job)}`)
+        return { job: usenetView(job, await usenet.snapshot()) }
+      }
+      const torrent = await torrentFor(job)
+      if (!torrent) throw new TomifinError('not-in-qbittorrent', 'The torrent is no longer in qBittorrent, so it cannot be retried. Search for it again.')
+      if (torrentSize(torrent) > config.maxBytes) throw new TomifinError('too-large', 'This torrent is larger than the download limit (TOMIFY_TOMIFIN_MAX_BYTES), so it cannot be retried.')
+      if (!torrentRetryable(torrent, config.destinations[job.destination], config.maxBytes)) throw new TomifinError('not-retryable', FAILED_STATES.has(text(torrent.state)) ? 'qBittorrent keeps this torrent outside its library folder, so Tomifin will not retry it.' : 'Only a failed download can be retried.')
+      const hash = text(torrent.hash).toLowerCase()
+      await client.recheck(hash)
+      await client.resume(hash)
+      log(`Tomifin asked qBittorrent to recheck and restart ${logName(job)}`)
+      return { job: jobView(job, { ...torrent, state: 'checkingDL' }) }
+    },
+
     // Takes the download out of its downloader and off the list. Downloaded data is deleted only for an unfinished
     // download, and only in that job's own staging folder (see partialDataDeletable, and SABnzbd's own job folder);
     // otherwise every file is left where it is. Published library files are never touched.
@@ -722,7 +757,7 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
 // The agent's /v1/tomifin/* routes. Returns null for any other path. Every route but login needs the Jellyfin
 // session token (body.session) of a Jellyfin administrator, checked with Jellyfin (recovery-agent/jellyfin.mjs).
 export async function handleTomifinRequest(path, body, controller, auth) {
-  const route = String(path || '').match(/^\/v1\/tomifin\/(login|logout|session|status|vpn|search|link|download|downloads|pause|resume|cancel)$/)
+  const route = String(path || '').match(/^\/v1\/tomifin\/(login|logout|session|status|vpn|search|link|download|downloads|pause|resume|retry|cancel)$/)
   if (!route) return null
   const action = route[1]
   try {

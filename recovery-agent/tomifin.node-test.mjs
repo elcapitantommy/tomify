@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createQbittorrentClient, safeDetailsUrl } from './torrent.mjs'
 import { JellyfinAuthError } from './jellyfin.mjs'
-import { UNCONFIRMED_KEEP_MS, createTomifinController, handleTomifinRequest, hostContentPath, partialDataDeletable, stagingPath, qualityFromTitle, tomifinConfig, tomifinTorrentState, validSearchQuery } from './tomifin.mjs'
+import { UNCONFIRMED_KEEP_MS, createTomifinController, handleTomifinRequest, hostContentPath, partialDataDeletable, stagingPath, qualityFromTitle, tomifinConfig, tomifinTorrentState, torrentRetryable, validSearchQuery } from './tomifin.mjs'
 
 const hash = '0123456789abcdef0123456789abcdef01234567'
 const other = 'fedcba9876543210fedcba9876543210fedcba98'
@@ -31,6 +31,7 @@ function fakeClient({ searchResults = [], existing = [] } = {}) {
     async list(category) { calls.push(['list', category]); return torrents.filter((torrent) => torrent.category === category) },
     async pause(value) { calls.push(['pause', value]); const torrent = torrents.find((entry) => entry.hash === value); if (torrent) torrent.state = 'stoppedDL' },
     async resume(value) { calls.push(['resume', value]) },
+    async recheck(value) { calls.push(['recheck', value]) },
     async remove(value, deleteFiles) { calls.push(['remove', value, deleteFiles]); const index = torrents.findIndex((torrent) => torrent.hash === value); if (index >= 0) torrents.splice(index, 1) },
   }
 }
@@ -206,6 +207,48 @@ test('pause and resume act only on the job\'s own torrent', async () => {
   assert.deepEqual(client.calls.filter(([name]) => ['pause', 'resume'].includes(name)), [['pause', hash], ['resume', hash]])
   await assert.rejects(controller.pause({ id: '../../etc/passwd' }), /Unknown download/)
   await assert.rejects(controller.pause({ id: '00000000-0000-4000-8000-999999999999' }), /no longer listed/)
+})
+
+test('a failed torrent can be retried: qBittorrent rechecks and restarts it, in its own folders only', async () => {
+  const client = fakeClient({ searchResults })
+  const { controller } = await controllerWith(client)
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  const { job } = await controller.download({ resultId: best.id, destination: 'family' })
+  const staging = `/media/family/.tomifin-incomplete/${job.id}`
+  Object.assign(client.torrents[0], { state: 'downloading', save_path: '/media/family/', download_path: staging, content_path: `${staging}/Big Buck Bunny`, progress: 0.4 })
+  assert.equal((await controller.list()).jobs[0].canRetry, false, 'a healthy torrent offers no retry')
+  await assert.rejects(controller.retry({ id: job.id }), { code: 'not-retryable' })
+  for (const state of ['error', 'missingFiles']) {
+    client.torrents[0].state = state
+    const [view] = (await controller.list()).jobs
+    assert.deepEqual([view.status, view.canRetry, view.canResume], ['failed', true, false], state)
+    const retried = await controller.retry({ id: job.id })
+    assert.deepEqual([retried.job.status, retried.job.message], ['downloading', 'Checking files'])
+  }
+  assert.deepEqual(client.calls.filter(([name]) => ['recheck', 'resume', 'remove'].includes(name)), [['recheck', hash], ['resume', hash], ['recheck', hash], ['resume', hash]])
+  // A torrent qBittorrent keeps anywhere outside its library is never restarted.
+  client.calls.length = 0
+  for (const outside of [{ save_path: '/srv/other' }, { download_path: '/tmp/x' }, { content_path: '/media/private/Big Buck Bunny' }, { save_path: '' }, { save_path: '/media/family/../etc' }]) {
+    Object.assign(client.torrents[0], { state: 'error', save_path: '/media/family', download_path: staging, content_path: `${staging}/Big Buck Bunny`, ...outside })
+    assert.equal((await controller.list()).jobs[0].canRetry, false, JSON.stringify(outside))
+    await assert.rejects(controller.retry({ id: job.id }), /outside its library folder/, JSON.stringify(outside))
+  }
+  assert.equal(client.calls.some(([name]) => ['recheck', 'resume'].includes(name)), false)
+  await assert.rejects(controller.retry({ id: '../../etc/passwd' }), /Unknown download/)
+})
+
+test('torrents missing from qBittorrent or over the size limit cannot be retried', async () => {
+  const destination = config.destinations.family
+  assert.equal(torrentRetryable(null, destination), false)
+  assert.equal(torrentRetryable({ state: 'error', save_path: '/media/family', total_size: 10 }, destination, 5), false)
+  assert.equal(torrentRetryable({ state: 'error', save_path: '/media/family', total_size: 10 }, destination, 50), true)
+  assert.equal(torrentRetryable({ state: 'stalledDL', save_path: '/media/family' }, destination), false)
+  const client = fakeClient({ searchResults })
+  const { controller } = await controllerWith(client)
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  const { job } = await controller.download({ resultId: best.id, destination: 'family' })
+  client.torrents.length = 0
+  await assert.rejects(controller.retry({ id: job.id }), /no longer in qBittorrent/)
 })
 
 test('cancelling deletes partial data only while it is still in the job\'s own staging folder', async () => {
@@ -559,6 +602,8 @@ test('the qBittorrent client lists a category, pauses with the 5.x names and fal
   modern = false
   await client.resume(hash)
   assert.deepEqual(calls.filter((call) => /stop|start|pause|resume/.test(call.path)).map((call) => call.path), ['/api/v2/torrents/stop', '/api/v2/torrents/start', '/api/v2/torrents/resume'])
+  await client.recheck(hash)
+  assert.deepEqual(calls.filter((call) => call.path === '/api/v2/torrents/recheck').map((call) => call.body), [{ hashes: hash }])
   assert.equal(await client.connection(), 'firewalled')
   await client.add(`magnet:?xt=urn:btih:${hash}`, { tag: 'tomifin-1', savePath: '/media/family', category: 'tomifin-family', subfolder: true })
   assert.deepEqual(calls.find((call) => call.path === '/api/v2/torrents/createCategory').body, { category: 'tomifin-family', savePath: '/media/family' })

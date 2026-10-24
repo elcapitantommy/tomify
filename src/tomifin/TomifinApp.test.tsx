@@ -48,7 +48,7 @@ function fakeApi({ vpn = { state: 'connected', qbittorrent: 'connected', nordvpn
     if (url === '/api/tomifin/link') return link(body)
     if (url === '/api/tomifin/download') return download(body)
     if (url === '/api/tomifin/downloads') return Response.json({ jobs })
-    if (/\/api\/tomifin\/downloads\/.+\/(pause|resume|cancel)$/.test(url)) return Response.json(url.endsWith('cancel') ? { cancelled: true, filesDeleted: true } : { job: job() })
+    if (/\/api\/tomifin\/downloads\/.+\/(pause|resume|retry|cancel)$/.test(url)) return Response.json(url.endsWith('cancel') ? { cancelled: true, filesDeleted: true } : { job: job() })
     return Response.json({ error: 'not-found' }, { status: 404 })
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -274,6 +274,23 @@ describe('Tomifin Downloader', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Magnet, .torrent or .nzb link' }), { target: { value: 'http://192.168.1.2/a.torrent' } })
     fireEvent.click(screen.getByRole('button', { name: 'Check' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('That link points at a private network address.')
+  })
+
+  it('offers Retry only on failed downloads their downloader can try again', async () => {
+    const calls = fakeApi({ jobs: [
+      job({ status: 'failed', message: 'qBittorrent reports the files are missing.', canPause: false, canRetry: true }),
+      job({ id: '00000000-0000-4000-8000-000000000004', name: 'Sintel', downloader: 'sabnzbd', downloaderLabel: 'SABnzbd', type: 'usenet', status: 'failed', message: 'The download is password-protected.', canPause: false, canRetry: false }),
+      job({ id: '00000000-0000-4000-8000-000000000005', name: 'Tears of Steel', canRetry: false }),
+    ] })
+    await open()
+    const failed = (await screen.findByText('Big Buck Bunny (2008)')).closest('li')!
+    expect(within(screen.getByText('Sintel').closest('li')!).queryByRole('button', { name: 'Retry' })).toBeNull()
+    expect(within(screen.getByText('Tears of Steel').closest('li')!).queryByRole('button', { name: 'Retry' })).toBeNull()
+    const retry = within(failed).getByRole('button', { name: 'Retry' })
+    expect(retry).toHaveAttribute('title', 'Check the files again and restart the torrent in qBittorrent')
+    fireEvent.click(retry)
+    await waitFor(() => expect(calls.some((call) => call.url === `/api/tomifin/downloads/${job().id}/retry` && call.method === 'POST' && call.headers['x-tomifin'] === '1')).toBe(true))
+    expect(await screen.findByRole('status')).toHaveTextContent('Retrying “Big Buck Bunny (2008)” in qBittorrent.')
   })
 
   it('lists SABnzbd downloads beside qBittorrent ones and says which downloader cancel removes from', async () => {

@@ -15,6 +15,8 @@ export interface TomifinJob {
   downloader?: 'qbittorrent' | 'sabnzbd'; downloaderLabel?: string; type?: TomifinResultType
   progress: number; downloadSpeed: number | null; uploadSpeed: number | null; downloaded: number | null; size: number | null; eta: number | null
   seeds: number | null; peers: number | null; source: string | null; createdAt: string; canPause: boolean; canResume: boolean; keepsFilesOnCancel: boolean
+  // A failed download its downloader can try again (an older agent leaves this out).
+  canRetry?: boolean
 }
 export interface TomifinVpnStatus {
   state: 'connected' | 'connecting' | 'down' | 'unknown'
@@ -32,6 +34,8 @@ export const DESTINATIONS: Record<TomifinDestination, { label: string; path: str
   family: { label: 'Family', path: '/media/family' },
   private: { label: 'Private', path: '/media/private' },
 }
+
+export type TomifinJobAction = 'pause' | 'resume' | 'retry' | 'cancel'
 
 export class TomifinRequestError extends Error {
   status: number
@@ -68,7 +72,7 @@ export const tomifinApi = {
   addLink: (input: TomifinLinkInput) => request<{ detected: TomifinDetected; result: TomifinResult }>('/api/tomifin/link', { method: 'POST', body: JSON.stringify(input) }),
   download: (resultId: string, destination: TomifinDestination) => request<{ job: TomifinJob }>('/api/tomifin/download', { method: 'POST', body: JSON.stringify({ resultId, destination }) }),
   downloads: (signal?: AbortSignal) => request<{ jobs: TomifinJob[] }>('/api/tomifin/downloads', { signal }),
-  control: (id: string, action: 'pause' | 'resume' | 'cancel') => request<{ job?: TomifinJob; cancelled?: boolean; filesDeleted?: boolean }>(`/api/tomifin/downloads/${encodeURIComponent(id)}/${action}`, { method: 'POST' }),
+  control: (id: string, action: TomifinJobAction) => request<{ job?: TomifinJob; cancelled?: boolean; filesDeleted?: boolean }>(`/api/tomifin/downloads/${encodeURIComponent(id)}/${action}`, { method: 'POST' }),
 }
 
 export function formatSize(bytes: number | null | undefined) {

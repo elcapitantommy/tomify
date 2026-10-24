@@ -418,6 +418,13 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
     // qBittorrent 5 renamed pause and resume to stop and start; the old names answer 404 there, and the new ones on 4.x.
     async pause(hash) { await renamedCall(hash, 'torrents/stop', 'torrents/pause', 'qBittorrent pause') },
     async resume(hash) { await renamedCall(hash, 'torrents/start', 'torrents/resume', 'qBittorrent resume') },
+    // Checks the torrent's data on disk again (the same name in qBittorrent 4.x and 5.x): what a failed torrent needs
+    // before it is started again, so a missing or damaged file is downloaded rather than reported as an error.
+    async recheck(hash) {
+      const cookie = await session()
+      const { response } = await call(cookie, 'torrents/recheck', { hashes: hash }, 'qBittorrent recheck')
+      if (!response.ok) throw new Error(`qBittorrent recheck returned HTTP ${response.status}.`)
+    },
     async remove(hash, deleteFiles) {
       const cookie = await session()
       const { response } = await call(cookie, 'torrents/delete', { hashes: hash, deleteFiles: deleteFiles ? 'true' : 'false' }, 'qBittorrent delete')

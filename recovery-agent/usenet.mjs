@@ -496,5 +496,12 @@ export function createSabnzbdClient(config, fetchImpl = fetch) {
     async resume(id) { await api('queue', { name: 'resume', value: id }) },
     async deleteQueued(id, deleteFiles) { await api('queue', { name: 'delete', value: id, del_files: deleteFiles ? '1' : '0' }) },
     async deleteHistory(id, deleteFiles) { await api('history', { name: 'delete', value: id, del_files: deleteFiles ? '1' : '0' }) },
+    // Retries a failed job from SABnzbd's history: SABnzbd puts it back in the queue (reusing what it already
+    // downloaded) under a new id and drops the history entry. Returns the new id, or null if SABnzbd did not say.
+    async retry(id) {
+      const payload = await api('retry', { value: id })
+      return text(payload?.nzo_id) || (Array.isArray(payload?.nzo_ids) ? text(payload.nzo_ids[0]) : '') || null
+    },
+    async rename(id, name) { await api('queue', { name: 'rename', value: id, value2: name }) },
   }
 }

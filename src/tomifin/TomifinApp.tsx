@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CircleCheck, Clapperboard, ShieldAlert, ShieldCheck, ShieldQuestion, ExternalLink, FileDown, Link2, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Newspaper, Pause, Play, RefreshCw, Search, TriangleAlert, Upload, UserRound, Users, X } from 'lucide-react'
-import { DESTINATIONS, formatAge, formatEta, formatSize, formatSpeed, readFileBase64, tomifinApi, TomifinRequestError, type TomifinDestination, type TomifinDetected, type TomifinJob, type TomifinKind, type TomifinResult, type TomifinServiceStatus, type TomifinVpnStatus } from './api'
+import { CircleCheck, Clapperboard, ShieldAlert, ShieldCheck, ShieldQuestion, ExternalLink, FileDown, Link2, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Newspaper, Pause, Play, RefreshCw, RotateCcw, Search, TriangleAlert, Upload, UserRound, Users, X } from 'lucide-react'
+import { DESTINATIONS, formatAge, formatEta, formatSize, formatSpeed, readFileBase64, tomifinApi, TomifinRequestError, type TomifinDestination, type TomifinDetected, type TomifinJob, type TomifinJobAction, type TomifinKind, type TomifinResult, type TomifinServiceStatus, type TomifinVpnStatus } from './api'
 import { sortResults, type SortKey } from './results'
 
 type TomifinUser = { name: string }
@@ -102,7 +102,7 @@ function ResultCard({ result, destination, busy, queued, onQueue }: { result: To
   )
 }
 
-function JobCard({ job, onAction, busy }: { job: TomifinJob; onAction: (job: TomifinJob, action: 'pause' | 'resume' | 'cancel') => void; busy: boolean }) {
+function JobCard({ job, onAction, busy }: { job: TomifinJob; onAction: (job: TomifinJob, action: TomifinJobAction) => void; busy: boolean }) {
   const [confirming, setConfirming] = useState(false)
   const done = job.status === 'completed'
   return (
@@ -126,6 +126,7 @@ function JobCard({ job, onAction, busy }: { job: TomifinJob; onAction: (job: Tom
       <div className="tf-job-actions">
         {job.canPause && <button type="button" className="tf-button" disabled={busy} onClick={() => onAction(job, 'pause')}><Pause aria-hidden/>Pause</button>}
         {job.canResume && <button type="button" className="tf-button" disabled={busy} onClick={() => onAction(job, 'resume')}><Play aria-hidden/>Resume</button>}
+        {job.canRetry && <button type="button" className="tf-button" disabled={busy} onClick={() => onAction(job, 'retry')} title={job.downloader === 'sabnzbd' ? 'Ask SABnzbd to try this download again' : 'Check the files again and restart the torrent in qBittorrent'}><RotateCcw aria-hidden/>Retry</button>}
         {!confirming && <button type="button" className="tf-button tf-ghost" disabled={busy} onClick={() => setConfirming(true)}><X aria-hidden/>{done || job.status === 'failed' ? 'Remove' : 'Cancel'}</button>}
         {confirming && (
           <div className="tf-confirm" role="group" aria-label="Confirm">
@@ -186,7 +187,7 @@ function AddLink({ destination, disabled, onChecked, onQueue, needDestination }:
   )
 }
 
-function Downloads({ jobs, loading, error, onRefresh, onAction, busyId }: { jobs: TomifinJob[] | null; loading: boolean; error: string | null; onRefresh: () => void; onAction: (job: TomifinJob, action: 'pause' | 'resume' | 'cancel') => void; busyId: string | null }) {
+function Downloads({ jobs, loading, error, onRefresh, onAction, busyId }: { jobs: TomifinJob[] | null; loading: boolean; error: string | null; onRefresh: () => void; onAction: (job: TomifinJob, action: TomifinJobAction) => void; busyId: string | null }) {
   return (
     <section className="tf-panel" aria-labelledby="tf-downloads-title">
       <div className="tf-section-head">
@@ -317,10 +318,11 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
     destinationRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
   }
 
-  const control = async (job: TomifinJob, action: 'pause' | 'resume' | 'cancel') => {
+  const control = async (job: TomifinJob, action: TomifinJobAction) => {
     setBusyJob(job.id)
     try {
       const response = await tomifinApi.control(job.id, action)
+      if (action === 'retry') setNotice({ tone: 'success', text: `Retrying “${job.name}” in ${job.downloaderLabel || 'qBittorrent'}.` })
       if (action === 'cancel') setNotice({ tone: 'success', text: response.filesDeleted ? `Cancelled “${job.name}” and deleted its partial download.` : `Removed “${job.name}” from ${job.downloaderLabel || 'qBittorrent'}. Its files were kept.` })
       await refresh()
     } catch (error) { if (!failed(error)) setNotice({ tone: 'error', text: message(error) }) }

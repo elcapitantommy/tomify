@@ -10,7 +10,7 @@
 //            publishes: Family through the Family importer (films and TV, family-import.mjs), Private as a verified
 //            copy of its videos and subtitles. Doubtful downloads go to a hidden review folder with reason.json.
 //   cleanup  SABnzbd's output is never deleted unless TOMIFY_TOMIFIN_USENET_CLEANUP=true and publication was verified.
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rmdir, unlink, writeFile } from 'node:fs/promises'
 import { basename, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
 import { createSabnzbdClient, newznabDownloadUrl, nzbIndexDownloadUrl, searchNewznabVideo, searchNzbIndexVideo, validateCompletedPath } from './usenet.mjs'
 import { createFamilyImporter, DEFAULT_TV_DIR, ffprobeReader } from './family-import.mjs'
@@ -29,6 +29,9 @@ const MAX_RETRY_MS = 30 * 60_000
 export function publishRetryDelay(attempts) { return Math.min(MAX_RETRY_MS, RETRY_MS * 2 ** Math.min(Math.max(0, attempts - 1), 16)) }
 const CATEGORY = /^[a-z0-9][a-z0-9_.-]{0,63}$/i
 const PRIVATE_REVIEW = '.tomifin-review'
+// SABnzbd failures a retry can help with: missing articles (another server, or the posts arriving late) and a failed
+// repair or unpack. A password-protected job, or one SABnzbd no longer has, cannot be retried.
+const RETRYABLE_FAILURES = new Set(['download-failed', 'unpack-failed'])
 
 function text(value) { return String(value ?? '').trim() }
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null }
@@ -151,6 +154,38 @@ export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.
       await mkdir(folder, { mode: 0o775 }).catch((error) => { if (error?.code !== 'EEXIST') throw error })
       await writeFile(join(folder, 'reason.json'), `${JSON.stringify({ job: job.id, downloader: 'sabnzbd', destination: job.destination, name: text(job.title).slice(0, 300), result: 'review', code, reason, at: new Date(now()).toISOString() }, null, 2)}\n`, { flag: 'wx' }).catch((error) => { if (error?.code !== 'EEXIST') throw error })
     } catch (error) { log(`Tomifin could not write a review note for ${job.id}: ${message(error)}`) }
+  }
+
+  // The folder writeReview uses for a job's failure note.
+  function reviewFolder(job) {
+    const destination = tomifin.destinations[job.destination]
+    if (!destination) return null
+    return job.destination === 'family' ? join(destination.hostPath, '.review', `usenet-${job.id}`) : join(destination.hostPath, PRIVATE_REVIEW, job.id)
+  }
+
+  // After a retry, the note writeReview left for the earlier failure is taken away again (only Tomifin's own
+  // reason.json for this job, and the folder only if that leaves it empty), so a later failure or review can write
+  // its own. Anything else in the folder is left alone.
+  async function clearFailureNote(job) {
+    const folder = reviewFolder(job)
+    if (!folder) return
+    const note = join(folder, 'reason.json')
+    try {
+      const saved = JSON.parse(await readFile(note, 'utf8'))
+      if (saved?.job !== job.id || saved?.downloader !== 'sabnzbd') return
+      await unlink(note)
+      await rmdir(folder).catch(() => {})
+    } catch (error) { if (error?.code !== 'ENOENT') log(`Tomifin could not clear the failure note of ${job.id}: ${message(error)}`) }
+  }
+
+  // Whether SABnzbd can retry this job: its own failure (not a publication problem), of a kind a retry can fix, and
+  // still in SABnzbd's history as failed in this job's own category.
+  function retryable(job, found) {
+    if (!job.failure || !RETRYABLE_FAILURES.has(job.failure.code) || job.import || importing.has(job.id) || job.unconfirmedSince) return false
+    if (found?.where !== 'history' || !text(found.slot.nzo_id)) return false
+    if (text(found.slot.category).toLowerCase() !== text(job.category).toLowerCase()) return false
+    const state = sabHistoryState(found.slot)
+    return state.status === 'failed' && RETRYABLE_FAILURES.has(state.code)
   }
 
   function find(snapshot, job) {
@@ -361,15 +396,15 @@ export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.
       const base = {
         id: job.id, name: job.title, destination: job.destination, destinationLabel: destination?.label || job.destination, downloader: 'sabnzbd', downloaderLabel: 'SABnzbd', type: 'usenet',
         progress: 0, downloadSpeed: null, uploadSpeed: null, downloaded: null, size: job.size || null, eta: null, seeds: null, peers: null,
-        source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, keepsFilesOnCancel: true,
+        source: job.source || null, createdAt: job.createdAt, canPause: false, canResume: false, canRetry: false, keepsFilesOnCancel: true,
       }
       const label = destination?.label || job.destination
       if (!available) return { ...base, status: 'failed', message: 'Usenet downloads are not set up on the media server.' }
       if (['published', 'already-imported'].includes(job.import?.state)) return { ...base, status: 'completed', message: job.import.state === 'already-imported' ? `Already in ${label}` : `In the ${label} library`, progress: 100, downloaded: job.size || null }
       if (job.import?.state === 'review') return { ...base, status: 'failed', message: `Held for review: ${cleanMessage(job.import.reason) || job.import.code}`, progress: 100 }
       if (job.import?.state === 'failed') return { ...base, status: 'failed', message: cleanMessage(job.import.reason) || 'Publication failed.', progress: 100 }
-      if (job.failure) return { ...base, status: 'failed', message: job.failure.reason || 'The download failed.', keepsFilesOnCancel: job.recovered === true }
       const found = find(snapshot, job)
+      if (job.failure) return { ...base, status: 'failed', message: job.failure.reason || 'The download failed.', keepsFilesOnCancel: job.recovered === true, canRetry: retryable(job, found) }
       if (!found) {
         if (job.unconfirmedSince) return { ...base, status: 'queued', message: 'Waiting for SABnzbd to confirm' }
         return { ...base, status: 'queued', message: snapshot?.error ? 'SABnzbd could not be reached' : 'Waiting for SABnzbd' }
@@ -412,6 +447,49 @@ export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.
       if (found?.where !== 'queue') throw new TomifinUsenetError('not-in-sabnzbd', 'Only a download still in SABnzbd\'s queue can be resumed.')
       if (sabQueueState(found.slot).code === 'password-protected') throw new TomifinUsenetError('password-protected', 'This download is password-protected and cannot be resumed.')
       await sab.resume(text(found.slot.nzo_id))
+    },
+
+    // Asks SABnzbd to retry a failed job (see retryable). It stays this job: the record follows SABnzbd's new id, and
+    // the queue entry keeps the tomifin-<id> name so publication finds this job's own folder. A retry whose answer is
+    // lost is not sent again: the failure is cleared, and the next check finds the job by name in the queue or marks
+    // it failed again from the history.
+    async retry(job, store) {
+      requireUsenet()
+      const snapshot = await backend.snapshot()
+      if (snapshot?.error) throw new TomifinUsenetError('usenet-unavailable', 'SABnzbd could not be reached, so the download was not retried.')
+      const found = find(snapshot, job)
+      if (!retryable(job, found)) {
+        if (job.failure?.code === 'password-protected') throw new TomifinUsenetError('not-retryable', 'This download is password-protected, so retrying it would fail again.')
+        if (job.failure && !found) throw new TomifinUsenetError('not-retryable', 'SABnzbd no longer has this download, so it cannot be retried. Search for it again.')
+        throw new TomifinUsenetError('not-retryable', 'Only a download SABnzbd reported as failed can be retried.')
+      }
+      // The record is updated before SABnzbd is asked, as when queuing: if it cannot be written, nothing is sent, and
+      // a job SABnzbd is downloading again is never left marked as failed. Without an id it is found by its name.
+      const previous = { failure: job.failure, remoteId: job.remoteId, retries: job.retries }
+      const restore = () => { Object.assign(job, previous); if (previous.retries === undefined) delete job.retries }
+      delete job.failure
+      delete job.missingSince
+      job.remoteId = null
+      job.retries = (job.retries || 0) + 1
+      try { await store.saveJob(job) } catch (error) { restore(); throw error }
+      let nzoId = null
+      try { nzoId = await sab.retry(text(found.slot.nzo_id)) }
+      catch (error) {
+        if (error?.rejected === true) {
+          restore()
+          await store.saveJob(job).catch((failure) => log(`Tomifin could not restore the failure of Usenet job ${job.id}: ${message(failure)}`))
+          throw new TomifinUsenetError('sabnzbd-refused', error.message || 'SABnzbd refused to retry the download.')
+        }
+        log(`Tomifin could not confirm a retry of Usenet job ${job.id} with SABnzbd: ${message(error)}`)
+      }
+      if (nzoId) { job.remoteId = nzoId; await store.saveJob(job).catch((failure) => log(`Tomifin could not save SABnzbd's new id for ${job.id}: ${message(failure)}`)) }
+      await clearFailureNote(job)
+      if (nzoId) {
+        const slot = (await sab.queue().catch(() => ({ slots: [] }))).slots.find((entry) => text(entry.nzo_id) === nzoId)
+        if (slot && SAB_NAME.exec(text(slot.filename))?.[1]?.toLowerCase() !== job.id) {
+          await sab.rename(nzoId, jobName(job.id)).catch((error) => log(`Tomifin could not rename retried Usenet job ${job.id} in SABnzbd: ${message(error)}`))
+        }
+      }
     },
 
     // Takes the job out of SABnzbd. Unfinished data is deleted only in that job's own SABnzbd folder; a finished
