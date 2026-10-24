@@ -126,7 +126,7 @@ function JobCard({ job, onAction, busy }: { job: TomifinJob; onAction: (job: Tom
       <div className="tf-job-actions">
         {job.canPause && <button type="button" className="tf-button" disabled={busy} onClick={() => onAction(job, 'pause')}><Pause aria-hidden/>Pause</button>}
         {job.canResume && <button type="button" className="tf-button" disabled={busy} onClick={() => onAction(job, 'resume')}><Play aria-hidden/>Resume</button>}
-        {job.canRetry && <button type="button" className="tf-button" disabled={busy} onClick={() => onAction(job, 'retry')} title={job.downloader === 'sabnzbd' ? 'Ask SABnzbd to try this download again' : 'Check the files again and restart the torrent in qBittorrent'}><RotateCcw aria-hidden/>Retry</button>}
+        {job.canRetry && <button type="button" className="tf-button" disabled={busy} onClick={() => onAction(job, 'retry')} title={job.retryHint || (job.downloader === 'sabnzbd' ? 'Ask SABnzbd to try this download again' : 'Check the files again and restart the torrent in qBittorrent')}><RotateCcw aria-hidden/>Retry</button>}
         {!confirming && <button type="button" className="tf-button tf-ghost" disabled={busy} onClick={() => setConfirming(true)}><X aria-hidden/>{done || job.status === 'failed' ? 'Remove' : 'Cancel'}</button>}
         {confirming && (
           <div className="tf-confirm" role="group" aria-label="Confirm">

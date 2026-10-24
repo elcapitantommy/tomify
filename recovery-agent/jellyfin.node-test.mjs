@@ -99,3 +99,24 @@ test('signing out closes the Jellyfin session', async () => {
   await rejects(auth.verify(adminToken), 'unauthorized')
   assert.deepEqual(await auth.logout('nonsense'), { signedOut: true })
 })
+
+test('the library scan after a Tomifin download is opt-in, batched, and never logs the API key', async () => {
+  const { createJellyfinLibraryRefresh } = await import('./jellyfin.mjs')
+  const config = { url: 'http://127.0.0.1:8096' }
+  assert.equal(createJellyfinLibraryRefresh(config, { apiKey: '' }), null)
+  assert.equal(createJellyfinLibraryRefresh(null, { apiKey: 'a'.repeat(32) }), null)
+  const logs = []
+  assert.equal(createJellyfinLibraryRefresh(config, { apiKey: 'not a key!', log: (line) => logs.push(line) }), null)
+  const calls = []
+  const key = '0123456789abcdef0123456789abcdef'
+  const refresh = createJellyfinLibraryRefresh(config, { apiKey: key, delayMs: 1, log: (line) => logs.push(line), fetchImpl: async (url, init) => { calls.push([url, init]); return new Response(null, { status: 204 }) } })
+  await Promise.all([refresh(), refresh(), refresh()])
+  assert.equal(calls.length, 1, 'several publications, one scan')
+  assert.deepEqual([calls[0][0], calls[0][1].method], ['http://127.0.0.1:8096/Library/Refresh', 'POST'])
+  assert.match(calls[0][1].headers.authorization, new RegExp(`Token="${key}"`))
+  await refresh()
+  assert.equal(calls.length, 2)
+  const failing = createJellyfinLibraryRefresh(config, { apiKey: key, delayMs: 1, fetchImpl: async () => new Response(null, { status: 401 }) })
+  await assert.rejects(failing(), /HTTP 401/)
+  assert.equal(logs.join('\n').includes(key), false)
+})
