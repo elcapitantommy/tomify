@@ -5,7 +5,7 @@ import { useAuth } from '../stores/auth'
 import { usePlayer } from '../stores/player'
 import { useAlbumArtwork } from '../stores/albumArtwork'
 import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
-import { OUTPUT_CHANGE_GUARD_MS } from '../lib/audioOutputs'
+import { OUTPUT_CHANGE_GUARD_MS, OUTPUT_DROP_AFTER_PLAY_MS } from '../lib/audioOutputs'
 import { clearPlaybackLog, playbackLog } from '../lib/playbackLog'
 import { PlayerRuntime } from './PlayerRuntime'
 import { loadHlsLibrary, resetAdaptiveAvailability } from '../lib/adaptiveStream'
@@ -394,6 +394,26 @@ describe('PlayerRuntime', () => {
       expect(usePlayer.getState().playing).toBe(true)
       await changeDevices([])
       expect(usePlayer.getState().playing).toBe(false)
+    })
+
+    it('pauses again when the earbuds are only reported gone several seconds after their play (Windows)', async () => {
+      vi.useFakeTimers()
+      await startPlaying()
+      await sessionAction('pause')
+      await sessionAction('play')
+      await act(async () => { vi.advanceTimersByTime(OUTPUT_DROP_AFTER_PLAY_MS - 1000) })
+      await changeDevices([])
+      expect(usePlayer.getState().playing).toBe(false)
+    })
+
+    it('keeps playing when a device changes long after the listener pressed play', async () => {
+      vi.useFakeTimers()
+      await startPlaying()
+      await sessionAction('pause')
+      await sessionAction('play')
+      await act(async () => { vi.advanceTimersByTime(OUTPUT_DROP_AFTER_PLAY_MS) })
+      await changeDevices([])
+      expect(usePlayer.getState().playing).toBe(true)
     })
 
     it('still plays when the listener presses play later on', async () => {

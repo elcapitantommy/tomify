@@ -3,6 +3,10 @@
 // same moment, exactly as if the listener had pressed play, and the music comes back out of the
 // phone's speaker. A play that close to a device change is taken as that, not as the listener.
 export const OUTPUT_CHANGE_GUARD_MS = 4000
+// The play can also come first, with the device only reported gone a few seconds later (Bluetooth
+// earbuds going into their case on Windows, where the music then moves to the next headset or
+// speaker). A play from paused followed by a device change this soon after is undone.
+export const OUTPUT_DROP_AFTER_PLAY_MS = 10000
 
 export type AudioOutputWatcher = {
   // True while a device change happened in the last OUTPUT_CHANGE_GUARD_MS.

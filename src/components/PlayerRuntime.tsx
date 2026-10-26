@@ -7,7 +7,7 @@ import { setMediaMetadata } from '../lib/mediaSession'
 import { ListeningTracker, sendListeningEvent } from '../lib/listening-log'
 import { localPlaybackDeviceName } from '../stores/livePlayback'
 import { albumArtworkUrl, useAlbumArtwork } from '../stores/albumArtwork'
-import { OUTPUT_CHANGE_GUARD_MS, watchAudioOutputs, type AudioOutputWatcher } from '../lib/audioOutputs'
+import { OUTPUT_DROP_AFTER_PLAY_MS, watchAudioOutputs, type AudioOutputWatcher } from '../lib/audioOutputs'
 import { logPlayback } from '../lib/playbackLog'
 import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import { AdaptiveSources, chooseSource, loadHlsLibrary, markAdaptiveUnavailable, playbackEngine, wantsAdaptive, type StreamSource } from '../lib/adaptiveStream'
@@ -671,7 +671,7 @@ export function PlayerRuntime() {
       if (removed) logPlayback('Audio device removed')
       else logPlayback('Audio devices changed')
       if (!usePlayer.getState().playing) return
-      if (!removed && Date.now() - sessionPlayAt.current >= OUTPUT_CHANGE_GUARD_MS) return
+      if (!removed && Date.now() - sessionPlayAt.current >= OUTPUT_DROP_AFTER_PLAY_MS) return
       logPlayback('Paused', removed ? 'an audio device went away' : 'the play came as an audio device came or went')
       useDj.getState().hush()
       usePlayer.getState().setPlaying(false)
