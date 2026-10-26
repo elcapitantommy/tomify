@@ -3,17 +3,20 @@
 // The only native parts are the window, the mini player mode and opening other sites in the browser.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod mini_spot;
+
+use mini_spot::{Area, MINI_HEIGHT, MINI_WIDTH};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::webview::NewWindowResponse;
 use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, Runtime, Url, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
 const APP_URL: &str = "https://app.tomify.tomdixon.uk/";
-const MINI_WIDTH: f64 = 360.0;
-const MINI_HEIGHT: f64 = 168.0;
-const MINI_MARGIN: i32 = 16;
+// Where the mini player was last left, kept in the app's settings folder so it survives restarts.
+const MINI_SPOT_FILE: &str = "mini-player-position.txt";
 // wry's defaults, plus Chromium's media key handling so the keyboard's play, next and previous keys
 // and the Windows media overlay reach Tomify's Media Session controls.
 const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-features=HardwareMediaKeyHandling";
@@ -21,6 +24,41 @@ const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreen
 // The full window's size and place, kept while the mini player is showing.
 #[derive(Default)]
 struct FullWindow(Mutex<Option<(PhysicalPosition<i32>, PhysicalSize<u32>, bool)>>);
+
+fn mini_spot_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|dir| dir.join(MINI_SPOT_FILE))
+}
+
+fn load_mini_spot<R: Runtime>(app: &AppHandle<R>) -> Option<(i32, i32)> {
+    mini_spot::parse(&std::fs::read_to_string(mini_spot_path(app)?).ok()?)
+}
+
+// Called while the window is the mini player: remembers where it is now. Best effort; a failed save
+// only means it opens in the default spot next time.
+fn save_mini_spot<R: Runtime>(app: &AppHandle<R>, position: tauri::Result<PhysicalPosition<i32>>, minimized: bool) {
+    let Ok(position) = position else { return };
+    let spot = (position.x, position.y);
+    if minimized || !mini_spot::worth_saving(spot) {
+        return;
+    }
+    if let Some(path) = mini_spot_path(app) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, mini_spot::format(spot));
+    }
+}
+
+fn area(monitor: &Monitor) -> Area {
+    let work = monitor.work_area();
+    Area {
+        x: work.position.x,
+        y: work.position.y,
+        width: work.size.width as i32,
+        height: work.size.height as i32,
+        scale: monitor.scale_factor(),
+    }
+}
 
 fn same_site(url: &Url) -> bool {
     Url::parse(APP_URL).map(|app| app.origin() == url.origin()).unwrap_or(false)
@@ -47,15 +85,11 @@ fn enter_mini_player(window: WebviewWindow, saved: tauri::State<FullWindow>) -> 
     window
         .set_size(LogicalSize::new(MINI_WIDTH, MINI_HEIGHT))
         .map_err(|e| e.to_string())?;
-    // Bottom right of the screen the window is on, above the taskbar.
-    if let Ok(Some(monitor)) = window.current_monitor() {
-        let area = monitor.work_area();
-        let scale = monitor.scale_factor();
-        let width = (MINI_WIDTH * scale) as i32;
-        let height = (MINI_HEIGHT * scale) as i32;
-        let margin = (MINI_MARGIN as f64 * scale) as i32;
-        let x = area.position.x + area.size.width as i32 - width - margin;
-        let y = area.position.y + area.size.height as i32 - height - margin;
+    // Where it was last left (kept on a screen that is still connected), or the first time
+    // the bottom right of the screen the window is on, above the taskbar.
+    if let Ok(Some(current)) = window.current_monitor() {
+        let areas: Vec<Area> = window.available_monitors().unwrap_or_default().iter().map(area).collect();
+        let (x, y) = mini_spot::place(load_mini_spot(window.app_handle()), &area(&current), &areas);
         window
             .set_position(PhysicalPosition::new(x, y))
             .map_err(|e| e.to_string())?;
@@ -69,6 +103,7 @@ fn exit_mini_player(window: WebviewWindow, saved: tauri::State<FullWindow>) -> R
     let Some((position, size, maximized)) = saved.0.lock().map_err(|e| e.to_string())?.take() else {
         return Ok(());
     };
+    save_mini_spot(window.app_handle(), window.outer_position(), window.is_minimized().unwrap_or(false));
     window.set_always_on_top(false).map_err(|e| e.to_string())?;
     window.set_decorations(true).map_err(|e| e.to_string())?;
     window.set_resizable(true).map_err(|e| e.to_string())?;
@@ -116,6 +151,20 @@ fn main() {
             }
         }))
         .manage(FullWindow::default())
+        // Closing the app while it is the mini player still remembers where the mini player was.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { .. } = event {
+                let mini = window
+                    .state::<FullWindow>()
+                    .0
+                    .lock()
+                    .map(|saved| saved.is_some())
+                    .unwrap_or(false);
+                if mini {
+                    save_mini_spot(window.app_handle(), window.outer_position(), window.is_minimized().unwrap_or(false));
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![enter_mini_player, exit_mini_player])
         .setup(|app| {
             open_main_window(app.handle())?;

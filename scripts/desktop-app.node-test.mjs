@@ -32,6 +32,19 @@ test('the mini player commands are declared, registered, granted and the ones th
   assert.deepEqual(capability.permissions.filter((permission) => !permission.startsWith('allow-')), ['core:window:allow-start-dragging'])
 })
 
+test('the mini player remembers where it was left, on leaving it and on closing the app', () => {
+  const spot = read('desktop/src-tauri/src/mini_spot.rs')
+  assert.match(main, /^mod mini_spot;/m)
+  assert.match(main, /mini_spot::place\(load_mini_spot\(/)
+  // Saved when the full window comes back, and when the app is closed as the mini player.
+  assert.match(main.slice(main.indexOf('fn exit_mini_player')), /save_mini_spot\(/)
+  assert.match(main, /WindowEvent::CloseRequested[\s\S]*save_mini_spot\(/)
+  // One size for the mini player, defined beside the code that places it.
+  assert.match(spot, /pub const MINI_WIDTH: f64 = 360\.0;/)
+  assert.match(spot, /pub const MINI_HEIGHT: f64 = 168\.0;/)
+  assert.doesNotMatch(main, /const MINI_(WIDTH|HEIGHT)/)
+})
+
 test('installer settings: version in step, icons present, Windows media keys on', () => {
   assert.equal(conf.version, cargo.match(/^version = "([^"]+)"/m)[1])
   assert.equal(conf.app.withGlobalTauri, true)
