@@ -8,6 +8,7 @@ import { ListeningTracker, sendListeningEvent } from '../lib/listening-log'
 import { localPlaybackDeviceName } from '../stores/livePlayback'
 import { albumArtworkUrl, useAlbumArtwork } from '../stores/albumArtwork'
 import { OUTPUT_CHANGE_GUARD_MS, watchAudioOutputs, type AudioOutputWatcher } from '../lib/audioOutputs'
+import { logPlayback } from '../lib/playbackLog'
 import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import { AdaptiveSources, chooseSource, loadHlsLibrary, markAdaptiveUnavailable, playbackEngine, wantsAdaptive, type StreamSource } from '../lib/adaptiveStream'
 import { castElementState, castErrorMessage, castKind, type CastableElement, type CastState } from '../lib/cast'
@@ -624,34 +625,54 @@ export function PlayerRuntime() {
     if (usePlayer.getState().playing) equaliser.current?.resume()
   }, [api, equaliserEnabled, equaliserGains, visualiserOn])
 
+  // True when the music is paused and an audio device has just connected or dropped out.
+  function outputJustChanged() {
+    return !usePlayer.getState().playing && Boolean(outputs.current?.changedRecently())
+  }
+
+  function skipFromSession(direction: 'next' | 'previous') {
+    if (outputJustChanged()) { logPlayback(`Ignored ${direction}`, 'an audio device had just come or gone'); return }
+    const wasPaused = !usePlayer.getState().playing
+    logPlayback(direction === 'next' ? 'Next' : 'Previous', 'lock screen, headphones or car')
+    if (direction === 'next') usePlayer.getState().next()
+    else usePlayer.getState().previous()
+    // A skip that started paused music is undone like a play if the device drops out straight after.
+    if (wasPaused && usePlayer.getState().playing) sessionPlayAt.current = Date.now()
+  }
+
   useEffect(() => {
     if (!track || !('mediaSession' in navigator)) return
     const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
       ['play', () => {
         // Headphones or a car dropping out can send a play of their own as they go: that would start the
         // music out of the speaker, so a play right as an audio device comes or goes is ignored.
-        if (!usePlayer.getState().playing && outputs.current?.changedRecently()) return
+        if (outputJustChanged()) { logPlayback('Ignored play', 'an audio device had just come or gone'); return }
+        logPlayback('Play', 'lock screen, headphones or car')
         sessionPlayAt.current = Date.now()
         usePlayer.getState().setPlaying(true)
       }],
-      ['pause', () => { useDj.getState().hush(); usePlayer.getState().setPlaying(false) }],
-      ['previoustrack', () => usePlayer.getState().previous()],
-      ['nexttrack', () => usePlayer.getState().next()],
+      ['pause', () => { logPlayback('Pause', 'lock screen, headphones or car'); useDj.getState().hush(); usePlayer.getState().setPlaying(false) }],
+      // Skipping starts paused music too, so the same goes for a skip sent as headphones drop out.
+      ['previoustrack', () => skipFromSession('previous')],
+      ['nexttrack', () => skipFromSession('next')],
       ['seekbackward', (d) => usePlayer.getState().seekTo(Math.max(0, (currentAudio()?.currentTime ?? 0) - (d.seekOffset ?? 10)))],
       ['seekforward', (d) => usePlayer.getState().seekTo(Math.min(currentAudio()?.duration ?? Infinity, (currentAudio()?.currentTime ?? 0) + (d.seekOffset ?? 10)))],
       ['seekto', (d) => d.seekTime !== undefined && usePlayer.getState().seekTo(d.seekTime)],
     ]
     handlers.forEach(([action, handler]) => { try { navigator.mediaSession.setActionHandler(action, handler) } catch { /* unsupported action on this browser */ } })
     return () => handlers.forEach(([action]) => { try { navigator.mediaSession.setActionHandler(action, null) } catch { /* unsupported action */ } })
-  }, [api, track])
+  }, [api, track]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // The play from headphones dropping out can also arrive just before the browser reports the device change:
   // undo a lock-screen or headphone play that close to it. A device that is known to have gone pauses the
   // music as unplugging wired headphones does.
   useEffect(() => {
     const watcher = watchAudioOutputs((removed) => {
+      if (removed) logPlayback('Audio device removed')
+      else logPlayback('Audio devices changed')
       if (!usePlayer.getState().playing) return
       if (!removed && Date.now() - sessionPlayAt.current >= OUTPUT_CHANGE_GUARD_MS) return
+      logPlayback('Paused', removed ? 'an audio device went away' : 'the play came as an audio device came or went')
       useDj.getState().hush()
       usePlayer.getState().setPlaying(false)
     })
@@ -676,6 +697,7 @@ export function PlayerRuntime() {
     channel.current = bus
     bus.onmessage = (event: MessageEvent<{ type?: string; id?: string }>) => {
       if (event.data?.type !== 'playing' || event.data.id === instanceId.current) return
+      if (usePlayer.getState().playing) logPlayback('Paused', 'another open copy of Tomify started playing')
       clearRetry()
       clearStall()
       pauseAll()
@@ -770,6 +792,7 @@ export function PlayerRuntime() {
       // minutes later, so it is stopped. The listener's own play buttons (lock screen, headphones, car) go
       // through the media session handlers below, which set the player playing first.
       if (!usePlayer.getState().playing && 'mediaSession' in navigator) {
+        logPlayback('Stopped a play Tomify didn\'t ask for', 'the phone or browser resumed it')
         event.currentTarget.pause()
         return
       }

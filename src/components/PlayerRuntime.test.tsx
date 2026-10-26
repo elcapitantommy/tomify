@@ -6,6 +6,7 @@ import { usePlayer } from '../stores/player'
 import { useAlbumArtwork } from '../stores/albumArtwork'
 import { ADAPTIVE_START_TIMEOUT_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from '../lib/playbackRecovery'
 import { OUTPUT_CHANGE_GUARD_MS } from '../lib/audioOutputs'
+import { clearPlaybackLog, playbackLog } from '../lib/playbackLog'
 import { PlayerRuntime } from './PlayerRuntime'
 import { loadHlsLibrary, resetAdaptiveAvailability } from '../lib/adaptiveStream'
 import { DEFAULT_NAVIDROME_SERVER } from '../lib/navidrome'
@@ -349,6 +350,41 @@ describe('PlayerRuntime', () => {
       await sessionAction('play')
       expect(usePlayer.getState().playing).toBe(false)
       expect(vi.mocked(HTMLMediaElement.prototype.play).mock.contexts).not.toContain(current)
+    })
+
+    it('ignores a skip the headphones send as they drop out, so paused music stays paused on the same song', async () => {
+      await startPlaying()
+      await sessionAction('pause')
+      await changeDevices([])
+      await sessionAction('nexttrack')
+      await sessionAction('previoustrack')
+      expect(usePlayer.getState()).toEqual(expect.objectContaining({ playing: false, currentIndex: 0 }))
+    })
+
+    it('pauses again when a skip that started paused music comes just before the disconnect is reported', async () => {
+      await startPlaying()
+      await sessionAction('pause')
+      await sessionAction('nexttrack')
+      expect(usePlayer.getState()).toEqual(expect.objectContaining({ playing: true, currentIndex: 1 }))
+      await changeDevices([])
+      expect(usePlayer.getState().playing).toBe(false)
+    })
+
+    it('still skips from the headphones when nothing has connected or disconnected', async () => {
+      vi.useFakeTimers()
+      await startPlaying()
+      await act(async () => { vi.advanceTimersByTime(OUTPUT_CHANGE_GUARD_MS) })
+      await sessionAction('nexttrack')
+      expect(usePlayer.getState()).toEqual(expect.objectContaining({ playing: true, currentIndex: 1 }))
+    })
+
+    it('notes ignored plays and device changes in the playback log', async () => {
+      clearPlaybackLog()
+      await startPlaying()
+      await sessionAction('pause')
+      await changeDevices([])
+      await sessionAction('play')
+      expect(playbackLog().map((entry) => entry.event)).toEqual(['Pause', 'Audio devices changed', 'Ignored play'])
     })
 
     it('pauses again when that play arrives just before the disconnect is reported', async () => {
