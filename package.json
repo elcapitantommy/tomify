@@ -9,7 +9,7 @@
     "build": "node scripts/build-worker-info.mjs && tsc -b && vite build && pnpm exec wrangler deploy --dry-run --outdir dist/server --no-minify",
     "lint": "eslint .",
     "typecheck": "node scripts/build-worker-info.mjs && tsc -b --pretty false",
-    "test": "vitest run && node --test --test-concurrency=1 recovery-agent/*.node-test.mjs scripts/*.node-test.mjs",
+    "test": "vitest run && node --test --test-concurrency=1 recovery-agent/*.node-test.mjs tomtube-service/*.node-test.mjs scripts/*.node-test.mjs",
     "test:watch": "vitest",
     "deploy": "pnpm exec wrangler d1 migrations apply tomify-metadata --remote && pnpm exec wrangler deploy"
   },

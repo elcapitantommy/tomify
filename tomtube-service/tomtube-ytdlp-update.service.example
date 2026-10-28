@@ -1,0 +1,11 @@
+# Keeps TomTube's own yt-dlp binary current: YouTube changes often, and an old yt-dlp is the most
+# common reason playback stops working. Copy to /etc/systemd/system/ with the .timer (docs/TOMTUBE.md).
+[Unit]
+Description=Update TomTube's yt-dlp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tom
+ExecStart=/opt/tomtube/bin/yt-dlp --update-to stable

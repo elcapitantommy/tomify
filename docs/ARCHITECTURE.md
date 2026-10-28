@@ -4,7 +4,7 @@ This describes Tomify as it is built on `main` today. For what is planned next, 
 
 ## 1. Overview
 
-Tomify has three running parts:
+Tomify has three running parts (plus TomTube, an optional fourth described in [TOMTUBE.md](TOMTUBE.md)):
 
 1. **The PWA**, a React app that runs in the browser and talks to Navidrome and to the Worker.
 2. **The Cloudflare Worker**, which serves the PWA, proxies Navidrome, and owns Tomify's own data in D1.
@@ -36,6 +36,7 @@ Navidrome stays the source of truth for accounts, the library, playlists, favour
 ## 2. The PWA
 
 - Tomifin Downloader is a separate app at its own address (`TOMIFIN_HOSTNAME`, a second Custom Domain on the same Worker), built from `tomifin/index.html` and `src/tomifin/` as another Vite entry point. It shares none of Tomify's shell or sign-in: Jellyfin administrators sign in through the recovery agent (`recovery-agent/jellyfin.mjs`), and the session is an HttpOnly cookie; see [TOMIFIN.md](TOMIFIN.md).
+- TomTube is a third Vite entry point (`tomtube/index.html`, `src/tomtube/`) served at `/tomtube/` on Tomify's own address, installed as its own home-screen app. It signs in with the same Navidrome account and requires the same media tokens (`TOMIFY_MEDIA_KEY`) for every media URL; see [TOMTUBE.md](TOMTUBE.md).
 - React 18, TypeScript and Vite, under `src/`. Routes are declared in `src/App.tsx`: Home, Artists, Albums, Search, Playlists (including Spotify import and imported playlists), Favourites, Downloads, Recovery and Settings.
 - `src/lib/navidrome.ts` is the single typed OpenSubsonic client. Signing in creates a salted token (`createAuthSession`); the password is never stored. When the server is the default (`https://tomify.tomdixon.uk`), requests go through the Worker's same-origin `/navidrome` proxy, which avoids CORS.
 - Calls to Tomify's own API (`src/lib/recovery-api.ts`, `catalogue-api.ts`, `completeness-api.ts`, `playlist-shares.ts` and the stores) send the Navidrome username, token and salt as `x-tomify-user`, `x-tomify-token` and `x-tomify-salt` headers.
@@ -72,6 +73,7 @@ Wrangler deploys those as separate surfaces. Workers Static Assets serves `dist/
 | `worker/routes/inventory.ts`, `worker/routes/system-settings.ts` | `/api/inventory*`, `/api/library-health*`, `/api/system*`, quality, scan and preflight routes | Administrative library and server operations |
 | `worker/routes/navidrome.ts`, `worker/routes/version.ts` | `/navidrome/*`, `/api/version` | Navidrome proxy and deployed version information |
 | `worker/routes/hls.ts`, `worker/routes/media-session.ts` (+ `worker/features/media-session.ts`) | `/api/hls/*`, `/api/media-session` | Adaptive streaming through the agent; short-lived media tokens and the LAN address |
+| `worker/routes/tomtube.ts` | `/api/tomtube/*`, `/tomtube/*` | TomTube: ad-free YouTube through the TomTube service on the box (a fixed list of paths, signed-in listeners only), and TomTube's page; see [TOMTUBE.md](TOMTUBE.md) |
 | `worker/routes/tomifin.ts`, `worker/routes/tomifin-site.ts` | `/api/tomifin/*`; everything on `TOMIFIN_HOSTNAME` | Tomifin Downloader (Jellyfin administrators only): film and TV torrent search and queuing through the recovery agent; see [TOMIFIN.md](TOMIFIN.md) |
 | `scripts/recovery-metadata.mjs`, `scripts/recovery-artwork.mjs` | (helpers) | MusicBrainz metadata review and artwork resolution for Recovery |
 
@@ -129,11 +131,14 @@ Audio elements cannot send headers either, so stream URLs used to carry the Navi
 | `TOMIFY_MIXES_MODEL` | Dashboard var | Optional | `claude-sonnet-5-5` | `worker/features/mix-curator.ts` (mixes and the DJ) | Mixes and the DJ use Claude Sonnet 5.5. |
 | `AI` | Workers AI binding (`wrangler.toml`) | Optional | Workers AI | `worker/features/dj.ts` (the DJ's voice, Deepgram Aura-2) | The DJ still plays its sets but doesn't speak; `/api/dj/voice` returns `503`. |
 | `TOMIFY_DJ_VOICE` | Dashboard var | Optional | `ophelia` | `worker/features/dj.ts` | The Aura-2 voice, used when `TOMIFY_DJ_VOICE_MODEL` is `aura`. |
-| `TOMIFY_MEDIA_KEY` | Dashboard secret | Optional | None | `worker/features/media-session.ts` (seals and opens short-lived media tokens); the agent's `TOMIFY_MEDIA_KEY` must be the same value. Also seals party hosts' and collaborative-playlist owners' Navidrome tokens (`worker/features/party.ts`, `worker/features/playlist-share.ts`) | `/api/media-session` returns `404` and stream URLs keep the Navidrome login, as before. Playlists can't be made collaborative. |
+| `TOMIFY_MEDIA_KEY` | Dashboard secret | Optional | None | `worker/features/media-session.ts` (seals and opens short-lived media tokens); the agent's `TOMIFY_MEDIA_KEY` must be the same value. Also seals party hosts' and collaborative-playlist owners' Navidrome tokens (`worker/features/party.ts`, `worker/features/playlist-share.ts`) | `/api/media-session` returns `404` and stream URLs keep the Navidrome login, as before. Playlists can't be made collaborative. TomTube can't play anything (it accepts only media tokens). |
 | `TOMIFY_PARTY_USERNAME` | Dashboard var | Optional | None | `worker/features/party.ts` (a Navidrome account party guests search and see covers with) | Guests search as the host, whose login is stored sealed with `TOMIFY_MEDIA_KEY` while the party runs. Without either, starting a party returns `503`. |
 | `TOMIFY_PARTY_PASSWORD` | Dashboard secret | Optional | None | `worker/features/party.ts` (the party account's password; used only with `TOMIFY_PARTY_USERNAME`) | As above. |
 | `TOMIFY_LAN_ORIGIN` | `wrangler.toml` var | Optional | None | `worker/routes/media-session.ts` (the box's `https://` address on the home network, for example `https://lan.tomify.tomdixon.uk:8789`) | Players always stream through the Worker. |
 | `TOMIFIN_HOSTNAME` | `wrangler.toml` var | Optional | None (set to `tomifin.tomdixon.uk`) | `worker/routes/tomifin-site.ts` (Tomifin Downloader's own address, a second Custom Domain on this Worker) | Tomifin is served at `/tomifin/` on Tomify's address instead. |
+| `TOMTUBE_SERVICE_URL` | Dashboard var | Optional | None | `worker/routes/tomtube.ts` (the TomTube service's Cloudflare Tunnel address; see [TOMTUBE.md](TOMTUBE.md)) | `/api/tomtube/*` answers `503 not-configured`; the TomTube page shows that TomTube is not set up. |
+| `TOMTUBE_SERVICE_TOKEN` | Dashboard secret | Optional (required with `TOMTUBE_SERVICE_URL`) | None | `worker/routes/tomtube.ts` bearer authentication to the TomTube service; the service's `TOMTUBE_TOKEN` must be the same value | Same as a missing `TOMTUBE_SERVICE_URL`. |
+| `TOMTUBE_ALLOWED_USERS` | Dashboard var | Optional | None (every signed-in listener) | `worker/routes/tomtube.ts` (comma-separated Navidrome usernames allowed to use TomTube) | Every signed-in Tomify listener can use TomTube. |
 | `TOMIFY_DJ_VOICE_MODEL` | `wrangler.toml` var | Optional | `melotts` (set to `aura`) | `worker/features/dj.ts` | The DJ reads links with MeloTTS, which costs about 8 free neurons a link. Set `aura` to use Aura-2 (about 1,100 a link) first, with MeloTTS as backup. |
 | `TOMIFY_VERSION` | Build-time constant | Required, generated | Current Git short SHA; then `CF_PAGES_COMMIT_SHA`; then `WORKERS_CI_COMMIT_SHA`; then `unknown` | `/api/version` | Reports `unknown` only when Git and both CI fallbacks are unavailable. |
 | `TOMIFY_AGENT_CONTRACT` | Build-time constant | Required, generated | `2` | `/api/version` and the recovery-agent compatibility gate | Build generation supplies it; a missing generated module fails the build. |

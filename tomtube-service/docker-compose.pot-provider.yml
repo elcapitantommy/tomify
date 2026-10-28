@@ -1,0 +1,15 @@
+# Optional: a Proof-of-Origin (PO) token provider for yt-dlp, self-hosted on the box.
+# https://github.com/Brainicism/bgutil-ytdlp-pot-provider (maintained, documented by yt-dlp's PO Token Guide).
+# It listens on loopback only; TomTube's yt-dlp reaches it through TOMTUBE_POT_PROVIDER_URL, with the
+# matching yt-dlp plugin installed (docs/TOMTUBE.md). Pin the image tag to the plugin version you install.
+#   docker compose -f docker-compose.pot-provider.yml up -d
+services:
+  bgutil-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    container_name: tomtube-pot-provider
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:4416:4416"
+    mem_limit: 512m
+    cpus: 1.0

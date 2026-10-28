@@ -4,8 +4,8 @@ import { VitePWA } from 'vite-plugin-pwa'
 import { lightTheme } from './scripts/light-theme.mjs'
 
 export default defineConfig({
-  // Two pages: Tomify itself, and Tomifin Downloader at /tomifin/ (tomifin/index.html).
-  build: { outDir: 'dist/client', rollupOptions: { input: { main: 'index.html', tomifin: 'tomifin/index.html' } } },
+  // Three pages: Tomify itself, Tomifin Downloader at /tomifin/ (tomifin/index.html) and TomTube at /tomtube/ (tomtube/index.html).
+  build: { outDir: 'dist/client', rollupOptions: { input: { main: 'index.html', tomifin: 'tomifin/index.html', tomtube: 'tomtube/index.html' } } },
   plugins: [
     react(),
     lightTheme(),
@@ -24,14 +24,14 @@ export default defineConfig({
         // Push notification handlers (public/push-sw.js).
         importScripts: ['/push-sw.js'],
         navigateFallback: '/index.html',
-        // Tomifin Downloader is its own page, not a Tomify route, so it is never answered with Tomify's index.html.
-        navigateFallbackDenylist: [/^\/api\//, /^\/navidrome\//, /^\/tomifin(\/|$)/],
+        // Tomifin Downloader and TomTube are their own pages, not Tomify routes, so they are never answered with Tomify's index.html.
+        navigateFallbackDenylist: [/^\/api\//, /^\/navidrome\//, /^\/tomifin(\/|$)/, /^\/tomtube(\/|$)/],
         cleanupOutdatedCaches: true,
         clientsClaim: false,
         skipWaiting: true,
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
-        // Tomifin is always loaded from the network, so it never runs a stale cached copy.
-        globIgnores: ['server/**', 'tomifin/**'],
+        // Tomifin and TomTube are always loaded from the network, so they never run a stale cached copy.
+        globIgnores: ['server/**', 'tomifin/**', 'tomtube/**'],
         runtimeCaching: [{
           urlPattern: ({ request }) => request.destination === 'image',
           handler: 'CacheFirst',

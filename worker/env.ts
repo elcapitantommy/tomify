@@ -32,6 +32,11 @@ export interface Env {
   TOMIFY_PARTY_PASSWORD?: string
   // Optional: Tomifin Downloader's own hostname (a second custom domain on this Worker). Unset, it stays at /tomifin/.
   TOMIFIN_HOSTNAME?: string
+  // Optional: TomTube (docs/TOMTUBE.md). The TomTube service's tunnel address and its bearer token; unset, /api/tomtube answers 503.
+  TOMTUBE_SERVICE_URL?: string
+  TOMTUBE_SERVICE_TOKEN?: string
+  // Optional: comma-separated Navidrome usernames allowed to use TomTube. Unset, every signed-in listener can.
+  TOMTUBE_ALLOWED_USERS?: string
 }
 
 // `ctx` lets a route finish work after answering (waitUntil).
