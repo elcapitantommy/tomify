@@ -73,7 +73,7 @@ export const HISTORY_LIMIT = 100
 
 // Most recent first, one entry per video.
 export function recordHistory(history: HistoryEntry[], video: TomTubeVideo, now = Date.now(), position = 0): HistoryEntry[] {
-  const entry: HistoryEntry = { id: video.id, title: video.title, channel: video.channel, duration: video.duration, viewCount: video.viewCount ?? null, watchedAt: now, position }
+  const entry: HistoryEntry = { id: video.id, title: video.title, channel: video.channel, channelId: video.channelId ?? null, duration: video.duration, viewCount: video.viewCount ?? null, watchedAt: now, position }
   return [entry, ...history.filter((item) => item.id !== video.id)].slice(0, HISTORY_LIMIT)
 }
 

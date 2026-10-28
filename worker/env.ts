@@ -37,6 +37,7 @@ export interface Env {
   TOMTUBE_SERVICE_TOKEN?: string
   // Optional: comma-separated Navidrome usernames allowed to use TomTube. Unset, every signed-in listener can.
   TOMTUBE_ALLOWED_USERS?: string
+  TOMTUBE_TRAINING_USERS?: string
 }
 
 // `ctx` lets a route finish work after answering (waitUntil).

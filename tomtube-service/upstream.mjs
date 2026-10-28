@@ -1,7 +1,8 @@
 // Fetching media bytes from YouTube's video servers, and only from them.
 //
-// The service fetches two kinds of upstream URL: googlevideo.com media URLs that yt-dlp resolved, and
-// i.ytimg.com thumbnails it builds itself from a video id. Anything else, including a redirect to
+// The service fetches three kinds of upstream URL: googlevideo.com media URLs that yt-dlp resolved,
+// i.ytimg.com thumbnails it builds itself from a video id, and a channel's public RSS feed
+// (www.youtube.com/feeds/videos.xml?channel_id=UC…) for suggestions. Anything else, including a redirect to
 // anywhere else, is refused. Redirects are followed by hand so each hop is checked.
 
 export class UpstreamError extends Error {
@@ -21,6 +22,8 @@ export function isAllowedUpstream(value, kind = 'media') {
   try { url = new URL(value) } catch { return false }
   if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) return false
   const host = url.hostname.toLowerCase()
+  // A channel's public uploads feed, for suggestions (training.mjs).
+  if (kind === 'feed') return host === 'www.youtube.com' && url.pathname === '/feeds/videos.xml' && /^channel_id=UC[A-Za-z0-9_-]{22}$/.test(url.search.slice(1))
   return kind === 'image' ? IMAGE_HOSTS.has(host) : MEDIA_HOST.test(host)
 }
 

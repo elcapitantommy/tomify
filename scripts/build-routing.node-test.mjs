@@ -2276,6 +2276,51 @@ test('TomTube passes only its own paths to the TomTube service, for signed-in li
   } finally { globalThis.fetch = originalFetch }
 })
 
+test('TomTube recommendations and training paths pass on only their own methods and bodies', async () => {
+  const originalFetch = globalThis.fetch
+  const serviceCalls = []
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: url.searchParams.get('u') === 'tt-trainer' ? 'ok' : 'failed' } })
+    serviceCalls.push({ url, method: init.method, body: init.body, headers: init.headers })
+    return Response.json({ ok: true })
+  }
+  const env = { TOMTUBE_SERVICE_URL: 'https://tomtube-service.tomify.test', TOMTUBE_SERVICE_TOKEN: 's'.repeat(40), TOMIFY_MEDIA_KEY: 'k'.repeat(40) }
+  const login = { 'x-tomify-user': 'tt-trainer', 'x-tomify-token': '0123456789abcdef0123456789abcdef', 'x-tomify-salt': 'salt5' }
+  const call = (path, init = {}) => worker.fetch(new Request(`https://app.tomify.test/api/tomtube/${path}`, { ...init, headers: { ...login, ...init.headers } }), env)
+  try {
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/tomtube/training'), env)).status, 401)
+    assert.equal((await call('recommendations?refresh=1&x=y')).status, 200)
+    assert.equal(serviceCalls.at(-1).url.href, 'https://tomtube-service.tomify.test/v1/recommendations?refresh=1')
+    assert.equal((await call('training/cookies', { method: 'PUT', body: '# Netscape HTTP Cookie File\n' })).status, 200)
+    assert.equal(serviceCalls.at(-1).method, 'PUT')
+    assert.equal(serviceCalls.at(-1).body, '# Netscape HTTP Cookie File\n')
+    assert.equal(serviceCalls.at(-1).url.pathname, '/v1/training/cookies')
+    assert.equal((await call('watched', { method: 'POST', body: '{"id":"dQw4w9WgXcQ"}' })).status, 200)
+    assert.equal(serviceCalls.at(-1).headers['content-type'], 'application/json')
+    for (const [path, method] of [['training', 'DELETE'], ['training/cookies', 'DELETE'], ['training/sync', 'POST'], ['training', 'GET']]) {
+      assert.equal((await call(path, { method })).status, 200, `${method} ${path}`)
+    }
+    const before = serviceCalls.length
+    for (const [path, method] of [['training/cookies', 'GET'], ['training/sync', 'GET'], ['watched', 'GET'], ['recommendations', 'POST'], ['training', 'PUT']]) {
+      assert.equal((await call(path, { method })).status, 405, `${method} ${path}`)
+    }
+    assert.equal((await call('training/cookies', { method: 'PUT', body: 'x'.repeat(300 * 1024) })).status, 413)
+    assert.equal((await call('training/other')).status, 404)
+    assert.equal(serviceCalls.length, before)
+    // Only the owner may change cookies or training data when TOMTUBE_TRAINING_USERS is set; others still get suggestions.
+    const owner = { ...env, TOMTUBE_TRAINING_USERS: 'someone-else' }
+    const as = (path, init = {}) => worker.fetch(new Request(`https://app.tomify.test/api/tomtube/${path}`, { ...init, headers: { ...login, ...init.headers } }), owner)
+    assert.equal((await as('training/cookies', { method: 'PUT', body: 'x' })).status, 403)
+    assert.equal((await as('training', { method: 'DELETE' })).status, 403)
+    assert.equal((await as('training/sync', { method: 'POST' })).status, 403)
+    assert.equal(serviceCalls.length, before)
+    assert.equal((await as('recommendations')).status, 200)
+    assert.equal((await as('feedback', { method: 'POST', body: '{"id":"dQw4w9WgXcQ","kind":"not-interested"}' })).status, 200)
+    assert.equal(serviceCalls.at(-1).headers['content-type'], 'application/json')
+  } finally { globalThis.fetch = originalFetch }
+})
+
 test('TomTube playlists are re-signed with a fresh media token', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input) => {

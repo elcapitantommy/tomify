@@ -26,6 +26,21 @@ export interface TomTubeDetails extends TomTubeVideo {
 
 export interface QueueTimeline { tracks: Array<{ id: string; offset: number; duration: number }>; skipped: Array<{ id: string; error: string }> }
 
+// A suggestion from the server's training log (tomtube-service/training.mjs), with why it is shown.
+export interface RecommendedVideo extends TomTubeVideo { reason?: string; publishedAt?: string }
+export interface RecommendationShelf { id: 'youtube' | 'channels' | 'discover' | 'topics'; title: string; videos: RecommendedVideo[] }
+export interface Recommendations { generatedAt: string; source: 'youtube' | 'training' | 'none'; cookies: CookieState; topics: string[]; shelves: RecommendationShelf[] }
+
+export type CookieState = 'missing' | 'checking' | 'valid' | 'expired' | 'error'
+export interface TrainingStatus {
+  cookies: { state: CookieState; updatedAt: string | null; expiresAt: string | null; lastSyncAt: string | null; lastSuccessAt: string | null; lastError: { code: string; message: string; at: string } | null; nextSyncAt: string | null; encrypted: boolean }
+  learned: { watches: number; finished: number; skipped: number; notInterested: number; youtubeHistory: number; subscriptions: number; channels: number; recommendedChannels: number; recommendedSyncedAt: string | null }
+  syncIntervalHours: number
+}
+
+// What the app reports when a video stops being watched (or reaches 30 seconds, or ends).
+export interface WatchReport { id: string; title: string; channel: string; channelId: string | null; duration: number | null; seconds: number; ended: boolean; skipped?: boolean }
+
 export class TomTubeError extends Error {
   constructor(message: string, readonly status: number, readonly code: string) { super(message); this.name = 'TomTubeError' }
 }
@@ -61,6 +76,16 @@ export const tomtubeApi = {
   prefetch: (session: AuthSession, id: string) => request<{ state: string }>(session, `videos/${encodeURIComponent(id)}/prefetch`, { method: 'POST' }),
   queueTimeline: (session: AuthSession, ids: string[]) => request<QueueTimeline>(session, `queue.json?${new URLSearchParams({ ids: ids.join(',') })}`),
   status: (session: AuthSession) => request<Record<string, unknown>>(session, 'status'),
+  recommendations: (session: AuthSession, refresh = false, signal?: AbortSignal) => request<Recommendations>(session, refresh ? 'recommendations?refresh=1' : 'recommendations', { signal }),
+  watched: (session: AuthSession, report: WatchReport) => request<{ ok: boolean }>(session, 'watched', { method: 'POST', body: JSON.stringify(report), headers: { 'content-type': 'application/json' }, keepalive: true }),
+  // "Not interested" on a suggestion: a strong negative for the model.
+  notInterested: (session: AuthSession, video: TomTubeVideo) => request<{ ok: boolean }>(session, 'feedback', { method: 'POST', body: JSON.stringify({ id: video.id, kind: 'not-interested', channelId: video.channelId ?? null, channel: video.channel, title: video.title }), headers: { 'content-type': 'application/json' } }),
+  training: (session: AuthSession) => request<TrainingStatus>(session, 'training'),
+  clearTraining: (session: AuthSession) => request<TrainingStatus>(session, 'training', { method: 'DELETE' }),
+  // The cookie file goes to the server and is never read back.
+  uploadCookies: (session: AuthSession, cookies: string) => request<TrainingStatus>(session, 'training/cookies', { method: 'PUT', body: cookies, headers: { 'content-type': 'text/plain' } }),
+  removeCookies: (session: AuthSession) => request<TrainingStatus>(session, 'training/cookies', { method: 'DELETE' }),
+  syncTraining: (session: AuthSession) => request<TrainingStatus>(session, 'training/sync', { method: 'POST' }),
 }
 
 // The query that signs a media URL right now; null until a media token is available.
