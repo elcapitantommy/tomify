@@ -1,5 +1,6 @@
 import type { Track } from '../types'
 import { usePlayer } from './player'
+import { logPlayback } from '../lib/playbackLog'
 import {
   LivePlaybackConflict,
   controlRemote,
@@ -108,6 +109,7 @@ export function playNextAnywhere(tracks: Track[]) {
 
 export function applyCommand(command: LivePlaybackCommand, snapshot: LivePlaybackSnapshot | null) {
   const player = usePlayer.getState()
+  if (command.action === 'play' || command.action === 'pause' || command.action === 'transfer' || command.action === 'play-index') logPlayback(`${command.action} from another device`)
   switch (command.action) {
     case 'play': player.setPlaying(true); break
     case 'pause': player.setPlaying(false); break
