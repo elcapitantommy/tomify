@@ -58,14 +58,24 @@ Run the [manual checklist](#manual-playback-test-checklist) on the phone before 
 
 **Audio mode (Test B).** Tapping **Audio only** notes the position, pauses and empties the `<video>` element (it does not keep running in the background), loads the video's audio into a separate `<audio>` element and starts it at the same position. On iPhone and iPad the audio is the single `audio.m4a` file by default, because device testing showed iOS pausing HLS audio (`audio.m3u8`) when the phone locks while the M4A file kept playing; elsewhere it is HLS. Settings → **Audio stream** can choose either everywhere. When the service is asked for an audio playlist it also downloads that video's audio (a few MB) to its disk cache, so a locked phone keeps playing even if YouTube's address expires or YouTube is slow. The Media Session API supplies the lock-screen title, channel, artwork, play/pause, next/previous and seeking, which headphones, Bluetooth and CarPlay-style controls use too. Interruptions (calls, Siri) pause, and the lock-screen play button resumes. A stalled or failed stream is reloaded from where it stopped (1, 3, 6, 10, 15 seconds), and an HLS stream that fails twice falls back to the single `.m4a` file.
 
-**Locking during a video.** With **Keep listening when the phone locks** on (the default), TomTube switches to audio by itself when it goes to the background during a video, and back to video when you return. This means starting the `<audio>` element after iOS has begun backgrounding the page, which iOS restricts in two ways:
+**Locking during a video on iPhone and iPad (paired playback).** With **Keep listening when the phone locks** on (the default), the sound of a video always comes from the `<audio>` element, from the moment playback starts. The `<video>` element plays a muted, video-only stream (`video.m3u8`, the same quality variants without the audio track) and follows the audio. Device testing showed that iOS will not start a new audio element while the page is going to the background, so nothing has to start when the phone locks:
 
-- iOS lets a page start a media element by itself only once that element has been started from a tap. So every tap that plays something also starts and immediately stops the empty `<audio>` element. No source is loaded and nothing is heard; it only marks the element as started by the user.
-- Whether iOS lets a page that is going to the background start a new audio element at all can only be found out on a phone. If it refuses, TomTube shows as paused on the lock screen and its play button starts the audio.
+| | Picture (`<video>`, muted) | Sound (`<audio>`, M4A by default) |
+|---|---|---|
+| Watching a video | playing, kept in step | playing |
+| Phone locked | paused by TomTube (and by iOS) | keeps playing |
+| Phone unlocked | moved to the sound's position and restarted | keeps playing |
+| **Audio only** | stopped and emptied | keeps playing, never reloaded |
 
-iOS may also pause the video for the lock screen a moment before the page reports being hidden; TomTube treats that pause as part of locking, so it still switches, from the exact position. Late events from the element no longer in use, and pauses TomTube makes itself while switching, never change what the player or the lock screen shows.
+- **Drift.** The picture is moved to the sound's position when the two are 0.3 s or more apart, at most every 2 seconds, and straight away after loading, buffering or unlocking.
+- **Seeking.** TomTube's seek bar, the lock screen and headphones move the sound and the picture together. Scrubbing in the full-screen video player moves the sound to match.
+- **Buffering.** If the sound buffers, the picture waits for it. If the picture buffers, the sound keeps going and the picture catches up, so there is never a moment where only the picture is playing.
+- **Pause and play.** Pausing anywhere (the app, the lock screen, headphones, the full-screen player) pauses both. A pause of the picture alone counts as yours only if TomTube is still visible a second later, because iOS pauses the video for the lock screen a moment before the page reports being hidden.
+- **Next video.** The queue moves on in the `<audio>` element exactly as in audio mode, so it works while locked too; the picture is attached when you come back.
+- **Picture unavailable.** If `video.m3u8` fails twice the picture falls back to the 360p single file (muted), and if that fails too the sound carries on alone with the thumbnail.
+- The tap that starts a video starts both elements, which is what iOS requires before a page may control them.
 
-If the switch still doesn't start by itself on a phone, the next step is to keep the audio element playing all along, with the video muted and kept in step with it, so nothing has to start when the phone locks.
+Paired playback is used only on iPhone and iPad with the setting on. Elsewhere, or with the setting off, the video plays with its own sound as before, and on other platforms TomTube switches to the audio element when the page is hidden.
 
 **Queue progression (Test C, experimental).** Two mechanisms are implemented:
 
@@ -184,7 +194,7 @@ Pass: video plays and seeks without ads on the iPhone through Tomify.
 5. Interruption: receive or make a call (or trigger Siri) while locked; afterwards resume from the lock screen.
 6. Network: while locked, walk from Wi-Fi to mobile data. Playback continues (it may pause briefly).
 7. Long video: play a 1-hour+ video in audio mode locked for 20 minutes; it doesn't stop.
-8. **Auto switch:** with Settings → Audio stream on **Automatic** and "Keep listening when the phone locks" on, play a video in video mode for at least 10 seconds, then lock the phone without tapping **Audio only**. Audio continues by itself, from where the video was. Note whether it continued by itself or needed the lock screen's play button. Unlock: the video is back at the current position.
+8. **Lock during a video (paired playback):** with Settings → Audio stream on **Automatic** and "Keep listening when the phone locks" on, play a video in video mode for at least 10 seconds, then lock the phone without tapping **Audio only**. The sound carries on without a gap or restart. Unlock: the picture catches up with the sound within a second or two. Also check: lip sync over a few minutes, seeking from the seek bar and the full-screen player, pause/play from the full-screen player, **Audio only** and back (no gap in the sound), and a queued video starting while locked.
 
 Pass: steps 1–3 work. Note any failure in 4–8 with what happened.
 

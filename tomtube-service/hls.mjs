@@ -51,28 +51,26 @@ function rank(variant, preferredHeight) {
 }
 
 // Video variants with one shared audio rendition. Safari starts with the first variant listed, so the
-// one nearest `startHeight` comes first; it then moves up or down with the connection.
+// one nearest `startHeight` comes first; it then moves up or down with the connection. Without an
+// audio format it is video only: the iPhone app plays sound from a separate <audio> element and the
+// picture muted, so the audio isn't fetched twice.
 export function masterPlaylist(videoFormats, audioFormat, { startHeight = 720 } = {}) {
-  if (!videoFormats.length || !audioFormat) throw new TypeError('A master playlist needs video and audio.')
+  if (!videoFormats.length) throw new TypeError('A master playlist needs video.')
   const first = [...videoFormats].sort((a, b) => rank(a, startHeight) - rank(b, startHeight) || b.height - a.height)[0]
   const ordered = [first, ...videoFormats.filter((format) => format !== first)]
-  const audioBitrate = audioFormat.bitrate || 128_000
-  const lines = [
-    '#EXTM3U',
-    `#EXT-X-VERSION:${HLS_VERSION}`,
-    '#EXT-X-INDEPENDENT-SEGMENTS',
-    `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Audio",DEFAULT=YES,AUTOSELECT=YES,URI="a${audioFormat.itag}.m3u8"`,
-  ]
+  const audioBitrate = audioFormat ? audioFormat.bitrate || 128_000 : 0
+  const lines = ['#EXTM3U', `#EXT-X-VERSION:${HLS_VERSION}`, '#EXT-X-INDEPENDENT-SEGMENTS']
+  if (audioFormat) lines.push(`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Audio",DEFAULT=YES,AUTOSELECT=YES,URI="a${audioFormat.itag}.m3u8"`)
   for (const format of ordered) {
     const bandwidth = (format.bitrate || 1_000_000) + audioBitrate
     const attributes = [
       `BANDWIDTH=${Math.round(bandwidth * 1.2)}`,
       `AVERAGE-BANDWIDTH=${Math.round(bandwidth)}`,
-      `CODECS="${format.vcodec},${audioFormat.acodec}"`,
+      `CODECS="${audioFormat ? `${format.vcodec},${audioFormat.acodec}` : format.vcodec}"`,
     ]
     if (format.width && format.height) attributes.push(`RESOLUTION=${format.width}x${format.height}`)
     if (format.fps) attributes.push(`FRAME-RATE=${Number(format.fps).toFixed(3)}`)
-    attributes.push('AUDIO="audio"')
+    if (audioFormat) attributes.push('AUDIO="audio"')
     lines.push(`#EXT-X-STREAM-INF:${attributes.join(',')}`, `v${format.itag}.m3u8`)
   }
   lines.push('')

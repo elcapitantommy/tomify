@@ -7,6 +7,7 @@
 //   GET  /v1/resolve?url=…                     a pasted YouTube link → the video's details
 //   GET  /v1/videos/<id>                       details and the iPhone-playable formats
 //   GET  /v1/videos/<id>/master.m3u8           HLS: H.264 video up to 1080p + AAC audio
+//   GET  /v1/videos/<id>/video.m3u8            HLS: H.264 video only (muted picture beside <audio> on iPhone)
 //   GET  /v1/videos/<id>/audio.m3u8            HLS: AAC audio only (background playback)
 //   GET  /v1/videos/<id>/v<itag>.m3u8          one video stream / a<itag>.m3u8 one audio stream
 //   GET  /v1/videos/<id>/<itag>.mp4|.m4a       the stream's bytes, with Range support
@@ -169,6 +170,11 @@ export function createHandler({ config, ytdlp, resolver, cache = null, fetch = g
       const { selection } = await resolver.get(videoId)
       if (!selection.video.length || !selection.audio.length) throw new ApiError(422, 'no-hls', 'This video has no H.264 streams for HLS; use progressive.mp4.')
       return sendPlaylist(request, response, masterPlaylist(selection.video, selection.audio[0]))
+    }
+    if (file === 'video.m3u8') {
+      const { selection } = await resolver.get(videoId)
+      if (!selection.video.length) throw new ApiError(422, 'no-hls', 'This video has no H.264 streams for HLS; use progressive.mp4.')
+      return sendPlaylist(request, response, masterPlaylist(selection.video, null))
     }
     if (file === 'audio.m3u8') {
       const { selection } = await resolver.get(videoId)

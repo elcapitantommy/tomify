@@ -14,7 +14,7 @@ import { json } from '../lib/http.ts'
 //   re-signed with a fresh token, so a long video outlives the old one.
 const ID = '[A-Za-z0-9_-]{11}'
 const JSON_PATH = new RegExp(`^/api/tomtube/(?:search|resolve|status|queue\\.json|videos/${ID}(?:/prefetch)?)$`)
-const MEDIA_PATH = new RegExp(`^/api/tomtube/(?:queue\\.m3u8|videos/${ID}/(?:master|audio|[va]\\d{1,4})\\.m3u8|videos/${ID}/(?:\\d{1,4}\\.(?:mp4|m4a)|progressive\\.mp4|audio\\.m4a)|thumbs/${ID}/[a-z]{4,13}\\.jpg)$`)
+const MEDIA_PATH = new RegExp(`^/api/tomtube/(?:queue\\.m3u8|videos/${ID}/(?:master|video|audio|[va]\\d{1,4})\\.m3u8|videos/${ID}/(?:\\d{1,4}\\.(?:mp4|m4a)|progressive\\.mp4|audio\\.m4a)|thumbs/${ID}/[a-z]{4,13}\\.jpg)$`)
 const FORWARDED = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']
 const QUERY_KEYS: Record<string, string[]> = { search: ['q', 'limit'], resolve: ['url'], 'queue.json': ['ids'], 'queue.m3u8': ['ids'] }
 

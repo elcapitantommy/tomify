@@ -168,6 +168,9 @@ test('HLS playlists describe the streams the service serves', async () => {
     const masterText = await master.text()
     assert.match(masterText, /URI="a140\.m3u8"/)
     assert.match(masterText, /^v136\.m3u8$/m)
+    const videoOnly = await (await service.call(`/v1/videos/${VIDEO}/video.m3u8`)).text()
+    assert.match(videoOnly, /^v136\.m3u8$/m)
+    assert.equal(videoOnly.includes('TYPE=AUDIO'), false)
     const variant = await (await service.call(`/v1/videos/${VIDEO}/v136.m3u8`)).text()
     assert.match(variant, /#EXT-X-MAP:URI="136\.mp4",BYTERANGE="\d+@0"/)
     const audio = await (await service.call(`/v1/videos/${VIDEO}/audio.m3u8`)).text()
@@ -291,7 +294,7 @@ test('ffmpeg plays the HLS master and audio playlists end to end', { skip: !ffmp
       // The service runs in this process, so the HLS client must run asynchronously.
       const run = (command, args) => promisify(execFile)(command, args, { timeout: 60_000 })
       const input = (playlist) => ['-v', 'error', '-protocol_whitelist', 'http,tcp', '-allowed_extensions', 'ALL', '-i', `${service.base}/v1/videos/${VIDEO}/${playlist}`]
-      for (const playlist of ['master.m3u8', 'audio.m3u8']) {
+      for (const playlist of ['master.m3u8', 'video.m3u8', 'audio.m3u8']) {
         await run('ffmpeg', [...input(playlist), '-map', '0', '-f', 'null', '-'])
         const probe = await run('ffprobe', [...input(playlist), '-show_entries', 'format=duration', '-of', 'csv=p=0'])
         assert.ok(Math.abs(Number(probe.stdout.trim()) - 12) < 1, `${playlist} duration ${probe.stdout}`)

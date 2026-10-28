@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { TomTubeEngine, LOCK_PAUSE_WINDOW_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS, isAppleMobile } from './engine'
+import { DRIFT_LIMIT_S, TomTubeEngine, LOCK_PAUSE_WINDOW_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS, VIDEO_PAUSE_CONFIRM_MS, isAppleMobile } from './engine'
 import { useTomTube, defaultSettings, initialPlayer } from './store'
 import { emptyQueue } from './queue'
 import type { TomTubeVideo } from './api'
@@ -13,6 +13,7 @@ class FakeMedia extends EventTarget {
   queued: Event[] = []
   // play() calls without a source (the tap that lets iOS start the element later).
   emptyPlays = 0
+  muted = false
   emptyPlayError = 'AbortError'
   attributes = new Map<string, string>()
   paused = true
@@ -462,6 +463,202 @@ describe('TomTube player', () => {
     })
   })
 
+  describe('paired playback on iPhone (the sound never changes hands)', () => {
+    // A playing pair: sound from <audio>, picture muted in <video>, both with metadata.
+    function playPaired(position = 0) {
+      create({ appleMobile: true })
+      engine.playVideo(video('a'), position)
+      audioEl.metadata(300)
+      audioEl.fire('playing')
+      videoEl.metadata(300)
+      videoEl.fire('playing')
+    }
+
+    it('plays the sound from the audio element and the picture muted, from one tap', () => {
+      create({ appleMobile: true })
+      engine.playVideo(video('a'))
+      expect(audioEl.src).toMatch(/\/videos\/aaaaaaaaaaa\/audio\.m4a\?mt=/)
+      expect(videoEl.src).toMatch(/\/videos\/aaaaaaaaaaa\/video\.m3u8\?mt=/)
+      expect(videoEl.muted).toBe(true)
+      expect(audioEl.playCalls).toBe(1)
+      expect(videoEl.playCalls).toBe(1)
+      expect(player()).toMatchObject({ mode: 'video', playing: true, source: 'file' })
+      audioEl.fire('playing')
+      expect(mediaSession.playbackState).toBe('playing')
+    })
+
+    it('locking pauses only the picture; the sound is never reloaded or restarted', () => {
+      playPaired()
+      const audioLoads = audioEl.loads
+      const audioPlays = audioEl.playCalls
+      audioEl.currentTime = 42
+      doc.set('hidden')
+      expect(videoEl.paused).toBe(true)
+      expect(audioEl.paused).toBe(false)
+      expect(audioEl.loads).toBe(audioLoads)
+      expect(audioEl.playCalls).toBe(audioPlays)
+      expect(player()).toMatchObject({ mode: 'video', playing: true })
+      expect(mediaSession.playbackState).toBe('playing')
+      vi.advanceTimersByTime(VIDEO_PAUSE_CONFIRM_MS * 2)
+      expect(player().playing).toBe(true)
+      // Unlocking: the picture starts again at the sound's position.
+      audioEl.currentTime = 95
+      doc.set('visible')
+      expect(videoEl.paused).toBe(false)
+      expect(videoEl.currentTime).toBe(95)
+      expect(audioEl.loads).toBe(audioLoads)
+    })
+
+    it('iOS pausing the picture just before the page is hidden does not pause the sound', () => {
+      playPaired()
+      videoEl.pause() // iOS, as the phone locks
+      vi.advanceTimersByTime(VIDEO_PAUSE_CONFIRM_MS / 2)
+      doc.set('hidden')
+      vi.advanceTimersByTime(VIDEO_PAUSE_CONFIRM_MS * 2)
+      expect(audioEl.paused).toBe(false)
+      expect(player()).toMatchObject({ playing: true })
+    })
+
+    it('a pause of the picture while TomTube stays showing (full-screen controls) pauses everything', () => {
+      playPaired()
+      videoEl.pause()
+      expect(audioEl.paused).toBe(false)
+      vi.advanceTimersByTime(VIDEO_PAUSE_CONFIRM_MS)
+      expect(audioEl.paused).toBe(true)
+      expect(player()).toMatchObject({ playing: false, status: 'paused' })
+      expect(mediaSession.playbackState).toBe('paused')
+      // And playing from those controls plays both again.
+      const plays = audioEl.playCalls
+      videoEl.paused = false
+      videoEl.fire('play')
+      expect(audioEl.playCalls).toBe(plays + 1)
+      expect(player().playing).toBe(true)
+    })
+
+    it('keeps the picture within the drift limit of the sound, without chasing every small gap', () => {
+      playPaired()
+      clock += 10_000
+      audioEl.currentTime = 50
+      videoEl.currentTime = 50 - DRIFT_LIMIT_S / 2
+      audioEl.fire('timeupdate')
+      expect(videoEl.currentTime).toBe(50 - DRIFT_LIMIT_S / 2)
+      videoEl.currentTime = 48
+      audioEl.fire('timeupdate')
+      expect(videoEl.currentTime).toBe(50)
+      // Moved again at most every couple of seconds.
+      videoEl.currentTime = 49
+      clock += 500
+      audioEl.fire('timeupdate')
+      expect(videoEl.currentTime).toBe(49)
+      clock += 2000
+      audioEl.fire('timeupdate')
+      expect(videoEl.currentTime).toBe(50)
+    })
+
+    it('seeking moves both; scrubbing in iOS\'s full-screen player moves the sound', () => {
+      playPaired()
+      engine.seek(120)
+      expect(audioEl.currentTime).toBe(120)
+      expect(videoEl.currentTime).toBe(120)
+      videoEl.fire('seeking') // this player's own move: the sound stays put
+      expect(audioEl.currentTime).toBe(120)
+      videoEl.currentTime = 200
+      videoEl.fire('seeking')
+      expect(audioEl.currentTime).toBe(200)
+      expect(player().currentTime).toBe(200)
+    })
+
+    it('pause and resume act on both; an interruption of the sound pauses the picture too', () => {
+      playPaired()
+      engine.pause()
+      expect(audioEl.paused).toBe(true)
+      expect(videoEl.paused).toBe(true)
+      engine.resume()
+      expect(audioEl.paused).toBe(false)
+      expect(videoEl.paused).toBe(false)
+      audioEl.fire('playing')
+      audioEl.pause() // a call
+      expect(videoEl.paused).toBe(true)
+      expect(player()).toMatchObject({ playing: false, status: 'paused' })
+      mediaSession.action('play')
+      audioEl.fire('playing')
+      expect(videoEl.paused).toBe(false)
+    })
+
+    it('the picture waits while the sound buffers, and the sound never waits for the picture', () => {
+      playPaired()
+      audioEl.readyState = 2
+      audioEl.fire('waiting')
+      expect(videoEl.paused).toBe(true)
+      audioEl.readyState = 4
+      audioEl.fire('playing')
+      expect(videoEl.paused).toBe(false)
+      videoEl.fire('waiting')
+      vi.advanceTimersByTime(STALL_TIMEOUT_MS + 1000)
+      expect(audioEl.paused).toBe(false)
+      expect(player()).toMatchObject({ playing: true })
+    })
+
+    it('Audio only removes the picture and leaves the sound alone; Video brings it back in step', () => {
+      playPaired()
+      const audioLoads = audioEl.loads
+      const audioPlays = audioEl.playCalls
+      engine.setMode('audio')
+      expect(videoEl.src).toBe('')
+      expect(audioEl.loads).toBe(audioLoads)
+      expect(audioEl.playCalls).toBe(audioPlays)
+      expect(player()).toMatchObject({ mode: 'audio', playing: true })
+      audioEl.currentTime = 77
+      engine.setMode('video')
+      expect(videoEl.src).toMatch(/video\.m3u8/)
+      videoEl.metadata(300)
+      expect(videoEl.currentTime).toBe(77)
+      expect(audioEl.loads).toBe(audioLoads)
+    })
+
+    it('the next queued video starts inside ended; the picture follows only while TomTube is showing', () => {
+      playPaired()
+      useTomTube.getState().setQueue({ ...useTomTube.getState().queue, items: [...useTomTube.getState().queue.items, video('b')] })
+      doc.set('hidden')
+      audioEl.ended = true
+      audioEl.fire('ended')
+      audioEl.ended = false
+      expect(audioEl.src).toMatch(/bbbbbbbbbbb\/audio\.m4a/)
+      expect(videoEl.src).toBe('')
+      doc.set('visible')
+      expect(videoEl.src).toMatch(/bbbbbbbbbbb\/video\.m3u8/)
+    })
+
+    it('a broken picture is retried, then shown from the single file, then left off; the sound carries on', () => {
+      playPaired()
+      const audioLoads = audioEl.loads
+      videoEl.fire('error')
+      vi.advanceTimersByTime(RETRY_DELAYS_MS[0])
+      expect(videoEl.src).toMatch(/video\.m3u8/)
+      videoEl.fire('error')
+      vi.advanceTimersByTime(RETRY_DELAYS_MS[0])
+      expect(videoEl.src).toMatch(/progressive\.mp4/)
+      expect(videoEl.muted).toBe(true)
+      videoEl.fire('error')
+      vi.advanceTimersByTime(RETRY_DELAYS_MS[0])
+      videoEl.fire('error')
+      const src = videoEl.src
+      vi.advanceTimersByTime(RETRY_DELAYS_MS[0] * 10)
+      expect(videoEl.src).toBe(src)
+      expect(audioEl.loads).toBe(audioLoads)
+      expect(player()).toMatchObject({ playing: true })
+    })
+
+    it('is used only on iPhone and iPad with "Keep listening when the phone locks" on', () => {
+      create({ appleMobile: true })
+      useTomTube.getState().setSettings({ backgroundAudio: false })
+      engine.playVideo(video('a'))
+      expect(audioEl.src).toBe('')
+      expect(videoEl.src).toMatch(/master\.m3u8/)
+      expect(videoEl.muted).toBe(false)
+    })
+  })
+
   describe('audio stream format', () => {
     it('plays the single M4A file on iPhone by default, and HLS only when chosen', () => {
       create({ appleMobile: true })
@@ -475,6 +672,7 @@ describe('TomTube player', () => {
       engine.settingsChanged()
       expect(audioEl.src).toMatch(/audio\.m4a\?/)
       // Video is unchanged.
+      useTomTube.getState().setSettings({ backgroundAudio: false })
       engine.setMode('video')
       expect(videoEl.src).toMatch(/master\.m3u8\?/)
     })
