@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { TomTubeEngine, RETRY_DELAYS_MS, STALL_TIMEOUT_MS, isAppleMobile } from './engine'
+import { TomTubeEngine, LOCK_PAUSE_WINDOW_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS, isAppleMobile } from './engine'
 import { useTomTube, defaultSettings, initialPlayer } from './store'
 import { emptyQueue } from './queue'
 import type { TomTubeVideo } from './api'
@@ -13,6 +13,7 @@ class FakeMedia extends EventTarget {
   queued: Event[] = []
   // play() calls without a source (the tap that lets iOS start the element later).
   emptyPlays = 0
+  emptyPlayError = 'AbortError'
   attributes = new Map<string, string>()
   paused = true
   ended = false
@@ -30,7 +31,7 @@ class FakeMedia extends EventTarget {
   get src() { return this.getAttribute('src') ?? '' }
   load() { this.loads += 1; this.readyState = 0; this.queued = [] }
   play() {
-    if (!this.getAttribute('src')) { this.emptyPlays += 1; return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })) }
+    if (!this.getAttribute('src')) { this.emptyPlays += 1; return Promise.reject(Object.assign(new Error('empty'), { name: this.emptyPlayError })) }
     this.playCalls += 1
     this.paused = false
     return this.playResult
@@ -324,7 +325,7 @@ describe('TomTube player', () => {
       videoEl.currentTime = 61.7 // played on past the last timeupdate
       videoEl.pause() // iOS, for the lock screen
       expect(player().playing).toBe(false)
-      clock += 300
+      clock += LOCK_PAUSE_WINDOW_MS - 100
       doc.set('hidden')
       expect(player()).toMatchObject({ mode: 'audio', playing: true, autoAudio: true })
       expect(audioEl.playCalls).toBe(1)
@@ -332,15 +333,50 @@ describe('TomTube player', () => {
       expect(audioEl.currentTime).toBe(61.7)
     })
 
-    it('a pause long before the page is hidden (the listener stopped) does not start audio', () => {
+    it('pausing and then locking the phone does not start audio', () => {
       engine.playVideo(video('a'))
       videoEl.fire('playing')
       clock += 10_000
-      videoEl.pause()
-      clock += 5000
+      // Paused with TomTube's own button, then locked straight away.
+      engine.pause()
+      clock += 50
       doc.set('hidden')
       expect(player()).toMatchObject({ mode: 'video', playing: false })
       expect(audioEl.playCalls).toBe(0)
+      doc.set('visible')
+      // Paused another way (for example the full-screen player's controls), then locked a moment later.
+      engine.resume()
+      videoEl.fire('playing')
+      clock += 10_000
+      videoEl.pause()
+      clock += LOCK_PAUSE_WINDOW_MS + 100
+      doc.set('hidden')
+      expect(player()).toMatchObject({ mode: 'video', playing: false })
+      expect(audioEl.playCalls).toBe(0)
+      doc.set('visible')
+      // Paused with iOS's full-screen controls, then locked inside the window: still the listener's pause.
+      engine.resume()
+      videoEl.fire('playing')
+      clock += 10_000
+      Object.assign(videoEl, { webkitDisplayingFullscreen: true })
+      videoEl.pause()
+      clock += 100
+      doc.set('hidden')
+      expect(player()).toMatchObject({ mode: 'video', playing: false })
+      expect(audioEl.playCalls).toBe(0)
+    })
+
+    it('tries the empty audio element again on the next tap if the browser refused it', async () => {
+      audioEl.emptyPlayError = 'NotAllowedError'
+      engine.playVideo(video('a'))
+      await vi.runAllTimersAsync()
+      audioEl.emptyPlayError = 'AbortError'
+      engine.pause()
+      engine.resume()
+      await vi.runAllTimersAsync()
+      engine.pause()
+      engine.resume()
+      expect(audioEl.emptyPlays).toBe(2)
     })
 
     it('the video\'s late pause, after the switch, does not pause the audio or the lock screen', () => {
@@ -386,6 +422,11 @@ describe('TomTube player', () => {
       expect(player()).toMatchObject({ playing: true })
       audioEl.fire('playing')
       expect(mediaSession.playbackState).toBe('playing')
+      // The next pause is a real one (headphones out) and must not be mistaken for that old request.
+      audioEl.pause()
+      audioEl.deliver()
+      expect(player()).toMatchObject({ playing: false, status: 'paused' })
+      expect(mediaSession.playbackState).toBe('paused')
     })
 
     it('a reload of the audio does not take its own pause for the listener\'s', () => {

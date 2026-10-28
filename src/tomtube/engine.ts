@@ -37,7 +37,8 @@ export const RETRY_DELAYS_MS = [1000, 3000, 6000, 10_000, 15_000]
 // After this many failed attempts on HLS, the single-file stream is tried instead.
 const HLS_FAILURES_BEFORE_FILE = 2
 // A pause iOS made this long before the page reports being hidden counts as part of locking the phone.
-const LOCK_PAUSE_WINDOW_MS = 1500
+// Short, so a listener who pauses and then locks the phone stays paused; widen only on device evidence.
+export const LOCK_PAUSE_WINDOW_MS = 500
 const MAX_CONTINUOUS_TRACKS = 20
 
 type Media = HTMLMediaElement
@@ -218,6 +219,8 @@ export class TomTubeEngine {
   }
 
   private start(element: Media) {
+    // Starting again settles any pause this player asked for earlier; its late event is ignored below.
+    this.requestedPauses.delete(element)
     const attempt = element.play()
     if (!attempt) return
     attempt.catch((error: unknown) => {
@@ -348,14 +351,17 @@ export class TomTubeEngine {
 
   // Called from taps (and lock-screen buttons): see the note at the top of this file. play() on the
   // empty element counts as the user starting it; pause() straight after rejects that play() with an
-  // AbortError, so nothing loads or plays.
+  // AbortError, so nothing loads or plays. If the browser refused it (NotAllowedError) or threw, the
+  // next tap tries again. Whether WebKit then lets the element start in the background is a device test.
   private primeAudio() {
     if (this.audioPrimed || this.view.mode !== 'video' || this.audio.getAttribute('src')) return
     this.audioPrimed = true
     try {
-      this.audio.play()?.catch(() => undefined)
+      this.audio.play()?.catch((error: unknown) => {
+        if ((error as { name?: string } | null)?.name === 'NotAllowedError') this.audioPrimed = false
+      })
       this.audio.pause()
-    } catch { /* not supported here; the switch to audio may then need the lock screen's play button */ }
+    } catch { this.audioPrimed = false }
   }
 
   private setSessionState(state: MediaSessionPlaybackState) {
@@ -438,12 +444,14 @@ export class TomTubeEngine {
     })
     on('pause', () => {
       // Late: the element has been emptied or started again since (a switch, a reload, a new source).
-      if (!element.paused || element.ended || !element.getAttribute('src')) return
+      if (!element.paused || element.ended || !element.getAttribute('src')) { this.requestedPauses.delete(element); return }
       // This player paused it (pause(), a switch or a reload) and has already set the state it wants.
       if (this.requestedPauses.delete(element)) return
       // A pause nobody here asked for: a phone call, Siri, headphones unplugged, or iOS pausing a video
       // for the lock screen. The lock screen's play button resumes it.
-      if (this.view.playing && this.view.mode === 'video') this.videoInterruptedAt = this.now()
+      // Inline, TomTube's video has no native controls, so a pause there is iOS's (or a call's). Full
+      // screen has iOS's own controls, so a pause there may be the listener's: never taken for locking.
+      if (this.view.playing && this.view.mode === 'video' && !this.inFullScreen(element)) this.videoInterruptedAt = this.now()
       if (this.view.playing) this.set({ playing: false, status: 'paused' })
       this.setSessionState('paused')
     })
@@ -451,6 +459,11 @@ export class TomTubeEngine {
     on('stalled', () => { if (element.readyState < 3) this.buffering(element) })
     on('ended', () => this.ended())
     on('error', () => this.recover())
+  }
+
+  private inFullScreen(element: Media) {
+    const fullScreen = element as Media & { webkitDisplayingFullscreen?: boolean }
+    return Boolean(fullScreen.webkitDisplayingFullscreen) || (typeof document !== 'undefined' && document.fullscreenElement === element)
   }
 
   private timeUpdate(element: Media) {
