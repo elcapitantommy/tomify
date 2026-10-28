@@ -333,6 +333,17 @@ describe('TomTube player', () => {
       expect(audioEl.currentTime).toBe(61.7)
     })
 
+    it('pausing within a second of starting and then locking does not start audio', () => {
+      engine.playVideo(video('a'))
+      videoEl.fire('playing')
+      clock += 100
+      engine.pause()
+      clock += 100
+      doc.set('hidden')
+      expect(player()).toMatchObject({ mode: 'video', playing: false })
+      expect(audioEl.playCalls).toBe(0)
+    })
+
     it('pausing and then locking the phone does not start audio', () => {
       engine.playVideo(video('a'))
       videoEl.fire('playing')

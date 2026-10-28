@@ -84,7 +84,7 @@ export class TomTubeEngine {
   private continuous: Continuous | null = null
   private lastPositionSave = 0
   private lastLockScreenUpdate = 0
-  private playingSince = 0
+  private playingSince = -Infinity
   private cleanups: Array<() => void> = []
   private stopWaitingForToken: (() => void) | null = null
   // Elements this player paused itself, whose `pause` event is still to come.
@@ -299,6 +299,9 @@ export class TomTubeEngine {
   }
 
   pause() {
+    // The listener stopped it: locking now must not count it as just playing or just interrupted.
+    this.playingSince = -Infinity
+    this.videoInterruptedAt = -Infinity
     this.set({ playing: false, status: this.current() ? 'paused' : 'idle' })
     this.clearTimers()
     this.pauseElement(this.element)
