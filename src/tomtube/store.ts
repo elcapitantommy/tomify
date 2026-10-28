@@ -14,8 +14,9 @@ export interface TomTubeSettings {
   continuousQueue: boolean
   // 'auto' plays HLS (up to 1080p) where the browser supports it; 'compatible' always plays the single 360p MP4.
   videoQuality: 'auto' | 'compatible'
-  // 'auto' plays audio as HLS where supported; 'file' always plays the single M4A file.
-  audioFormat: 'auto' | 'file'
+  // 'auto' plays the single M4A file on iPhone and iPad (it keeps playing with the screen locked, which
+  // HLS audio did not in device testing) and HLS elsewhere; 'hls' and 'file' choose one everywhere.
+  audioFormat: 'auto' | 'hls' | 'file'
 }
 
 export interface PlayerView {

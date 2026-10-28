@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { TomTubeEngine, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from './engine'
+import { TomTubeEngine, RETRY_DELAYS_MS, STALL_TIMEOUT_MS, isAppleMobile } from './engine'
 import { useTomTube, defaultSettings, initialPlayer } from './store'
 import { emptyQueue } from './queue'
 import type { TomTubeVideo } from './api'
 import { mediaTokenStatus, setMediaGrant, startMediaTokens } from './mediaToken'
 
 // A stand-in for <video>/<audio>: records what the engine does and lets tests fire media events.
+// With `deferEvents`, pause events wait in `queued` until `deliver()`, like a browser's event queue,
+// and loading a new source drops them, as the media load algorithm does.
 class FakeMedia extends EventTarget {
+  deferEvents = false
+  queued: Event[] = []
+  // play() calls without a source (the tap that lets iOS start the element later).
+  emptyPlays = 0
   attributes = new Map<string, string>()
   paused = true
   ended = false
@@ -22,9 +28,16 @@ class FakeMedia extends EventTarget {
   setAttribute(name: string, value: string) { this.attributes.set(name, value) }
   removeAttribute(name: string) { this.attributes.delete(name) }
   get src() { return this.getAttribute('src') ?? '' }
-  load() { this.loads += 1; this.readyState = 0 }
-  play() { this.playCalls += 1; this.paused = false; return this.playResult }
-  pause() { if (!this.paused) { this.paused = true; this.dispatchEvent(new Event('pause')) } }
+  load() { this.loads += 1; this.readyState = 0; this.queued = [] }
+  play() {
+    if (!this.getAttribute('src')) { this.emptyPlays += 1; return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })) }
+    this.playCalls += 1
+    this.paused = false
+    return this.playResult
+  }
+  pause() { if (!this.paused) { this.paused = true; this.emit(new Event('pause')) } }
+  emit(event: Event) { if (this.deferEvents) this.queued.push(event); else this.dispatchEvent(event) }
+  deliver() { const events = this.queued; this.queued = []; events.forEach((event) => this.dispatchEvent(event)) }
   canPlayType(type: string) { return this.hls && type === 'application/vnd.apple.mpegurl' ? 'maybe' : '' }
   fire(type: string) { this.dispatchEvent(new Event(type)) }
   metadata(duration: number) { this.duration = duration; this.readyState = 1; this.fire('loadedmetadata') }
@@ -56,8 +69,10 @@ let engine: TomTubeEngine
 let api: { prefetch: ReturnType<typeof vi.fn>; queueTimeline: ReturnType<typeof vi.fn> }
 let clock = 1_000_000
 
-function create() {
+function create(options: { appleMobile?: boolean } = {}) {
+  engine?.destroy()
   engine = new TomTubeEngine({
+    appleMobile: options.appleMobile ?? false,
     video: videoEl as unknown as HTMLMediaElement,
     audio: audioEl as unknown as HTMLMediaElement,
     session: () => session,
@@ -267,9 +282,157 @@ describe('TomTube player', () => {
     doc.set('hidden')
     await vi.runAllTimersAsync()
     expect(player()).toMatchObject({ mode: 'audio', playing: false, status: 'paused' })
+    // The lock screen must offer play, not pause.
+    expect(mediaSession.playbackState).toBe('paused')
     audioEl.playResult = Promise.resolve()
+    const plays = audioEl.playCalls
     mediaSession.action('play')
     expect(player().playing).toBe(true)
+    expect(audioEl.playCalls).toBe(plays + 1)
+    audioEl.fire('playing')
+    expect(mediaSession.playbackState).toBe('playing')
+    // Unlocking goes back to the video, paused where the audio was if it never started.
+    audioEl.currentTime = 30
+    audioEl.fire('timeupdate')
+    engine.pause()
+    doc.set('visible')
+    expect(player()).toMatchObject({ mode: 'video', playing: false })
+    expect(videoEl.src).toMatch(/master\.m3u8/)
+    expect(videoEl.playCalls).toBe(1)
+  })
+
+  describe('handing over from video to audio as the phone locks', () => {
+    it('a tap that plays also starts the empty audio element once, so iOS lets it start later', () => {
+      engine.playVideo(video('a'))
+      expect(audioEl.emptyPlays).toBe(1)
+      expect(audioEl.paused).toBe(true)
+      expect(audioEl.src).toBe('')
+      expect(player()).toMatchObject({ mode: 'video', playing: true })
+      engine.pause()
+      engine.resume()
+      engine.playVideo(video('b'))
+      expect(audioEl.emptyPlays).toBe(1)
+    })
+
+    it('a pause iOS makes just before the page is hidden still switches to audio, from the exact position', () => {
+      engine.playVideo(video('a'))
+      videoEl.metadata(300)
+      videoEl.fire('playing')
+      clock += 10_000
+      videoEl.currentTime = 60
+      videoEl.fire('timeupdate')
+      videoEl.currentTime = 61.7 // played on past the last timeupdate
+      videoEl.pause() // iOS, for the lock screen
+      expect(player().playing).toBe(false)
+      clock += 300
+      doc.set('hidden')
+      expect(player()).toMatchObject({ mode: 'audio', playing: true, autoAudio: true })
+      expect(audioEl.playCalls).toBe(1)
+      audioEl.metadata(300)
+      expect(audioEl.currentTime).toBe(61.7)
+    })
+
+    it('a pause long before the page is hidden (the listener stopped) does not start audio', () => {
+      engine.playVideo(video('a'))
+      videoEl.fire('playing')
+      clock += 10_000
+      videoEl.pause()
+      clock += 5000
+      doc.set('hidden')
+      expect(player()).toMatchObject({ mode: 'video', playing: false })
+      expect(audioEl.playCalls).toBe(0)
+    })
+
+    it('the video\'s late pause, after the switch, does not pause the audio or the lock screen', () => {
+      videoEl.deferEvents = true
+      engine.playVideo(video('a'))
+      videoEl.fire('playing')
+      clock += 10_000
+      doc.set('hidden')
+      audioEl.fire('playing')
+      expect(mediaSession.playbackState).toBe('playing')
+      // iOS's own pause of the video for the lock screen arrives now.
+      videoEl.paused = true
+      videoEl.queued.push(new Event('pause'))
+      videoEl.deliver()
+      expect(player()).toMatchObject({ mode: 'audio', playing: true, status: 'playing' })
+      expect(mediaSession.playbackState).toBe('playing')
+    })
+
+    it('an element no longer in use changes nothing, whatever it reports', () => {
+      engine.playVideo(video('a'))
+      videoEl.fire('playing')
+      engine.setMode('audio')
+      audioEl.metadata(300)
+      audioEl.fire('playing')
+      const before = { ...player() }
+      const loads = audioEl.loads
+      for (const type of ['pause', 'waiting', 'stalled', 'error', 'ended', 'playing', 'loadedmetadata', 'timeupdate']) videoEl.fire(type)
+      vi.advanceTimersByTime(STALL_TIMEOUT_MS + RETRY_DELAYS_MS[0])
+      expect(player()).toEqual(before)
+      expect(audioEl.loads).toBe(loads)
+      expect(mediaSession.playbackState).toBe('playing')
+    })
+
+    it('a pause this player asked for, reported late, does not stop playback started since', () => {
+      engine.playVideo(video('a'))
+      engine.setMode('audio')
+      audioEl.fire('playing')
+      audioEl.deferEvents = true
+      engine.pause()
+      expect(mediaSession.playbackState).toBe('paused')
+      engine.resume()
+      audioEl.deliver()
+      expect(player()).toMatchObject({ playing: true })
+      audioEl.fire('playing')
+      expect(mediaSession.playbackState).toBe('playing')
+    })
+
+    it('a reload of the audio does not take its own pause for the listener\'s', () => {
+      engine.playVideo(video('a'))
+      engine.setMode('audio')
+      audioEl.metadata(300)
+      audioEl.fire('playing')
+      useTomTube.getState().setSettings({ audioFormat: 'file' })
+      engine.settingsChanged()
+      expect(audioEl.src).toMatch(/audio\.m4a/)
+      audioEl.fire('pause') // a stray pause from the old source, after the new one started
+      expect(player()).toMatchObject({ mode: 'audio', playing: true })
+    })
+
+    it('a pause from a call or Siri still pauses, and shows as paused on the lock screen', () => {
+      engine.playVideo(video('a'))
+      engine.setMode('audio')
+      audioEl.fire('playing')
+      audioEl.pause()
+      expect(player()).toMatchObject({ playing: false, status: 'paused' })
+      expect(mediaSession.playbackState).toBe('paused')
+    })
+  })
+
+  describe('audio stream format', () => {
+    it('plays the single M4A file on iPhone by default, and HLS only when chosen', () => {
+      create({ appleMobile: true })
+      engine.playVideo(video('a'))
+      engine.setMode('audio')
+      expect(audioEl.src).toMatch(/audio\.m4a\?/)
+      useTomTube.getState().setSettings({ audioFormat: 'hls' })
+      engine.settingsChanged()
+      expect(audioEl.src).toMatch(/audio\.m3u8\?/)
+      useTomTube.getState().setSettings({ audioFormat: 'file' })
+      engine.settingsChanged()
+      expect(audioEl.src).toMatch(/audio\.m4a\?/)
+      // Video is unchanged.
+      engine.setMode('video')
+      expect(videoEl.src).toMatch(/master\.m3u8\?/)
+    })
+
+    it('recognises iPhones and iPads, including iPads that report a Mac', () => {
+      expect(isAppleMobile({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', maxTouchPoints: 5 })).toBe(true)
+      expect(isAppleMobile({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', maxTouchPoints: 5 })).toBe(true)
+      expect(isAppleMobile({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', maxTouchPoints: 0 })).toBe(false)
+      expect(isAppleMobile({ userAgent: 'Mozilla/5.0 (Linux; Android 15)', maxTouchPoints: 5 })).toBe(false)
+    })
   })
 
   it('a broken stream is retried from the same place, then falls back from HLS to the single file', () => {
