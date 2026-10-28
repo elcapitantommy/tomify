@@ -17,6 +17,8 @@ TOMIFY_DJ_VOICE_MODEL = "aura"
 TOMIFY_LAN_ORIGIN = "https://lan.tomify.tomdixon.uk:8789"
 # Tomifin Downloader's own address: a second Custom Domain on this Worker (docs/TOMIFIN.md). Only Tomifin is served there.
 TOMIFIN_HOSTNAME = "tomifin.tomdixon.uk"
+# TomTube backend, reached through the recovery Cloudflare Tunnel.
+TOMTUBE_SERVICE_URL = "https://tomtube-service.tomdixon.uk"
 # Navidrome usernames allowed to add, renew or remove TomTube's YouTube recommendation cookies and clear
 # its training data (docs/TOMTUBE.md). Empty means nobody can: the cookie endpoints fail closed. Kept here,
 # not in the dashboard, because plain dashboard variables are replaced on deploy.
