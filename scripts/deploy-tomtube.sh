@@ -2,8 +2,9 @@
 # Deploy the TomTube service (tomtube-service/) to the media server as an immutable release under
 # /opt/tomtube/releases/<sha>, switch /opt/tomtube/current to it, restart the `tomtube` unit and wait
 # for its health check. If the new release does not come up healthy, the previous one is restored.
-# First-time setup is in docs/TOMTUBE.md. The restart uses sudo; see the docs for a sudoers rule that
-# allows exactly `systemctl restart tomtube` without a password.
+# The first deploy also installs and enables the systemd units shipped in the release. Setup before
+# that (folders, yt-dlp, /etc/tomtube/tomtube.env) is in docs/TOMTUBE.md. The restart uses sudo; see
+# the docs for a sudoers rule that allows exactly `systemctl restart tomtube` without a password.
 set -euo pipefail
 
 host=${TOMIFY_AGENT_HOST:-tom@tomify}

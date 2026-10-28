@@ -2221,12 +2221,19 @@ test('TomTube passes only its own paths to the TomTube service, for signed-in li
     if (url.pathname.endsWith('.m4a')) return new Response('bytes', { status: 206, headers: { 'content-type': 'audio/mp4', 'content-range': 'bytes 0-4/100', 'content-length': '5', 'accept-ranges': 'bytes', 'set-cookie': 'leak=1' } })
     return Response.json({ results: [] })
   }
-  const env = { TOMTUBE_SERVICE_URL: 'https://tomtube-service.tomify.test/', TOMTUBE_SERVICE_TOKEN: 's'.repeat(40) }
+  const env = { TOMTUBE_SERVICE_URL: 'https://tomtube-service.tomify.test/', TOMTUBE_SERVICE_TOKEN: 's'.repeat(40), TOMIFY_MEDIA_KEY: 'k'.repeat(40) }
   const login = { 'x-tomify-user': 'tt-listener', 'x-tomify-token': '0123456789abcdef0123456789abcdef', 'x-tomify-salt': 'salt9' }
-  const query = 'u=tt-listener&t=0123456789abcdef0123456789abcdef&s=salt9'
+  const loginQuery = 'u=tt-listener&t=0123456789abcdef0123456789abcdef&s=salt9'
   try {
+    const { token } = await (await worker.fetch(new Request('https://app.tomify.test/api/media-session', { method: 'POST', headers: login }), env)).json()
+    const query = `mt=${encodeURIComponent(token)}`
     assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/tomtube/search?q=x'), env)).status, 401)
-    assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/140.m4a?u=nobody&t=0123456789abcdef0123456789abcdef&s=salt9'), env)).status, 401)
+    // Media URLs take only a media token: never the Navidrome login, even a valid one.
+    assert.equal((await worker.fetch(new Request(`https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/140.m4a?${loginQuery}`), env)).status, 401)
+    assert.equal((await worker.fetch(new Request(`https://app.tomify.test/api/tomtube/thumbs/dQw4w9WgXcQ/mqdefault.jpg?${loginQuery}`), env)).status, 401)
+    const noKey = await worker.fetch(new Request(`https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/master.m3u8?${loginQuery}`), { ...env, TOMIFY_MEDIA_KEY: undefined })
+    assert.equal(noKey.status, 503)
+    assert.equal((await noKey.json()).error, 'media-tokens-not-configured')
     assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/tomtube/search?q=x', { headers: login }), {})).status, 503)
     assert.equal(serviceCalls.length, 0)
 
@@ -2247,11 +2254,12 @@ test('TomTube passes only its own paths to the TomTube service, for signed-in li
 
     // Playlists come back with every URI signed, including URI="…" attributes.
     const playlist = await (await worker.fetch(new Request(`https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/audio.m3u8?${query}`), env)).text()
-    assert.match(playlist, new RegExp(`#EXT-X-MAP:URI="140\\.m4a\\?${query}",BYTERANGE="700@0"`))
-    assert.match(playlist, new RegExp(`\\n140\\.m4a\\?${query}\\n`))
-    assert.match(playlist, new RegExp(`URI="a140\\.m3u8\\?${query}"`))
-    assert.match(playlist, new RegExp(`\\nvideos/aaaaaaaaaaa/140\\.m4a\\?${query}\\n`))
+    assert.match(playlist, /#EXT-X-MAP:URI="140\.m4a\?mt=[^"&\s]+",BYTERANGE="700@0"/)
+    assert.match(playlist, /\n140\.m4a\?mt=[^&\s]+\n/)
+    assert.match(playlist, /URI="a140\.m3u8\?mt=[^"&\s]+"/)
+    assert.match(playlist, /\nvideos\/aaaaaaaaaaa\/140\.m4a\?mt=[^&\s]+\n/)
     assert.match(playlist, /#EXT-X-ENDLIST\n$/)
+    assert.equal(playlist.includes('0123456789abcdef0123456789abcdef'), false)
 
     const prefetchGet = await worker.fetch(new Request('https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/prefetch', { headers: login }), env)
     assert.equal(prefetchGet.status, 405)

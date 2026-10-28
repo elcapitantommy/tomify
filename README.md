@@ -237,7 +237,7 @@ Tomifin Downloader is a separate app at its own address (`https://tomifin.tomdix
 
 ### TomTube
 
-TomTube is an ad-free YouTube player at `/tomtube/`, signed in with your Tomify account and installable on the iPhone home screen. Its main job is background audio: switch to **Audio only** (or lock the phone) and playback continues from an audio-only stream with lock-screen and Bluetooth controls. It needs its own service on the media server (`tomtube-service/`, yt-dlp, port 8790) and two Worker secrets; see [docs/TOMTUBE.md](docs/TOMTUBE.md) for setup, the iPhone test checklist and known limits.
+TomTube is an ad-free YouTube player at `/tomtube/`, signed in with your Tomify account and installable on the iPhone home screen. Its main job is background audio: switch to **Audio only** (or lock the phone) and playback continues from an audio-only stream with lock-screen and Bluetooth controls. It needs its own service on the media server (`tomtube-service/`, yt-dlp, port 8790) two Worker settings, and `TOMIFY_MEDIA_KEY` (TomTube media URLs only ever carry short-lived media tokens); see [docs/TOMTUBE.md](docs/TOMTUBE.md) for setup, the iPhone test checklist and known limits.
 
 ### Deploying
 

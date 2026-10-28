@@ -1,10 +1,10 @@
 // TomTube's calls to the Worker (worker/routes/tomtube.ts), which passes them on to the TomTube
 // service on the media server. JSON calls carry the Tomify sign-in as x-tomify-* headers. Media URLs
 // (playlists, streams, thumbnails) are used by <video>, <audio> and <img>, which can't send headers,
-// so they carry a short-lived media token (`mt`, the same one Tomify's player uses) or, when the
-// server hands out no tokens, the Navidrome token and salt.
+// so they carry only a short-lived media token (`mt`, see mediaToken.ts), never the Navidrome login.
+// Until a token is available the URL builders return null.
 import type { AuthSession } from '../lib/navidrome'
-import { mediaRoute } from '../lib/mediaRoute'
+import { mediaToken } from './mediaToken'
 
 export interface TomTubeVideo {
   id: string
@@ -35,6 +35,7 @@ const MESSAGES: Record<string, string> = {
   'tomtube-unavailable': 'The TomTube service on the media server is not answering.',
   unauthorized: 'Your Tomify sign-in has expired. Sign in again.',
   forbidden: 'TomTube is not enabled for this account.',
+  'media-tokens-not-configured': 'TomTube needs secure media links, which are not set up on the Tomify server yet.',
 }
 
 function headers(session: AuthSession): HeadersInit {
@@ -62,24 +63,28 @@ export const tomtubeApi = {
   status: (session: AuthSession) => request<Record<string, unknown>>(session, 'status'),
 }
 
-// The query that signs a media URL right now.
+// The query that signs a media URL right now; null until a media token is available.
 export function mediaQuery(session: AuthSession, now = Date.now()) {
-  const route = mediaRoute(session.username, now)
-  return new URLSearchParams(route ? { mt: route.token } : { u: session.username, t: session.token, s: session.salt }).toString()
+  const token = mediaToken(session.username, now)
+  return token ? new URLSearchParams({ mt: token }).toString() : null
 }
 
 export type MediaFile = 'master.m3u8' | 'audio.m3u8' | 'progressive.mp4' | 'audio.m4a'
 
 export function mediaUrl(session: AuthSession, id: string, file: MediaFile) {
-  return `/api/tomtube/videos/${encodeURIComponent(id)}/${file}?${mediaQuery(session)}`
+  const query = mediaQuery(session)
+  return query ? `/api/tomtube/videos/${encodeURIComponent(id)}/${file}?${query}` : null
 }
 
 export function queueStreamUrl(session: AuthSession, ids: string[]) {
-  return `/api/tomtube/queue.m3u8?ids=${ids.map(encodeURIComponent).join(',')}&${mediaQuery(session)}`
+  const query = mediaQuery(session)
+  return query ? `/api/tomtube/queue.m3u8?ids=${ids.map(encodeURIComponent).join(',')}&${query}` : null
 }
 
 export function thumbnailUrl(session: AuthSession, id: string, variant: 'mqdefault' | 'hqdefault' | 'maxresdefault' = 'mqdefault', absolute = false) {
-  const path = `/api/tomtube/thumbs/${encodeURIComponent(id)}/${variant}.jpg?${mediaQuery(session)}`
+  const query = mediaQuery(session)
+  if (!query) return null
+  const path = `/api/tomtube/thumbs/${encodeURIComponent(id)}/${variant}.jpg?${query}`
   return absolute ? new URL(path, window.location.origin).href : path
 }
 

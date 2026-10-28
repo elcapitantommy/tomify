@@ -5,6 +5,7 @@ import { TomTubeApp } from './App'
 import { useAuth } from '../stores/auth'
 import { useTomTube, defaultSettings, initialPlayer } from './store'
 import { emptyQueue } from './queue'
+import { setMediaGrant } from './mediaToken'
 import { formatDuration, formatViews, youtubeLinkId } from './api'
 
 const session = { serverUrl: 'https://tomify.tomdixon.uk', username: 'tom', token: '0123456789abcdef0123456789abcdef', salt: 'abc123' }
@@ -22,6 +23,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  setMediaGrant(null)
   useAuth.setState({ session: null, status: 'signed-out' })
 })
 
@@ -37,7 +39,7 @@ describe('TomTube app', () => {
     useAuth.setState({ session, status: 'signed-in' })
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
-      if (url.startsWith('/api/media-session')) return new Response('{}', { status: 404 })
+      if (url.startsWith('/api/media-session')) return Response.json({ token: 'tok-app', expiresAt: Date.now() + 4 * 3600_000 })
       if (url.startsWith('/api/tomtube/search')) {
         expect(new Headers(init?.headers).get('x-tomify-user')).toBe('tom')
         return Response.json({ query: 'rick', results })
@@ -57,15 +59,25 @@ describe('TomTube app', () => {
 
     await user.click(screen.getByText('Never Gonna Give You Up'))
     const video = container.querySelector('video')!
-    await waitFor(() => expect(video.getAttribute('src')).toMatch(/^\/api\/tomtube\/videos\/dQw4w9WgXcQ\/(?:master\.m3u8|progressive\.mp4)\?u=tom&/))
+    await waitFor(() => expect(video.getAttribute('src')).toMatch(/^\/api\/tomtube\/videos\/dQw4w9WgXcQ\/(?:master\.m3u8|progressive\.mp4)\?mt=tok-app$/))
     expect(screen.getByRole('heading', { level: 1, name: 'Never Gonna Give You Up' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('radio', { name: /Audio only/ }))
     const audio = container.querySelector('audio')!
     expect(audio.getAttribute('src')).toMatch(/\/videos\/dQw4w9WgXcQ\/audio\.(?:m3u8|m4a)\?/)
+    // The Navidrome login never appears in a media URL.
+    for (const element of container.querySelectorAll('[src]')) expect(element.getAttribute('src')).not.toMatch(/0123456789abcdef|[?&][uts]=/)
     expect(video.getAttribute('src')).toBeNull()
     expect(useTomTube.getState().player.mode).toBe('audio')
     expect(useTomTube.getState().history[0].id).toBe('dQw4w9WgXcQ')
+    vi.unstubAllGlobals()
+  })
+
+  it('says so when the server has no media tokens, instead of falling back to the login', async () => {
+    useAuth.setState({ session, status: 'signed-in' })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404 })))
+    render(<TomTubeApp/>)
+    expect(await screen.findByText(/needs secure media links/)).toBeInTheDocument()
     vi.unstubAllGlobals()
   })
 

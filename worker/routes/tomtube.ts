@@ -8,8 +8,10 @@ import { json } from '../lib/http.ts'
 // listeners get through, optionally only those in TOMTUBE_ALLOWED_USERS. Only the paths below are
 // passed on, so the service cannot be used as a general relay, and the phone never sees a YouTube URL.
 //   JSON (x-tomify-* headers): search, resolve, videos/<id>, videos/<id>/prefetch, queue.json, status
-//   Media (`mt` token or u/t/s in the query, since players can't send headers): playlists, streams,
-//   thumbnails. Playlists are re-signed with a fresh token, so a long video outlives the old one.
+//   Media (playlists, streams, thumbnails): only a short-lived `mt` media token in the query, since
+//   players can't send headers. The Navidrome login is never accepted in a TomTube URL, so it can't
+//   end up in Cloudflare or browser logs; without TOMIFY_MEDIA_KEY media answers 503. Playlists are
+//   re-signed with a fresh token, so a long video outlives the old one.
 const ID = '[A-Za-z0-9_-]{11}'
 const JSON_PATH = new RegExp(`^/api/tomtube/(?:search|resolve|status|queue\\.json|videos/${ID}(?:/prefetch)?)$`)
 const MEDIA_PATH = new RegExp(`^/api/tomtube/(?:queue\\.m3u8|videos/${ID}/(?:master|audio|[va]\\d{1,4})\\.m3u8|videos/${ID}/(?:\\d{1,4}\\.(?:mp4|m4a)|progressive\\.mp4|audio\\.m4a)|thumbs/${ID}/[a-z]{4,13}\\.jpg)$`)
@@ -40,12 +42,12 @@ export const tomtubeRoute: RouteHandler = async (request, env, url) => {
   const post = url.pathname.endsWith('/prefetch')
   if (request.method !== (post ? 'POST' : 'GET') && !(isMedia && request.method === 'HEAD')) return json({ error: 'method-not-allowed' }, 405)
 
+  if (isMedia && !env.TOMIFY_MEDIA_KEY) return json({ error: 'media-tokens-not-configured', message: 'TomTube needs media tokens (TOMIFY_MEDIA_KEY) on this server.' }, 503)
   let user: string | null
   let login: string[] | null = null
-  const mt = url.searchParams.get('mt')
   if (isJson) user = await authenticate(request, env)
   else {
-    login = mt ? await openMediaToken(env, mt) : ['u', 't', 's'].map((key) => url.searchParams.get(key) || '')
+    login = await openMediaToken(env, url.searchParams.get('mt'))
     user = login ? await authenticateCredentials(env, login[0], login[1], login[2]) : null
   }
   if (!user) return json({ error: 'unauthorized' }, 401)
@@ -67,7 +69,7 @@ export const tomtubeRoute: RouteHandler = async (request, env, url) => {
 
   if (isMedia && upstream.ok && rest.endsWith('.m3u8')) {
     // A fresh four-hour token for everything this playlist names.
-    const query = new URLSearchParams(env.TOMIFY_MEDIA_KEY ? { mt: (await mediaToken(env, login!)).token } : { u: login![0], t: login![1], s: login![2] }).toString()
+    const query = new URLSearchParams({ mt: (await mediaToken(env, login!)).token }).toString()
     return new Response(request.method === 'HEAD' ? null : signTomTubePlaylist(await upstream.text(), query), { headers: { 'content-type': 'application/vnd.apple.mpegurl', 'cache-control': 'no-store' } })
   }
   const out = new Headers({ 'x-content-type-options': 'nosniff' })

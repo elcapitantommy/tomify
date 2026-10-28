@@ -15,6 +15,7 @@
 // browser; see docs/TOMTUBE.md for the device tests.
 import type { AuthSession } from '../lib/navidrome'
 import { mediaUrl, queueStreamUrl, thumbnailUrl, tomtubeApi, type QueueTimeline, type TomTubeVideo } from './api'
+import { mediaTokenStatus, onMediaTokenChange } from './mediaToken'
 import * as Q from './queue'
 import { useTomTube, type PlaybackMode, type PlayerView } from './store'
 
@@ -60,6 +61,7 @@ export class TomTubeEngine {
   private lastLockScreenUpdate = 0
   private playingSince = 0
   private cleanups: Array<() => void> = []
+  private stopWaitingForToken: (() => void) | null = null
 
   constructor(deps: Deps) {
     this.deps = deps
@@ -136,20 +138,23 @@ export class TomTubeEngine {
     const continuous = mode === 'audio' && this.continuousIds()
     const session = this.deps.session()
     if (!session) return
-    let url: string
+    let url: string | null
     let source: 'hls' | 'file'
     if (continuous) {
       url = queueStreamUrl(session, continuous)
       source = 'hls'
-      this.continuous = { ids: continuous, baseIndex: this.store.queue.index, timeline: null }
-      void this.loadTimeline(this.continuous)
     } else {
       const chosen = this.sourceFor(video, mode)
       if (!chosen) return
       url = chosen.url
       source = chosen.kind
-      this.continuous = null
     }
+    // No media token yet (just opened, or offline): wait for one rather than sign the URL any other way.
+    if (!url) { this.release(element); this.waitForToken(video, mode, position, autoplay); return }
+    if (continuous) {
+      this.continuous = { ids: continuous, baseIndex: this.store.queue.index, timeline: null }
+      void this.loadTimeline(this.continuous)
+    } else this.continuous = null
     this.pendingSeek = position > 0.5 ? position : null
     element.setAttribute('src', url)
     element.load()
@@ -157,6 +162,21 @@ export class TomTubeEngine {
     this.updateMetadata(video)
     if (autoplay) this.start(element)
     if (mode === 'audio') this.prefetchAhead()
+  }
+
+  private waitForToken(video: TomTubeVideo, mode: PlaybackMode, position: number, autoplay: boolean) {
+    const notConfigured = () => this.set({ playing: false, status: 'error', error: 'TomTube needs secure media links, which are not set up on the Tomify server yet.' })
+    if (mediaTokenStatus() === 'not-configured') { notConfigured(); return }
+    this.set({ status: 'loading', error: null, currentTime: position, duration: video.duration ?? 0, playing: autoplay })
+    this.updateMetadata(video)
+    this.stopWaitingForToken = onMediaTokenChange(() => {
+      const status = mediaTokenStatus()
+      if (status !== 'ready' && status !== 'not-configured') return
+      this.stopWaitingForToken?.()
+      this.stopWaitingForToken = null
+      if (status === 'not-configured') notConfigured()
+      else if (this.current()?.id === video.id && this.view.mode === mode) this.load(position, autoplay && this.view.playing)
+    })
   }
 
   private start(element: Media) {
@@ -456,7 +476,13 @@ export class TomTubeEngine {
   }
 
   private clearStall() { this.cancel(this.stallTimer); this.stallTimer = null }
-  private clearTimers() { this.clearStall(); this.cancel(this.retryTimer); this.retryTimer = null }
+  private clearTimers() {
+    this.clearStall()
+    this.cancel(this.retryTimer)
+    this.retryTimer = null
+    this.stopWaitingForToken?.()
+    this.stopWaitingForToken = null
+  }
 
   // --- history and lock screen ---------------------------------------------------------------------
 
@@ -477,10 +503,10 @@ export class TomTubeEngine {
       title: video.title,
       artist: video.channel,
       album: 'TomTube',
-      artwork: [
-        { src: thumbnailUrl(session, video.id, 'mqdefault', true), sizes: '320x180', type: 'image/jpeg' },
-        { src: thumbnailUrl(session, video.id, 'hqdefault', true), sizes: '480x360', type: 'image/jpeg' },
-      ],
+      artwork: ([['mqdefault', '320x180'], ['hqdefault', '480x360']] as const).flatMap(([variant, sizes]) => {
+        const src = thumbnailUrl(session, video.id, variant, true)
+        return src ? [{ src, sizes, type: 'image/jpeg' }] : []
+      }),
     })
   }
 

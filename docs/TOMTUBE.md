@@ -111,22 +111,20 @@ All on the Debian box, as `tom` unless `sudo` is shown.
    /opt/tomtube/bin/yt-dlp --version && deno --version
    ```
 
-   Daily updates: `sudo cp tomtube-service/tomtube-ytdlp-update.service.example /etc/systemd/system/tomtube-ytdlp-update.service`, the same for the `.timer`, then `sudo systemctl daemon-reload && sudo systemctl enable --now tomtube-ytdlp-update.timer`.
+   Daily updates: the first deploy (step 5) installs and enables the `tomtube-ytdlp-update` timer.
 
 3. **Optional: PO token provider.** `docker compose -f tomtube-service/docker-compose.pot-provider.yml up -d` (listens on `127.0.0.1:4416` only), install the matching plugin for yt-dlp (download `bgutil-ytdlp-pot-provider.zip` from the same project's releases into `~/.config/yt-dlp/plugins/` for the user TomTube runs as; with the unit's `HOME=/var/lib/tomtube` that is `/var/lib/tomtube/.config/yt-dlp/plugins/`), and set `TOMTUBE_POT_PROVIDER_URL=http://127.0.0.1:4416`. `yt-dlp -v` lists loaded plugins.
 
 4. **Settings.** Copy `tomtube-service/tomtube.env.example` to `/etc/tomtube/tomtube.env` (`sudo install -o tom -g tom -m 600 …`) and set `TOMTUBE_TOKEN` to a new random value (`openssl rand -base64 48`). Every other value has a sensible default. Never commit the env file or a cookie file.
 
-5. **First release.** From a checkout: `./scripts/deploy-tomtube.sh` (or `--host user@host`). Then install the unit once:
+5. **First release.** From a checkout: `./scripts/deploy-tomtube.sh` (or `--host user@host`). It stops before changing anything if `/etc/tomtube/tomtube.env` is missing. On the first run it also installs and enables `tomtube.service` and the daily `tomtube-ytdlp-update` timer from the release, so it asks for the sudo password. Then check:
 
    ```bash
-   sudo cp /opt/tomtube/current/tomtube-service/tomtube.service.example /etc/systemd/system/tomtube.service
-   sudo systemctl daemon-reload && sudo systemctl enable --now tomtube
    curl -s http://127.0.0.1:8790/health; echo     # {"ok":true,"version":"<sha>"}
    journalctl -u tomtube -n 20                     # "TomTube listening on http://127.0.0.1:8790 (yt-dlp 2026.…)"
    ```
 
-   Later deploys are just `./scripts/deploy-tomtube.sh`; it asks for the sudo password to restart the service, unless you allow exactly that command: `echo 'tom ALL=(root) NOPASSWD: /usr/bin/systemctl restart tomtube' | sudo tee /etc/sudoers.d/tomtube-deploy && sudo chmod 440 /etc/sudoers.d/tomtube-deploy`. It keeps the five newest releases and puts the previous one back if the new one doesn't report healthy within 30 seconds.
+   Later deploys are just `./scripts/deploy-tomtube.sh`. They leave the installed units alone (and say so if the release ships a changed `tomtube.service.example`), and ask for the sudo password to restart the service, unless you allow exactly that command: `echo 'tom ALL=(root) NOPASSWD: /usr/bin/systemctl restart tomtube' | sudo tee /etc/sudoers.d/tomtube-deploy && sudo chmod 440 /etc/sudoers.d/tomtube-deploy`. It keeps the five newest releases and puts the previous one back if the new one doesn't report healthy within 30 seconds.
 
 6. **Tunnel.** Give the service its own public hostname on the tunnel the recovery agent already uses (`tomify-recovery-cloudflared`): in Cloudflare Zero Trust → Networks → Tunnels → that tunnel → Public Hostname → Add, for example `tomtube-service.tomdixon.uk` → `http://localhost:8790`. (If the tunnel is configured by a local `config.yml` instead, add the same ingress rule above the catch-all.) Check from anywhere: `curl -s https://tomtube-service.tomdixon.uk/health` returns `{"ok":true,…}`, and `/v1/status` without the token returns 401.
 
@@ -141,7 +139,7 @@ In the Cloudflare dashboard, tomify Worker → Settings → Variables and Secret
 | `TOMTUBE_SERVICE_URL` | Variable | The tunnel hostname, e.g. `https://tomtube-service.tomdixon.uk` |
 | `TOMTUBE_SERVICE_TOKEN` | **Secret** | The same value as `TOMTUBE_TOKEN` on the box |
 | `TOMTUBE_ALLOWED_USERS` | Variable (optional) | Comma-separated Navidrome usernames; unset means every Tomify listener |
-| `TOMIFY_MEDIA_KEY` | Secret (already used by Tomify) | Recommended: media URLs then carry a 4-hour token instead of the Navidrome login |
+| `TOMIFY_MEDIA_KEY` | Secret (already used by Tomify) | **Required.** TomTube media URLs carry only a 4-hour media token made with this key; the Navidrome login is never accepted in a TomTube URL. Without it, TomTube's media answers `503 media-tokens-not-configured` and the app says so |
 
 Deploy the site as usual (merge to `main`). Without the service variables, `/api/tomtube/*` answers `503 not-configured` and nothing else in Tomify changes.
 
@@ -197,7 +195,7 @@ Record each method separately. If the standard method fails and the continuous o
 
 - **Settings → Check server** in the app, or `GET /api/tomtube/status` (signed in) or the service's `/v1/status` (token): yt-dlp version, running/queued yt-dlp jobs, active streams, cache size, and the last 50 failures with codes.
 - `journalctl -u tomtube -f` on the box: one line per yt-dlp failure with its code. Media URLs, signatures, PO tokens, cookies and paths are removed from messages.
-- Error codes the app may show: `bot-check` (add a PO token provider or cookies), `rate-limited`, `age-restricted`, `private`, `members-only`, `unavailable`, `geo-blocked`, `live-not-supported`, `no-compatible-format`, `no-segment-index`, `upstream-expired` (YouTube refused a renewed address), `ytdlp-missing`, `timeout`, `busy` (too many streams or yt-dlp jobs), `not-configured` (Worker variables missing), `tomtube-unavailable` (tunnel or service down).
+- Error codes the app may show: `bot-check` (add a PO token provider or cookies), `rate-limited`, `age-restricted`, `private`, `members-only`, `unavailable`, `geo-blocked`, `live-not-supported`, `no-compatible-format`, `no-segment-index`, `upstream-expired` (YouTube refused a renewed address), `ytdlp-missing`, `timeout`, `busy` (too many streams or yt-dlp jobs), `not-configured` (Worker variables missing), `media-tokens-not-configured` (no `TOMIFY_MEDIA_KEY` on the Worker), `tomtube-unavailable` (tunnel or service down).
 - Everything fails: update yt-dlp (`/opt/tomtube/bin/yt-dlp -U`), check `deno --version`, then try `/opt/tomtube/bin/yt-dlp -v -F <url>` as `tom` to see what YouTube returns.
 - Video won't start but audio works: Settings → Video quality → **Compatible** (360p single file). Audio won't start: Settings → Audio stream → **Single file**. Please note which, so the default can be changed.
 
@@ -223,7 +221,7 @@ All under `/v1/` need `Authorization: Bearer $TOMTUBE_TOKEN`; the Worker exposes
 ## Security
 
 - The service listens on loopback and refuses to start without a token of at least 32 characters. Only the Worker, through the tunnel, can reach it.
-- The Worker requires a valid Tomify sign-in for every TomTube path (headers for JSON; a media token or the Navidrome token for media), optionally limited to `TOMTUBE_ALLOWED_USERS`, and passes on only a fixed list of paths and query parameters.
+- The Worker requires a valid Tomify sign-in for every TomTube path (headers for JSON; for media, only a short-lived media token: the Navidrome login is never put in or accepted from a TomTube URL, so it can't appear in Cloudflare, proxy or browser logs), optionally limited to `TOMTUBE_ALLOWED_USERS`, and passes on only a fixed list of paths and query parameters.
 - No arbitrary URL is ever fetched: clients send video ids; yt-dlp gets a URL built from the id; the proxy fetches only `https://*.googlevideo.com` (checked again on every redirect) and thumbnails only from `https://i.ytimg.com/vi/<id>/<fixed name>.jpg`. YouTube's URLs and request headers never reach the phone, and cookies are never forwarded upstream.
 - yt-dlp runs without a shell, with `--ignore-config`, a timeout, an output cap and a concurrency limit. A cookie file is copied privately for each run and deleted.
 - Secrets live only in `/etc/tomtube/tomtube.env`, `/opt/tomtube/secrets` and the Worker's secrets. Logs and error messages strip media URLs, signatures, PO tokens, cookies and paths.

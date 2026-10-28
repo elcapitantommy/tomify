@@ -3,6 +3,7 @@ import { TomTubeEngine, RETRY_DELAYS_MS, STALL_TIMEOUT_MS } from './engine'
 import { useTomTube, defaultSettings, initialPlayer } from './store'
 import { emptyQueue } from './queue'
 import type { TomTubeVideo } from './api'
+import { mediaTokenStatus, setMediaGrant, startMediaTokens } from './mediaToken'
 
 // A stand-in for <video>/<audio>: records what the engine does and lets tests fire media events.
 class FakeMedia extends EventTarget {
@@ -79,11 +80,13 @@ beforeEach(() => {
   doc = new FakeDocument()
   api = { prefetch: vi.fn(async () => ({ state: 'started' })), queueTimeline: vi.fn(async () => ({ tracks: [], skipped: [] })) }
   vi.stubGlobal('MediaMetadata', class { constructor(readonly init: MediaMetadataInit) {} })
+  setMediaGrant({ username: 'tom', token: 'tok-1', expiresAt: Date.now() + 4 * 3600_000 })
   create()
 })
 
 afterEach(() => {
   engine.destroy()
+  setMediaGrant(null)
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
@@ -92,9 +95,34 @@ const player = () => useTomTube.getState().player
 const queueIds = () => useTomTube.getState().queue.items.map((item) => item.id[0])
 
 describe('TomTube player', () => {
+  it('never signs a media URL with the login: without a media token it waits, then plays', () => {
+    setMediaGrant(null)
+    engine.playVideo(video('a'))
+    expect(videoEl.src).toBe('')
+    expect(player()).toMatchObject({ playing: true, status: 'loading' })
+    setMediaGrant({ username: 'tom', token: 'tok-2', expiresAt: Date.now() + 4 * 3600_000 })
+    expect(videoEl.src).toMatch(/^\/api\/tomtube\/videos\/aaaaaaaaaaa\/master\.m3u8\?mt=tok-2$/)
+    expect(videoEl.playCalls).toBe(1)
+    // A token about to expire is not used for a new stream.
+    setMediaGrant({ username: 'tom', token: 'tok-old', expiresAt: Date.now() + 60_000 })
+    engine.setMode('audio')
+    expect(audioEl.src).toBe('')
+  })
+
+  it('explains when the server hands out no media tokens', async () => {
+    setMediaGrant(null)
+    const stop = startMediaTokens({ username: 'tom', token: session.token, salt: session.salt }, vi.fn(async () => new Response('{}', { status: 404 })) as never)
+    await vi.waitFor(() => expect(mediaTokenStatus()).toBe('not-configured'))
+    engine.playVideo(video('a'))
+    expect(videoEl.src).toBe('')
+    expect(player()).toMatchObject({ playing: false, status: 'error' })
+    expect(player().error).toMatch(/secure media links/)
+    stop()
+  })
+
   it('plays a video as HLS through Tomify, and as a single file where HLS is not native', () => {
     engine.playVideo(video('a'))
-    expect(videoEl.src).toMatch(/^\/api\/tomtube\/videos\/aaaaaaaaaaa\/master\.m3u8\?u=tom&t=0123456789abcdef0123456789abcdef&s=abc123$/)
+    expect(videoEl.src).toMatch(/^\/api\/tomtube\/videos\/aaaaaaaaaaa\/master\.m3u8\?mt=tok-1$/)
     expect(videoEl.playCalls).toBe(1)
     expect(audioEl.src).toBe('')
     expect(player()).toMatchObject({ mode: 'video', playing: true, status: 'loading', source: 'hls' })
@@ -310,7 +338,7 @@ describe('TomTube player', () => {
       engine.playVideo(video('a', 100))
       useTomTube.getState().setQueue({ items: [video('a', 100), video('b', 200)], index: 0 })
       engine.setMode('audio')
-      expect(audioEl.src).toMatch(/^\/api\/tomtube\/queue\.m3u8\?ids=aaaaaaaaaaa,bbbbbbbbbbb&u=tom/)
+      expect(audioEl.src).toMatch(/^\/api\/tomtube\/queue\.m3u8\?ids=aaaaaaaaaaa,bbbbbbbbbbb&mt=tok-1/)
       expect(player().continuous).toBe(true)
       await vi.runAllTimersAsync()
       audioEl.metadata(300)

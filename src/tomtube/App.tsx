@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
 import { ChevronDown, Headphones, ListPlus, ListVideo, LoaderCircle, LogOut, Maximize, MoreVertical, Pause, Play, Search, Settings, SkipBack, SkipForward, Trash2, Tv, X } from 'lucide-react'
 import { useAuth } from '../stores/auth'
 import { DEFAULT_NAVIDROME_SERVER } from '../lib/navidrome'
-import { startMediaRoute } from '../lib/mediaRoute'
+import { mediaTokenStatus, onMediaTokenChange, startMediaTokens } from './mediaToken'
 import { formatDuration, formatViews, thumbnailUrl, tomtubeApi, TomTubeError, youtubeLinkId, type TomTubeVideo } from './api'
 import { TomTubeEngine } from './engine'
 import * as Q from './queue'
 import { useTomTube } from './store'
+
+const useMediaTokenStatus = () => useSyncExternalStore(onMediaTokenChange, mediaTokenStatus)
 
 function SignIn() {
   const login = useAuth((state) => state.login)
@@ -32,8 +34,10 @@ function Logo({ large = false }: { large?: boolean }) {
 
 function Thumb({ id, duration, variant = 'mqdefault' }: { id: string; duration?: number | null; variant?: 'mqdefault' | 'hqdefault' }) {
   const session = useAuth((state) => state.session)!
+  useMediaTokenStatus()
+  const src = thumbnailUrl(session, id, variant)
   return <span className="tt-thumb">
-    <img src={thumbnailUrl(session, id, variant)} alt="" loading="lazy" decoding="async" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/>
+    {src && <img src={src} alt="" loading="lazy" decoding="async" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/>}
     {duration ? <span className="tt-badge">{formatDuration(duration)}</span> : null}
   </span>
 }
@@ -146,7 +150,8 @@ function TomTube() {
   const searchAbort = useRef<AbortController | null>(null)
   const current = Q.current(queue)
 
-  useEffect(() => startMediaRoute({ username: session.username, token: session.token, salt: session.salt }), [session])
+  const tokenStatus = useMediaTokenStatus()
+  useEffect(() => startMediaTokens({ username: session.username, token: session.token, salt: session.salt }), [session])
 
   useEffect(() => {
     const created = new TomTubeEngine({ video: videoRef.current!, audio: audioRef.current!, session: () => useAuth.getState().session, api: tomtubeApi, mediaSession: 'mediaSession' in navigator ? navigator.mediaSession : null })
@@ -211,6 +216,7 @@ function TomTube() {
     </header>
 
     <main className="tt-main">
+      {tokenStatus === 'not-configured' && <div className="tt-error" role="alert">TomTube needs secure media links (TOMIFY_MEDIA_KEY), which are not set up on the Tomify server yet, so videos can't play.</div>}
       {error && <div className="tt-error" role="alert">{error}</div>}
       {results ? <Section title={`Results for “${query.trim()}”`}>
         {results.length ? <ul className="tt-list">{results.map((video) => <VideoRow key={video.id} video={video} actions={rowActions(video)}/>)}</ul> : <p className="tt-note">Nothing found.</p>}
