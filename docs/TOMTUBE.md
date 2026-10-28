@@ -100,6 +100,8 @@ Signals fade with a 90-day half-life (Not interested: 180 days). Any channel who
 
 **Shelves**, in order: *Recommended for you* (YouTube's own recommendations from the last sync, while under two days old, minus what you've seen); *New from channels you watch* (latest uploads, from each channel's public RSS feed, of up to 8 channels you like most); *Channels you might like* (channels YouTube kept recommending that you haven't watched); *More like what you finish* (YouTube searches for up to three topics that recur in titles you finished or mostly watched). Results are cached for an hour; **Refresh** recomputes them.
 
+**First set-up (admin only).** Put your Navidrome username in `TOMTUBE_TRAINING_USERS` in `wrangler.toml` and deploy. The feed reading hasn't been tried against real YouTube yet, so try it first with cookies from a **disposable** YouTube account, check Settings shows *valid* and the shelves fill, then remove them and add your own.
+
 **Adding or renewing cookies.** TomTube → Settings → Recommendations → *Add YouTube cookies* (or *Renew*):
 
 1. On a computer, open a private (incognito) window and sign in to youtube.com with your account.
@@ -113,7 +115,7 @@ TomTube checks them straight away and Settings shows **valid**, **expired** or t
 - They are used **only** to read three account feeds (`:ythistory`, `:ytsubs`, `:ytrec`) with yt-dlp, every `TOMTUBE_TRAINING_SYNC_HOURS` (default 6, minimum 2) with a few seconds between feeds. Playback, search and topic searches never use them; those stay unauthenticated (or use the separate throwaway `TOMTUBE_YOUTUBE_COOKIES`).
 - Only youtube.com cookies are kept (Google account cookies are dropped). They are encrypted with AES-256-GCM (key from `TOMTUBE_TRAINING_KEY`, or derived from `TOMTUBE_TOKEN`) in `/var/lib/tomtube/secrets/` (folder mode 700, file mode 600, owned by the service user). For each yt-dlp run they are decrypted into a private temporary file that is deleted afterwards. As YouTube rotates them, yt-dlp's updated copy is encrypted and saved, which keeps them working longer.
 - They are never logged and never sent back to the phone: the API reports only their state and dates. Error messages are scrubbed of cookie values.
-- Changing them goes through the signed-in Worker; set `TOMTUBE_TRAINING_USERS` to your Navidrome username so only you can add, renew or remove them or clear the training data.
+- Changing them goes through the signed-in Worker and is allowed only for the Navidrome usernames in `TOMTUBE_TRAINING_USERS` in `wrangler.toml` (kept there so a deploy can't drop it). It fails closed: while it is empty nobody can add, renew, remove or sync cookies or clear the training data, and Settings says so.
 
 The model itself (what was watched, skipped, rejected, the YouTube history and recommended channels; no cookies) is in `/var/lib/tomtube/training/log.json`. It is one model per server, shared by everyone allowed to use TomTube.
 
@@ -187,7 +189,7 @@ In the Cloudflare dashboard, tomify Worker → Settings → Variables and Secret
 | `TOMTUBE_SERVICE_URL` | Variable | The tunnel hostname, e.g. `https://tomtube-service.tomdixon.uk` |
 | `TOMTUBE_SERVICE_TOKEN` | **Secret** | The same value as `TOMTUBE_TOKEN` on the box |
 | `TOMTUBE_ALLOWED_USERS` | Variable (optional) | Comma-separated Navidrome usernames; unset means every Tomify listener |
-| `TOMTUBE_TRAINING_USERS` | Variable (recommended) | Navidrome usernames allowed to add, renew or remove the recommendation cookies and clear training data; unset means every TomTube user |
+| `TOMTUBE_TRAINING_USERS` | **`wrangler.toml`** var | Navidrome usernames allowed to add, renew, sync or remove the recommendation cookies and clear training data. Empty means nobody (fails closed) |
 | `TOMIFY_MEDIA_KEY` | Secret (already used by Tomify) | **Required.** TomTube media URLs carry only a 4-hour media token made with this key; the Navidrome login is never accepted in a TomTube URL. Without it, TomTube's media answers `503 media-tokens-not-configured` and the app says so |
 
 Deploy the site as usual (merge to `main`). Without the service variables, `/api/tomtube/*` answers `503 not-configured` and nothing else in Tomify changes.
