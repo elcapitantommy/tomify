@@ -235,6 +235,10 @@ Icon-only buttons and links need both an `aria-label` and a `title` tooltip (the
 
 Tomifin Downloader is a separate app at its own address (`https://tomifin.tomdixon.uk/`, served by the same Worker) for Jellyfin administrators, who sign in with their Jellyfin account: search films and TV with the same torrent sources Recovery uses, choose **Family** (`/media/family`) or **Private** (`/media/private`), and queue the torrent in the media server's qBittorrent, with live progress, pause, resume and cancel. It needs the custom domain added to the Worker, three settings on the agent and a qBittorrent drop-in; see [docs/TOMIFIN.md](docs/TOMIFIN.md).
 
+### TomTube
+
+TomTube is an ad-free YouTube player at `/tomtube/`, signed in with your Tomify account and installable on the iPhone home screen. Its main job is background audio: switch to **Audio only** (or lock the phone) and playback continues from an audio-only stream with lock-screen and Bluetooth controls. It needs its own service on the media server (`tomtube-service/`, yt-dlp, port 8790) and two Worker secrets; see [docs/TOMTUBE.md](docs/TOMTUBE.md) for setup, the iPhone test checklist and known limits.
+
 ### Deploying
 
 Cloudflare builds and deploys the site on every push to `main`; the recovery agent is deployed separately from the Windows checkout. Both, plus D1 migrations, box dependencies, secrets and backups, are covered in [DEPLOYMENT.md](docs/DEPLOYMENT.md).

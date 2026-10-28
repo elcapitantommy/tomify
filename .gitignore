@@ -10,3 +10,4 @@ youtube.cookies
 secrets/
 .wrangler/
 worker/generated/
+tomtube-state/

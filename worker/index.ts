@@ -29,6 +29,7 @@ import { smartPlaylistsRoute } from './routes/smart-playlists.ts'
 import { systemSettingsRoute } from './routes/system-settings.ts'
 import { tomifinRoute } from './routes/tomifin.ts'
 import { tomifinSiteRoute } from './routes/tomifin-site.ts'
+import { tomtubePageRoute, tomtubeRoute } from './routes/tomtube.ts'
 import { versionRoute } from './routes/version.ts'
 
 // Must match wrangler.toml.
@@ -56,6 +57,8 @@ const routes: RouteHandler[] = [
   tomifinRoute,
   versionRoute,
   hlsRoute,
+  tomtubeRoute,
+  tomtubePageRoute,
   mediaSessionRoute,
   handleRecoveryRequest,
   navidromeRoute,

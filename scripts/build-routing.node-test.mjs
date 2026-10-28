@@ -78,10 +78,11 @@ async function withStaticAssetsWorker(callback) {
   }
 }
 
-test('generated service worker excludes API, Navidrome and Tomifin navigations from the SPA fallback', () => {
-  assert.equal(serviceWorker.includes('denylist:[/^\\/api\\//,/^\\/navidrome\\//,/^\\/tomifin(\\/|$)/]'), true)
-  // Tomifin is not precached, so the service worker never serves an old copy of it.
+test('generated service worker excludes API, Navidrome, Tomifin and TomTube navigations from the SPA fallback', () => {
+  assert.equal(serviceWorker.includes('denylist:[/^\\/api\\//,/^\\/navidrome\\//,/^\\/tomifin(\\/|$)/,/^\\/tomtube(\\/|$)/]'), true)
+  // Tomifin and TomTube are not precached, so the service worker never serves an old copy of them.
   assert.equal(serviceWorker.includes('tomifin/index.html'), false)
+  assert.equal(serviceWorker.includes('tomtube/'), false)
 })
 
 test('Worker handles the Spotify callback as API and returns JSON for unknown API routes', async () => {
@@ -2207,4 +2208,96 @@ test('the party queue lets guests take turns, and votes go first when voting is 
   const votes = [entry('a1', 'anna', 1), entry('b1', 'ben', 2, 3), entry('c1', 'cara', 3, 1), entry('q', 'dan', 0, 0, 'queued')]
   assert.deepEqual(orderPartyQueue(votes, true).map((value) => value.id), ['q', 'b1', 'c1', 'a1'], 'the up-next track stays at the top')
   assert.deepEqual(orderPartyQueue(votes, false).map((value) => value.id), ['q', 'a1', 'b1', 'c1'])
+})
+
+test('TomTube passes only its own paths to the TomTube service, for signed-in listeners', async () => {
+  const originalFetch = globalThis.fetch
+  const serviceCalls = []
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: ['tt-listener', 'tt-other'].includes(url.searchParams.get('u')) ? 'ok' : 'failed' } })
+    serviceCalls.push({ url, init })
+    if (url.pathname.endsWith('.m3u8')) return new Response('#EXTM3U\n#EXT-X-MAP:URI="140.m4a",BYTERANGE="700@0"\n#EXTINF:5.000,\n#EXT-X-BYTERANGE:900@1000\n140.m4a\n#EXT-X-MEDIA:TYPE=AUDIO,URI="a140.m3u8"\nv136.m3u8\nvideos/aaaaaaaaaaa/140.m4a\n#EXT-X-ENDLIST\n', { headers: { 'content-type': 'application/vnd.apple.mpegurl' } })
+    if (url.pathname.endsWith('.m4a')) return new Response('bytes', { status: 206, headers: { 'content-type': 'audio/mp4', 'content-range': 'bytes 0-4/100', 'content-length': '5', 'accept-ranges': 'bytes', 'set-cookie': 'leak=1' } })
+    return Response.json({ results: [] })
+  }
+  const env = { TOMTUBE_SERVICE_URL: 'https://tomtube-service.tomify.test/', TOMTUBE_SERVICE_TOKEN: 's'.repeat(40) }
+  const login = { 'x-tomify-user': 'tt-listener', 'x-tomify-token': '0123456789abcdef0123456789abcdef', 'x-tomify-salt': 'salt9' }
+  const query = 'u=tt-listener&t=0123456789abcdef0123456789abcdef&s=salt9'
+  try {
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/tomtube/search?q=x'), env)).status, 401)
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/140.m4a?u=nobody&t=0123456789abcdef0123456789abcdef&s=salt9'), env)).status, 401)
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/tomtube/search?q=x', { headers: login }), {})).status, 503)
+    assert.equal(serviceCalls.length, 0)
+
+    const search = await worker.fetch(new Request('https://app.tomify.test/api/tomtube/search?q=rick&limit=5&url=https://evil.test', { headers: login }), env)
+    assert.equal(search.status, 200)
+    assert.equal(serviceCalls[0].url.href, 'https://tomtube-service.tomify.test/v1/search?q=rick&limit=5')
+    assert.equal(serviceCalls[0].init.headers.authorization, `Bearer ${'s'.repeat(40)}`)
+    assert.equal(serviceCalls[0].init.headers['x-tomify-token'], undefined)
+
+    const stream = await worker.fetch(new Request(`https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/140.m4a?${query}`, { headers: { range: 'bytes=0-4' } }), env)
+    assert.equal(stream.status, 206)
+    assert.equal(stream.headers.get('content-range'), 'bytes 0-4/100')
+    assert.equal(stream.headers.get('content-type'), 'audio/mp4')
+    assert.equal(stream.headers.get('set-cookie'), null)
+    assert.equal(await stream.text(), 'bytes')
+    assert.equal(serviceCalls.at(-1).url.href, 'https://tomtube-service.tomify.test/v1/videos/dQw4w9WgXcQ/140.m4a')
+    assert.equal(serviceCalls.at(-1).init.headers.range, 'bytes=0-4')
+
+    // Playlists come back with every URI signed, including URI="…" attributes.
+    const playlist = await (await worker.fetch(new Request(`https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/audio.m3u8?${query}`), env)).text()
+    assert.match(playlist, new RegExp(`#EXT-X-MAP:URI="140\\.m4a\\?${query}",BYTERANGE="700@0"`))
+    assert.match(playlist, new RegExp(`\\n140\\.m4a\\?${query}\\n`))
+    assert.match(playlist, new RegExp(`URI="a140\\.m3u8\\?${query}"`))
+    assert.match(playlist, new RegExp(`\\nvideos/aaaaaaaaaaa/140\\.m4a\\?${query}\\n`))
+    assert.match(playlist, /#EXT-X-ENDLIST\n$/)
+
+    const prefetchGet = await worker.fetch(new Request('https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/prefetch', { headers: login }), env)
+    assert.equal(prefetchGet.status, 405)
+    const calls = serviceCalls.length
+    for (const path of ['/api/tomtube/proxy?url=https://169.254.169.254/', '/api/tomtube/videos/short/140.m4a', '/api/tomtube/videos/dQw4w9WgXcQ/../../v1/status', '/api/tomtube/videos/dQw4w9WgXcQ/140.webm', '/api/tomtube/thumbs/dQw4w9WgXcQ/x.png', '/api/tomtube', '/api/tomtube/health']) {
+      const response = await worker.fetch(new Request(`https://app.tomify.test${path}${path.includes('?') ? '&' : '?'}${query}`, { headers: login }), env)
+      assert.equal(response.status, 404, path)
+    }
+    assert.equal(serviceCalls.length, calls)
+
+    const limited = { ...env, TOMTUBE_ALLOWED_USERS: 'tt-other, someone' }
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/tomtube/search?q=x', { headers: login }), limited)).status, 403)
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/tomtube/search?q=x', { headers: { ...login, 'x-tomify-user': 'tt-other' } }), limited)).status, 200)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('TomTube playlists are re-signed with a fresh media token', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: url.searchParams.get('u') === 'tt-token' ? 'ok' : 'failed' } })
+    return new Response('#EXTM3U\nv136.m3u8\n')
+  }
+  const env = { TOMTUBE_SERVICE_URL: 'https://tomtube-service.tomify.test', TOMTUBE_SERVICE_TOKEN: 's'.repeat(40), TOMIFY_MEDIA_KEY: 'k'.repeat(40) }
+  try {
+    const grant = await worker.fetch(new Request('https://app.tomify.test/api/media-session', { method: 'POST', headers: { 'x-tomify-user': 'tt-token', 'x-tomify-token': '0123456789abcdef0123456789abcdef', 'x-tomify-salt': 'salt7' } }), env)
+    const { token } = await grant.json()
+    const playlist = await worker.fetch(new Request(`https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/master.m3u8?mt=${encodeURIComponent(token)}`), env)
+    assert.equal(playlist.status, 200)
+    const signed = /v136\.m3u8\?mt=([^\n]+)/.exec(await playlist.text())[1]
+    assert.deepEqual(openMediaToken(env.TOMIFY_MEDIA_KEY, decodeURIComponent(signed)), { user: 'tt-token', token: '0123456789abcdef0123456789abcdef', salt: 'salt7' })
+    assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/master.m3u8?mt=forged'), env)).status, 401)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('TomTube\'s page is served for /tomtube and any path under it', async () => {
+  const pages = []
+  const assets = { fetch: async (request) => { pages.push(new URL(request.url).pathname); return new Response('<title>TomTube</title>', { headers: { 'content-type': 'text/html' } }) } }
+  const redirect = await builtWorker.fetch(new Request('https://app.tomify.test/tomtube'), { ASSETS: assets, NAVIDROME_ORIGIN: TEST_NAVIDROME_ORIGIN })
+  assert.equal(redirect.status, 301)
+  assert.equal(redirect.headers.get('location'), 'https://app.tomify.test/tomtube/')
+  const deep = await builtWorker.fetch(new Request('https://app.tomify.test/tomtube/watch/abc'), { ASSETS: assets, NAVIDROME_ORIGIN: TEST_NAVIDROME_ORIGIN })
+  assert.equal(await deep.text(), '<title>TomTube</title>')
+  assert.equal(deep.headers.get('cache-control'), 'no-cache')
+  assert.deepEqual(pages, ['/tomtube/'])
+  const manifest = await builtWorker.fetch(new Request('https://app.tomify.test/tomtube/manifest.webmanifest'), { ASSETS: assets, NAVIDROME_ORIGIN: TEST_NAVIDROME_ORIGIN })
+  assert.equal(manifest.status, 200)
+  assert.deepEqual(pages, ['/tomtube/', '/tomtube/manifest.webmanifest'])
 })

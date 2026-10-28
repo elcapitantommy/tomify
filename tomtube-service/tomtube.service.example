@@ -1,0 +1,39 @@
+# TomTube service: copy to /etc/systemd/system/tomtube.service (see docs/TOMTUBE.md).
+# Separate from tomify-recovery, with its own limits, so a busy video stream can't starve Recovery,
+# Navidrome, qBittorrent or SABnzbd, and a crash restarts only TomTube.
+[Unit]
+Description=TomTube (ad-free YouTube for Tomify)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tom
+WorkingDirectory=/opt/tomtube/current/tomtube-service
+EnvironmentFile=/etc/tomtube/tomtube.env
+Environment=HOME=/var/lib/tomtube
+ExecStart=/usr/bin/node /opt/tomtube/current/tomtube-service/index.mjs
+Restart=always
+RestartSec=3
+# Resource limits (change with `systemctl edit tomtube`).
+MemoryHigh=384M
+MemoryMax=512M
+CPUQuota=150%
+TasksMax=128
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+# Sandbox: TomTube writes only its state and cache folders.
+StateDirectory=tomtube
+CacheDirectory=tomtube
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadOnlyPaths=-/opt/tomtube/secrets
+
+[Install]
+WantedBy=multi-user.target
