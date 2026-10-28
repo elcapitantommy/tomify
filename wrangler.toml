@@ -17,6 +17,8 @@ TOMIFY_DJ_VOICE_MODEL = "aura"
 TOMIFY_LAN_ORIGIN = "https://lan.tomify.tomdixon.uk:8789"
 # Tomifin Downloader's own address: a second Custom Domain on this Worker (docs/TOMIFIN.md). Only Tomifin is served there.
 TOMIFIN_HOSTNAME = "tomifin.tomdixon.uk"
+# TomTube backend, reached through the recovery Cloudflare Tunnel.
+TOMTUBE_SERVICE_URL = "https://tomtube-service.tomdixon.uk"
 
 # Once a day (UTC): refresh imported Spotify playlists and check for new releases.
 # Every five minutes: announce finished Recovery downloads (only when someone has notifications on).
