@@ -17,7 +17,7 @@ Sign in once in the app: it keeps its own sign-in, downloads and settings, separ
 
 ## What is different from the browser
 
-- **Mini player.** The pop-out button in the player bar shrinks the app's own window to the mini player at the bottom right of the screen, always on top. Drag it by anything that isn't a control; the expand button (top right) puts the full window back where it was. Reloading Tomify also puts it back.
+- **Mini player.** The pop-out button in the player bar shrinks the app's own window to the mini player, always on top. The first time it sits at the bottom right of the screen; after that it opens wherever you last left it, even after closing and restarting the app (saved in `mini-player-position.txt` in the app's settings folder, `%APPDATA%\uk.tomdixon.tomify`). If that screen has been unplugged or the spot is partly off screen, it moves just far enough to be fully on the nearest screen. Drag it by anything that isn't a control; the expand button (top right) puts the full window back where it was. Reloading Tomify also puts it back. The mini player is a fixed size, so only its position is remembered.
 - **Media keys.** The app turns on Chromium's hardware media key handling, so the keyboard's play/pause, next and previous keys and the Windows media overlay drive Tomify's Media Session controls.
 - **Links to other sites** (MusicBrainz, Radio Browser) open in your normal browser.
 - **What the site can ask the app to do** is limited to switching the mini player on and off and dragging it (`src-tauri/capabilities/tomify-site.json`), and only from https://app.tomify.tomdixon.uk.
@@ -38,6 +38,7 @@ The installers land in `desktop/src-tauri/target/release/bundle/`. `npx --yes @t
 ## Files
 
 - `src-tauri/src/main.rs`: the window, the mini player commands, single instance and opening other sites in the browser.
+- `src-tauri/src/mini_spot.rs`: where the mini player opens (the remembered spot, kept on a connected screen) and its saved file format; plain Rust with its own tests.
 - `src-tauri/tauri.conf.json`: name, version and installer settings. Bump `version` here and in `Cargo.toml` together.
 - `src-tauri/icons/`: made from `public/pwa-512x512.png` (the rounded Tomify tile) with `npx @tauri-apps/cli@2.12.4 icon ../public/pwa-512x512.png -o src-tauri/icons`.
 - `offline/index.html`: required by Tauri's build; the app never shows it, because the window opens the site directly.
