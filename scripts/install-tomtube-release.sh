@@ -20,6 +20,9 @@ if [[ ! -d $release ]]; then
   staging=$(mktemp -d /opt/tomtube/releases/.staging.XXXXXX)
   tar -xzf "$archive" -C "$staging"
   printf '%s\n' "$sha" > "$staging/tomtube-service/VERSION"
+  # Allow the unprivileged tomtube service to read the release.
+  chmod -R a+rX "$staging"
+  # Keep deployed releases immutable to normal users.
   chmod -R a-w "$staging"
   mv "$staging" "$release"
 fi
