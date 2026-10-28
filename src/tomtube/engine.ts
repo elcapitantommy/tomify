@@ -6,6 +6,19 @@
 // <audio> element playing with the screen locked and shows it on the lock screen through the Media
 // Session API, with play/pause, next/previous and seeking, from headphones and Bluetooth too.
 //
+// Locking the phone during a video switches to audio by itself (visibilitychange). Three things make
+// that handoff work, or at least fail visibly:
+// - iOS starts a media element without a tap only once that element has been started from a tap. The
+//   <audio> element is otherwise only ever started from visibilitychange, so every tap that plays
+//   something also starts and immediately stops the empty <audio> element (primeAudio). No source is
+//   loaded and nothing is heard; it only marks the element as started by the user.
+// - Events from the element that is no longer in use, and pauses this player asked for itself (when
+//   switching or reloading), never change the player's state or the lock screen's.
+// - iOS may pause the video for the lock screen just before the page reports being hidden. That pause
+//   is remembered, so the switch to audio still happens and continues from the same position.
+// Whether iOS lets a backgrounded page start the <audio> element at all can only be tested on a phone
+// (docs/TOMTUBE.md). If it refuses, the lock screen shows TomTube paused and its play button resumes.
+//
 // Moving to the next queued video while the phone is locked: iOS lets a page that is already playing
 // audio start the next source on the same element from its `ended` event, but it may suspend a page
 // that has gone silent. So the next source is set and played synchronously inside `ended`, with no
@@ -23,6 +36,9 @@ export const STALL_TIMEOUT_MS = 15_000
 export const RETRY_DELAYS_MS = [1000, 3000, 6000, 10_000, 15_000]
 // After this many failed attempts on HLS, the single-file stream is tried instead.
 const HLS_FAILURES_BEFORE_FILE = 2
+// A pause iOS made this long before the page reports being hidden counts as part of locking the phone.
+// Short, so a listener who pauses and then locks the phone stays paused; widen only on device evidence.
+export const LOCK_PAUSE_WINDOW_MS = 500
 const MAX_CONTINUOUS_TRACKS = 20
 
 type Media = HTMLMediaElement
@@ -38,12 +54,21 @@ interface Deps {
   now?: () => number
   document?: Pick<Document, 'visibilityState' | 'addEventListener' | 'removeEventListener'>
   window?: Pick<Window, 'addEventListener' | 'removeEventListener'>
+  // iPhone and iPad: audio defaults to the single M4A file, which keeps playing with the screen locked
+  // (HLS audio was paused by iOS on lock in device testing).
+  appleMobile?: boolean
 }
 
 interface Continuous { ids: string[]; baseIndex: number; timeline: QueueTimeline['tracks'] | null }
 
 export function supportsNativeHls(element: Pick<Media, 'canPlayType'>) {
   try { return element.canPlayType('application/vnd.apple.mpegurl') !== '' } catch { return false }
+}
+
+export function isAppleMobile(nav: Pick<Navigator, 'userAgent' | 'maxTouchPoints'> & { platform?: string } | undefined = typeof navigator !== 'undefined' ? navigator : undefined) {
+  if (!nav) return false
+  // iPadOS reports itself as a Mac; a touch screen gives it away.
+  return /iPhone|iPad|iPod/.test(nav.userAgent) || (/Macintosh/.test(nav.userAgent) && nav.maxTouchPoints > 1)
 }
 
 export class TomTubeEngine {
@@ -59,9 +84,14 @@ export class TomTubeEngine {
   private continuous: Continuous | null = null
   private lastPositionSave = 0
   private lastLockScreenUpdate = 0
-  private playingSince = 0
+  private playingSince = -Infinity
   private cleanups: Array<() => void> = []
   private stopWaitingForToken: (() => void) | null = null
+  // Elements this player paused itself, whose `pause` event is still to come.
+  private readonly requestedPauses = new Set<Media>()
+  // When iOS (not the listener) last paused a playing video.
+  private videoInterruptedAt = -Infinity
+  private audioPrimed = false
 
   constructor(deps: Deps) {
     this.deps = deps
@@ -94,6 +124,7 @@ export class TomTubeEngine {
   private get view() { return this.store.player }
   private set(view: Partial<PlayerView>) { this.store.setPlayer(view) }
   private get element(): Media { return this.view.mode === 'audio' ? this.audio : this.video }
+  private get appleMobile() { return this.deps.appleMobile ?? isAppleMobile() }
   private now() { return this.deps.now?.() ?? Date.now() }
   private timeout(callback: () => void, ms: number) { return (this.deps.setTimeout ?? ((cb, delay) => window.setTimeout(cb, delay)))(callback, ms) }
   private cancel(id: number | null) { if (id !== null) (this.deps.clearTimeout ?? ((value) => window.clearTimeout(value)))(id) }
@@ -105,7 +136,7 @@ export class TomTubeEngine {
   private useHls(id: string, mode: PlaybackMode) {
     const { settings } = this.store
     if (mode === 'video' && settings.videoQuality === 'compatible') return false
-    if (mode === 'audio' && settings.audioFormat === 'file') return false
+    if (mode === 'audio' && (settings.audioFormat === 'file' || (settings.audioFormat === 'auto' && this.appleMobile))) return false
     if ((this.hlsFailures.get(`${mode}:${id}`) ?? 0) >= HLS_FAILURES_BEFORE_FILE) return false
     return supportsNativeHls(mode === 'audio' ? this.audio : this.video)
   }
@@ -118,12 +149,20 @@ export class TomTubeEngine {
     return { url: mediaUrl(session, video.id, file), kind: hls ? 'hls' as const : 'file' as const }
   }
 
-  private release(element: Media) {
+  // Pauses an element on this player's behalf, so its `pause` event isn't taken for the listener's or iOS's.
+  private pauseElement(element: Media) {
+    if (!element.paused) this.requestedPauses.add(element)
     element.pause()
+  }
+
+  private release(element: Media) {
+    this.pauseElement(element)
     if (element.getAttribute('src')) {
       element.removeAttribute('src')
       element.load()
     }
+    // Emptying an element drops its queued events, so its pause may never be reported.
+    this.requestedPauses.delete(element)
   }
 
   // Loads the current video into the element for `mode`, starting at `position`. Everything here is
@@ -180,6 +219,8 @@ export class TomTubeEngine {
   }
 
   private start(element: Media) {
+    // Starting again settles any pause this player asked for earlier; its late event is ignored below.
+    this.requestedPauses.delete(element)
     const attempt = element.play()
     if (!attempt) return
     attempt.catch((error: unknown) => {
@@ -187,7 +228,7 @@ export class TomTubeEngine {
       if (name === 'AbortError' || element !== this.element) return
       // iOS refused to start without a tap (for example switching to audio after the screen locked):
       // stay ready, so the lock screen's play button starts it.
-      if (name === 'NotAllowedError') { this.set({ playing: false, status: 'paused' }); return }
+      if (name === 'NotAllowedError') { this.set({ playing: false, status: 'paused' }); this.setSessionState('paused'); return }
       this.recover()
     })
   }
@@ -231,6 +272,7 @@ export class TomTubeEngine {
   // --- controls (call these from taps) -------------------------------------------------------------
 
   playVideo(video: TomTubeVideo, position = 0) {
+    this.primeAudio()
     this.store.setQueue(Q.playNow(this.store.queue, video))
     this.startedCurrent()
     this.load(position, true)
@@ -239,6 +281,7 @@ export class TomTubeEngine {
   playAt(index: number) {
     const queue = this.store.queue
     if (index === queue.index || !queue.items[index]) return
+    this.primeAudio()
     if (this.continuous && this.jumpWithinContinuous(index)) return
     this.store.setQueue(Q.jumpTo(queue, index))
     this.startedCurrent()
@@ -248,6 +291,7 @@ export class TomTubeEngine {
   resume() {
     const element = this.element
     if (!this.current()) return
+    this.primeAudio()
     if (!element.getAttribute('src') || this.view.status === 'error') { this.set({ playing: true }); this.load(this.view.currentTime, true); return }
     this.set({ playing: true })
     if (this.view.status === 'ended') this.seek(0)
@@ -255,10 +299,13 @@ export class TomTubeEngine {
   }
 
   pause() {
+    // The listener stopped it: locking now must not count it as just playing or just interrupted.
+    this.playingSince = -Infinity
+    this.videoInterruptedAt = -Infinity
     this.set({ playing: false, status: this.current() ? 'paused' : 'idle' })
     this.clearTimers()
-    this.element.pause()
-    if (this.deps.mediaSession) this.deps.mediaSession.playbackState = 'paused'
+    this.pauseElement(this.element)
+    this.setSessionState('paused')
   }
 
   toggle() { if (this.view.playing) this.pause(); else this.resume() }
@@ -276,6 +323,7 @@ export class TomTubeEngine {
   skipNext() {
     const following = Q.next(this.store.queue)
     if (!following) return
+    this.primeAudio()
     if (this.continuous && this.jumpWithinContinuous(following.index)) return
     this.store.setQueue(following)
     this.startedCurrent()
@@ -283,6 +331,7 @@ export class TomTubeEngine {
   }
 
   skipPrevious() {
+    this.primeAudio()
     if (this.view.currentTime > 5) { this.seek(0); return }
     const before = Q.previous(this.store.queue)
     if (!before) { this.seek(0); return }
@@ -294,11 +343,32 @@ export class TomTubeEngine {
 
   setMode(mode: PlaybackMode, { auto = false } = {}) {
     if (mode === this.view.mode) return
-    const position = this.view.currentTime
+    // The element's own position is the freshest; timeupdate can be up to a quarter of a second behind.
+    const from = this.element
+    const position = !this.continuous && from.getAttribute('src') && from.readyState >= 1 && Number.isFinite(from.currentTime) ? from.currentTime : this.view.currentTime
     const playing = this.view.playing
     this.set({ mode, autoAudio: auto && mode === 'audio' })
     if (!this.current()) { this.release(mode === 'audio' ? this.video : this.audio); return }
     this.load(position, playing)
+  }
+
+  // Called from taps (and lock-screen buttons): see the note at the top of this file. play() on the
+  // empty element counts as the user starting it; pause() straight after rejects that play() with an
+  // AbortError, so nothing loads or plays. If the browser refused it (NotAllowedError) or threw, the
+  // next tap tries again. Whether WebKit then lets the element start in the background is a device test.
+  private primeAudio() {
+    if (this.audioPrimed || this.view.mode !== 'video' || this.audio.getAttribute('src')) return
+    this.audioPrimed = true
+    try {
+      this.audio.play()?.catch((error: unknown) => {
+        if ((error as { name?: string } | null)?.name === 'NotAllowedError') this.audioPrimed = false
+      })
+      this.audio.pause()
+    } catch { this.audioPrimed = false }
+  }
+
+  private setSessionState(state: MediaSessionPlaybackState) {
+    if (this.deps.mediaSession) this.deps.mediaSession.playbackState = state
   }
 
   // The queue changed under a continuous stream: rebuild it from where the listener is.
@@ -352,7 +422,11 @@ export class TomTubeEngine {
   private listen(element: Media) {
     const active = () => element === this.element
     const on = (type: string, handler: () => void) => {
-      const wrapped = () => { if (active()) handler() }
+      const wrapped = () => {
+        if (active()) handler()
+        // An element no longer in use: its late events change nothing, and a pause it reports is done.
+        else if (type === 'pause' && element.paused) this.requestedPauses.delete(element)
+      }
       element.addEventListener(type, wrapped)
       this.cleanups.push(() => element.removeEventListener(type, wrapped))
     }
@@ -369,14 +443,20 @@ export class TomTubeEngine {
       this.playingSince = this.now()
       this.clearStall()
       this.set({ status: 'playing', playing: true, error: null })
-      if (this.deps.mediaSession) this.deps.mediaSession.playbackState = 'playing'
+      this.setSessionState('playing')
     })
     on('pause', () => {
-      if (element.ended) return
+      // Late: the element has been emptied or started again since (a switch, a reload, a new source).
+      if (!element.paused || element.ended || !element.getAttribute('src')) { this.requestedPauses.delete(element); return }
+      // This player paused it (pause(), a switch or a reload) and has already set the state it wants.
+      if (this.requestedPauses.delete(element)) return
       // A pause nobody here asked for: a phone call, Siri, headphones unplugged, or iOS pausing a video
       // for the lock screen. The lock screen's play button resumes it.
-      if (this.view.playing && !(this.view.mode === 'video' && this.hiddenRecently())) this.set({ playing: false, status: 'paused' })
-      if (this.deps.mediaSession) this.deps.mediaSession.playbackState = 'paused'
+      // Inline, TomTube's video has no native controls, so a pause there is iOS's (or a call's). Full
+      // screen has iOS's own controls, so a pause there may be the listener's: never taken for locking.
+      if (this.view.playing && this.view.mode === 'video' && !this.inFullScreen(element)) this.videoInterruptedAt = this.now()
+      if (this.view.playing) this.set({ playing: false, status: 'paused' })
+      this.setSessionState('paused')
     })
     on('waiting', () => this.buffering(element))
     on('stalled', () => { if (element.readyState < 3) this.buffering(element) })
@@ -384,8 +464,10 @@ export class TomTubeEngine {
     on('error', () => this.recover())
   }
 
-  private hiddenAt = 0
-  private hiddenRecently() { return this.now() - this.hiddenAt < 1500 }
+  private inFullScreen(element: Media) {
+    const fullScreen = element as Media & { webkitDisplayingFullscreen?: boolean }
+    return Boolean(fullScreen.webkitDisplayingFullscreen) || (typeof document !== 'undefined' && document.fullscreenElement === element)
+  }
 
   private timeUpdate(element: Media) {
     let time = element.currentTime
@@ -408,7 +490,7 @@ export class TomTubeEngine {
     const following = Q.next(this.store.queue)
     if (!following) {
       this.set({ playing: false, status: 'ended' })
-      if (this.deps.mediaSession) this.deps.mediaSession.playbackState = 'none'
+      this.setSessionState('none')
       return
     }
     // Synchronously, inside the event: see the note at the top of this file.
@@ -421,7 +503,7 @@ export class TomTubeEngine {
   private buffering(element: Media) {
     if (!this.view.playing) return
     this.set({ status: 'buffering' })
-    if (this.deps.mediaSession) this.deps.mediaSession.playbackState = 'paused'
+    this.setSessionState('paused')
     if (this.stallTimer !== null) return
     this.stallFrom = element.currentTime
     this.stallTimer = this.timeout(() => {
@@ -464,8 +546,9 @@ export class TomTubeEngine {
   private visibilityChanged(state: DocumentVisibilityState) {
     const { settings } = this.store
     if (state === 'hidden') {
-      this.hiddenAt = this.now()
-      const wasPlaying = this.view.playing || this.now() - this.playingSince < 1000
+      const now = this.now()
+      // Playing, just started, or paused by iOS a moment ago as the phone locked.
+      const wasPlaying = this.view.playing || now - this.playingSince < 1000 || now - this.videoInterruptedAt < LOCK_PAUSE_WINDOW_MS
       if (settings.backgroundAudio && this.view.mode === 'video' && wasPlaying && this.current()) {
         this.set({ playing: true })
         this.setMode('audio', { auto: true })

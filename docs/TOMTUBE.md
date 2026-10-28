@@ -56,9 +56,16 @@ Run the [manual checklist](#manual-playback-test-checklist) on the phone before 
 
 **Video playback (Test A).** The app plays `/api/tomtube/videos/<id>/master.m3u8` in a `<video>` element. Because TomTube fetches the media streams itself, none of YouTube's player, ad requests or ad breaks are involved.
 
-**Audio mode (Test B).** Tapping **Audio only** notes the position, pauses and empties the `<video>` element (it does not keep running in the background), loads `audio.m3u8` into a separate `<audio>` element and starts it at the same position. When the service is asked for an audio playlist it also downloads that video's audio (a few MB) to its disk cache, so a locked phone keeps playing even if YouTube's address expires or YouTube is slow. The Media Session API supplies the lock-screen title, channel, artwork, play/pause, next/previous and seeking, which headphones, Bluetooth and CarPlay-style controls use too. Interruptions (calls, Siri) pause, and the lock-screen play button resumes. A stalled or failed stream is reloaded from where it stopped (1, 3, 6, 10, 15 seconds), and an HLS stream that fails twice falls back to the single `.m4a` file.
+**Audio mode (Test B).** Tapping **Audio only** notes the position, pauses and empties the `<video>` element (it does not keep running in the background), loads the video's audio into a separate `<audio>` element and starts it at the same position. On iPhone and iPad the audio is the single `audio.m4a` file by default, because device testing showed iOS pausing HLS audio (`audio.m3u8`) when the phone locks while the M4A file kept playing; elsewhere it is HLS. Settings → **Audio stream** can choose either everywhere. When the service is asked for an audio playlist it also downloads that video's audio (a few MB) to its disk cache, so a locked phone keeps playing even if YouTube's address expires or YouTube is slow. The Media Session API supplies the lock-screen title, channel, artwork, play/pause, next/previous and seeking, which headphones, Bluetooth and CarPlay-style controls use too. Interruptions (calls, Siri) pause, and the lock-screen play button resumes. A stalled or failed stream is reloaded from where it stopped (1, 3, 6, 10, 15 seconds), and an HLS stream that fails twice falls back to the single `.m4a` file.
 
-**Locking during a video.** With **Keep listening when the phone locks** on (the default), TomTube switches to audio by itself when it goes to the background during a video, and back to video when you return. iOS may refuse to start audio without a tap at that moment; TomTube then stays ready, and the lock screen's play button starts it.
+**Locking during a video.** With **Keep listening when the phone locks** on (the default), TomTube switches to audio by itself when it goes to the background during a video, and back to video when you return. This means starting the `<audio>` element after iOS has begun backgrounding the page, which iOS restricts in two ways:
+
+- iOS lets a page start a media element by itself only once that element has been started from a tap. So every tap that plays something also starts and immediately stops the empty `<audio>` element. No source is loaded and nothing is heard; it only marks the element as started by the user.
+- Whether iOS lets a page that is going to the background start a new audio element at all can only be found out on a phone. If it refuses, TomTube shows as paused on the lock screen and its play button starts the audio.
+
+iOS may also pause the video for the lock screen a moment before the page reports being hidden; TomTube treats that pause as part of locking, so it still switches, from the exact position. Late events from the element no longer in use, and pauses TomTube makes itself while switching, never change what the player or the lock screen shows.
+
+If the switch still doesn't start by itself on a phone, the next step is to keep the audio element playing all along, with the video muted and kept in step with it, so nothing has to start when the phone locks.
 
 **Queue progression (Test C, experimental).** Two mechanisms are implemented:
 
@@ -177,7 +184,7 @@ Pass: video plays and seeks without ads on the iPhone through Tomify.
 5. Interruption: receive or make a call (or trigger Siri) while locked; afterwards resume from the lock screen.
 6. Network: while locked, walk from Wi-Fi to mobile data. Playback continues (it may pause briefly).
 7. Long video: play a 1-hour+ video in audio mode locked for 20 minutes; it doesn't stop.
-8. **Auto switch:** play a video (video mode), then lock the phone. With "Keep listening when the phone locks" on, audio continues (or the lock screen play button starts it). Unlock: the video is back at the current position.
+8. **Auto switch:** with Settings → Audio stream on **Automatic** and "Keep listening when the phone locks" on, play a video in video mode for at least 10 seconds, then lock the phone without tapping **Audio only**. Audio continues by itself, from where the video was. Note whether it continued by itself or needed the lock screen's play button. Unlock: the video is back at the current position.
 
 Pass: steps 1–3 work. Note any failure in 4–8 with what happened.
 
@@ -197,7 +204,7 @@ Record each method separately. If the standard method fails and the continuous o
 - `journalctl -u tomtube -f` on the box: one line per yt-dlp failure with its code. Media URLs, signatures, PO tokens, cookies and paths are removed from messages.
 - Error codes the app may show: `bot-check` (add a PO token provider or cookies), `rate-limited`, `age-restricted`, `private`, `members-only`, `unavailable`, `geo-blocked`, `live-not-supported`, `no-compatible-format`, `no-segment-index`, `upstream-expired` (YouTube refused a renewed address), `ytdlp-missing`, `timeout`, `busy` (too many streams or yt-dlp jobs), `not-configured` (Worker variables missing), `media-tokens-not-configured` (no `TOMIFY_MEDIA_KEY` on the Worker), `tomtube-unavailable` (tunnel or service down).
 - Everything fails: update yt-dlp (`/opt/tomtube/bin/yt-dlp -U`), check `deno --version`, then try `/opt/tomtube/bin/yt-dlp -v -F <url>` as `tom` to see what YouTube returns.
-- Video won't start but audio works: Settings → Video quality → **Compatible** (360p single file). Audio won't start: Settings → Audio stream → **Single file**. Please note which, so the default can be changed.
+- Video won't start but audio works: Settings → Video quality → **Compatible** (360p single file). Audio won't start or stops when the phone locks: Settings → Audio stream → **Single file** (already the automatic choice on iPhone and iPad). Please note which, so the default can be changed.
 
 ## Service API
 
