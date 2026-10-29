@@ -2,12 +2,15 @@ name: Windows app
 
 # Builds the Tomify for Windows installers (desktop/). Download them from the run's
 # "Artifacts" section: Tomify-windows-installer holds the .exe (recommended) and the .msi.
+# With the updater signing secrets set (desktop/README.md, "Automatic updates"), the installers are
+# signed for the app's updater, and a build on main whose version has no release yet is published as
+# release desktop-v<version> with latest.json, which installed apps check for updates.
 on:
   push:
     branches: [main]
-    paths: ['desktop/**', '.github/workflows/desktop.yml']
+    paths: ['desktop/**', '.github/workflows/desktop.yml', 'scripts/desktop-update-manifest.mjs']
   pull_request:
-    paths: ['desktop/**', '.github/workflows/desktop.yml']
+    paths: ['desktop/**', '.github/workflows/desktop.yml', 'scripts/desktop-update-manifest.mjs']
   workflow_dispatch:
 
 permissions:
@@ -16,6 +19,8 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    outputs:
+      signed: ${{ steps.signing.outputs.signed }}
     defaults:
       run:
         working-directory: desktop
@@ -40,8 +45,38 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo test --locked
 
+      # The public key goes into the app so it can check updates; the private key signs them.
+      # Without both, the build still works but the app it makes never looks for updates.
+      - name: Updater signing
+        id: signing
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          HAS_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if ($env:TAURI_UPDATER_PUBLIC_KEY -and $env:HAS_PRIVATE_KEY -eq 'true') {
+            $config = @{
+              bundle = @{ createUpdaterArtifacts = $true }
+              plugins = @{ updater = @{ pubkey = $env:TAURI_UPDATER_PUBLIC_KEY.Trim() } }
+            } | ConvertTo-Json -Depth 5
+            $path = Join-Path $env:RUNNER_TEMP 'tomify-updater.json'
+            Set-Content -Path $path -Value $config -Encoding utf8NoBOM
+            "config=$path" >> $env:GITHUB_OUTPUT
+            "signed=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Output "::warning::Updater signing isn't set up (see desktop/README.md), so this build won't update itself and won't be released."
+            "signed=false" >> $env:GITHUB_OUTPUT
+          }
+
       - name: Build installers
-        run: npx --yes @tauri-apps/cli@2.12.4 build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          UPDATER_CONFIG: ${{ steps.signing.outputs.config }}
+        run: |
+          $extra = @()
+          if ($env:UPDATER_CONFIG) { $extra += '--config', $env:UPDATER_CONFIG }
+          npx --yes @tauri-apps/cli@2.12.4 build @extra
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
@@ -50,4 +85,40 @@ jobs:
           path: |
             desktop/src-tauri/target/release/bundle/nsis/*.exe
             desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/bundle/nsis/*.exe.sig
+            desktop/src-tauri/target/release/bundle/msi/*.msi.sig
           if-no-files-found: error
+
+  # Publishes a new app version for the updater. Only from main, only signed builds, and only once
+  # per version: bump the version in tauri.conf.json and Cargo.toml to ship one.
+  release:
+    needs: windows
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.windows.outputs.signed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          name: Tomify-windows-installer
+          path: bundle
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+          tag="desktop-v$version"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "Release $tag already exists; bump the version in desktop/src-tauri to publish an update."
+            exit 0
+          fi
+          node scripts/desktop-update-manifest.mjs bundle bundle/latest.json "$tag"
+          gh release create "$tag" --target "$GITHUB_SHA" --latest \
+            --title "Tomify for Windows $version" \
+            --notes "Installed copies of Tomify for Windows offer this update by themselves. For a new install, download Tomify_${version}_x64-setup.exe below." \
+            bundle/nsis/*-setup.exe bundle/nsis/*-setup.exe.sig bundle/msi/*.msi bundle/msi/*.msi.sig bundle/latest.json

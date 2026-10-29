@@ -245,7 +245,7 @@ Cloudflare builds and deploys the site on every push to `main`; the recovery age
 
 ### Windows app
 
-Tomify for Windows (`desktop/`) is a small [Tauri](https://tauri.app) app that opens https://app.tomify.tomdixon.uk in its own window, with no browser address bar or tabs, its own taskbar icon and Start menu entry. The app is still the website, so every deploy reaches it without reinstalling. See [desktop/README.md](desktop/README.md) for building and installing it.
+Tomify for Windows (`desktop/`) is a small [Tauri](https://tauri.app) app that opens https://app.tomify.tomdixon.uk in its own window, with no browser address bar or tabs, its own taskbar icon and Start menu entry. The app is still the website, so every deploy reaches it without reinstalling; changes to the app itself are released on GitHub (tags `desktop-v<version>`) and the installed app offers them by itself. See [desktop/README.md](desktop/README.md) for installing it, building it and the one-time updater signing key setup.
 
 ### Recovery imports
 

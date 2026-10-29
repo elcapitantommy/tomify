@@ -1,9 +1,11 @@
 // Tomify for Windows: the hosted Tomify web app in its own window.
-// The app itself stays the website, so updates arrive without reinstalling.
-// The only native parts are the window, the mini player mode and opening other sites in the browser.
+// The app itself stays the website, so site updates arrive without reinstalling.
+// The only native parts are the window, the mini player mode, opening other sites in the browser
+// and updating the app itself (updates.rs).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod mini_spot;
+mod updates;
 
 use mini_spot::{Area, MINI_HEIGHT, MINI_WIDTH};
 use std::path::PathBuf;
@@ -150,6 +152,9 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
+        // Updates are checked and installed from Rust only (updates.rs); the site has no updater permissions.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .manage(FullWindow::default())
         // Closing the app while it is the mini player still remembers where the mini player was.
         .on_window_event(|window, event| {
@@ -168,6 +173,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![enter_mini_player, exit_mini_player])
         .setup(|app| {
             open_main_window(app.handle())?;
+            updates::start(app.handle());
             Ok(())
         })
         .run(tauri::generate_context!())
