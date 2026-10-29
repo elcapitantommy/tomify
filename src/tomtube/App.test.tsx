@@ -95,6 +95,28 @@ describe('TomTube app', () => {
   })
 })
 
+describe('TomTube import report', () => {
+  it('shows what the last sync imported and its problems', async () => {
+    useAuth.setState({ session, status: 'signed-in' })
+    const status = { cookies: { state: 'valid', updatedAt: null, expiresAt: null, lastSyncAt: null, lastSuccessAt: '2026-10-29T08:00:00Z', lastError: null, nextSyncAt: null, encrypted: true }, learned: { watches: 0, finished: 0, skipped: 0, notInterested: 0, youtubeHistory: 2, subscriptions: 0, channels: 1, recommendedChannels: 0, recommendedSyncedAt: null }, syncIntervalHours: 6, lastImport: { at: '2026-10-29T08:00:00Z', problems: [':ythistory: 1 of 2 videos have no channel ID'], feeds: [] } }
+    const report = { at: '2026-10-29T08:00:00Z', problems: [':ythistory: 1 of 2 videos have no channel ID'], feeds: [{ feed: ':ythistory', ok: true, ms: 3000, shape: { type: 'playlist', extractor: 'YoutubeHistory', hasEntries: true }, entries: 2, videos: 2, dropped: 0, droppedKinds: [], missing: { channelId: 1, channel: 0, title: 0, duration: 1 }, channels: 1, fields: ['id', 'title'], sample: [{ id: 'dQw4w9WgXcQ', title: 'Never Gonna Give You Up', channel: 'Rick Astley', channelId: null }], warnings: [] }] }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/tomtube/training') return Response.json(status)
+      if (url === '/api/tomtube/training/imports') return Response.json({ reports: [report] })
+      return new Response('{}', { status: 404 })
+    }))
+    const user = userEvent.setup()
+    render(<TomTubeApp/>)
+    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText(/The last import had 1 problem/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Show import report' }))
+    expect(await screen.findByText(/:ythistory: 2 videos, 1 channels, 1 without a channel ID/)).toBeInTheDocument()
+    expect(screen.getByText(/Never Gonna Give You Up · Rick Astley · no channel ID/)).toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
+})
+
 describe('TomTube helpers', () => {
   it('recognises pasted YouTube links', () => {
     expect(youtubeLinkId('https://youtu.be/dQw4w9WgXcQ?si=1')).toBe('dQw4w9WgXcQ')

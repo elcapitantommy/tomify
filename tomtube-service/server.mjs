@@ -24,8 +24,9 @@
 //   DELETE /v1/training                        forget what was learned (the cookies stay)
 //   PUT  /v1/training/cookies                  a new cookies.txt for the account feeds; DELETE removes it
 //   POST /v1/training/sync                     read the account feeds now (in the background)
+//   GET  /v1/training/imports                  what the last syncs imported, and any problems
 // The recommendation paths are per account: x-tomtube-profile names it (URI-encoded), and
-// x-tomtube-owner: 1 allows the cookie and sync paths (owners only).
+// x-tomtube-owner: 1 allows the cookie, sync and import-report paths (owners only).
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { once } from 'node:events'
@@ -315,7 +316,7 @@ export function createHandler({ config, ytdlp, resolver, cache = null, training 
       only(request, 'GET', 'DELETE')
       return sendJson(response, 200, request.method === 'DELETE' ? await store.clear() : await store.status())
     }
-    if ((pathname === '/v1/training/cookies' || pathname === '/v1/training/sync') && request.headers['x-tomtube-owner'] !== '1') {
+    if ((pathname === '/v1/training/cookies' || pathname === '/v1/training/sync' || pathname === '/v1/training/imports') && request.headers['x-tomtube-owner'] !== '1') {
       throw new ApiError(403, 'training-forbidden', 'Only the account owner can use YouTube account cookies.')
     }
     if (pathname === '/v1/training/cookies') {
@@ -325,6 +326,10 @@ export function createHandler({ config, ytdlp, resolver, cache = null, training 
       // Checked in the background: reading the feeds can take a minute.
       void store.sync().catch((error) => log(`TomTube training sync failed: ${error.message}`))
       return sendJson(response, 200, await store.status())
+    }
+    if (pathname === '/v1/training/imports') {
+      only(request, 'GET')
+      return sendJson(response, 200, await store.imports())
     }
     if (pathname === '/v1/training/sync') {
       only(request, 'POST')

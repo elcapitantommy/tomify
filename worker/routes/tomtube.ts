@@ -8,7 +8,8 @@ import { json } from '../lib/http.ts'
 // listeners get through, optionally only those in TOMTUBE_ALLOWED_USERS. Only the paths below are
 // passed on, so the service cannot be used as a general relay, and the phone never sees a YouTube URL.
 //   JSON (x-tomify-* headers): search, resolve, videos/<id>, videos/<id>/prefetch, queue.json, status,
-//   and recommendations: recommendations, watched, feedback, training, training/cookies, training/sync.
+//   and recommendations: recommendations, watched, feedback, training, training/cookies, training/sync,
+//   training/imports (the owner's import report).
 //   The cookie upload is passed on as a body of at most 256 KB; the service never sends cookies back.
 //   Recommendations are per account: the service is told which listener is signed in
 //   (x-tomtube-profile) and whether they are an owner (x-tomtube-owner), and keeps a profile for each.
@@ -19,7 +20,7 @@ import { json } from '../lib/http.ts'
 //   end up in Cloudflare or browser logs; without TOMIFY_MEDIA_KEY media answers 503. Playlists are
 //   re-signed with a fresh token, so a long video outlives the old one.
 const ID = '[A-Za-z0-9_-]{11}'
-const JSON_PATH = new RegExp(`^/api/tomtube/(?:search|resolve|status|queue\\.json|recommendations|watched|feedback|training(?:/cookies|/sync)?|videos/${ID}(?:/prefetch)?)$`)
+const JSON_PATH = new RegExp(`^/api/tomtube/(?:search|resolve|status|queue\\.json|recommendations|watched|feedback|training(?:/cookies|/sync|/imports)?|videos/${ID}(?:/prefetch)?)$`)
 // The methods each JSON path takes (GET unless listed), and the largest body passed on.
 const JSON_METHODS: Array<[RegExp, string[]]> = [
   [/\/prefetch$/, ['POST']],
@@ -30,8 +31,9 @@ const JSON_METHODS: Array<[RegExp, string[]]> = [
   [/^training\/sync$/, ['POST']],
 ]
 const BODY_LIMITS: Record<string, number> = { watched: 4096, feedback: 4096, 'training/cookies': 256 * 1024 }
-// Using the YouTube account cookies: only TOMTUBE_TRAINING_USERS.
-const MANAGE = (rest: string) => rest === 'training/cookies' || rest === 'training/sync'
+// Using the YouTube account cookies, and the import report (it shows titles from the account's YouTube
+// history): only TOMTUBE_TRAINING_USERS.
+const MANAGE = (rest: string) => rest === 'training/cookies' || rest === 'training/sync' || rest === 'training/imports'
 // The paths that read or change one account's recommendation profile.
 const PROFILE = /^(?:recommendations|watched|feedback|training(?:\/.*)?)$/
 const MEDIA_PATH = new RegExp(`^/api/tomtube/(?:queue\\.m3u8|videos/${ID}/(?:master|video|audio|[va]\\d{1,4})\\.m3u8|videos/${ID}/(?:\\d{1,4}\\.(?:mp4|m4a)|progressive\\.mp4|audio\\.m4a)|thumbs/${ID}/[a-z]{4,13}\\.jpg)$`)

@@ -38,7 +38,20 @@ export interface TrainingStatus {
   syncIntervalHours: number
   // Whether this account may add YouTube account cookies (only the owner). Each account has its own profile.
   youtubeAccount?: boolean
+  lastImport: { at: string; problems: string[]; feeds: Array<{ feed: string; ok: boolean; videos: number; channels: number }> } | null
 }
+
+// One sync's import report (tomtube-service/training.mjs inspectFeed), for checking real YouTube data.
+export interface ImportFeedReport {
+  feed: string; ok: boolean; ms: number; code?: string; signedOut?: boolean; message?: string
+  shape?: { type: string | null; extractor: string | null; hasEntries: boolean }
+  entries?: number; videos?: number; dropped?: number; droppedKinds?: Array<[string, number]>
+  missing?: { channelId: number; channel: number; title: number; duration: number }
+  backfilled?: number; channels?: number; fields?: string[]
+  sample?: Array<{ id: string; title: string; channel: string; channelId: string | null }>
+  warnings?: string[]
+}
+export interface ImportReport { at: string; feeds: ImportFeedReport[]; problems: string[] }
 
 // What the app reports when a video stops being watched (or reaches 30 seconds, or ends).
 export interface WatchReport { id: string; title: string; channel: string; channelId: string | null; duration: number | null; seconds: number; ended: boolean; skipped?: boolean }
@@ -87,6 +100,7 @@ export const tomtubeApi = {
   // The cookie file goes to the server and is never read back.
   uploadCookies: (session: AuthSession, cookies: string) => request<TrainingStatus>(session, 'training/cookies', { method: 'PUT', body: cookies, headers: { 'content-type': 'text/plain' } }),
   removeCookies: (session: AuthSession) => request<TrainingStatus>(session, 'training/cookies', { method: 'DELETE' }),
+  imports: (session: AuthSession) => request<{ reports: ImportReport[] }>(session, 'training/imports'),
   syncTraining: (session: AuthSession) => request<TrainingStatus>(session, 'training/sync', { method: 'POST' }),
 }
 

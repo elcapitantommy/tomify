@@ -2302,7 +2302,7 @@ test('TomTube recommendations and training paths pass on only their own methods 
     assert.equal(serviceCalls.at(-1).url.pathname, '/v1/training/cookies')
     assert.equal((await call('watched', { method: 'POST', body: '{"id":"dQw4w9WgXcQ"}' })).status, 200)
     assert.equal(serviceCalls.at(-1).headers['content-type'], 'application/json')
-    for (const [path, method] of [['training', 'DELETE'], ['training/cookies', 'DELETE'], ['training/sync', 'POST'], ['training', 'GET']]) {
+    for (const [path, method] of [['training', 'DELETE'], ['training/cookies', 'DELETE'], ['training/sync', 'POST'], ['training', 'GET'], ['training/imports', 'GET']]) {
       assert.equal((await call(path, { method })).status, 200, `${method} ${path}`)
     }
     const before = serviceCalls.length
@@ -2319,6 +2319,7 @@ test('TomTube recommendations and training paths pass on only their own methods 
       assert.equal((await as('training/cookies', { method: 'PUT', body: 'x' })).status, 403, String(owners))
       assert.equal((await as('training/cookies', { method: 'DELETE' })).status, 403, String(owners))
       assert.equal((await as('training/sync', { method: 'POST' })).status, 403, String(owners))
+      assert.equal((await as('training/imports')).status, 403, String(owners))
       assert.equal(serviceCalls.length, before)
     }
     const as = (path, init = {}) => worker.fetch(new Request(`https://app.tomify.test/api/tomtube/${path}`, { ...init, headers: { ...login, ...init.headers } }), { ...env, TOMTUBE_TRAINING_USERS: undefined })
