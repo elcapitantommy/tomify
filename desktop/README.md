@@ -40,6 +40,7 @@ The installers land in `desktop/src-tauri/target/release/bundle/`. `npx --yes @t
 - `src-tauri/src/main.rs`: the window, the mini player commands, single instance and opening other sites in the browser.
 - `src-tauri/src/mini_spot.rs`: where the mini player opens (the remembered spot, kept on a connected screen) and its saved file format; plain Rust with its own tests.
 - `src-tauri/tauri.conf.json`: name, version and installer settings. Bump `version` here and in `Cargo.toml` together.
-- `src-tauri/icons/`: made from `public/pwa-512x512.png` (the rounded Tomify tile) with `npx @tauri-apps/cli@2.12.4 icon ../public/pwa-512x512.png -o src-tauri/icons`.
+- `icon.svg`: the app icon source, the rounded yellow tile (same shape and colour as `public/pwa-512x512.png`) with the skull and crossbones from `public/favicon.svg`. The PWA keeps its own T icon.
+- `src-tauri/icons/`: made from `icon.svg` with `npx @tauri-apps/cli@2.12.4 icon icon.svg -o <temp folder>`, then copying `32x32.png`, `128x128.png`, `128x128@2x.png`, `icon.ico` and `icon.png` in (the other sizes it makes are for platforms this app doesn't ship).
 - `offline/index.html`: required by Tauri's build; the app never shows it, because the window opens the site directly.
 - The site side is `src/lib/desktop-app.ts` and the `compact` mode in `src/stores/miniPlayer.ts`.
