@@ -2242,6 +2242,7 @@ test('TomTube passes only its own paths to the TomTube service, for signed-in li
     assert.equal(serviceCalls[0].url.href, 'https://tomtube-service.tomify.test/v1/search?q=rick&limit=5')
     assert.equal(serviceCalls[0].init.headers.authorization, `Bearer ${'s'.repeat(40)}`)
     assert.equal(serviceCalls[0].init.headers['x-tomify-token'], undefined)
+    assert.equal(serviceCalls[0].init.headers['x-tomtube-profile'], undefined)
 
     const stream = await worker.fetch(new Request(`https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/140.m4a?${query}`, { headers: { range: 'bytes=0-4' } }), env)
     assert.equal(stream.status, 206)
@@ -2292,6 +2293,9 @@ test('TomTube recommendations and training paths pass on only their own methods 
     assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/tomtube/training'), env)).status, 401)
     assert.equal((await call('recommendations?refresh=1&x=y')).status, 200)
     assert.equal(serviceCalls.at(-1).url.href, 'https://tomtube-service.tomify.test/v1/recommendations?refresh=1')
+    // The service is told whose profile this is, and that this listener is an owner.
+    assert.equal(serviceCalls.at(-1).headers['x-tomtube-profile'], 'tt-trainer')
+    assert.equal(serviceCalls.at(-1).headers['x-tomtube-owner'], '1')
     assert.equal((await call('training/cookies', { method: 'PUT', body: '# Netscape HTTP Cookie File\n' })).status, 200)
     assert.equal(serviceCalls.at(-1).method, 'PUT')
     assert.equal(serviceCalls.at(-1).body, '# Netscape HTTP Cookie File\n')
@@ -2308,17 +2312,19 @@ test('TomTube recommendations and training paths pass on only their own methods 
     assert.equal((await call('training/cookies', { method: 'PUT', body: 'x'.repeat(300 * 1024) })).status, 413)
     assert.equal((await call('training/other')).status, 404)
     assert.equal(serviceCalls.length, before)
-    // Only listed owners may change cookies or training data, and nobody when the list is unset or blank;
-    // everyone still gets suggestions.
+    // Only listed owners may use the YouTube account cookies, and nobody when the list is unset or blank;
+    // everyone still gets their own suggestions and can clear their own training data.
     for (const owners of ['someone-else', '', ' , ', undefined]) {
       const as = (path, init = {}) => worker.fetch(new Request(`https://app.tomify.test/api/tomtube/${path}`, { ...init, headers: { ...login, ...init.headers } }), { ...env, TOMTUBE_TRAINING_USERS: owners })
       assert.equal((await as('training/cookies', { method: 'PUT', body: 'x' })).status, 403, String(owners))
       assert.equal((await as('training/cookies', { method: 'DELETE' })).status, 403, String(owners))
-      assert.equal((await as('training', { method: 'DELETE' })).status, 403, String(owners))
       assert.equal((await as('training/sync', { method: 'POST' })).status, 403, String(owners))
       assert.equal(serviceCalls.length, before)
     }
     const as = (path, init = {}) => worker.fetch(new Request(`https://app.tomify.test/api/tomtube/${path}`, { ...init, headers: { ...login, ...init.headers } }), { ...env, TOMTUBE_TRAINING_USERS: undefined })
+    assert.equal((await as('training', { method: 'DELETE' })).status, 200)
+    assert.equal(serviceCalls.at(-1).headers['x-tomtube-profile'], 'tt-trainer')
+    assert.equal(serviceCalls.at(-1).headers['x-tomtube-owner'], '0')
     assert.equal((await as('recommendations')).status, 200)
     assert.equal((await as('training')).status, 200)
     assert.equal((await as('feedback', { method: 'POST', body: '{"id":"dQw4w9WgXcQ","kind":"not-interested"}' })).status, 200)
