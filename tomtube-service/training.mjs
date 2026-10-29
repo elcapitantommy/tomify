@@ -295,12 +295,75 @@ function cap(map, limit, field) {
 
 const text = (value, max) => String(value ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, max)
 
-function feedVideos(result) {
-  const entries = Array.isArray(result?.entries) ? result.entries : []
-  return entries.map(searchResult).filter(Boolean)
+// A flat feed entry's channel id: channel_id, or the UC… id in its channel or uploader URL.
+export function channelIdOf(entry) {
+  for (const value of [entry?.channel_id, entry?.uploader_id, entry?.channel_url, entry?.uploader_url]) {
+    const match = /(?:^|\/channel\/)(UC[A-Za-z0-9_-]{22})(?:$|[/?#])/.exec(String(value || ''))
+    if (match) return match[1]
+  }
+  return null
 }
 
-export function createTraining({ stateDir, ytdlp, secret = null, fetch = globalThis.fetch, now = Date.now, log = () => {}, syncIntervalMs = 6 * HOUR, search = null, feedPauseMs = 5000 }) {
+function feedVideos(result) {
+  const entries = Array.isArray(result?.entries) ? result.entries : []
+  return entries.map((entry) => {
+    const video = searchResult(entry)
+    if (video && !video.channelId) video.channelId = channelIdOf(entry)
+    return video
+  }).filter(Boolean)
+}
+
+const REPORTS_KEPT = 5
+const BACKFILL_PER_SYNC = 10
+
+// What one account feed returned, for checking the import against real YouTube: how many entries,
+// how many became usable videos, what was missing or dropped, and the shapes seen. It holds field
+// names, counts and a few of the account's own titles, never cookies.
+export function inspectFeed(feed, result, { warnings = '', ms = 0 } = {}) {
+  const raw = Array.isArray(result?.entries) ? result.entries : null
+  const entries = raw || []
+  const videos = feedVideos(result)
+  const count = (list, pick) => Object.entries(list.reduce((totals, item) => { const key = String(pick(item) ?? 'none'); totals[key] = (totals[key] || 0) + 1; return totals }, {})).sort((a, b) => b[1] - a[1]).slice(0, 6)
+  const fields = new Map()
+  for (const entry of entries.slice(0, 20)) for (const key of Object.keys(entry || {})) fields.set(key, (fields.get(key) || 0) + 1)
+  return {
+    feed,
+    ok: true,
+    ms,
+    shape: { type: result?._type ?? null, extractor: result?.extractor_key ?? null, hasEntries: Boolean(raw) },
+    entries: entries.length,
+    videos: videos.length,
+    dropped: entries.length - videos.length,
+    droppedKinds: count(entries.filter((entry) => !searchResult(entry)), (entry) => entry?.ie_key || entry?._type || typeof entry),
+    missing: {
+      channelId: videos.filter((video) => !video.channelId).length,
+      channel: videos.filter((video) => !video.channel).length,
+      title: videos.filter((video) => video.title === 'Untitled').length,
+      duration: videos.filter((video) => !video.duration).length,
+    },
+    channels: new Set(videos.map((video) => video.channelId).filter(Boolean)).size,
+    fields: [...fields].sort((a, b) => b[1] - a[1]).map(([key]) => key).slice(0, 25),
+    sample: videos.slice(0, 3).map(({ id, title, channel, channelId }) => ({ id, title, channel, channelId })),
+    warnings: String(warnings || '').split('\n').map((line) => line.trim()).filter((line) => /WARNING|ERROR/.test(line)).slice(0, 3),
+  }
+}
+
+// Plain-language problems in one sync's import, worst first.
+export function importProblems(report) {
+  const problems = []
+  for (const feed of report.feeds) {
+    if (!feed.ok) { problems.push(`${feed.feed}: failed (${feed.code}${feed.signedOut ? ', signed out' : ''})`); continue }
+    if (!feed.shape.hasEntries) problems.push(`${feed.feed}: unexpected structure (no entries list; type ${feed.shape.type || 'none'})`)
+    else if (!feed.entries) problems.push(`${feed.feed}: returned nothing`)
+    if (feed.entries && feed.dropped / feed.entries > 0.2) problems.push(`${feed.feed}: ${feed.dropped} of ${feed.entries} entries were not usable videos`)
+    const unresolved = feed.missing.channelId - (feed.backfilled || 0)
+    if (feed.videos && unresolved / feed.videos > 0.1) problems.push(`${feed.feed}: ${unresolved} of ${feed.videos} videos have no channel ID${feed.backfilled ? ` (${feed.backfilled} looked up)` : ''}`)
+    if (feed.warnings.length) problems.push(`${feed.feed}: yt-dlp warned: ${feed.warnings[0]}`)
+  }
+  return problems
+}
+
+export function createTraining({ stateDir, ytdlp, lookupChannel = null, secret = null, fetch = globalThis.fetch, now = Date.now, log = () => {}, syncIntervalMs = 6 * HOUR, search = null, feedPauseMs = 5000 }) {
   const key = cookieKey(secret)
   const dir = join(stateDir, 'training')
   const dataFile = join(dir, 'log.json')
@@ -394,13 +457,24 @@ export function createTraining({ stateDir, ytdlp, secret = null, fetch = globalT
         recommendedSyncedAt: data.recommended.syncedAt,
       },
       syncIntervalHours: Math.round(syncIntervalMs / HOUR * 10) / 10,
+      lastImport: data.importReports?.[0] ? { at: data.importReports[0].at, problems: data.importReports[0].problems, feeds: data.importReports[0].feeds.map((feed) => ({ feed: feed.feed, ok: feed.ok, videos: feed.videos ?? 0, channels: feed.channels ?? 0 })) } : null,
     }
   }
 
   // --- syncing the account's feeds ---------------------------------------------------------------
 
+  // The current sync's import report (see inspectFeed).
+  let report = null
+
   async function readFeed(feed, limit) {
-    const result = await ytdlp.feed(feed, limit, await readCookies())
+    const started = now()
+    let result
+    try { result = await ytdlp.feed(feed, limit, await readCookies()) }
+    catch (error) {
+      report?.feeds.push({ feed, ok: false, ms: now() - started, code: error.code || 'error', signedOut: isSignedOut(`${error.message}\n${error.detail || ''}`, error.code), message: redact(error.message) })
+      throw error
+    }
+    report?.feeds.push(inspectFeed(feed, result.data, { warnings: redact(result.warnings), ms: now() - started }))
     if (isSignedOut(result.warnings)) throw Object.assign(new Error('YouTube says the cookies are no longer valid.'), { code: 'cookies-expired' })
     // yt-dlp keeps the jar current as YouTube rotates cookies; keep that copy if it is still signed in.
     if (result.jar) {
@@ -423,9 +497,11 @@ export function createTraining({ stateDir, ytdlp, secret = null, fetch = globalT
     }
     const at = new Date(now()).toISOString()
     data.cookies.lastSyncAt = at
+    report = { at, feeds: [] }
     try {
       // History first: it needs a signed-in account, so it tells whether the cookies still work.
       const history = await readFeed(FEEDS.history, FEED_SIZES.history)
+      await backfillChannels(history, report.feeds.at(-1))
       const stamp = now()
       for (const video of history) {
         const known = data.youtubeHistory[video.id]
@@ -440,7 +516,9 @@ export function createTraining({ stateDir, ytdlp, secret = null, fetch = globalT
       // The others are best effort, a few seconds apart.
       await pause()
       try {
-        for (const video of await readFeed(FEEDS.subscriptions, FEED_SIZES.subscriptions)) {
+        const subscriptions = await readFeed(FEEDS.subscriptions, FEED_SIZES.subscriptions)
+        await backfillChannels(subscriptions, report.feeds.at(-1))
+        for (const video of subscriptions) {
           if (video.channelId) data.subscriptions[video.channelId] = { channelId: video.channelId, channel: video.channel, seenAt: stamp }
         }
         data.subscriptions = cap(data.subscriptions, LIMITS.subscriptions, 'seenAt')
@@ -465,7 +543,31 @@ export function createTraining({ stateDir, ytdlp, secret = null, fetch = globalT
       data.cookies.lastError = { code: expired ? 'cookies-expired' : (error.code || 'error'), message: expired ? 'YouTube no longer accepts these cookies. Upload new ones in Settings to keep learning.' : redact(error.message), at }
       log(`TomTube training sync failed: ${data.cookies.lastError.code}`)
     }
+    report.problems = importProblems(report)
+    data.importReports = [report, ...(data.importReports || [])].slice(0, REPORTS_KEPT)
+    if (report.problems.length) log(`TomTube import problems: ${report.problems.join('; ')}`)
+    report = null
     await save()
+  }
+
+  // Videos whose feed entry had no channel id get one from an ordinary (signed-out) lookup of the
+  // video, a few per sync, so history and subscriptions still count towards their channels.
+  async function backfillChannels(videos, feedReport) {
+    if (!lookupChannel) return
+    let looked = 0
+    for (const video of videos) {
+      if (video.channelId || looked >= BACKFILL_PER_SYNC) continue
+      looked += 1
+      try {
+        const channelId = await lookupChannel(video.id)
+        if (CHANNEL_ID.test(String(channelId || ''))) { video.channelId = channelId; if (feedReport) feedReport.backfilled = (feedReport.backfilled || 0) + 1 }
+      } catch { /* left without a channel */ }
+    }
+  }
+
+  async function imports() {
+    await load()
+    return { reports: data.importReports || [] }
   }
 
   // `manual` syncs (Settings → Sync now) are refused within MIN_SYNC_GAP_MS of the last one.
@@ -668,5 +770,5 @@ export function createTraining({ stateDir, ytdlp, secret = null, fetch = globalT
     return () => { clearTimeout(first); clearInterval(timer) }
   }
 
-  return { status, sync, setCookies, removeCookies, clear, recordWatch, recordFeedback, recommendations, start, paths: { cookieFile, dataFile } }
+  return { status, imports, sync, setCookies, removeCookies, clear, recordWatch, recordFeedback, recommendations, start, paths: { cookieFile, dataFile } }
 }

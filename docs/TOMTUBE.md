@@ -112,6 +112,13 @@ Signals fade with a 90-day half-life (Not interested: 180 days). Any channel who
 
 **First set-up (admin only).** Put your Navidrome username in `TOMTUBE_TRAINING_USERS` in `wrangler.toml` and deploy. The feed reading hasn't been tried against real YouTube yet, so try it first with cookies from a **disposable** YouTube account, check Settings shows *valid* and the shelves fill, then remove them and add your own.
 
+**Checking the import against your account.** Every sync keeps a report of what each feed returned (the last five are kept). Open TomTube → Settings → Recommendations → **Show import report**, or on the box `curl -s -H "Authorization: Bearer $T" http://127.0.0.1:8790/v1/training/imports`. For each feed it shows how many entries came back, how many became usable videos, how many had no channel ID (and how many of those were looked up), missing channel names, titles and durations, entries dropped and what kind they were, the structure and field names yt-dlp returned, yt-dlp's warnings, sign-in failures, and three sample videos. Settings also shows the first problem of the last import under **Sync now**. What to look for on the first real run:
+
+- `:ythistory` and `:ytsubs` with **0 videos** or **failed (… signed out)**: the cookies didn't sign in. Export them again from a private window.
+- **unexpected structure (no entries list)**: yt-dlp's output for that feed changed. Update yt-dlp, then send me the report.
+- **N of M videos have no channel ID**: yt-dlp's flat feed entries didn't include the channel. TomTube reads it from the entry's channel URL when present, and otherwise looks up 10 videos per sync the ordinary signed-out way (never with your cookies). If many are still missing after a few syncs, history and subscriptions count for less; send me the report.
+- **entries were not usable videos**: shelves, Shorts or playlists in the feed, which are skipped. A few are normal.
+
 **Adding or renewing cookies.** TomTube → Settings → Recommendations → *Add YouTube cookies* (or *Renew*):
 
 1. On a computer, open a private (incognito) window and sign in to youtube.com with your account.
@@ -284,6 +291,7 @@ All under `/v1/` need `Authorization: Bearer $TOMTUBE_TOKEN`; the Worker exposes
 | `GET /v1/training`, `DELETE /v1/training` | Cookie state and what has been learned (never the cookies); DELETE forgets what was learned |
 | `PUT /v1/training/cookies`, `DELETE …` | A new cookies.txt as the body (max 256 KB), checked in the background; DELETE removes it |
 | `POST /v1/training/sync` | Read the account feeds now (at most every 15 minutes) |
+| `GET /v1/training/imports` | The last five syncs' import reports and the problems found (owner only through the Worker) |
 
 ## Security
 

@@ -3,7 +3,7 @@ import { Ban, ChevronDown, Headphones, ListPlus, ListVideo, LoaderCircle, LogOut
 import { useAuth } from '../stores/auth'
 import { DEFAULT_NAVIDROME_SERVER } from '../lib/navidrome'
 import { mediaTokenStatus, onMediaTokenChange, startMediaTokens } from './mediaToken'
-import { formatDuration, formatViews, thumbnailUrl, tomtubeApi, TomTubeError, youtubeLinkId, type Recommendations, type RecommendedVideo, type TomTubeVideo, type TrainingStatus } from './api'
+import { formatDuration, formatViews, thumbnailUrl, tomtubeApi, TomTubeError, youtubeLinkId, type ImportReport, type Recommendations, type RecommendedVideo, type TomTubeVideo, type TrainingStatus } from './api'
 import { TomTubeEngine } from './engine'
 import * as Q from './queue'
 import { useTomTube } from './store'
@@ -82,6 +82,26 @@ function cookieSummary(status: TrainingStatus) {
   }
 }
 
+// What the last syncs imported from YouTube, to check the import against the real account.
+function ImportReportView({ reports }: { reports: ImportReport[] }) {
+  if (!reports.length) return <p className="tt-note">No imports yet. Add cookies or tap Sync now.</p>
+  const [latest, ...older] = reports
+  return <div className="tt-import" aria-label="Import report">
+    <p className="tt-note"><b>Last import {when(latest.at)}</b>: {latest.problems.length ? `${latest.problems.length} problem${latest.problems.length > 1 ? 's' : ''}` : 'no problems found'}.</p>
+    {latest.problems.length > 0 && <ul className="tt-note">{latest.problems.map((problem) => <li key={problem}>{problem}</li>)}</ul>}
+    {latest.feeds.map((feed) => <details key={feed.feed} className="tt-note">
+      <summary>{feed.feed}: {feed.ok ? `${feed.videos} videos, ${feed.channels} channels, ${feed.missing?.channelId ?? 0} without a channel ID${feed.backfilled ? ` (${feed.backfilled} looked up)` : ''}` : `failed (${feed.code})`}</summary>
+      {feed.ok ? <>
+        <p>{feed.entries} entries, {feed.dropped} not usable{feed.droppedKinds?.length ? ` (${feed.droppedKinds.map(([kind, count]) => `${kind} ×${count}`).join(', ')})` : ''}. Missing: {feed.missing?.channel ?? 0} channel names, {feed.missing?.title ?? 0} titles, {feed.missing?.duration ?? 0} durations. Took {Math.round(feed.ms / 1000)} s.</p>
+        <p>Structure: {feed.shape?.type || 'none'}{feed.shape?.hasEntries ? '' : ' (no entries list)'}. Fields: {feed.fields?.join(', ') || 'none'}.</p>
+        {feed.warnings?.map((line) => <p key={line}>{line}</p>)}
+        {feed.sample?.length ? <ul>{feed.sample.map((video) => <li key={video.id}>{video.title} · {video.channel || '?'} · {video.channelId || 'no channel ID'}</li>)}</ul> : null}
+      </> : <p>{feed.signedOut ? 'YouTube said the account is signed out. ' : ''}{feed.message}</p>}
+    </details>)}
+    {older.length > 0 && <p className="tt-note">Earlier: {older.map((report) => `${when(report.at)} (${report.problems.length} problem${report.problems.length === 1 ? '' : 's'})`).join(', ')}.</p>}
+  </div>
+}
+
 // The training period: cookie status, adding or renewing cookies, and forgetting what was learned.
 // The cookie text is sent once and never kept in the app.
 function TrainingSettings({ onChanged }: { onChanged(): void }) {
@@ -91,6 +111,11 @@ function TrainingSettings({ onChanged }: { onChanged(): void }) {
   const [busy, setBusy] = useState(false)
   const [cookies, setCookies] = useState('')
   const [adding, setAdding] = useState(false)
+  const [reports, setReports] = useState<ImportReport[] | null>(null)
+  const showImports = async () => {
+    setError(null)
+    try { setReports((await tomtubeApi.imports(session)).reports) } catch (failure) { setError(failure instanceof Error ? failure.message : 'The import report could not be loaded.') }
+  }
   const fileRef = useRef<HTMLInputElement>(null)
 
   const run = async (task: () => Promise<TrainingStatus>) => {
@@ -135,6 +160,8 @@ function TrainingSettings({ onChanged }: { onChanged(): void }) {
     </div> : <button className="tt-secondary" disabled={busy} onClick={() => setAdding(true)}>{status?.cookies.state === 'missing' ? 'Add YouTube cookies' : 'Renew YouTube cookies'}</button>}
     {status && status.cookies.state !== 'missing' && <>
       <button className="tt-secondary" disabled={busy || status.cookies.state === 'checking'} onClick={() => void run(() => tomtubeApi.syncTraining(session))}><RefreshCw/>Sync now</button>
+      {status.lastImport && status.lastImport.problems.length > 0 && <p className="tt-note">The last import had {status.lastImport.problems.length} problem{status.lastImport.problems.length > 1 ? 's' : ''}: {status.lastImport.problems[0]}</p>}
+      {reports ? <ImportReportView reports={reports}/> : <button className="tt-secondary" onClick={() => void showImports()}>Show import report</button>}
       <button className="tt-secondary" disabled={busy} onClick={() => { if (window.confirm('Remove your YouTube cookies from the server? What TomTube has learned is kept.')) void run(() => tomtubeApi.removeCookies(session)) }}>Remove cookies</button>
     </>}
     <button className="tt-secondary" disabled={busy} onClick={() => { if (window.confirm('Forget everything TomTube has learned about what you watch? Your cookies are kept.')) void run(() => tomtubeApi.clearTraining(session)) }}><Trash2/>Clear training data</button>

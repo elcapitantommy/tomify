@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { channelAffinity, cookieKey, createTraining, decryptCookies, encryptCookies, isSignedOut, parseChannelFeed, parseCookieFile, topicPhrases } from './training.mjs'
+import { channelAffinity, channelIdOf, importProblems, inspectFeed, cookieKey, createTraining, decryptCookies, encryptCookies, isSignedOut, parseChannelFeed, parseCookieFile, topicPhrases } from './training.mjs'
 import { createHandler } from './server.mjs'
 import { YtDlpError, feedArguments } from './ytdlp.mjs'
 import { isAllowedUpstream } from './upstream.mjs'
@@ -274,6 +274,10 @@ test('service: training endpoints, without ever returning the cookies', async ()
     assert.equal(status.learned.watches, 1)
     assert.ok(['checking', 'valid'].includes(status.cookies.state))
     assert.equal((await call('/v1/training/sync', { method: 'POST' })).status, 202)
+    const imports = await call('/v1/training/imports')
+    assert.equal(imports.status, 200)
+    assert.ok(Array.isArray((await imports.json()).reports))
+    assert.equal((await call('/v1/training/imports', { method: 'POST' })).status, 405)
     assert.equal((await call('/v1/recommendations')).status, 200)
     assert.equal((await (await call('/v1/training', { method: 'DELETE' })).json()).learned.watches, 0)
     assert.equal((await call('/v1/training/other')).status, 404)
@@ -288,4 +292,66 @@ test('service: training endpoints, without ever returning the cookies', async ()
     const response = await fetch(`http://127.0.0.1:${disabled.address().port}/v1/recommendations`, { headers: { authorization: `Bearer ${'t'.repeat(40)}` } })
     assert.equal(response.status, 503)
   } finally { disabled.closeAllConnections?.(); await new Promise((resolve) => disabled.close(resolve)) }
+})
+
+test('channel ids come from channel_id or a channel URL', () => {
+  assert.equal(channelIdOf({ channel_id: CHANNEL_A }), CHANNEL_A)
+  assert.equal(channelIdOf({ channel_url: `https://www.youtube.com/channel/${CHANNEL_B}` }), CHANNEL_B)
+  assert.equal(channelIdOf({ uploader_url: `https://www.youtube.com/channel/${CHANNEL_C}/videos` }), CHANNEL_C)
+  assert.equal(channelIdOf({ uploader_url: 'https://www.youtube.com/@handle' }), null)
+})
+
+test('a feed report counts usable videos, missing channel ids and odd structures', () => {
+  const report = inspectFeed(':ythistory', { _type: 'playlist', entries: [
+    entry(id(1), 'Has channel', 'A', CHANNEL_A),
+    { id: id(2), title: 'From URL', channel: 'B', channel_url: `https://www.youtube.com/channel/${CHANNEL_B}`, ie_key: 'Youtube' },
+    { id: id(3), title: 'No channel', ie_key: 'Youtube' },
+    { id: 'shortsShelf', ie_key: 'YoutubeTab', _type: 'url' },
+  ] }, { warnings: 'WARNING: [youtube] something odd\nnoise', ms: 1200 })
+  assert.equal(report.entries, 4)
+  assert.equal(report.videos, 3)
+  assert.equal(report.dropped, 1)
+  assert.deepEqual(report.droppedKinds, [['YoutubeTab', 1]])
+  assert.equal(report.missing.channelId, 1)
+  assert.equal(report.missing.channel, 1)
+  assert.equal(report.channels, 2)
+  assert.deepEqual(report.warnings, ['WARNING: [youtube] something odd'])
+  assert.ok(report.fields.includes('channel_url'))
+  const problems = importProblems({ feeds: [report, inspectFeed(':ytrec', { _type: 'video', id: id(9) }), { feed: ':ytsubs', ok: false, code: 'cookies-expired', signedOut: true }] })
+  assert.ok(problems.some((line) => /:ythistory: 1 of 3 videos have no channel ID/.test(line)))
+  assert.ok(problems.some((line) => /:ytrec: unexpected structure/.test(line)))
+  assert.ok(problems.some((line) => /:ytsubs: failed \(cookies-expired, signed out\)/.test(line)))
+  assert.ok(problems.some((line) => /:ythistory: 1 of 4 entries were not usable/.test(line)))
+})
+
+test('training: each sync keeps an import report, looks up missing channel ids, and never stores cookies in it', async () => {
+  const dir = await tempDir()
+  try {
+    const lookups = []
+    const ytdlp = fakeYtDlp({ feeds: {
+      ':ythistory': [entry(id(1), 'A video', 'A', CHANNEL_A), { id: id(2), title: 'No channel', channel: 'B', ie_key: 'Youtube' }],
+      ':ytsubs': [{ id: id(3), title: 'Sub', channel: 'C', channel_url: `https://www.youtube.com/channel/${CHANNEL_C}`, ie_key: 'Youtube' }],
+    } })
+    const training = createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp, now: () => NOW, lookupChannel: async (videoId) => { lookups.push(videoId); return CHANNEL_B } })
+    await training.setCookies(COOKIES)
+    const status = await training.sync()
+    assert.deepEqual(lookups, [id(2)])
+    assert.equal(status.learned.subscriptions, 1)
+    assert.deepEqual(status.lastImport.feeds.map((feed) => [feed.feed, feed.ok, feed.videos]), [[':ythistory', true, 2], [':ytsubs', true, 1], [':ytrec', true, 0]])
+    const { reports } = await training.imports()
+    assert.equal(reports.length, 1)
+    assert.equal(reports[0].feeds[0].backfilled, 1)
+    // The looked-up channel id was kept, so history counts towards channel B.
+    assert.ok(channelAffinity(JSON.parse(await readFile(training.paths.dataFile, 'utf8')), NOW).some((item) => item.channelId === CHANNEL_B))
+    assert.ok(reports[0].problems.some((line) => /:ytrec: returned nothing/.test(line)))
+    assert.ok(!reports[0].problems.some((line) => /:ythistory: .* no channel ID/.test(line)))
+    assert.doesNotMatch(JSON.stringify(reports), new RegExp(`${SECRET}|login-info`))
+
+    // A signed-out import is reported as such, and only five reports are kept.
+    const expired = createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp: fakeYtDlp({ signedOut: true }), now: () => NOW })
+    for (let round = 0; round < 6; round += 1) await expired.sync()
+    const after = await expired.imports()
+    assert.equal(after.reports.length, 5)
+    assert.deepEqual(after.reports[0].feeds.map((feed) => [feed.feed, feed.ok, feed.signedOut]), [[':ythistory', false, true]])
+  } finally { await rm(dir, { recursive: true, force: true }) }
 })

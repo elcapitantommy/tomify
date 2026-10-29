@@ -34,7 +34,16 @@ const ytdlp = createYtDlp(config.ytdlp, { log })
 const resolver = createResolver({ ytdlp, maxHeight: config.maxHeight, audioCache: cache })
 const diagnostics = createDiagnostics()
 const training = config.training.enabled
-  ? createTraining({ stateDir: config.stateDir, ytdlp, secret: config.training.key || config.token || null, log, syncIntervalMs: config.training.syncIntervalMs, search: (query, limit) => ytdlp.search(query, limit) })
+  ? createTraining({
+    stateDir: config.stateDir,
+    ytdlp,
+    // Channel ids missing from feed entries, looked up signed out (never with the training cookies).
+    lookupChannel: async (videoId) => (await resolver.get(videoId)).summary.channelId,
+    secret: config.training.key || config.token || null,
+    log,
+    syncIntervalMs: config.training.syncIntervalMs,
+    search: (query, limit) => ytdlp.search(query, limit),
+  })
   : null
 training?.start()
 const handler = createHandler({ config, ytdlp, resolver, cache, training, diagnostics, log, version })
