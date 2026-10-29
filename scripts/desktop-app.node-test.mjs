@@ -50,6 +50,11 @@ test('installer settings: version in step, icons present, Windows media keys on'
   assert.equal(conf.app.withGlobalTauri, true)
   assert.deepEqual(conf.bundle.targets.sort(), ['msi', 'nsis'])
   for (const icon of conf.bundle.icon) assert.ok(existsSync(new URL(`../desktop/src-tauri/${icon}`, import.meta.url)), icon)
+  // The desktop icon is the rounded tile with the skull from the favicon, not the PWA's T.
+  const iconSource = readFileSync(new URL('../desktop/icon.svg', import.meta.url), 'utf8')
+  const skull = readFileSync(new URL('../public/favicon.svg', import.meta.url), 'utf8').match(/<path d="([^"]+)"/)[1]
+  assert.ok(iconSource.includes(`d="${skull}"`), 'desktop/icon.svg uses the favicon skull')
+  assert.match(iconSource, /<rect [^>]*rx="\d+"/)
   // Setting browser arguments replaces wry's defaults, so they must be kept.
   assert.match(main, /--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection/)
   assert.match(main, /--enable-features=HardwareMediaKeyHandling/)

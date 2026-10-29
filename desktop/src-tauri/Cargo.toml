@@ -1,6 +1,6 @@
 [package]
 name = "tomify-desktop"
-version = "0.1.1"
+version = "0.1.2"
 description = "Tomify for Windows: the Tomify web app in its own window"
 edition = "2021"
 publish = false
