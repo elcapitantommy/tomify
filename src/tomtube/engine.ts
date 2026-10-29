@@ -176,6 +176,8 @@ export class TomTubeEngine {
 
   // --- sources -----------------------------------------------------------------------------------
 
+  private get fixedHeight() { return this.store.settings.videoQuality === '1080' ? 1080 : undefined }
+
   private useHls(id: string, mode: PlaybackMode) {
     const { settings } = this.store
     if (mode === 'video' && settings.videoQuality === 'compatible') return false
@@ -189,7 +191,7 @@ export class TomTubeEngine {
     if (!session) return null
     const hls = this.useHls(video.id, mode)
     const file = mode === 'audio' ? (hls ? 'audio.m3u8' : 'audio.m4a') : (hls ? 'master.m3u8' : 'progressive.mp4')
-    return { url: mediaUrl(session, video.id, file), kind: hls ? 'hls' as const : 'file' as const }
+    return { url: mediaUrl(session, video.id, file, this.fixedHeight), kind: hls ? 'hls' as const : 'file' as const }
   }
 
   // Pauses an element on this player's behalf, so its `pause` event isn't taken for the listener's or iOS's.
@@ -257,7 +259,7 @@ export class TomTubeEngine {
     const session = this.deps.session()
     if (!session || !this.visible()) return
     const hls = this.useHls(item.id, 'video')
-    const url = mediaUrl(session, item.id, hls ? 'video.m3u8' : 'progressive.mp4')
+    const url = mediaUrl(session, item.id, hls ? 'video.m3u8' : 'progressive.mp4', this.fixedHeight)
     if (!url) return
     this.cancelVideoTimers()
     this.video.muted = true

@@ -2335,9 +2335,11 @@ test('TomTube recommendations and training paths pass on only their own methods 
 
 test('TomTube playlists are re-signed with a fresh media token', async () => {
   const originalFetch = globalThis.fetch
+  const upstream = []
   globalThis.fetch = async (input) => {
     const url = new URL(String(input))
     if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: url.searchParams.get('u') === 'tt-token' ? 'ok' : 'failed' } })
+    upstream.push(url)
     return new Response('#EXTM3U\nv136.m3u8\n')
   }
   const env = { TOMTUBE_SERVICE_URL: 'https://tomtube-service.tomify.test', TOMTUBE_SERVICE_TOKEN: 's'.repeat(40), TOMIFY_MEDIA_KEY: 'k'.repeat(40) }
@@ -2352,6 +2354,11 @@ test('TomTube playlists are re-signed with a fresh media token', async () => {
     const videoOnly = await worker.fetch(new Request(`https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/video.m3u8?mt=${encodeURIComponent(token)}`), env)
     assert.equal(videoOnly.status, 200, 'the muted picture stream for paired playback is proxied')
     assert.match(await videoOnly.text(), /v136\.m3u8\?mt=/)
+    // A fixed quality is passed on for master/video playlists only; nothing else from the query is.
+    await worker.fetch(new Request(`https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/video.m3u8?height=1080&x=1&mt=${encodeURIComponent(token)}`), env)
+    assert.equal(upstream.at(-1).search, '?height=1080')
+    await worker.fetch(new Request(`https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/v136.m3u8?height=1080&mt=${encodeURIComponent(token)}`), env)
+    assert.equal(upstream.at(-1).search, '')
   } finally { globalThis.fetch = originalFetch }
 })
 

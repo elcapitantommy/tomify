@@ -38,6 +38,7 @@ const MANAGE = (rest: string) => rest === 'training/cookies' || rest === 'traini
 const PROFILE = /^(?:recommendations|watched|feedback|training(?:\/.*)?)$/
 const MEDIA_PATH = new RegExp(`^/api/tomtube/(?:queue\\.m3u8|videos/${ID}/(?:master|video|audio|[va]\\d{1,4})\\.m3u8|videos/${ID}/(?:\\d{1,4}\\.(?:mp4|m4a)|progressive\\.mp4|audio\\.m4a)|thumbs/${ID}/[a-z]{4,13}\\.jpg)$`)
 const FORWARDED = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']
+// master.m3u8 and video.m3u8 also pass `height` (a fixed quality).
 const QUERY_KEYS: Record<string, string[]> = { search: ['q', 'limit'], resolve: ['url'], 'queue.json': ['ids'], 'queue.m3u8': ['ids'], recommendations: ['refresh'] }
 
 function listed(value: unknown, user: string) {
@@ -88,7 +89,8 @@ export const tomtubeRoute: RouteHandler = async (request, env, url) => {
   if (!env.TOMTUBE_SERVICE_URL || !env.TOMTUBE_SERVICE_TOKEN) return json({ error: 'not-configured', message: 'TomTube is not set up on this server yet.' }, 503)
 
   const target = new URL(`${String(env.TOMTUBE_SERVICE_URL).replace(/\/+$/, '')}/v1/${rest}`)
-  for (const key of QUERY_KEYS[rest] || []) { const value = url.searchParams.get(key); if (value !== null) target.searchParams.set(key, value) }
+  const keys = QUERY_KEYS[rest] || (/^videos\/[^/]+\/(?:master|video)\.m3u8$/.test(rest) ? ['height'] : [])
+  for (const key of keys) { const value = url.searchParams.get(key); if (value !== null) target.searchParams.set(key, value) }
   const headers: Record<string, string> = { authorization: `Bearer ${env.TOMTUBE_SERVICE_TOKEN}` }
   if (isJson && PROFILE.test(rest)) {
     headers['x-tomtube-profile'] = encodeURIComponent(user.toLowerCase())

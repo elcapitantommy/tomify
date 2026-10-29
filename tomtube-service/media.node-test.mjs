@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { selectFormats, publicFormat, videoSummary, urlExpiry, earliestExpiry, findFormat, searchResult } from './formats.mjs'
 import { groupSegments, Mp4IndexError, readIndex, topLevelBoxes } from './mp4.mjs'
-import { masterPlaylist, mediaPlaylist, queuePlaylist, queueTimeline } from './hls.mjs'
+import { fixedHeight, masterPlaylist, mediaPlaylist, queuePlaylist, queueTimeline } from './hls.mjs'
 import { box, fragmentedMp4, ytdlpInfo } from './testing.mjs'
 
 test('only H.264 video, AAC audio and the progressive MP4 over plain HTTPS are chosen', () => {
@@ -133,6 +133,14 @@ test('the video-only master playlist has the same variants and no audio', () => 
   assert.equal(playlist.includes('AUDIO='), false)
   assert.deepEqual(playlist.split('\n').filter((line) => /^v\d+\.m3u8$/.test(line)), ['v136.m3u8', 'v134.m3u8', 'v137.m3u8'])
   assert.match(playlist, /CODECS="avc1\.4D401F",RESOLUTION=1280x720/)
+})
+
+test('a fixed height keeps only the largest variant up to it, or the smallest if none fits', () => {
+  const { video } = selectFormats(ytdlpInfo('dQw4w9WgXcQ').formats)
+  assert.deepEqual(fixedHeight(video, 1080).map((format) => format.itag), ['137'])
+  assert.deepEqual(fixedHeight(video, 720).map((format) => format.itag), ['136'])
+  assert.deepEqual(fixedHeight(video, 240).map((format) => format.itag), ['134'])
+  assert.equal(fixedHeight(video, null), video)
 })
 
 test('the queue playlist plays several tracks back to back with discontinuities', () => {
