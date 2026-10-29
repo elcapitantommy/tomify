@@ -147,6 +147,8 @@ export class TomTubeEngine {
     this.listenPaired()
     for (const element of [this.video, this.audio]) this.listen(element)
     this.setupMediaSession()
+    // Start loading hls.js now where it is needed, so the first video already gets HLS.
+    if (!supportsNativeHls(this.video)) this.scriptedHls?.ready()
     const win = deps.window ?? (typeof window !== 'undefined' ? window : undefined)
     if (doc) {
       const visibility = () => this.visibilityChanged(doc.visibilityState)

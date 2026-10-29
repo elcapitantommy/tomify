@@ -286,7 +286,11 @@ describe('TomTube player', () => {
     }
     videoEl.hls = false
     audioEl.hls = false
+    let readyCalls = 0
+    const ready = scripted.ready
+    scripted.ready = () => { readyCalls += 1; return ready() }
     create({ mobile: false, scriptedHls: scripted })
+    expect(readyCalls).toBe(1) // starts loading hls.js before the first video
     engine.playVideo(video('a'))
     expect(attached).toEqual([expect.stringMatching(/\/videos\/aaaaaaaaaaa\/master\.m3u8\?height=1080&mt=/)])
     expect(player()).toMatchObject({ source: 'hls', playing: true })
