@@ -12,8 +12,9 @@ export interface TomTubeSettings {
   backgroundAudio: boolean
   // Audio mode plays the queue as one continuous stream from the server (experimental; see docs/TOMTUBE.md).
   continuousQueue: boolean
-  // 'auto' plays HLS (up to 1080p) where the browser supports it; 'compatible' always plays the single 360p MP4.
-  videoQuality: 'auto' | 'compatible'
+  // '1080' plays HLS fixed at the largest stream up to 1080p (no stepping down); 'auto' plays adaptive HLS
+  // (starts near 720p and follows the connection); 'compatible' always plays the single 360p MP4.
+  videoQuality: '1080' | 'auto' | 'compatible'
   // 'auto' plays the single M4A file on iPhone and iPad (it keeps playing with the screen locked, which
   // HLS audio did not in device testing) and HLS elsewhere; 'hls' and 'file' choose one everywhere.
   audioFormat: 'auto' | 'hls' | 'file'
@@ -46,7 +47,7 @@ interface TomTubeState {
   clearHistory(): void
 }
 
-export const defaultSettings: TomTubeSettings = { backgroundAudio: true, continuousQueue: false, videoQuality: 'auto', audioFormat: 'auto' }
+export const defaultSettings: TomTubeSettings = { backgroundAudio: true, continuousQueue: false, videoQuality: '1080', audioFormat: 'auto' }
 export const initialPlayer: PlayerView = { mode: 'video', playing: false, status: 'idle', error: null, currentTime: 0, duration: 0, source: null, continuous: false, autoAudio: false }
 
 export const useTomTube = create<TomTubeState>()(persist((set) => ({

@@ -171,6 +171,11 @@ test('HLS playlists describe the streams the service serves', async () => {
     const videoOnly = await (await service.call(`/v1/videos/${VIDEO}/video.m3u8`)).text()
     assert.match(videoOnly, /^v136\.m3u8$/m)
     assert.equal(videoOnly.includes('TYPE=AUDIO'), false)
+    // ?height=1080: one fixed variant, the largest up to 1080p.
+    for (const file of ['master.m3u8', 'video.m3u8']) {
+      const fixed = await (await service.call(`/v1/videos/${VIDEO}/${file}?height=1080`)).text()
+      assert.deepEqual(fixed.split('\n').filter((line) => /^v\d+\.m3u8$/.test(line)), ['v137.m3u8'], file)
+    }
     const variant = await (await service.call(`/v1/videos/${VIDEO}/v136.m3u8`)).text()
     assert.match(variant, /#EXT-X-MAP:URI="136\.mp4",BYTERANGE="\d+@0"/)
     const audio = await (await service.call(`/v1/videos/${VIDEO}/audio.m3u8`)).text()

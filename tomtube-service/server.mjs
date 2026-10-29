@@ -8,6 +8,7 @@
 //   GET  /v1/videos/<id>                       details and the iPhone-playable formats
 //   GET  /v1/videos/<id>/master.m3u8           HLS: H.264 video up to 1080p + AAC audio
 //   GET  /v1/videos/<id>/video.m3u8            HLS: H.264 video only (muted picture beside <audio> on iPhone)
+//        (both take ?height=1080: only the largest variant up to that height, no adaptive step-down)
 //   GET  /v1/videos/<id>/audio.m3u8            HLS: AAC audio only (background playback)
 //   GET  /v1/videos/<id>/v<itag>.m3u8          one video stream / a<itag>.m3u8 one audio stream
 //   GET  /v1/videos/<id>/<itag>.mp4|.m4a       the stream's bytes, with Range support
@@ -28,7 +29,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { once } from 'node:events'
 import { cleanSearchQuery, isVideoId, parseYouTubeVideoId, THUMBNAIL_VARIANTS, thumbnailUrl } from './ids.mjs'
-import { masterPlaylist, mediaPlaylist, queuePlaylist, queueTimeline, streamFileName } from './hls.mjs'
+import { fixedHeight, masterPlaylist, mediaPlaylist, queuePlaylist, queueTimeline, streamFileName } from './hls.mjs'
 import { Mp4IndexError } from './mp4.mjs'
 import { searchResult } from './formats.mjs'
 import { fetchAllowed, parseRange, readRange, UpstreamError } from './upstream.mjs'
@@ -38,6 +39,11 @@ import { TrainingError } from './training.mjs'
 const VIDEO_PATH = /^\/v1\/videos\/([A-Za-z0-9_-]{11})(?:\/(.+))?$/
 const STREAM_FILE = /^(\d{1,4})\.(mp4|m4a)$/
 const PLAYLIST_FILE = /^([va])(\d{1,4})\.m3u8$/
+// `?height=1080` on master.m3u8 / video.m3u8: one fixed quality instead of adaptive.
+function playlistHeight(url) {
+  const value = url.searchParams.get('height')
+  return value && /^\d{3,4}$/.test(value) ? Number(value) : null
+}
 const THUMB_PATH = /^\/v1\/thumbs\/([A-Za-z0-9_-]{11})\/([a-z]+)\.jpg$/
 const MAX_QUEUE = 20
 const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024
@@ -179,7 +185,7 @@ export function createHandler({ config, ytdlp, resolver, cache = null, training 
     }
   }
 
-  async function videoRequest(request, response, videoId, file) {
+  async function videoRequest(request, response, videoId, file, height = null) {
     if (!file) {
       if (request.method !== 'GET') throw new ApiError(405, 'method-not-allowed', 'Use GET.')
       return sendJson(response, 200, (await resolver.get(videoId)).summary)
@@ -192,12 +198,12 @@ export function createHandler({ config, ytdlp, resolver, cache = null, training 
     if (file === 'master.m3u8') {
       const { selection } = await resolver.get(videoId)
       if (!selection.video.length || !selection.audio.length) throw new ApiError(422, 'no-hls', 'This video has no H.264 streams for HLS; use progressive.mp4.')
-      return sendPlaylist(request, response, masterPlaylist(selection.video, selection.audio[0]))
+      return sendPlaylist(request, response, masterPlaylist(fixedHeight(selection.video, height), selection.audio[0]))
     }
     if (file === 'video.m3u8') {
       const { selection } = await resolver.get(videoId)
       if (!selection.video.length) throw new ApiError(422, 'no-hls', 'This video has no H.264 streams for HLS; use progressive.mp4.')
-      return sendPlaylist(request, response, masterPlaylist(selection.video, null))
+      return sendPlaylist(request, response, masterPlaylist(fixedHeight(selection.video, height), null))
     }
     if (file === 'audio.m3u8') {
       const { selection } = await resolver.get(videoId)
@@ -361,7 +367,7 @@ export function createHandler({ config, ytdlp, resolver, cache = null, training 
     const thumb = THUMB_PATH.exec(pathname)
     if (thumb) return thumbnail(request, response, thumb[1], thumb[2])
     const video = VIDEO_PATH.exec(pathname)
-    if (video) return videoRequest(request, response, video[1], video[2])
+    if (video) return videoRequest(request, response, video[1], video[2], playlistHeight(url))
     throw new ApiError(404, 'not-found', 'Not found.')
   }
 

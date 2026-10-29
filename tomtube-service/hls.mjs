@@ -77,6 +77,17 @@ export function masterPlaylist(videoFormats, audioFormat, { startHeight = 720 } 
   return lines.join('\n')
 }
 
+// A fixed quality: only the largest variant no taller than `height` (or the smallest there is), so
+// Safari can't step down to a lower one on a slow start. Adaptive playback is the default.
+export function fixedHeight(videoFormats, height) {
+  if (!height || videoFormats.length < 2) return videoFormats
+  const fits = videoFormats.filter((format) => format.height && format.height <= height)
+  const pick = fits.length
+    ? fits.reduce((best, format) => (format.height > best.height || (format.height === best.height && (format.bitrate || 0) > (best.bitrate || 0)) ? format : best))
+    : videoFormats.reduce((best, format) => ((format.height || Infinity) < (best.height || Infinity) ? format : best))
+  return [pick]
+}
+
 // Several videos' audio as one continuous stream: each track is its own discontinuity with its own
 // initialisation section. The phone plays straight from one track into the next without JavaScript
 // having to start anything, which is the experimental way round iOS's limits on a locked screen.

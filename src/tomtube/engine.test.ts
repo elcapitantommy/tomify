@@ -118,7 +118,7 @@ describe('TomTube player', () => {
     expect(videoEl.src).toBe('')
     expect(player()).toMatchObject({ playing: true, status: 'loading' })
     setMediaGrant({ username: 'tom', token: 'tok-2', expiresAt: Date.now() + 4 * 3600_000 })
-    expect(videoEl.src).toMatch(/^\/api\/tomtube\/videos\/aaaaaaaaaaa\/master\.m3u8\?mt=tok-2$/)
+    expect(videoEl.src).toMatch(/^\/api\/tomtube\/videos\/aaaaaaaaaaa\/master\.m3u8\?height=1080&mt=tok-2$/)
     expect(videoEl.playCalls).toBe(1)
     // A token about to expire is not used for a new stream.
     setMediaGrant({ username: 'tom', token: 'tok-old', expiresAt: Date.now() + 60_000 })
@@ -137,9 +137,17 @@ describe('TomTube player', () => {
     stop()
   })
 
+  it('plays 1080p fixed by default, and adaptive HLS when the quality is Automatic', () => {
+    engine.playVideo(video('a'))
+    expect(videoEl.src).toContain('/master.m3u8?height=1080&mt=')
+    useTomTube.getState().setSettings({ videoQuality: 'auto' })
+    engine.playVideo(video('b'))
+    expect(videoEl.src).toMatch(/\/videos\/bbbbbbbbbbb\/master\.m3u8\?mt=tok-1$/)
+  })
+
   it('plays a video as HLS through Tomify, and as a single file where HLS is not native', () => {
     engine.playVideo(video('a'))
-    expect(videoEl.src).toMatch(/^\/api\/tomtube\/videos\/aaaaaaaaaaa\/master\.m3u8\?mt=tok-1$/)
+    expect(videoEl.src).toMatch(/^\/api\/tomtube\/videos\/aaaaaaaaaaa\/master\.m3u8\?height=1080&mt=tok-1$/)
     expect(videoEl.playCalls).toBe(1)
     expect(audioEl.src).toBe('')
     expect(player()).toMatchObject({ mode: 'video', playing: true, status: 'loading', source: 'hls' })
@@ -478,7 +486,7 @@ describe('TomTube player', () => {
       create({ appleMobile: true })
       engine.playVideo(video('a'))
       expect(audioEl.src).toMatch(/\/videos\/aaaaaaaaaaa\/audio\.m4a\?mt=/)
-      expect(videoEl.src).toMatch(/\/videos\/aaaaaaaaaaa\/video\.m3u8\?mt=/)
+      expect(videoEl.src).toMatch(/\/videos\/aaaaaaaaaaa\/video\.m3u8\?height=1080&mt=/)
       expect(videoEl.muted).toBe(true)
       expect(audioEl.playCalls).toBe(1)
       expect(videoEl.playCalls).toBe(1)

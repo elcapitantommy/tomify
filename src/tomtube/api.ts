@@ -96,9 +96,12 @@ export function mediaQuery(session: AuthSession, now = Date.now()) {
 
 export type MediaFile = 'master.m3u8' | 'video.m3u8' | 'audio.m3u8' | 'progressive.mp4' | 'audio.m4a'
 
-export function mediaUrl(session: AuthSession, id: string, file: MediaFile) {
+// `height` (master.m3u8 / video.m3u8 only): one fixed quality up to that height instead of adaptive.
+export function mediaUrl(session: AuthSession, id: string, file: MediaFile, height?: number) {
   const query = mediaQuery(session)
-  return query ? `/api/tomtube/videos/${encodeURIComponent(id)}/${file}?${query}` : null
+  if (!query) return null
+  const fixed = height && (file === 'master.m3u8' || file === 'video.m3u8') ? `height=${height}&` : ''
+  return `/api/tomtube/videos/${encodeURIComponent(id)}/${file}?${fixed}${query}`
 }
 
 export function queueStreamUrl(session: AuthSession, ids: string[]) {
