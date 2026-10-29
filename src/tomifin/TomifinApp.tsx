@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CircleCheck, Clapperboard, ShieldAlert, ShieldCheck, ShieldQuestion, ExternalLink, FileDown, Link2, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Newspaper, Pause, Play, RefreshCw, RotateCcw, Search, TriangleAlert, Upload, UserRound, Users, X } from 'lucide-react'
+import { CircleCheck, Clapperboard, ShieldAlert, ShieldCheck, ShieldQuestion, ExternalLink, FileDown, Link2, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Newspaper, Pause, Play, RadioTower, RefreshCw, RotateCcw, Search, TriangleAlert, Upload, UserRound, Users, X } from 'lucide-react'
 import { DESTINATIONS, formatAge, formatEta, formatSize, formatSpeed, readFileBase64, tomifinApi, TomifinRequestError, type TomifinDestination, type TomifinDetected, type TomifinJob, type TomifinJobAction, type TomifinKind, type TomifinResult, type TomifinServiceStatus, type TomifinVpnStatus } from './api'
 import { sortResults, type SortKey } from './results'
 
@@ -127,6 +127,7 @@ function JobCard({ job, onAction, busy }: { job: TomifinJob; onAction: (job: Tom
         {job.canPause && <button type="button" className="tf-button" disabled={busy} onClick={() => onAction(job, 'pause')}><Pause aria-hidden/>Pause</button>}
         {job.canResume && <button type="button" className="tf-button" disabled={busy} onClick={() => onAction(job, 'resume')}><Play aria-hidden/>Resume</button>}
         {job.canRetry && <button type="button" className="tf-button" disabled={busy} onClick={() => onAction(job, 'retry')} title={job.retryHint || (job.downloader === 'sabnzbd' ? 'Ask SABnzbd to try this download again' : 'Check the files again and restart the torrent in qBittorrent')}><RotateCcw aria-hidden/>Retry</button>}
+        {job.canFindTrackers && <button type="button" className="tf-button" disabled={busy} onClick={() => onAction(job, 'trackers')} title="Look up more trackers for this torrent's info hash and add them in qBittorrent"><RadioTower aria-hidden/>More trackers</button>}
         {!confirming && <button type="button" className="tf-button tf-ghost" disabled={busy} onClick={() => setConfirming(true)}><X aria-hidden/>{done || job.status === 'failed' ? 'Remove' : 'Cancel'}</button>}
         {confirming && (
           <div className="tf-confirm" role="group" aria-label="Confirm">
@@ -323,6 +324,13 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
     try {
       const response = await tomifinApi.control(job.id, action)
       if (action === 'retry') setNotice({ tone: 'success', text: `Retrying “${job.name}” in ${job.downloaderLabel || 'qBittorrent'}.` })
+      if (action === 'trackers') {
+        const added = response.added ?? 0
+        const warnings = response.warnings?.length ? ` ${response.warnings.join(' ')}` : ''
+        setNotice(added
+          ? { tone: warnings ? 'warn' : 'success', text: `Added ${added} tracker${added === 1 ? '' : 's'} to “${job.name}”${response.fromSearch ? ` (${response.fromSearch} from sites listing this torrent)` : ''}.${warnings}` }
+          : { tone: 'warn', text: `No new trackers found for “${job.name}”.${warnings}` })
+      }
       if (action === 'cancel') setNotice({ tone: 'success', text: response.filesDeleted ? `Cancelled “${job.name}” and deleted its partial download.` : `Removed “${job.name}” from ${job.downloaderLabel || 'qBittorrent'}. Its files were kept.` })
       await refresh()
     } catch (error) { if (!failed(error)) setNotice({ tone: 'error', text: message(error) }) }

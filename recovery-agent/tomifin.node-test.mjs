@@ -32,6 +32,10 @@ function fakeClient({ searchResults = [], existing = [] } = {}) {
     async pause(value) { calls.push(['pause', value]); const torrent = torrents.find((entry) => entry.hash === value); if (torrent) torrent.state = 'stoppedDL' },
     async resume(value) { calls.push(['resume', value]) },
     async recheck(value) { calls.push(['recheck', value]) },
+    trackerList: [], propertiesValue: { is_private: false },
+    async trackers(value) { calls.push(['trackers', value]); return this.trackerList },
+    async properties(value) { calls.push(['properties', value]); return this.propertiesValue },
+    async addTrackers(value, urls) { calls.push(['addTrackers', value, urls]) },
     async remove(value, deleteFiles) { calls.push(['remove', value, deleteFiles]); const index = torrents.findIndex((torrent) => torrent.hash === value); if (index >= 0) torrents.splice(index, 1) },
   }
 }
@@ -701,4 +705,52 @@ test('the agent route for Add link needs a session', async () => {
   assert.equal(signedIn.body.detected, 'magnet')
   const bad = await handleTomifinRequest('/v1/tomifin/link', { session: 'good-session-token', link: 'magnet:?xt=urn:btih:zz' }, controller, fakeAuth)
   assert.deepEqual([bad.status, bad.body.code], [400, 'invalid-link'])
+})
+
+test('More trackers adds trackers found by info hash and from public lists, never to a private torrent', async () => {
+  const client = fakeClient({ searchResults })
+  let listCalls = 0
+  const publicTrackers = async () => { listCalls += 1; return { trackers: ['udp://tracker.opentrackr.org:1337/announce', 'udp://open.demonii.com:1337/announce', 'udp://10.0.0.1:80/announce'], failed: 0, lists: 2 } }
+  const { controller } = await controllerWith(client, { publicTrackers })
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  const { job } = await controller.download({ resultId: best.id, destination: 'family' })
+  client.torrents[0].state = 'stalledDL'
+  assert.equal((await controller.list()).jobs[0].canFindTrackers, true)
+  client.trackerList = [{ url: '** [DHT] **', msg: '' }, { url: 'udp://open.demonii.com:1337/announce/', msg: '' }]
+  const hashResults = [
+    { fileName: 'Same', fileUrl: `magnet:?xt=urn:btih:${hash}&tr=udp%3A%2F%2Fexodus.desync.com%3A6969&tr=http%3A%2F%2Fuser%3Apw%40t.test%2Fa`, nbSeeders: 2 },
+    { fileName: 'Other', fileUrl: `magnet:?xt=urn:btih:${other}&tr=udp%3A%2F%2Fwrong.test%3A1`, nbSeeders: 9 },
+  ]
+  client.search = async (pattern, options) => { client.calls.push(['search', pattern, options]); return hashResults }
+  const outcome = await controller.trackers({ id: job.id })
+  assert.deepEqual([outcome.added, outcome.fromSearch, outcome.fromLists], [2, 1, 1])
+  assert.deepEqual(client.calls.find(([name]) => name === 'addTrackers'), ['addTrackers', hash, ['udp://exodus.desync.com:6969', 'udp://tracker.opentrackr.org:1337/announce']])
+  assert.equal(client.calls.filter(([name]) => name === 'search').at(-1)[1], hash, 'the search is by info hash')
+  assert.equal(listCalls, 1)
+
+  // A private torrent: refused, by any of qBittorrent's signs, and nothing is added.
+  for (const sign of [{ torrent: { private: true } }, { properties: { is_private: true } }, { trackers: [{ url: '** [PeX] **', msg: 'This torrent is private' }] }]) {
+    client.calls.length = 0
+    client.torrents[0].private = sign.torrent?.private
+    client.propertiesValue = sign.properties || { is_private: false }
+    client.trackerList = sign.trackers || []
+    if (sign.torrent) assert.equal((await controller.list()).jobs[0].canFindTrackers, false)
+    await assert.rejects(controller.trackers({ id: job.id }), { code: 'private-torrent' }, JSON.stringify(sign))
+    assert.equal(client.calls.some(([name]) => ['addTrackers', 'search'].includes(name)), false)
+  }
+  await assert.rejects(controller.trackers({ id: '../../etc/passwd' }), /Unknown download/)
+})
+
+test('More trackers with nothing new adds nothing, and says when the lookups failed', async () => {
+  const client = fakeClient({ searchResults })
+  const { controller } = await controllerWith(client, { publicTrackers: async () => ({ trackers: [], failed: 2, lists: 2 }) })
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  const { job } = await controller.download({ resultId: best.id, destination: 'family' })
+  client.search = async () => []
+  const outcome = await controller.trackers({ id: job.id })
+  assert.equal(outcome.added, 0)
+  assert.deepEqual(outcome.warnings, ['The public tracker lists could not be fetched.'])
+  assert.equal(client.calls.some(([name]) => name === 'addTrackers'), false)
+  client.search = async () => { throw new Error('qBittorrent is offline') }
+  await assert.rejects(controller.trackers({ id: job.id }), { code: 'trackers-unavailable' })
 })

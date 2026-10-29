@@ -48,6 +48,7 @@ function fakeApi({ vpn = { state: 'connected', qbittorrent: 'connected', nordvpn
     if (url === '/api/tomifin/link') return link(body)
     if (url === '/api/tomifin/download') return download(body)
     if (url === '/api/tomifin/downloads') return Response.json({ jobs })
+    if (url.endsWith('/trackers')) return Response.json({ job: job(), added: 3, fromSearch: 1, fromLists: 2, warnings: [] })
     if (/\/api\/tomifin\/downloads\/.+\/(pause|resume|retry|cancel)$/.test(url)) return Response.json(url.endsWith('cancel') ? { cancelled: true, filesDeleted: true } : { job: job() })
     return Response.json({ error: 'not-found' }, { status: 404 })
   })
@@ -291,6 +292,21 @@ describe('Tomifin Downloader', () => {
     fireEvent.click(retry)
     await waitFor(() => expect(calls.some((call) => call.url === `/api/tomifin/downloads/${job().id}/retry` && call.method === 'POST' && call.headers['x-tomifin'] === '1')).toBe(true))
     expect(await screen.findByRole('status')).toHaveTextContent('Retrying “Big Buck Bunny (2008)” in qBittorrent.')
+  })
+
+  it('offers More trackers only on torrents the agent allows it for', async () => {
+    const calls = fakeApi({ jobs: [
+      job({ canFindTrackers: true }),
+      job({ id: '00000000-0000-4000-8000-000000000005', name: 'Tears of Steel' }),
+    ] })
+    await open()
+    const torrent = (await screen.findByText('Big Buck Bunny (2008)')).closest('li')!
+    expect(within(screen.getByText('Tears of Steel').closest('li')!).queryByRole('button', { name: 'More trackers' })).toBeNull()
+    const more = within(torrent).getByRole('button', { name: 'More trackers' })
+    expect(more).toHaveAttribute('title', "Look up more trackers for this torrent's info hash and add them in qBittorrent")
+    fireEvent.click(more)
+    await waitFor(() => expect(calls.some((call) => call.url === `/api/tomifin/downloads/${job().id}/trackers` && call.method === 'POST' && call.headers['x-tomifin'] === '1')).toBe(true))
+    expect(await screen.findByRole('status')).toHaveTextContent('Added 3 trackers to “Big Buck Bunny (2008)” (1 from sites listing this torrent).')
   })
 
   it('lists SABnzbd downloads beside qBittorrent ones and says which downloader cancel removes from', async () => {
