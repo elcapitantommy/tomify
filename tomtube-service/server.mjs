@@ -24,6 +24,8 @@
 //   DELETE /v1/training                        forget what was learned (the cookies stay)
 //   PUT  /v1/training/cookies                  a new cookies.txt for the account feeds; DELETE removes it
 //   POST /v1/training/sync                     read the account feeds now (in the background)
+// The recommendation paths are per account: x-tomtube-profile names it (URI-encoded), and
+// x-tomtube-owner: 1 allows the cookie and sync paths (owners only).
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { once } from 'node:events'
@@ -280,9 +282,19 @@ export function createHandler({ config, ytdlp, resolver, cache = null, training 
     if (!methods.includes(request.method)) throw new ApiError(405, 'method-not-allowed', `Use ${methods.join(' or ')}.`)
   }
 
+  // Each Tomify account has its own profile. The Worker names the signed-in account in
+  // x-tomtube-profile and says in x-tomtube-owner whether it may use YouTube account cookies.
+  async function profileFor(request) {
+    let user = ''
+    try { user = decodeURIComponent(String(request.headers['x-tomtube-profile'] || '')) } catch { /* left empty */ }
+    if (!user.trim()) throw new ApiError(400, 'no-profile', 'Recommendations need a Tomify account.')
+    return needTraining().forUser(user, { owner: request.headers['x-tomtube-owner'] === '1' })
+  }
+
   // Recommendations and the training period. Nothing here ever returns the cookie file or its path.
   async function trainingRequest(request, response, pathname, url) {
-    const store = needTraining()
+    needTraining()
+    const store = await profileFor(request)
     if (pathname === '/v1/recommendations') {
       only(request, 'GET')
       return sendJson(response, 200, await store.recommendations({ refresh: url.searchParams.get('refresh') === '1' }))
@@ -302,6 +314,9 @@ export function createHandler({ config, ytdlp, resolver, cache = null, training 
     if (pathname === '/v1/training') {
       only(request, 'GET', 'DELETE')
       return sendJson(response, 200, request.method === 'DELETE' ? await store.clear() : await store.status())
+    }
+    if ((pathname === '/v1/training/cookies' || pathname === '/v1/training/sync') && request.headers['x-tomtube-owner'] !== '1') {
+      throw new ApiError(403, 'training-forbidden', 'Only the account owner can use YouTube account cookies.')
     }
     if (pathname === '/v1/training/cookies') {
       only(request, 'PUT', 'DELETE')
