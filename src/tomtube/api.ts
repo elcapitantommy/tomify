@@ -36,6 +36,8 @@ export interface TrainingStatus {
   cookies: { state: CookieState; updatedAt: string | null; expiresAt: string | null; lastSyncAt: string | null; lastSuccessAt: string | null; lastError: { code: string; message: string; at: string } | null; nextSyncAt: string | null; encrypted: boolean }
   learned: { watches: number; finished: number; skipped: number; notInterested: number; youtubeHistory: number; subscriptions: number; channels: number; recommendedChannels: number; recommendedSyncedAt: string | null }
   syncIntervalHours: number
+  // Whether this account may add YouTube account cookies (only the owner). Each account has its own profile.
+  youtubeAccount?: boolean
   lastImport: { at: string; problems: string[]; feeds: Array<{ feed: string; ok: boolean; videos: number; channels: number }> } | null
 }
 

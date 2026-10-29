@@ -73,6 +73,7 @@ const when = (value: string | null | undefined) => value ? new Date(value).toLoc
 
 function cookieSummary(status: TrainingStatus) {
   const { cookies } = status
+  if (status.youtubeAccount === false && cookies.state === 'missing') return 'Your suggestions are your own: TomTube learns from what you watch here on this account.'
   switch (cookies.state) {
     case 'missing': return 'No YouTube cookies yet. TomTube learns from what you watch here; add cookies to learn from your YouTube recommendations, subscriptions and history too.'
     case 'checking': return 'Checking your cookies with YouTube…'
@@ -146,7 +147,7 @@ function TrainingSettings({ onChanged }: { onChanged(): void }) {
     {status ? <p className="tt-note" role="status">{cookieSummary(status)}</p> : !error && <p className="tt-note">Loading…</p>}
     {learned && <p className="tt-note">Learned so far: {learned.watches} watched in TomTube ({learned.finished} finished, {learned.skipped} skipped), {learned.notInterested} marked Not interested, {learned.youtubeHistory} from your YouTube history, {learned.subscriptions} subscribed channels. What YouTube recommends is only used to discover channels, never counted as something you like.</p>}
     {error && <div className="tt-error" role="alert">{error}</div>}
-    {adding ? <div className="tt-cookies">
+    {status?.youtubeAccount === false ? null : adding ? <div className="tt-cookies">
       <ol className="tt-note">
         <li>On a computer, open a private (incognito) window and sign in to youtube.com.</li>
         <li>Export the cookies for youtube.com as <b>cookies.txt</b>, for example with the “Get cookies.txt LOCALLY” extension.</li>
@@ -158,13 +159,13 @@ function TrainingSettings({ onChanged }: { onChanged(): void }) {
       <button className="tt-primary" disabled={busy || !cookies.trim()} onClick={() => void save(cookies)}>Save cookies</button>
       <button className="tt-secondary" onClick={() => { setAdding(false); setCookies('') }}>Cancel</button>
     </div> : <button className="tt-secondary" disabled={busy} onClick={() => setAdding(true)}>{status?.cookies.state === 'missing' ? 'Add YouTube cookies' : 'Renew YouTube cookies'}</button>}
-    {status && status.cookies.state !== 'missing' && <>
+    {status && status.youtubeAccount !== false && status.cookies.state !== 'missing' && <>
       <button className="tt-secondary" disabled={busy || status.cookies.state === 'checking'} onClick={() => void run(() => tomtubeApi.syncTraining(session))}><RefreshCw/>Sync now</button>
       {status.lastImport && status.lastImport.problems.length > 0 && <p className="tt-note">The last import had {status.lastImport.problems.length} problem{status.lastImport.problems.length > 1 ? 's' : ''}: {status.lastImport.problems[0]}</p>}
       {reports ? <ImportReportView reports={reports}/> : <button className="tt-secondary" onClick={() => void showImports()}>Show import report</button>}
       <button className="tt-secondary" disabled={busy} onClick={() => { if (window.confirm('Remove your YouTube cookies from the server? What TomTube has learned is kept.')) void run(() => tomtubeApi.removeCookies(session)) }}>Remove cookies</button>
     </>}
-    <button className="tt-secondary" disabled={busy} onClick={() => { if (window.confirm('Forget everything TomTube has learned about what you watch? Your cookies are kept.')) void run(() => tomtubeApi.clearTraining(session)) }}><Trash2/>Clear training data</button>
+    <button className="tt-secondary" disabled={busy} onClick={() => { if (window.confirm(status?.youtubeAccount === false ? 'Forget everything TomTube has learned about what you watch?' : 'Forget everything TomTube has learned about what you watch? Your cookies are kept.')) void run(() => tomtubeApi.clearTraining(session)) }}><Trash2/>Clear training data</button>
   </section>
 }
 

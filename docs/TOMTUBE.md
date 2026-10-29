@@ -112,7 +112,7 @@ Signals fade with a 90-day half-life (Not interested: 180 days). Any channel who
 
 **First set-up (admin only).** Put your Navidrome username in `TOMTUBE_TRAINING_USERS` in `wrangler.toml` and deploy. The feed reading hasn't been tried against real YouTube yet, so try it first with cookies from a **disposable** YouTube account, check Settings shows *valid* and the shelves fill, then remove them and add your own.
 
-**Checking the import against your account.** Every sync keeps a report of what each feed returned (the last five are kept). Open TomTube → Settings → Recommendations → **Show import report**, or on the box `curl -s -H "Authorization: Bearer $T" http://127.0.0.1:8790/v1/training/imports`. For each feed it shows how many entries came back, how many became usable videos, how many had no channel ID (and how many of those were looked up), missing channel names, titles and durations, entries dropped and what kind they were, the structure and field names yt-dlp returned, yt-dlp's warnings, sign-in failures, and three sample videos. Settings also shows the first problem of the last import under **Sync now**. What to look for on the first real run:
+**Checking the import against your account.** Every sync keeps a report of what each feed returned (the last five are kept, in that owner's own profile). Only owners (`TOMTUBE_TRAINING_USERS`) can see it, and only their own. Open TomTube → Settings → Recommendations → **Show import report**, or on the box `curl -s -H "Authorization: Bearer $T" http://127.0.0.1:8790/v1/training/imports`. For each feed it shows how many entries came back, how many became usable videos, how many had no channel ID (and how many of those were looked up), missing channel names, titles and durations, entries dropped and what kind they were, the structure and field names yt-dlp returned, yt-dlp's warnings, sign-in failures, and three sample videos. Settings also shows the first problem of the last import under **Sync now**. What to look for on the first real run:
 
 - `:ythistory` and `:ytsubs` with **0 videos** or **failed (… signed out)**: the cookies didn't sign in. Export them again from a private window.
 - **unexpected structure (no entries list)**: yt-dlp's output for that feed changed. Update yt-dlp, then send me the report.
@@ -132,9 +132,11 @@ TomTube checks them straight away and Settings shows **valid**, **expired** or t
 - They are used **only** to read three account feeds (`:ythistory`, `:ytsubs`, `:ytrec`) with yt-dlp, every `TOMTUBE_TRAINING_SYNC_HOURS` (default 6, minimum 2) with a few seconds between feeds. Playback, search and topic searches never use them; those stay unauthenticated (or use the separate throwaway `TOMTUBE_YOUTUBE_COOKIES`).
 - Only youtube.com cookies are kept (Google account cookies are dropped). They are encrypted with AES-256-GCM (key from `TOMTUBE_TRAINING_KEY`, or derived from `TOMTUBE_TOKEN`) in `/var/lib/tomtube/secrets/` (folder mode 700, file mode 600, owned by the service user). For each yt-dlp run they are decrypted into a private temporary file that is deleted afterwards. As YouTube rotates them, yt-dlp's updated copy is encrypted and saved, which keeps them working longer.
 - They are never logged and never sent back to the phone: the API reports only their state and dates. Error messages are scrubbed of cookie values.
-- Changing them goes through the signed-in Worker and is allowed only for the Navidrome usernames in `TOMTUBE_TRAINING_USERS` in `wrangler.toml` (kept there so a deploy can't drop it). It fails closed: while it is empty nobody can add, renew, remove or sync cookies or clear the training data, and Settings says so.
+- Changing them goes through the signed-in Worker and is allowed only for the Navidrome usernames in `TOMTUBE_TRAINING_USERS` in `wrangler.toml` (kept there so a deploy can't drop it). It fails closed: while it is empty nobody can add, renew, remove or sync cookies, and Settings says so. The service checks this too (`x-tomtube-owner`), and stops syncing an account's cookies once it is no longer an owner.
 
-The model itself (what was watched, skipped, rejected, the YouTube history and recommended channels; no cookies) is in `/var/lib/tomtube/training/log.json`. It is one model per server, shared by everyone allowed to use TomTube.
+**One profile per account.** Each Tomify account has its own model: what it watched, skipped and marked Not interested, and (owners only) the YouTube history, subscriptions and recommendations imported with its cookies. One listener's viewing never changes another's suggestions. The Worker tells the service which account is signed in (`x-tomtube-profile`). Profiles are in `/var/lib/tomtube/training/users/<username>/log.json` (no cookies) and an owner's cookies in `/var/lib/tomtube/secrets/users/<username>.cookies`. Listeners who are not owners see their own suggestions and *Clear training data*, but no cookie controls; clearing only ever clears your own profile.
+
+The single shared log from before profiles (`training/log.json` and `secrets/youtube-training.cookies`) is moved to the first owner who opens TomTube after the update, so nothing already learned is lost. Deploy the Worker first, then the service: until the Worker sends `x-tomtube-profile`, the new service answers recommendation requests with `400 no-profile`.
 
 ## Design decisions
 
@@ -206,7 +208,7 @@ In the Cloudflare dashboard, tomify Worker → Settings → Variables and Secret
 | `TOMTUBE_SERVICE_URL` | Variable | The tunnel hostname, e.g. `https://tomtube-service.tomdixon.uk` |
 | `TOMTUBE_SERVICE_TOKEN` | **Secret** | The same value as `TOMTUBE_TOKEN` on the box |
 | `TOMTUBE_ALLOWED_USERS` | Variable (optional) | Comma-separated Navidrome usernames; unset means every Tomify listener |
-| `TOMTUBE_TRAINING_USERS` | **`wrangler.toml`** var | Navidrome usernames allowed to add, renew, sync or remove the recommendation cookies and clear training data. Empty means nobody (fails closed) |
+| `TOMTUBE_TRAINING_USERS` | **`wrangler.toml`** var | Navidrome usernames allowed to add, renew, sync or remove YouTube account cookies for their own recommendation profile. Empty means nobody (fails closed) |
 | `TOMIFY_MEDIA_KEY` | Secret (already used by Tomify) | **Required.** TomTube media URLs carry only a 4-hour media token made with this key; the Navidrome login is never accepted in a TomTube URL. Without it, TomTube's media answers `503 media-tokens-not-configured` and the app says so |
 
 Deploy the site as usual (merge to `main`). Without the service variables, `/api/tomtube/*` answers `503 not-configured` and nothing else in Tomify changes.
@@ -285,10 +287,11 @@ All under `/v1/` need `Authorization: Bearer $TOMTUBE_TOKEN`; the Worker exposes
 | `POST /v1/videos/<id>/prefetch` | Downloads the audio to the cache in the background |
 | `GET /v1/queue.m3u8?ids=a,b`, `queue.json?ids=a,b` | Continuous audio stream of up to 20 videos, and each one's offset |
 | `GET /v1/thumbs/<id>/<mqdefault\|hqdefault\|maxresdefault\|…>.jpg` | Thumbnail |
+| Recommendation paths below | Per account: `x-tomtube-profile: <username>` (URI-encoded) is required, and `x-tomtube-owner: 1` is required for the cookie and sync paths |
 | `GET /v1/recommendations[?refresh=1]` | `{ source, cookies, topics, shelves: [{ id, title, videos: [{ …video, reason }] }] }` |
 | `POST /v1/watched` | The app reports a watch: `{ id, title, channel, channelId, duration, seconds, ended, skipped }` |
 | `POST /v1/feedback` | `{ id, kind: "not-interested", channelId }` |
-| `GET /v1/training`, `DELETE /v1/training` | Cookie state and what has been learned (never the cookies); DELETE forgets what was learned |
+| `GET /v1/training`, `DELETE /v1/training` | Cookie state and what has been learned (never the cookies); DELETE forgets what this account learned; `youtubeAccount` says whether it may add cookies |
 | `PUT /v1/training/cookies`, `DELETE …` | A new cookies.txt as the body (max 256 KB), checked in the background; DELETE removes it |
 | `POST /v1/training/sync` | Read the account feeds now (at most every 15 minutes) |
 | `GET /v1/training/imports` | The last five syncs' import reports and the problems found (owner only through the Worker) |

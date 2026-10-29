@@ -11,7 +11,10 @@ import { json } from '../lib/http.ts'
 //   and recommendations: recommendations, watched, feedback, training, training/cookies, training/sync,
 //   training/imports (the owner's import report).
 //   The cookie upload is passed on as a body of at most 256 KB; the service never sends cookies back.
-//   Changing cookies or training data is allowed only for TOMTUBE_TRAINING_USERS; unset means nobody.
+//   Recommendations are per account: the service is told which listener is signed in
+//   (x-tomtube-profile) and whether they are an owner (x-tomtube-owner), and keeps a profile for each.
+//   Adding, removing or syncing YouTube account cookies is allowed only for TOMTUBE_TRAINING_USERS;
+//   unset means nobody. Anyone can clear their own training data.
 //   Media (playlists, streams, thumbnails): only a short-lived `mt` media token in the query, since
 //   players can't send headers. The Navidrome login is never accepted in a TomTube URL, so it can't
 //   end up in Cloudflare or browser logs; without TOMIFY_MEDIA_KEY media answers 503. Playlists are
@@ -28,9 +31,11 @@ const JSON_METHODS: Array<[RegExp, string[]]> = [
   [/^training\/sync$/, ['POST']],
 ]
 const BODY_LIMITS: Record<string, number> = { watched: 4096, feedback: 4096, 'training/cookies': 256 * 1024 }
-// Changing the account cookies or the training log; limited to TOMTUBE_TRAINING_USERS when that is set.
-// The import report too: it shows titles from the account's YouTube history.
-const MANAGE = (rest: string, method: string) => rest === 'training/cookies' || rest === 'training/sync' || rest === 'training/imports' || (rest === 'training' && method === 'DELETE')
+// Using the YouTube account cookies, and the import report (it shows titles from the account's YouTube
+// history): only TOMTUBE_TRAINING_USERS.
+const MANAGE = (rest: string) => rest === 'training/cookies' || rest === 'training/sync' || rest === 'training/imports'
+// The paths that read or change one account's recommendation profile.
+const PROFILE = /^(?:recommendations|watched|feedback|training(?:\/.*)?)$/
 const MEDIA_PATH = new RegExp(`^/api/tomtube/(?:queue\\.m3u8|videos/${ID}/(?:master|video|audio|[va]\\d{1,4})\\.m3u8|videos/${ID}/(?:\\d{1,4}\\.(?:mp4|m4a)|progressive\\.mp4|audio\\.m4a)|thumbs/${ID}/[a-z]{4,13}\\.jpg)$`)
 const FORWARDED = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']
 const QUERY_KEYS: Record<string, string[]> = { search: ['q', 'limit'], resolve: ['url'], 'queue.json': ['ids'], 'queue.m3u8': ['ids'], recommendations: ['refresh'] }
@@ -42,7 +47,7 @@ function listed(value: unknown, user: string) {
 
 const allowed = (env: Env, user: string) => listed(env.TOMTUBE_ALLOWED_USERS, user)
 
-// Changing the account cookies or training data fails closed: only usernames named in
+// Using the YouTube account cookies fails closed: only usernames named in
 // TOMTUBE_TRAINING_USERS (wrangler.toml), and nobody when it is empty or missing.
 function owner(env: Env, user: string) {
   const list = String(env.TOMTUBE_TRAINING_USERS || '').split(',').map((name) => name.trim().toLowerCase()).filter(Boolean)
@@ -79,12 +84,16 @@ export const tomtubeRoute: RouteHandler = async (request, env, url) => {
   }
   if (!user) return json({ error: 'unauthorized' }, 401)
   if (!allowed(env, user)) return json({ error: 'forbidden', message: 'TomTube is not enabled for this account.' }, 403)
-  if (MANAGE(rest, request.method) && !owner(env, user)) return json({ error: 'training-forbidden', message: String(env.TOMTUBE_TRAINING_USERS || '').trim() ? 'Only the account owner can change the YouTube cookies or training data.' : 'Changing the YouTube cookies is turned off until TOMTUBE_TRAINING_USERS is set in wrangler.toml.' }, 403)
+  if (MANAGE(rest) && !owner(env, user)) return json({ error: 'training-forbidden', message: String(env.TOMTUBE_TRAINING_USERS || '').trim() ? 'Only the account owner can use YouTube account cookies.' : 'Changing the YouTube cookies is turned off until TOMTUBE_TRAINING_USERS is set in wrangler.toml.' }, 403)
   if (!env.TOMTUBE_SERVICE_URL || !env.TOMTUBE_SERVICE_TOKEN) return json({ error: 'not-configured', message: 'TomTube is not set up on this server yet.' }, 503)
 
   const target = new URL(`${String(env.TOMTUBE_SERVICE_URL).replace(/\/+$/, '')}/v1/${rest}`)
   for (const key of QUERY_KEYS[rest] || []) { const value = url.searchParams.get(key); if (value !== null) target.searchParams.set(key, value) }
   const headers: Record<string, string> = { authorization: `Bearer ${env.TOMTUBE_SERVICE_TOKEN}` }
+  if (isJson && PROFILE.test(rest)) {
+    headers['x-tomtube-profile'] = encodeURIComponent(user.toLowerCase())
+    headers['x-tomtube-owner'] = owner(env, user) ? '1' : '0'
+  }
   const range = request.headers.get('range')
   if (range && /^bytes=\d*-\d*$/.test(range)) headers.range = range
   let body: string | undefined

@@ -23,9 +23,16 @@
 // few times a day, never for playback or search (those stay unauthenticated); they are decrypted only
 // into a private temporary file for each yt-dlp run; and they are never logged or sent back to the
 // phone: the API reports only whether they work, when they were added and when they expire.
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto'
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+//
+// Each Tomify account has its own profile: its own watches, skips, "Not interested", imported history,
+// subscriptions and recommendations, in training/users/<account>/log.json, so one listener's viewing
+// never shapes another's suggestions. Only an account owner (TOMTUBE_TRAINING_USERS in the Worker,
+// passed on as x-tomtube-owner) can add cookies or sync, so only an owner's profile imports from a
+// signed-in YouTube account. The server-wide log from before profiles is moved to the first owner who
+// opens TomTube.
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto'
+import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { isVideoId } from './ids.mjs'
 import { searchResult } from './formats.mjs'
 import { fetchAllowed } from './upstream.mjs'
@@ -284,7 +291,7 @@ export function channelAffinity(data, now = Date.now()) {
 // --- the log ----------------------------------------------------------------------------------------
 
 function emptyData() {
-  return { version: 1, watches: {}, notInterested: {}, youtubeHistory: {}, subscriptions: {}, recommended: { videos: [], syncedAt: null }, recommendedChannels: {}, cookies: { state: 'missing', updatedAt: null, expiresAt: null, lastSyncAt: null, lastSuccessAt: null, lastError: null } }
+  return { version: 1, owner: false, watches: {}, notInterested: {}, youtubeHistory: {}, subscriptions: {}, recommended: { videos: [], syncedAt: null }, recommendedChannels: {}, cookies: { state: 'missing', updatedAt: null, expiresAt: null, lastSyncAt: null, lastSuccessAt: null, lastError: null } }
 }
 
 function cap(map, limit, field) {
@@ -363,20 +370,92 @@ export function importProblems(report) {
   return problems
 }
 
+
+// A Tomify username → the name of its profile folder and cookie file. Plain usernames are kept as they
+// are (lower case) so the folders are easy to find; anything else becomes a hash.
+export function profileName(user) {
+  const name = String(user ?? '').trim().toLowerCase()
+  if (!name) return null
+  if (/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(name)) return name
+  return `h-${createHash('sha256').update(name).digest('hex').slice(0, 32)}`
+}
+
+const exists = (path) => stat(path).then(() => true, () => false)
+
+// All the profiles on the box. `forUser` gives one account's profile; `start` syncs every owner
+// profile that has cookies.
 export function createTraining({ stateDir, ytdlp, lookupChannel = null, secret = null, fetch = globalThis.fetch, now = Date.now, log = () => {}, syncIntervalMs = 6 * HOUR, search = null, feedPauseMs = 5000 }) {
   const key = cookieKey(secret)
-  const dir = join(stateDir, 'training')
-  const dataFile = join(dir, 'log.json')
-  const secretsDir = join(stateDir, 'secrets')
-  const cookieFile = join(secretsDir, 'youtube-training.cookies')
+  const usersDir = join(stateDir, 'training', 'users')
+  const cookiesDir = join(stateDir, 'secrets', 'users')
+  const legacy = { dataFile: join(stateDir, 'training', 'log.json'), cookieFile: join(stateDir, 'secrets', 'youtube-training.cookies') }
+  // Public channel RSS feeds are the same for everyone, so they are cached once.
+  const channelFeeds = new Map()
+  const profiles = new Map()
+  let adopting = null
+  let timer = null
+
+  const paths = (name) => ({ dir: join(usersDir, name), dataFile: join(usersDir, name, 'log.json'), cookieFile: join(cookiesDir, `${name}.cookies`) })
+
+  function profile(name) {
+    if (!profiles.has(name)) profiles.set(name, createProfile({ ...paths(name), stateDir, key, ytdlp, lookupChannel, fetch, now, log, syncIntervalMs, search, feedPauseMs, channelFeeds }))
+    return profiles.get(name)
+  }
+
+  // The log and cookies from before profiles existed belong to the owner: they move to the first owner
+  // profile that is opened, unless it already has its own.
+  async function adoptLegacy(name) {
+    const target = paths(name)
+    for (const [from, to, folder] of [[legacy.dataFile, target.dataFile, target.dir], [legacy.cookieFile, target.cookieFile, cookiesDir]]) {
+      if (!(await exists(from)) || await exists(to)) continue
+      await mkdir(folder, { recursive: true, mode: 0o700 })
+      await chmod(folder, 0o700).catch(() => undefined)
+      await rename(from, to)
+      log(`TomTube training: moved the shared ${from === legacy.dataFile ? 'log' : 'cookies'} to the profile of an owner`)
+    }
+  }
+
+  // One account's profile. `owner` says whether this account may import from a signed-in YouTube
+  // account (the Worker decides, from TOMTUBE_TRAINING_USERS).
+  async function forUser(user, { owner = false } = {}) {
+    const name = profileName(user)
+    if (!name) throw new TrainingError(400, 'no-profile', 'Recommendations need a Tomify account.')
+    if (owner && !profiles.has(name)) {
+      adopting = (adopting || Promise.resolve()).then(() => adoptLegacy(name)).catch((error) => log(`TomTube training: the shared log could not be moved: ${error.code || error.message}`))
+      await adopting
+    }
+    const chosen = profile(name)
+    await chosen.setOwner(Boolean(owner))
+    return chosen
+  }
+
+  // Every 30 minutes, syncs each owner profile whose cookies are due, one after another.
+  function start() {
+    const tick = async () => {
+      let names = []
+      try { names = (await readdir(cookiesDir)).filter((file) => file.endsWith('.cookies')).map((file) => file.slice(0, -'.cookies'.length)) } catch { return }
+      for (const name of names) {
+        try { await profile(name).syncIfDue() } catch (error) { log(`TomTube training sync failed: ${error.message}`) }
+      }
+    }
+    const first = setTimeout(tick, 60_000)
+    first.unref?.()
+    timer = setInterval(tick, 30 * 60_000)
+    timer.unref?.()
+    return () => { clearTimeout(first); clearInterval(timer) }
+  }
+
+  return { forUser, start, profileName, paths: (user) => paths(profileName(user)) }
+}
+
+function createProfile({ dir, dataFile, cookieFile, key, ytdlp, lookupChannel, fetch, now, log, syncIntervalMs, search, feedPauseMs, channelFeeds }) {
+  const secretsDir = dirname(cookieFile)
   let data = null
   let writing = Promise.resolve()
   let syncing = null
-  let timer = null
   let cookieValues = []
   let recommendationCache = null
   let computing = null
-  const channelFeeds = new Map()
 
   async function load() {
     if (data) return data
@@ -411,7 +490,7 @@ export function createTraining({ stateDir, ytdlp, lookupChannel = null, secret =
 
   async function writeCookies(file) {
     await mkdir(secretsDir, { recursive: true, mode: 0o700 })
-    await chmod(secretsDir, 0o700).catch(() => undefined)
+    for (const folder of [dirname(secretsDir), secretsDir]) await chmod(folder, 0o700).catch(() => undefined)
     const temporary = `${cookieFile}.${process.pid}.tmp`
     await writeFile(temporary, encryptCookies(file, key), { mode: 0o600 })
     await rename(temporary, cookieFile)
@@ -428,6 +507,18 @@ export function createTraining({ stateDir, ytdlp, lookupChannel = null, secret =
     const { state, lastSyncAt } = data.cookies
     if (state === 'missing' || state === 'expired') return null
     return new Date((lastSyncAt ? Date.parse(lastSyncAt) : now()) + syncIntervalMs).toISOString()
+  }
+
+  // Recorded on every request, so a profile stops syncing once its account is no longer an owner.
+  async function setOwner(owner) {
+    await load()
+    if (data.owner === owner) return
+    data.owner = owner
+    await save()
+  }
+
+  function needOwner() {
+    if (!data.owner) throw new TrainingError(403, 'training-forbidden', 'Only the account owner can use YouTube account cookies.')
   }
 
   async function status() {
@@ -457,6 +548,8 @@ export function createTraining({ stateDir, ytdlp, lookupChannel = null, secret =
         recommendedSyncedAt: data.recommended.syncedAt,
       },
       syncIntervalHours: Math.round(syncIntervalMs / HOUR * 10) / 10,
+      // Whether this account may add YouTube cookies (only owners can).
+      youtubeAccount: Boolean(data.owner),
       lastImport: data.importReports?.[0] ? { at: data.importReports[0].at, problems: data.importReports[0].problems, feeds: data.importReports[0].feeds.map((feed) => ({ feed: feed.feed, ok: feed.ok, videos: feed.videos ?? 0, channels: feed.channels ?? 0 })) } : null,
     }
   }
@@ -573,6 +666,7 @@ export function createTraining({ stateDir, ytdlp, lookupChannel = null, secret =
   // `manual` syncs (Settings → Sync now) are refused within MIN_SYNC_GAP_MS of the last one.
   async function sync({ manual = false } = {}) {
     await load()
+    needOwner()
     const last = Date.parse(data.cookies.lastSyncAt || '')
     if (manual && !syncing && Number.isFinite(last) && now() - last < MIN_SYNC_GAP_MS && data.cookies.state === 'valid') return status()
     if (!syncing) syncing = runSync().finally(() => { syncing = null })
@@ -581,6 +675,7 @@ export function createTraining({ stateDir, ytdlp, lookupChannel = null, secret =
 
   async function setCookies(input) {
     await load()
+    needOwner()
     const parsed = parseCookieFile(input, now())
     if (syncing) await syncing.catch(() => undefined)
     await writeCookies(parsed.file)
@@ -605,9 +700,8 @@ export function createTraining({ stateDir, ytdlp, lookupChannel = null, secret =
   async function clear() {
     await load()
     if (syncing) await syncing.catch(() => undefined)
-    data = { ...emptyData(), cookies: data.cookies }
+    data = { ...emptyData(), owner: data.owner, cookies: data.cookies }
     recommendationCache = null
-    channelFeeds.clear()
     await save()
     return status()
   }
@@ -752,23 +846,15 @@ export function createTraining({ stateDir, ytdlp, lookupChannel = null, secret =
     return computing
   }
 
-  // Syncs every `syncIntervalMs` while the cookies work; stops trying once YouTube says they expired.
-  function start() {
-    const tick = async () => {
-      try {
-        await load()
-        const { state, lastSyncAt } = data.cookies
-        if (state === 'missing' || state === 'expired') return
-        if (lastSyncAt && now() - Date.parse(lastSyncAt) < syncIntervalMs) return
-        await sync()
-      } catch (error) { log(`TomTube training sync failed: ${error.message}`) }
-    }
-    const first = setTimeout(tick, 60_000)
-    first.unref?.()
-    timer = setInterval(tick, 30 * 60_000)
-    timer.unref?.()
-    return () => { clearTimeout(first); clearInterval(timer) }
+  // Called by the timer: syncs while the cookies work and this account is still an owner; stops once
+  // YouTube says they expired.
+  async function syncIfDue() {
+    await load()
+    const { state, lastSyncAt } = data.cookies
+    if (!data.owner || state === 'missing' || state === 'expired') return
+    if (lastSyncAt && now() - Date.parse(lastSyncAt) < syncIntervalMs) return
+    await sync()
   }
 
-  return { status, imports, sync, setCookies, removeCookies, clear, recordWatch, recordFeedback, recommendations, start, paths: { cookieFile, dataFile } }
+  return { status, imports, sync, syncIfDue, setOwner, setCookies, removeCookies, clear, recordWatch, recordFeedback, recommendations, paths: { cookieFile, dataFile } }
 }

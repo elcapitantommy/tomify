@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { channelAffinity, channelIdOf, importProblems, inspectFeed, cookieKey, createTraining, decryptCookies, encryptCookies, isSignedOut, parseChannelFeed, parseCookieFile, topicPhrases } from './training.mjs'
@@ -145,7 +145,7 @@ test('training: cookies are stored privately, synced, and never reported back', 
       ':ytsubs': [entry(id(2), 'Sub upload', 'C', CHANNEL_C)],
       ':ytrec': [entry(id(3), 'Rec one', 'B', CHANNEL_B), entry(id(1), 'Watched on YouTube', 'A', CHANNEL_A)],
     } })
-    const training = createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp, now: () => NOW, secret: 's'.repeat(40) })
+    const training = await createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp, now: () => NOW, secret: 's'.repeat(40) }).forUser('tom', { owner: true })
     assert.equal((await training.status()).cookies.state, 'missing')
     await training.setCookies(COOKIES)
     // Stored encrypted; yt-dlp gets the plain youtube.com cookies only.
@@ -168,7 +168,7 @@ test('training: cookies are stored privately, synced, and never reported back', 
     assert.equal(status.learned.recommendedChannels, 2)
     const everything = JSON.stringify(status) + await readFile(training.paths.dataFile, 'utf8')
     assert.doesNotMatch(everything, new RegExp(SECRET))
-    assert.doesNotMatch(everything, /login-info-value|youtube-training\.cookies/)
+    assert.doesNotMatch(everything, /login-info-value|tom\.cookies/)
 
     // YouTube's own recommendations come first, without what was already watched.
     const recommendations = await training.recommendations()
@@ -181,7 +181,7 @@ test('training: expired cookies are reported and syncing stops', async () => {
   const dir = await tempDir()
   try {
     const ytdlp = fakeYtDlp({ signedOut: true })
-    const training = createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp, now: () => NOW })
+    const training = await createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp, now: () => NOW }).forUser('tom', { owner: true })
     await training.setCookies(COOKIES)
     const status = await training.sync()
     assert.equal(status.cookies.state, 'expired')
@@ -189,7 +189,7 @@ test('training: expired cookies are reported and syncing stops', async () => {
     assert.equal(status.cookies.nextSyncAt, null)
     assert.equal(ytdlp.calls.length, 1)
     // Renewing them puts it back to checking, then valid.
-    const renewed = createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp: fakeYtDlp(), now: () => NOW })
+    const renewed = await createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp: fakeYtDlp(), now: () => NOW }).forUser('Tom', { owner: true })
     await renewed.setCookies(COOKIES)
     assert.equal((await renewed.sync()).cookies.state, 'valid')
     assert.equal((await renewed.removeCookies()).cookies.state, 'missing')
@@ -211,7 +211,7 @@ test('training: after expiry, suggestions come from the watch log', async () => 
       const channel = new URL(url).searchParams.get('channel_id')
       return rss[channel] ? new Response(rss[channel]) : new Response('', { status: 404 })
     }
-    const training = createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp, fetch, now: () => now, search: async (query, limit) => { searches.push({ query, limit }); return { entries: [entry(id(40), `${query} deep dive`, 'Other', 'UCeeeeeeeeeeeeeeeeeeeeee'), entry(id(41), 'From a skipped channel', 'Skippy', CHANNEL_B), entry(id(1), 'Already watched', 'Alpha', CHANNEL_A)] } } })
+    const training = await createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp, fetch, now: () => now, search: async (query, limit) => { searches.push({ query, limit }); return { entries: [entry(id(40), `${query} deep dive`, 'Other', 'UCeeeeeeeeeeeeeeeeeeeeee'), entry(id(41), 'From a skipped channel', 'Skippy', CHANNEL_B), entry(id(1), 'Already watched', 'Alpha', CHANNEL_A)] } } }).forUser('tom', { owner: true })
     await training.setCookies(COOKIES)
     // Two syncs a day apart: Disco is recommended twice.
     await training.sync()
@@ -255,9 +255,16 @@ test('service: training endpoints, without ever returning the cookies', async ()
   const server = createServer(handler)
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const base = `http://127.0.0.1:${server.address().port}`
-  const call = (path, init = {}) => fetch(base + path, { ...init, headers: { authorization: `Bearer ${token}`, ...init.headers } })
+  const call = (path, init = {}) => fetch(base + path, { ...init, headers: { authorization: `Bearer ${token}`, 'x-tomtube-profile': 'tom', 'x-tomtube-owner': '1', ...init.headers } })
+  const guest = (path, init = {}) => call(path, { ...init, headers: { 'x-tomtube-profile': 'anna', 'x-tomtube-owner': '0', ...init.headers } })
   try {
     assert.equal((await fetch(`${base}/v1/training`)).status, 401)
+    // A profile is required, and only owners may touch the cookies or sync.
+    assert.equal((await call('/v1/recommendations', { headers: { 'x-tomtube-profile': '' } })).status, 400)
+    assert.equal((await guest('/v1/training/cookies', { method: 'PUT', body: COOKIES })).status, 403)
+    assert.equal((await guest('/v1/training/cookies', { method: 'DELETE' })).status, 403)
+    assert.equal((await guest('/v1/training/sync', { method: 'POST' })).status, 403)
+    assert.equal((await (await guest('/v1/training')).json()).youtubeAccount, false)
     const put = await call('/v1/training/cookies', { method: 'PUT', body: COOKIES, headers: { 'content-type': 'text/plain' } })
     assert.equal(put.status, 200)
     const putText = await put.text()
@@ -272,12 +279,23 @@ test('service: training endpoints, without ever returning the cookies', async ()
     assert.equal((await call('/v1/feedback', { method: 'POST', body: JSON.stringify({ id: id(2) }) })).status, 400)
     const status = await (await call('/v1/training')).json()
     assert.equal(status.learned.watches, 1)
+    assert.equal(status.youtubeAccount, true)
+    // Another account's watches and feedback stay in its own profile.
+    assert.equal((await guest('/v1/watched', { method: 'POST', body: JSON.stringify({ id: id(3), seconds: 40, duration: 100 }) })).status, 200)
+    const guestStatus = await (await guest('/v1/training')).json()
+    assert.equal(guestStatus.learned.watches, 1)
+    assert.equal(guestStatus.learned.notInterested, 0)
+    assert.equal(guestStatus.cookies.state, 'missing')
+    assert.equal((await (await guest('/v1/training', { method: 'DELETE' })).json()).learned.watches, 0)
+    assert.equal((await (await call('/v1/training')).json()).learned.watches, 1)
     assert.ok(['checking', 'valid'].includes(status.cookies.state))
     assert.equal((await call('/v1/training/sync', { method: 'POST' })).status, 202)
     const imports = await call('/v1/training/imports')
     assert.equal(imports.status, 200)
     assert.ok(Array.isArray((await imports.json()).reports))
     assert.equal((await call('/v1/training/imports', { method: 'POST' })).status, 405)
+    // Another account's report is never shown, and a non-owner has none.
+    assert.equal((await guest('/v1/training/imports')).status, 403)
     assert.equal((await call('/v1/recommendations')).status, 200)
     assert.equal((await (await call('/v1/training', { method: 'DELETE' })).json()).learned.watches, 0)
     assert.equal((await call('/v1/training/other')).status, 404)
@@ -332,7 +350,7 @@ test('training: each sync keeps an import report, looks up missing channel ids, 
       ':ythistory': [entry(id(1), 'A video', 'A', CHANNEL_A), { id: id(2), title: 'No channel', channel: 'B', ie_key: 'Youtube' }],
       ':ytsubs': [{ id: id(3), title: 'Sub', channel: 'C', channel_url: `https://www.youtube.com/channel/${CHANNEL_C}`, ie_key: 'Youtube' }],
     } })
-    const training = createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp, now: () => NOW, lookupChannel: async (videoId) => { lookups.push(videoId); return CHANNEL_B } })
+    const training = await createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp, now: () => NOW, lookupChannel: async (videoId) => { lookups.push(videoId); return CHANNEL_B } }).forUser('tom', { owner: true })
     await training.setCookies(COOKIES)
     const status = await training.sync()
     assert.deepEqual(lookups, [id(2)])
@@ -348,10 +366,73 @@ test('training: each sync keeps an import report, looks up missing channel ids, 
     assert.doesNotMatch(JSON.stringify(reports), new RegExp(`${SECRET}|login-info`))
 
     // A signed-out import is reported as such, and only five reports are kept.
-    const expired = createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp: fakeYtDlp({ signedOut: true }), now: () => NOW })
+    const expired = await createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp: fakeYtDlp({ signedOut: true }), now: () => NOW }).forUser('tom', { owner: true })
     for (let round = 0; round < 6; round += 1) await expired.sync()
     const after = await expired.imports()
     assert.equal(after.reports.length, 5)
     assert.deepEqual(after.reports[0].feeds.map((feed) => [feed.feed, feed.ok, feed.signedOut]), [[':ythistory', false, true]])
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('training: each account has its own profile, and only owners import from YouTube', async () => {
+  const dir = await tempDir()
+  try {
+    const ytdlp = fakeYtDlp({ feeds: { ':ythistory': [entry(id(1), 'Watched on YouTube', 'A', CHANNEL_A)], ':ytrec': [entry(id(3), 'Rec one', 'B', CHANNEL_B)] } })
+    const training = createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp, now: () => NOW, fetch: async () => new Response('', { status: 404 }) })
+    const tom = await training.forUser('Tom', { owner: true })
+    const anna = await training.forUser('anna')
+    assert.equal(await training.forUser('tom', { owner: true }), tom)
+    await assert.rejects(training.forUser('  '), { code: 'no-profile' })
+
+    await tom.setCookies(COOKIES)
+    await tom.sync()
+    await anna.recordWatch({ id: id(7), title: 'Anna only', channel: 'C', channelId: CHANNEL_C, duration: 600, seconds: 600, ended: true })
+    await anna.recordFeedback({ id: id(8), kind: 'not-interested', channelId: CHANNEL_A })
+    const [tomStatus, annaStatus] = [await tom.status(), await anna.status()]
+    assert.deepEqual([tomStatus.learned.watches, tomStatus.learned.notInterested, tomStatus.learned.youtubeHistory, tomStatus.cookies.state], [0, 0, 1, 'valid'])
+    assert.deepEqual([annaStatus.learned.watches, annaStatus.learned.notInterested, annaStatus.learned.youtubeHistory, annaStatus.cookies.state], [1, 1, 0, 'missing'])
+    // Tom's YouTube recommendations are only in Tom's suggestions.
+    assert.equal((await tom.recommendations()).source, 'youtube')
+    assert.notEqual((await anna.recommendations()).source, 'youtube')
+    // A non-owner cannot add cookies or sync, even when called directly.
+    await assert.rejects(anna.setCookies(COOKIES), { code: 'training-forbidden' })
+    await assert.rejects(anna.sync(), { code: 'training-forbidden' })
+    assert.equal(tom.paths.cookieFile, join(dir, 'secrets', 'users', 'tom.cookies'))
+    assert.equal(anna.paths.dataFile, join(dir, 'training', 'users', 'anna', 'log.json'))
+    assert.match(training.profileName('Odd/../Name'), /^h-[0-9a-f]{32}$/)
+
+    // Once an account is no longer an owner, its cookies are no longer synced.
+    const calls = ytdlp.calls.length
+    await training.forUser('tom', { owner: false })
+    await tom.syncIfDue()
+    assert.equal(ytdlp.calls.length, calls)
+    assert.equal((await tom.status()).youtubeAccount, false)
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('training: the shared log from before profiles moves to the first owner', async () => {
+  const dir = await tempDir()
+  try {
+    const before = createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp: fakeYtDlp(), now: () => NOW })
+    const old = await before.forUser('setup', { owner: true })
+    await old.setCookies(COOKIES)
+    await old.recordWatch({ id: id(1), title: 'Old watch', seconds: 600, duration: 600, ended: true })
+    // Put them where the server-wide version kept them.
+    await mkdir(join(dir, 'secrets'), { recursive: true })
+    await rename(old.paths.dataFile, join(dir, 'training', 'log.json'))
+    await rename(old.paths.cookieFile, join(dir, 'secrets', 'youtube-training.cookies'))
+
+    const training = createTraining({ feedPauseMs: 0, stateDir: dir, ytdlp: fakeYtDlp(), now: () => NOW })
+    // A listener who is not an owner never gets it.
+    assert.equal((await (await training.forUser('anna')).status()).learned.watches, 0)
+    const tom = await training.forUser('tom', { owner: true })
+    const status = await tom.status()
+    assert.equal(status.learned.watches, 1)
+    assert.notEqual(status.cookies.state, 'missing')
+    await assert.rejects(stat(join(dir, 'training', 'log.json')))
+    await assert.rejects(stat(join(dir, 'secrets', 'youtube-training.cookies')))
+    assert.equal((await stat(join(dir, 'secrets', 'users'))).mode & 0o777, 0o700)
+    // A second owner starts fresh.
+    assert.equal((await (await training.forUser('admin2', { owner: true })).status()).learned.watches, 0)
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
