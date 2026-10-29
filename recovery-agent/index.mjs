@@ -34,6 +34,7 @@ import { createLanHandler, lanConfig, startLanServer } from './lan.mjs'
 import { createTomifinController, handleTomifinRequest, tomifinConfig } from './tomifin.mjs'
 import { createTomifinUsenet, tomifinUsenetConfig } from './tomifin-usenet.mjs'
 import { createLinkFetcher } from './tomifin-links.mjs'
+import { createPublicTrackerLists, trackerListsConfig } from './tomifin-trackers.mjs'
 import { ffprobeReader } from './family-import.mjs'
 import { createJellyfinAuth, createJellyfinLibraryRefresh, jellyfinConfig } from './jellyfin.mjs'
 
@@ -101,7 +102,10 @@ const tomifinLog = (message) => process.stderr.write(`${message}\n`)
 const tomifinUsenet = createTomifinUsenet({ config: tomifinUsenetSettings, tomifin: tomifinSettings, stateRoot: usenetStateRoot, probe: ffprobeReader(ffprobe), log: tomifinLog })
 // Added links may reach a private address only when it is exactly a configured indexer's host.
 const tomifinTrustedHosts = [...(torrentDownloader?.indexers || []), ...newznabIndexers].map((indexer) => { try { return new URL(indexer.url).host } catch { return '' } }).filter(Boolean)
-const tomifin = createTomifinController({ config: tomifinSettings, client: tomifinSettings.enabled ? qbittorrent : null, usenet: tomifinUsenet, fetchLink: createLinkFetcher({ trustedHosts: tomifinTrustedHosts }), stateRoot: usenetStateRoot, vpnStatus: () => vpn.status(), log: tomifinLog, refreshLibrary: createJellyfinLibraryRefresh(jellyfinSettings, { log: tomifinLog }) })
+const tomifinLinkFetcher = createLinkFetcher({ trustedHosts: tomifinTrustedHosts })
+// More trackers' public lists are fetched like any added link: public hosts only (TOMIFY_TOMIFIN_TRACKER_LISTS).
+const tomifinPublicTrackers = createPublicTrackerLists({ lists: trackerListsConfig(process.env), fetchLink: createLinkFetcher() })
+const tomifin = createTomifinController({ config: tomifinSettings, client: tomifinSettings.enabled ? qbittorrent : null, usenet: tomifinUsenet, fetchLink: tomifinLinkFetcher, publicTrackers: tomifinPublicTrackers, stateRoot: usenetStateRoot, vpnStatus: () => vpn.status(), log: tomifinLog, refreshLibrary: createJellyfinLibraryRefresh(jellyfinSettings, { log: tomifinLog }) })
 
 function safeName(value, fallback) {
   const cleaned = String(value || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '').replace(/[. ]+$/g, '').trim().slice(0, 120)

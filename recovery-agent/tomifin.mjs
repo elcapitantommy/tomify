@@ -16,6 +16,7 @@ import { configuredTorrentIndexers, isIndexerLink } from './torrent-indexers.mjs
 import { JellyfinAuthError } from './jellyfin.mjs'
 import { LinkError, createLinkFetcher, inspectSubmission } from './tomifin-links.mjs'
 import { TomifinUsenetError, publishRetryDelay } from './tomifin-usenet.mjs'
+import { magnetTrackers, newTrackers, torrentPrivacy } from './tomifin-trackers.mjs'
 import { FINISHED_STATES, FinaliseError, STAGING_FOLDER, inspectStaged, publishStagedItem, readyForFinalisation, removeEmptyStaging, stagedContent, stagingPath } from './tomifin-finalise.mjs'
 
 export { STAGING_FOLDER, stagingPath }
@@ -241,8 +242,9 @@ function torrentSize(torrent) { return Math.max(number(torrent?.total_size) || 0
 // usenet: the Usenet backend (createTomifinUsenet), or null when Usenet is not set up. fetchLink: how added links are
 // fetched (createLinkFetcher), with the configured indexers' hosts as the only private hosts allowed.
 // refreshLibrary: asks Jellyfin to scan its libraries after Tomifin has published a finished torrent (see
-// createJellyfinLibraryRefresh in jellyfin.mjs), or null.
-export function createTomifinController({ config, client, stateRoot, usenet = null, fetchLink = createLinkFetcher(), now = () => Date.now(), randomId = randomUUID, log = () => {}, intervalMs = 10_000, vpnStatus = null, refreshLibrary = null }) {
+// createJellyfinLibraryRefresh in jellyfin.mjs), or null. publicTrackers: the public tracker lists for More trackers
+// (createPublicTrackerLists in tomifin-trackers.mjs), or null for none.
+export function createTomifinController({ config, client, stateRoot, usenet = null, fetchLink = createLinkFetcher(), now = () => Date.now(), randomId = randomUUID, log = () => {}, intervalMs = 10_000, vpnStatus = null, refreshLibrary = null, publicTrackers = null }) {
   const jobsRoot = resolve(stateRoot, 'tomifin')
   // Torrent jobs being finished right now, which cancel leaves alone until done.
   const finalising = new Set()
@@ -531,6 +533,8 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
       canPause: Boolean(torrent) && !oversized && ['queued', 'downloading', 'stalled'].includes(state.status),
       canResume: Boolean(torrent) && !oversized && state.status === 'paused',
       canRetry: state.status === 'failed' && torrentRetryable(torrent, destination, config.maxBytes),
+      // More trackers: an unfinished torrent qBittorrent does not report as private (checked again when pressed).
+      canFindTrackers: Boolean(torrent) && !oversized && torrent.private !== true && ['queued', 'downloading', 'stalled', 'paused'].includes(state.status),
       // Only an unfinished download still in its own staging folder has its data deleted on cancel.
       keepsFilesOnCancel: job.recovered === true || !partialDataDeletable(torrent, destination, job.id),
     }
@@ -850,6 +854,45 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
       return { job: jobView(job, { ...torrent, state: 'checkingDL' }) }
     },
 
+    // More trackers: looks up trackers for the torrent's info hash (the magnets Tomifin's torrent sources list for the
+    // same hash, and the public tracker lists) and adds the ones it does not have yet in qBittorrent. Refused for a
+    // private torrent, and for one whose privacy cannot be told although its details have arrived.
+    async trackers(body) {
+      requireEnabled()
+      const job = await loadJob(body?.id)
+      if (isUsenetJob(job)) throw new TomifinError('not-a-torrent', 'Only torrents have trackers.')
+      const key = `trackers:${job.id}`
+      if (queuing.has(key)) throw new TomifinError('busy', 'Tomifin is already looking up trackers for this torrent.')
+      queuing.add(key)
+      try {
+        const torrent = await torrentFor(job)
+        if (!torrent) throw new TomifinError('not-in-qbittorrent', 'The torrent is no longer in qBittorrent.')
+        const hash = text(torrent.hash).toLowerCase()
+        const [existing, properties] = await Promise.all([client.trackers(hash), client.properties(hash).catch(() => null)])
+        if (torrentPrivacy({ torrent, properties, trackers: existing }) === true) throw new TomifinError('private-torrent', 'This torrent is private, so Tomifin will not add other trackers to it: its tracker could ban the account for it.')
+        // Hybrid torrents are listed by their v1 hash, which is the one magnets and search sites use.
+        const v1 = [text(torrent.infohash_v1), text(job.infoHash), hash].map((value) => value.toLowerCase()).find((value) => /^[a-f0-9]{40}$/.test(value))
+        const searchByHash = v1
+          ? client.search(v1, { category: 'all', indexerCategories: TOMIFIN_SEARCH_KINDS.video.indexers, timeoutMs: 20_000 }).then((raw) => (Array.isArray(raw) ? raw : []).flatMap((result) => magnetTrackers(result?.fileUrl, v1)))
+          : Promise.resolve([])
+        const [searched, listed] = await Promise.allSettled([searchByHash, publicTrackers ? publicTrackers() : Promise.resolve({ trackers: [], failed: 0, lists: 0 })])
+        if (searched.status === 'rejected' && (listed.status === 'rejected' || !listed.value.trackers.length)) throw new TomifinError('trackers-unavailable', `No trackers could be looked up: ${searched.reason instanceof Error ? searched.reason.message : 'the search failed'}`)
+        const warnings = []
+        if (searched.status === 'rejected') warnings.push('Searching by info hash failed, so only the public lists were used.')
+        if (listed.status === 'fulfilled' && listed.value.failed) warnings.push(listed.value.failed === listed.value.lists ? 'The public tracker lists could not be fetched.' : 'A public tracker list could not be fetched.')
+        const picked = newTrackers({ existing, fromSearch: searched.status === 'fulfilled' ? searched.value : [], fromLists: listed.status === 'fulfilled' ? listed.value.trackers : [] })
+        const urls = [...picked.search, ...picked.lists]
+        // Asked again just before adding, in case the torrent's details (and its private flag) arrived meanwhile.
+        if (urls.length) {
+          const latest = await client.properties(hash).catch(() => null)
+          if (torrentPrivacy({ properties: latest }) === true) throw new TomifinError('private-torrent', 'This torrent is private, so Tomifin will not add other trackers to it: its tracker could ban the account for it.')
+          await client.addTrackers(hash, urls)
+        }
+        log(`Tomifin added ${urls.length} tracker${urls.length === 1 ? '' : 's'} to ${logName(job)} (${picked.search.length} from sites listing it)`)
+        return { job: jobView(job, torrent), added: urls.length, fromSearch: picked.search.length, fromLists: picked.lists.length, warnings }
+      } finally { queuing.delete(key) }
+    },
+
     // Takes the download out of its downloader and off the list. Downloaded data is deleted only for an unfinished
     // download, and only in that job's own staging folder (see partialDataDeletable, and SABnzbd's own job folder);
     // otherwise every file is left where it is. Published library files are never touched.
@@ -904,7 +947,7 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
 // The agent's /v1/tomifin/* routes. Returns null for any other path. Every route but login needs the Jellyfin
 // session token (body.session) of a Jellyfin administrator, checked with Jellyfin (recovery-agent/jellyfin.mjs).
 export async function handleTomifinRequest(path, body, controller, auth) {
-  const route = String(path || '').match(/^\/v1\/tomifin\/(login|logout|session|status|vpn|search|link|download|downloads|pause|resume|retry|cancel)$/)
+  const route = String(path || '').match(/^\/v1\/tomifin\/(login|logout|session|status|vpn|search|link|download|downloads|pause|resume|retry|trackers|cancel)$/)
   if (!route) return null
   const action = route[1]
   try {

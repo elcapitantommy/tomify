@@ -19,6 +19,8 @@ export interface TomifinJob {
   canRetry?: boolean
   // What Retry does for this job, when it is not the downloader's own retry (a finished torrent Tomifin moves itself).
   retryHint?: string
+  // A torrent More trackers can add trackers to (not a private one; an older agent leaves this out).
+  canFindTrackers?: boolean
 }
 export interface TomifinVpnStatus {
   state: 'connected' | 'connecting' | 'down' | 'unknown'
@@ -37,7 +39,7 @@ export const DESTINATIONS: Record<TomifinDestination, { label: string; path: str
   private: { label: 'Private', path: '/media/private' },
 }
 
-export type TomifinJobAction = 'pause' | 'resume' | 'retry' | 'cancel'
+export type TomifinJobAction = 'pause' | 'resume' | 'retry' | 'trackers' | 'cancel'
 
 export class TomifinRequestError extends Error {
   status: number
@@ -74,7 +76,7 @@ export const tomifinApi = {
   addLink: (input: TomifinLinkInput) => request<{ detected: TomifinDetected; result: TomifinResult }>('/api/tomifin/link', { method: 'POST', body: JSON.stringify(input) }),
   download: (resultId: string, destination: TomifinDestination) => request<{ job: TomifinJob }>('/api/tomifin/download', { method: 'POST', body: JSON.stringify({ resultId, destination }) }),
   downloads: (signal?: AbortSignal) => request<{ jobs: TomifinJob[] }>('/api/tomifin/downloads', { signal }),
-  control: (id: string, action: TomifinJobAction) => request<{ job?: TomifinJob; cancelled?: boolean; filesDeleted?: boolean }>(`/api/tomifin/downloads/${encodeURIComponent(id)}/${action}`, { method: 'POST' }),
+  control: (id: string, action: TomifinJobAction) => request<{ job?: TomifinJob; cancelled?: boolean; filesDeleted?: boolean; added?: number; fromSearch?: number; fromLists?: number; warnings?: string[] }>(`/api/tomifin/downloads/${encodeURIComponent(id)}/${action}`, { method: 'POST' }),
 }
 
 export function formatSize(bytes: number | null | undefined) {

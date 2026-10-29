@@ -425,6 +425,32 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
       const { response } = await call(cookie, 'torrents/recheck', { hashes: hash }, 'qBittorrent recheck')
       if (!response.ok) throw new Error(`qBittorrent recheck returned HTTP ${response.status}.`)
     },
+    // A torrent's tracker list (with qBittorrent's DHT, PeX and LSD entries) and its properties, for Tomifin's
+    // tracker finder. properties reports is_private from qBittorrent 4.6.
+    async trackers(hash) {
+      const cookie = await session()
+      const url = new URL(`${config.url}/api/v2/torrents/trackers`)
+      url.searchParams.set('hash', hash)
+      const response = await fetchImpl(url, { headers: cookie ? { cookie } : {}, signal: AbortSignal.timeout(30_000) })
+      if (!response.ok) throw new Error(`qBittorrent trackers returned HTTP ${response.status}.`)
+      const trackers = await response.json()
+      return Array.isArray(trackers) ? trackers : []
+    },
+    async properties(hash) {
+      const cookie = await session()
+      const url = new URL(`${config.url}/api/v2/torrents/properties`)
+      url.searchParams.set('hash', hash)
+      const response = await fetchImpl(url, { headers: cookie ? { cookie } : {}, signal: AbortSignal.timeout(30_000) })
+      if (!response.ok) throw new Error(`qBittorrent properties returned HTTP ${response.status}.`)
+      return response.json()
+    },
+    // Adds tracker URLs to one torrent (the same call in qBittorrent 4.x and 5.x), then asks it to announce now.
+    async addTrackers(hash, urls) {
+      const cookie = await session()
+      const { response } = await call(cookie, 'torrents/addTrackers', { hash, urls: urls.join('\n') }, 'qBittorrent add trackers')
+      if (!response.ok) throw new Error(`qBittorrent add trackers returned HTTP ${response.status}.`)
+      await call(cookie, 'torrents/reannounce', { hashes: hash }, 'qBittorrent reannounce').catch(() => {})
+    },
     async remove(hash, deleteFiles) {
       const cookie = await session()
       const { response } = await call(cookie, 'torrents/delete', { hashes: hash, deleteFiles: deleteFiles ? 'true' : 'false' }, 'qBittorrent delete')
