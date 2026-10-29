@@ -19,6 +19,10 @@ TOMIFY_LAN_ORIGIN = "https://lan.tomify.tomdixon.uk:8789"
 TOMIFIN_HOSTNAME = "tomifin.tomdixon.uk"
 # TomTube backend, reached through the recovery Cloudflare Tunnel.
 TOMTUBE_SERVICE_URL = "https://tomtube-service.tomdixon.uk"
+# Navidrome usernames allowed to add, renew or remove TomTube's YouTube recommendation cookies and clear
+# its training data (docs/TOMTUBE.md). Empty means nobody can: the cookie endpoints fail closed. Kept here,
+# not in the dashboard, because plain dashboard variables are replaced on deploy.
+TOMTUBE_TRAINING_USERS = "tom"
 
 # Once a day (UTC): refresh imported Spotify playlists and check for new releases.
 # Every five minutes: announce finished Recovery downloads (only when someone has notifications on).

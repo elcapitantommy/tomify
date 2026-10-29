@@ -17,6 +17,13 @@
 //   GET  /v1/queue.m3u8?ids=a,b,c              several videos' audio as one continuous stream
 //   GET  /v1/queue.json?ids=a,b,c              where each track starts in that stream
 //   GET  /v1/thumbs/<id>/<variant>.jpg         a thumbnail from i.ytimg.com
+//   GET  /v1/recommendations[?refresh=1]       suggestions from the training log (training.mjs)
+//   POST /v1/watched                           the app reports a video watched (or skipped) in TomTube
+//   POST /v1/feedback                          "Not interested" on a suggestion
+//   GET  /v1/training                          cookie status and what has been learned (never the cookies)
+//   DELETE /v1/training                        forget what was learned (the cookies stay)
+//   PUT  /v1/training/cookies                  a new cookies.txt for the account feeds; DELETE removes it
+//   POST /v1/training/sync                     read the account feeds now (in the background)
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { once } from 'node:events'
@@ -26,6 +33,7 @@ import { Mp4IndexError } from './mp4.mjs'
 import { searchResult } from './formats.mjs'
 import { fetchAllowed, parseRange, readRange, UpstreamError } from './upstream.mjs'
 import { YtDlpError } from './ytdlp.mjs'
+import { TrainingError } from './training.mjs'
 
 const VIDEO_PATH = /^\/v1\/videos\/([A-Za-z0-9_-]{11})(?:\/(.+))?$/
 const STREAM_FILE = /^(\d{1,4})\.(mp4|m4a)$/
@@ -33,6 +41,8 @@ const PLAYLIST_FILE = /^([va])(\d{1,4})\.m3u8$/
 const THUMB_PATH = /^\/v1\/thumbs\/([A-Za-z0-9_-]{11})\/([a-z]+)\.jpg$/
 const MAX_QUEUE = 20
 const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024
+const MAX_COOKIE_UPLOAD_BYTES = 256 * 1024
+const MAX_WATCH_BYTES = 4096
 
 export class ApiError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code }
@@ -71,7 +81,7 @@ function sendPlaylist(request, response, body) {
 }
 
 function errorStatus(error) {
-  if (error instanceof ApiError || error instanceof YtDlpError || error instanceof UpstreamError) return error.status
+  if (error instanceof ApiError || error instanceof YtDlpError || error instanceof UpstreamError || error instanceof TrainingError) return error.status
   if (error instanceof Mp4IndexError) return 422
   return 500
 }
@@ -81,6 +91,19 @@ function errorCode(error) {
   return error?.code && typeof error.code === 'string' ? error.code : 'internal-error'
 }
 
+async function readBody(request, limit) {
+  const declared = Number(request.headers['content-length'])
+  if (declared > limit) throw new ApiError(413, 'too-large', 'That is too large.')
+  const chunks = []
+  let size = 0
+  for await (const chunk of request) {
+    size += chunk.length
+    if (size > limit) throw new ApiError(413, 'too-large', 'That is too large.')
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
 async function writeAll(response, chunks, signal) {
   for await (const chunk of chunks) {
     if (signal.aborted || response.destroyed) return
@@ -88,7 +111,7 @@ async function writeAll(response, chunks, signal) {
   }
 }
 
-export function createHandler({ config, ytdlp, resolver, cache = null, fetch = globalThis.fetch, diagnostics = createDiagnostics(), log = () => {}, version = null }) {
+export function createHandler({ config, ytdlp, resolver, cache = null, training = null, fetch = globalThis.fetch, diagnostics = createDiagnostics(), log = () => {}, version = null }) {
   let activeStreams = 0
   let activeFills = 0
 
@@ -248,8 +271,60 @@ export function createHandler({ config, ytdlp, resolver, cache = null, fetch = g
     response.end(request.method === 'HEAD' ? undefined : body)
   }
 
+  function needTraining() {
+    if (!training) throw new ApiError(503, 'training-disabled', 'Recommendations are not set up on this server.')
+    return training
+  }
+
+  function only(request, ...methods) {
+    if (!methods.includes(request.method)) throw new ApiError(405, 'method-not-allowed', `Use ${methods.join(' or ')}.`)
+  }
+
+  // Recommendations and the training period. Nothing here ever returns the cookie file or its path.
+  async function trainingRequest(request, response, pathname, url) {
+    const store = needTraining()
+    if (pathname === '/v1/recommendations') {
+      only(request, 'GET')
+      return sendJson(response, 200, await store.recommendations({ refresh: url.searchParams.get('refresh') === '1' }))
+    }
+    if (pathname === '/v1/watched') {
+      only(request, 'POST')
+      let body
+      try { body = JSON.parse(await readBody(request, MAX_WATCH_BYTES)) } catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(400, 'invalid-watch', 'Send the watch as JSON.') }
+      return sendJson(response, 200, await store.recordWatch(body))
+    }
+    if (pathname === '/v1/feedback') {
+      only(request, 'POST')
+      let body
+      try { body = JSON.parse(await readBody(request, MAX_WATCH_BYTES)) } catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(400, 'invalid-feedback', 'Send the feedback as JSON.') }
+      return sendJson(response, 200, await store.recordFeedback(body))
+    }
+    if (pathname === '/v1/training') {
+      only(request, 'GET', 'DELETE')
+      return sendJson(response, 200, request.method === 'DELETE' ? await store.clear() : await store.status())
+    }
+    if (pathname === '/v1/training/cookies') {
+      only(request, 'PUT', 'DELETE')
+      if (request.method === 'DELETE') return sendJson(response, 200, await store.removeCookies())
+      await store.setCookies(await readBody(request, MAX_COOKIE_UPLOAD_BYTES))
+      // Checked in the background: reading the feeds can take a minute.
+      void store.sync().catch((error) => log(`TomTube training sync failed: ${error.message}`))
+      return sendJson(response, 200, await store.status())
+    }
+    if (pathname === '/v1/training/sync') {
+      only(request, 'POST')
+      void store.sync({ manual: true }).catch((error) => log(`TomTube training sync failed: ${error.message}`))
+      return sendJson(response, 202, await store.status())
+    }
+    return null
+  }
+
   async function route(request, response, url) {
     const { pathname } = url
+    if (pathname === '/v1/recommendations' || pathname === '/v1/watched' || pathname === '/v1/feedback' || pathname === '/v1/training' || pathname.startsWith('/v1/training/')) {
+      if (await trainingRequest(request, response, pathname, url) !== null) return
+      throw new ApiError(404, 'not-found', 'Not found.')
+    }
     if (pathname === '/v1/status') {
       return sendJson(response, 200, {
         version,

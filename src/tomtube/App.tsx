@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
-import { ChevronDown, Headphones, ListPlus, ListVideo, LoaderCircle, LogOut, Maximize, MoreVertical, Pause, Play, Search, Settings, SkipBack, SkipForward, Trash2, Tv, X } from 'lucide-react'
+import { Ban, ChevronDown, Headphones, ListPlus, ListVideo, LoaderCircle, LogOut, Maximize, MoreVertical, Pause, Play, RefreshCw, Search, Settings, SkipBack, SkipForward, Trash2, Tv, Upload, X } from 'lucide-react'
 import { useAuth } from '../stores/auth'
 import { DEFAULT_NAVIDROME_SERVER } from '../lib/navidrome'
 import { mediaTokenStatus, onMediaTokenChange, startMediaTokens } from './mediaToken'
-import { formatDuration, formatViews, thumbnailUrl, tomtubeApi, TomTubeError, youtubeLinkId, type TomTubeVideo } from './api'
+import { formatDuration, formatViews, thumbnailUrl, tomtubeApi, TomTubeError, youtubeLinkId, type Recommendations, type RecommendedVideo, type TomTubeVideo, type TrainingStatus } from './api'
 import { TomTubeEngine } from './engine'
 import * as Q from './queue'
 import { useTomTube } from './store'
@@ -42,9 +42,9 @@ function Thumb({ id, duration, variant = 'mqdefault' }: { id: string; duration?:
   </span>
 }
 
-interface RowActions { onPlay(): void; onPlayNext?(): void; onQueue?(): void; onRemove?(): void }
+interface RowActions { onPlay(): void; onPlayNext?(): void; onQueue?(): void; onRemove?(): void; onNotInterested?(): void }
 
-function VideoRow({ video, actions, active = false, compact = false }: { video: TomTubeVideo; actions: RowActions; active?: boolean; compact?: boolean }) {
+function VideoRow({ video, actions, active = false, compact = false, note }: { video: TomTubeVideo; actions: RowActions; active?: boolean; compact?: boolean; note?: string }) {
   const [menu, setMenu] = useState(false)
   return <li className={`tt-row${compact ? ' compact' : ''}${active ? ' active' : ''}`}>
     <button className="tt-row-main" onClick={actions.onPlay}>
@@ -52,13 +52,15 @@ function VideoRow({ video, actions, active = false, compact = false }: { video: 
       <span className="tt-row-text">
         <span className="tt-title">{video.title}</span>
         <span className="tt-meta">{[video.channel, formatViews(video.viewCount)].filter(Boolean).join(' · ')}</span>
+        {note && <span className="tt-meta tt-reason">{note}</span>}
       </span>
     </button>
-    {(actions.onPlayNext || actions.onQueue || actions.onRemove) && <button className="tt-icon" aria-label="More" title="More" aria-expanded={menu} onClick={() => setMenu(!menu)}><MoreVertical/></button>}
+    {(actions.onPlayNext || actions.onQueue || actions.onRemove || actions.onNotInterested) && <button className="tt-icon" aria-label="More" title="More" aria-expanded={menu} onClick={() => setMenu(!menu)}><MoreVertical/></button>}
     {menu && <div className="tt-menu" onClick={() => setMenu(false)}>
       {actions.onPlayNext && <button onClick={actions.onPlayNext}><ListVideo/>Play next</button>}
       {actions.onQueue && <button onClick={actions.onQueue}><ListPlus/>Add to queue</button>}
       {actions.onRemove && <button onClick={actions.onRemove}><Trash2/>Remove</button>}
+      {actions.onNotInterested && <button onClick={actions.onNotInterested}><Ban/>Not interested</button>}
     </div>}
   </li>
 }
@@ -67,7 +69,79 @@ function Section({ title, action, children }: { title: string; action?: ReactNod
   return <section className="tt-section"><header><h2>{title}</h2>{action}</header>{children}</section>
 }
 
-function SettingsSheet({ onClose, engine }: { onClose(): void; engine: TomTubeEngine | null }) {
+const when = (value: string | null | undefined) => value ? new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : null
+
+function cookieSummary(status: TrainingStatus) {
+  const { cookies } = status
+  switch (cookies.state) {
+    case 'missing': return 'No YouTube cookies yet. TomTube learns from what you watch here; add cookies to learn from your YouTube recommendations, subscriptions and history too.'
+    case 'checking': return 'Checking your cookies with YouTube…'
+    case 'valid': return [`Cookies work. Last synced ${when(cookies.lastSuccessAt) || 'just now'}.`, cookies.nextSyncAt && `Next sync ${when(cookies.nextSyncAt)}.`, cookies.expiresAt && `The sign-in expires ${when(cookies.expiresAt)} at the latest.`].filter(Boolean).join(' ')
+    case 'expired': return `Cookies expired${cookies.lastError?.at ? ` (${when(cookies.lastError.at)})` : ''}. Suggestions now come from what TomTube has learned. Add new cookies below to keep learning from YouTube.`
+    default: return `The last sync failed${cookies.lastError ? `: ${cookies.lastError.message}` : '.'}`
+  }
+}
+
+// The training period: cookie status, adding or renewing cookies, and forgetting what was learned.
+// The cookie text is sent once and never kept in the app.
+function TrainingSettings({ onChanged }: { onChanged(): void }) {
+  const session = useAuth((state) => state.session)!
+  const [status, setStatus] = useState<TrainingStatus | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [cookies, setCookies] = useState('')
+  const [adding, setAdding] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const run = async (task: () => Promise<TrainingStatus>) => {
+    setBusy(true)
+    setError(null)
+    try { setStatus(await task()); onChanged() } catch (failure) { setError(failure instanceof Error ? failure.message : 'That did not work.') } finally { setBusy(false) }
+  }
+
+  useEffect(() => { void run(() => tomtubeApi.training(session)) }, [session])
+  // While the server checks new cookies, look again every few seconds.
+  useEffect(() => {
+    if (status?.cookies.state !== 'checking') return
+    const timer = window.setTimeout(() => { void tomtubeApi.training(session).then((next) => { setStatus(next); if (next.cookies.state !== 'checking') onChanged() }).catch(() => undefined) }, 3000)
+    return () => window.clearTimeout(timer)
+  }, [status, session])
+
+  const save = async (text: string) => {
+    if (!text.trim()) return
+    await run(() => tomtubeApi.uploadCookies(session, text))
+    setCookies('')
+    if (fileRef.current) fileRef.current.value = ''
+    setAdding(false)
+  }
+
+  const learned = status?.learned
+  return <section className="tt-group" aria-label="Recommendations">
+    <h3>Recommendations</h3>
+    {status ? <p className="tt-note" role="status">{cookieSummary(status)}</p> : !error && <p className="tt-note">Loading…</p>}
+    {learned && <p className="tt-note">Learned so far: {learned.watches} watched in TomTube ({learned.finished} finished, {learned.skipped} skipped), {learned.notInterested} marked Not interested, {learned.youtubeHistory} from your YouTube history, {learned.subscriptions} subscribed channels. What YouTube recommends is only used to discover channels, never counted as something you like.</p>}
+    {error && <div className="tt-error" role="alert">{error}</div>}
+    {adding ? <div className="tt-cookies">
+      <ol className="tt-note">
+        <li>On a computer, open a private (incognito) window and sign in to youtube.com.</li>
+        <li>Export the cookies for youtube.com as <b>cookies.txt</b>, for example with the “Get cookies.txt LOCALLY” extension.</li>
+        <li>Close the private window (so the browser doesn't change them), then upload or paste the file here.</li>
+      </ol>
+      <p className="tt-note">They are stored encrypted on your Tomify server, used only to read your history, subscriptions and recommendations a few times a day (never to play videos), and never shown again here. Renewing them keeps everything TomTube has learned.</p>
+      <label className="tt-secondary tt-file"><Upload/>Upload cookies.txt<input ref={fileRef} type="file" accept=".txt,.json,text/plain,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void file.text().then(save) }}/></label>
+      <textarea value={cookies} onChange={(event) => setCookies(event.target.value)} placeholder="…or paste the contents of cookies.txt" aria-label="Paste cookies.txt" autoCapitalize="none" autoCorrect="off" spellCheck={false} rows={4}/>
+      <button className="tt-primary" disabled={busy || !cookies.trim()} onClick={() => void save(cookies)}>Save cookies</button>
+      <button className="tt-secondary" onClick={() => { setAdding(false); setCookies('') }}>Cancel</button>
+    </div> : <button className="tt-secondary" disabled={busy} onClick={() => setAdding(true)}>{status?.cookies.state === 'missing' ? 'Add YouTube cookies' : 'Renew YouTube cookies'}</button>}
+    {status && status.cookies.state !== 'missing' && <>
+      <button className="tt-secondary" disabled={busy || status.cookies.state === 'checking'} onClick={() => void run(() => tomtubeApi.syncTraining(session))}><RefreshCw/>Sync now</button>
+      <button className="tt-secondary" disabled={busy} onClick={() => { if (window.confirm('Remove your YouTube cookies from the server? What TomTube has learned is kept.')) void run(() => tomtubeApi.removeCookies(session)) }}>Remove cookies</button>
+    </>}
+    <button className="tt-secondary" disabled={busy} onClick={() => { if (window.confirm('Forget everything TomTube has learned about what you watch? Your cookies are kept.')) void run(() => tomtubeApi.clearTraining(session)) }}><Trash2/>Clear training data</button>
+  </section>
+}
+
+function SettingsSheet({ onClose, engine, onTrainingChanged }: { onClose(): void; engine: TomTubeEngine | null; onTrainingChanged(): void }) {
   const settings = useTomTube((state) => state.settings)
   const setSettings = useTomTube((state) => state.setSettings)
   const logout = useAuth((state) => state.logout)
@@ -90,6 +164,7 @@ function SettingsSheet({ onClose, engine }: { onClose(): void; engine: TomTubeEn
     <label className="tt-select"><span><b>Audio stream</b></span><select value={settings.audioFormat} onChange={(event) => change({ audioFormat: event.target.value as 'auto' | 'hls' | 'file' })}><option value="auto">Automatic (M4A on iPhone and iPad)</option><option value="hls">HLS</option><option value="file">Single file (M4A)</option></select></label>
     <button className="tt-secondary" onClick={() => void checkServer()}>Check server</button>
     {status && <p className="tt-note">{status}</p>}
+    <TrainingSettings onChanged={onTrainingChanged}/>
     <button className="tt-secondary" onClick={() => { useTomTube.getState().clearHistory() }}>Clear recently watched</button>
     <button className="tt-secondary" onClick={logout}><LogOut/>Sign out of {session.username}</button>
   </div>
@@ -124,6 +199,63 @@ function Controls({ engine }: { engine: TomTubeEngine }) {
   </div>
 }
 
+const SHELF_SIZE = 8
+
+function Shelves({ data, loading, error, onRefresh, onOpenSettings, actions }: { data: Recommendations | null; loading: boolean; error: string | null; onRefresh(): void; onOpenSettings(): void; actions(video: TomTubeVideo): RowActions }) {
+  const session = useAuth((state) => state.session)!
+  const [open, setOpen] = useState<Record<string, boolean>>({})
+  // Hidden at once; the server stops suggesting the video and counts it against its channel.
+  const [rejected, setRejected] = useState<Set<string>>(() => new Set())
+  const notInterested = (video: TomTubeVideo) => {
+    setRejected((current) => new Set(current).add(video.id))
+    void tomtubeApi.notInterested(session, video).catch(() => undefined)
+  }
+  const refresh = <button className="tt-link" onClick={onRefresh} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
+  if (!data?.shelves.length) {
+    if (!data && !error && !loading) return null
+    return <Section title="Recommended" action={refresh}>
+      {error ? <p className="tt-note">{error}</p>
+        : loading ? <p className="tt-note">Finding videos for you…</p>
+        : data?.cookies === 'missing' ? <p className="tt-note">Recommendations appear as TomTube learns what you watch. To start with your YouTube recommendations, <button className="tt-link" onClick={onOpenSettings}>add your YouTube cookies in Settings</button>.</p>
+        : <p className="tt-note">Nothing to suggest yet. Watch a few videos and come back.</p>}
+    </Section>
+  }
+  return <>{data.shelves.map((shelf, index) => {
+    const remaining = shelf.videos.filter((video) => !rejected.has(video.id))
+    if (!remaining.length) return null
+    const videos: RecommendedVideo[] = open[shelf.id] ? remaining : remaining.slice(0, SHELF_SIZE)
+    return <Section key={shelf.id} title={shelf.title} action={index === 0 ? refresh : undefined}>
+      {index === 0 && data.cookies === 'expired' && <p className="tt-note">Your YouTube cookies have expired, so these come from what TomTube has learned. <button className="tt-link" onClick={onOpenSettings}>Renew them</button></p>}
+      <ul className="tt-list">{videos.map((video) => <VideoRow key={video.id} video={video} note={shelf.id === 'youtube' ? undefined : video.reason} actions={{ ...actions(video), onNotInterested: () => notInterested(video) }}/>)}</ul>
+      {remaining.length > SHELF_SIZE && <button className="tt-link tt-more" onClick={() => setOpen({ ...open, [shelf.id]: !open[shelf.id] })}>{open[shelf.id] ? 'Show fewer' : `Show ${remaining.length - SHELF_SIZE} more`}</button>}
+    </Section>
+  })}</>
+}
+
+function useRecommendations() {
+  const session = useAuth((state) => state.session)!
+  const [data, setData] = useState<Recommendations | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const abort = useRef<AbortController | null>(null)
+  const load = async (refresh = false) => {
+    abort.current?.abort()
+    const controller = new AbortController()
+    abort.current = controller
+    setLoading(true)
+    setError(null)
+    try { setData(await tomtubeApi.recommendations(session, refresh, controller.signal)) }
+    catch (failure) {
+      if (failure instanceof DOMException && failure.name === 'AbortError') return
+      // A server without the recommendations update says nothing rather than showing an error.
+      if (failure instanceof TomTubeError && (failure.status === 404 || failure.code === 'training-disabled')) setData(null)
+      else setError(failure instanceof Error ? failure.message : 'Recommendations could not be loaded.')
+    } finally { if (abort.current === controller) setLoading(false) }
+  }
+  useEffect(() => { void load(); return () => abort.current?.abort() }, [session])
+  return { data, loading, error, load }
+}
+
 export function TomTubeApp() {
   const session = useAuth((state) => state.session)
   const status = useAuth((state) => state.status)
@@ -149,6 +281,7 @@ function TomTube() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const searchAbort = useRef<AbortController | null>(null)
   const current = Q.current(queue)
+  const recommendations = useRecommendations()
 
   const tokenStatus = useMediaTokenStatus()
   useEffect(() => startMediaTokens({ username: session.username, token: session.token, salt: session.salt }), [session])
@@ -224,6 +357,7 @@ function TomTube() {
         {upNext.length > 0 && <Section title="Up next" action={<button className="tt-link" onClick={() => updateQueue(Q.clearUpcoming(queue))}>Clear</button>}>
           <ul className="tt-list">{upNext.map(({ video, index }) => <VideoRow key={`${video.id}-${index}`} compact video={video} actions={{ onPlay: () => engine?.playAt(index), onRemove: () => updateQueue(Q.removeAt(queue, index)) }}/>)}</ul>
         </Section>}
+        <Shelves data={recommendations.data} loading={recommendations.loading} error={recommendations.error} onRefresh={() => void recommendations.load(true)} onOpenSettings={() => setSettingsOpen(true)} actions={rowActions}/>
         <Section title="Recently watched" action={history.length ? <span className="tt-meta">{history.length}</span> : undefined}>
           {history.length ? <ul className="tt-list">{history.slice(0, 50).map((video) => <VideoRow key={video.id} video={video} actions={rowActions(video)}/>)}</ul>
             : <p className="tt-note">Search for a video or paste a YouTube link to start. Videos play from your Tomify server, without adverts, and keep playing as audio when your phone locks.</p>}
@@ -256,6 +390,6 @@ function TomTube() {
       <audio ref={audioRef} preload="auto" x-webkit-airplay="allow"/>
     </section>
 
-    {settingsOpen && <SettingsSheet engine={engine} onClose={() => setSettingsOpen(false)}/>}
+    {settingsOpen && <SettingsSheet engine={engine} onClose={() => setSettingsOpen(false)} onTrainingChanged={() => void recommendations.load(true)}/>}
   </div>
 }

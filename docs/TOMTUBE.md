@@ -4,6 +4,7 @@ TomTube is Tomify's own YouTube player: ad-free videos and background audio on a
 
 - [Status: what is verified and what is not](#status)
 - [How it works](#how-it-works)
+- [Recommendations](#recommendations)
 - [Design decisions](#design-decisions)
 - [Upstream dependencies and limitations](#upstream-dependencies-and-limitations)
 - [Setting up the media server](#setting-up-the-media-server)
@@ -27,6 +28,7 @@ This is a proof of concept. The automated checks below run in CI; **none of the 
 | Worker: sign-in required, fixed path list, allowed users, re-signed playlists | Route tests against the built Worker | |
 | Player: video/audio switch keeps position, video element released, Media Session handlers and metadata, retries and HLS→file fallback, queue progression inside `ended`, continuous queue mapping | Unit tests with fake media elements (jsdom) | **iOS WebKit behaviour**, which only a device shows |
 | yt-dlp invocation | Runs the real yt-dlp 2026.10.26 binary; its failures are classified correctly | Successful extraction (YouTube was unreachable) |
+| Recommendations: cookie parsing and encrypted storage, signal weights, suggestions after expiry, RSS parsing, rate limits, Worker paths and owner-only cookie changes | Unit and service tests with a fake yt-dlp and fake RSS | Real `:ythistory`, `:ytsubs`, `:ytrec` output and how long YouTube keeps the cookies valid |
 | Test A — ad-free video on iPhone | | Needs device test |
 | Test B — locked-screen audio | | Needs device test |
 | Test C — queue progression while locked | | Needs device test (experimental) |
@@ -86,6 +88,47 @@ If neither works reliably on iOS, that is a WebKit limitation of web apps, and t
 
 **A future native client.** The service's API is plain HTTP with HLS and byte ranges, which is what AVPlayer wants. A native iOS app could use the same Worker paths (or the same service through its own token) with `AVPlayer` and `AVAudioSession` in `.playback` mode and `MPNowPlayingInfoCenter`, which removes every web-app limitation above. The same applies to an LG webOS client or TOMMICH: they need only the JSON API and the HLS URLs.
 
+## Recommendations
+
+TomTube builds its own recommendation model on the box (`tomtube-service/training.mjs`) and shows it on the home screen as shelves above **Recently watched**. It learns all the time from what you watch in TomTube. Optionally, a `cookies.txt` from your YouTube account lets it also learn from your YouTube history, subscriptions and recommendations. There is no fixed training period: while the cookies work, YouTube-powered discovery is added on top; when they expire, the model just carries on with what it has; renewing them adds to it again without resetting anything.
+
+**Signals.** What YouTube recommends is never treated as something you like.
+
+| What happened | Weight in the model |
+| --- | --- |
+| You finished a video (or watched 80%+) | Strong positive (+3 for its channel) |
+| You watch a channel again and again | Strong positive (+1 per extra video finished or mostly watched, up to +4) |
+| You subscribe to the channel (from `:ytsubs`) | Positive (+2) |
+| You watched most of a video (50%+) | Positive (+1.5) |
+| It is in your YouTube watch history | Positive (+1) |
+| You watched a little of it | Slight positive (+0.3) |
+| You moved on within 10 seconds of it starting | Weak negative (−0.5) |
+| **Not interested** (⋮ menu on a suggestion) | Strong negative (−4 for its channel; that video is never shown again) |
+| YouTube recommended it (`:ytrec`) | Discovery only: shown while fresh, and a channel recommended in two or more syncs is suggested to try. Never counted as liked |
+
+Signals fade with a 90-day half-life (Not interested: 180 days). Any channel whose score is negative is left out of every shelf.
+
+**Shelves**, in order: *Recommended for you* (YouTube's own recommendations from the last sync, while under two days old, minus what you've seen); *New from channels you watch* (latest uploads, from each channel's public RSS feed, of up to 8 channels you like most); *Channels you might like* (channels YouTube kept recommending that you haven't watched); *More like what you finish* (YouTube searches for up to three topics that recur in titles you finished or mostly watched). Results are cached for an hour; **Refresh** recomputes them.
+
+**First set-up (admin only).** Put your Navidrome username in `TOMTUBE_TRAINING_USERS` in `wrangler.toml` and deploy. The feed reading hasn't been tried against real YouTube yet, so try it first with cookies from a **disposable** YouTube account, check Settings shows *valid* and the shelves fill, then remove them and add your own.
+
+**Adding or renewing cookies.** TomTube → Settings → Recommendations → *Add YouTube cookies* (or *Renew*):
+
+1. On a computer, open a private (incognito) window and sign in to youtube.com with your account.
+2. Export the cookies for youtube.com as `cookies.txt` (Netscape format), for example with the “Get cookies.txt LOCALLY” extension. A JSON export of the cookies works too.
+3. Close the private window (so the browser doesn't rotate the cookies), then upload the file or paste its text in Settings.
+
+TomTube checks them straight away and Settings shows **valid**, **expired** or the last error, when they were last synced, when the next sync is, and when the sign-in expires at the latest. YouTube may end the session sooner (for example after a password change); Settings then says the cookies expired and the suggestions continue from the model. *Sync now* reads the feeds again (at most once every 15 minutes), *Remove cookies* deletes them from the box, and *Clear training data* forgets what was learned (the cookies stay).
+
+**How the cookies are kept apart.**
+
+- They are used **only** to read three account feeds (`:ythistory`, `:ytsubs`, `:ytrec`) with yt-dlp, every `TOMTUBE_TRAINING_SYNC_HOURS` (default 6, minimum 2) with a few seconds between feeds. Playback, search and topic searches never use them; those stay unauthenticated (or use the separate throwaway `TOMTUBE_YOUTUBE_COOKIES`).
+- Only youtube.com cookies are kept (Google account cookies are dropped). They are encrypted with AES-256-GCM (key from `TOMTUBE_TRAINING_KEY`, or derived from `TOMTUBE_TOKEN`) in `/var/lib/tomtube/secrets/` (folder mode 700, file mode 600, owned by the service user). For each yt-dlp run they are decrypted into a private temporary file that is deleted afterwards. As YouTube rotates them, yt-dlp's updated copy is encrypted and saved, which keeps them working longer.
+- They are never logged and never sent back to the phone: the API reports only their state and dates. Error messages are scrubbed of cookie values.
+- Changing them goes through the signed-in Worker and is allowed only for the Navidrome usernames in `TOMTUBE_TRAINING_USERS` in `wrangler.toml` (kept there so a deploy can't drop it). It fails closed: while it is empty nobody can add, renew, remove or sync cookies or clear the training data, and Settings says so.
+
+The model itself (what was watched, skipped, rejected, the YouTube history and recommended channels; no cookies) is in `/var/lib/tomtube/training/log.json`. It is one model per server, shared by everyone allowed to use TomTube.
+
 ## Design decisions
 
 - **A separate service, not part of the recovery agent.** It has its own systemd unit, port, token, limits (`MemoryMax`, `CPUQuota`, `TasksMax`, lower CPU and I/O priority) and `Restart=always`, so a busy stream can't slow Recovery, Navidrome, qBittorrent or SABnzbd, and a crash restarts only TomTube. It follows the agent's conventions (Node 20 ES modules, no npm dependencies, `node --test`, `/etc/<name>/<name>.env`, loopback + Cloudflare Tunnel + bearer token, immutable releases under `/opt/<name>/releases`).
@@ -100,9 +143,9 @@ If neither works reliably on iOS, that is a WebKit limitation of web apps, and t
 - **YouTube changes often.** yt-dlp is the part that keeps up; keep it current (the `tomtube-ytdlp-update` timer does this daily). When playback stops working everywhere, update yt-dlp first.
 - **JavaScript runtime.** yt-dlp needs one to solve YouTube's player challenges; without it only a few formats work. Deno is its default and recommended runtime (yt-dlp needs Node 22 or later if you use Node; the box has Node 20).
 - **Proof-of-Origin (PO) tokens.** YouTube requires them for some clients and may require them more widely. TomTube supports the maintained [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) (yt-dlp's [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) documents it), run on the box.
-- **The box's VPN.** The box sends outbound traffic through NordVPN, so TomTube's YouTube traffic does too. YouTube often treats VPN addresses as bots ("Sign in to confirm you're not a bot"). If that happens, add a PO token provider and/or a cookie file from a throwaway YouTube account; there is no per-process VPN bypass in the NordVPN Linux client.
+- **The home connection, not the VPN.** TomTube's YouTube traffic goes out over the home (residential) internet connection, not through the box's VPN. A residential address is what YouTube expects, so bot checks ("Sign in to confirm you're not a bot") should be rare. If they do appear, add a PO token provider and/or a playback cookie file from a throwaway YouTube account (`TOMTUBE_YOUTUBE_COOKIES`, not your own account's cookies).
 - **Addresses are tied to the server.** YouTube's media URLs expire after a few hours and are bound to the IP that fetched them, which is why the phone never uses them: the service fetches and renews them.
-- **Not supported yet:** live streams and premieres (`live-not-supported`), age-restricted and members-only videos without a suitable cookie file, playlists and channels (open individual videos), subtitles, comments, subscriptions, recommendations.
+- **Not supported yet:** live streams and premieres (`live-not-supported`), age-restricted and members-only videos without a suitable cookie file, playlists and channels (open individual videos), subtitles, comments. Recommendations are covered [below](#recommendations).
 - **Quality.** Up to 1080p H.264 (YouTube offers nothing higher in H.264). 1440p/4K are VP9/AV1 only.
 - **Bandwidth goes through Cloudflare.** Like Tomify's own audio, video passes through the Cloudflare Tunnel and the Worker. That suits personal use; heavy video use through Cloudflare is worth keeping an eye on, and streaming straight from the box at home (as Tomify's LAN-direct audio does) is a possible follow-up.
 - **iOS web-app limits.** Background audio works only from the `<audio>` element; `<video>` is paused by iOS when the phone locks. Whether a locked web app may start the next track is up to WebKit (see Test C).
@@ -156,6 +199,7 @@ In the Cloudflare dashboard, tomify Worker → Settings → Variables and Secret
 | `TOMTUBE_SERVICE_URL` | Variable | The tunnel hostname, e.g. `https://tomtube-service.tomdixon.uk` |
 | `TOMTUBE_SERVICE_TOKEN` | **Secret** | The same value as `TOMTUBE_TOKEN` on the box |
 | `TOMTUBE_ALLOWED_USERS` | Variable (optional) | Comma-separated Navidrome usernames; unset means every Tomify listener |
+| `TOMTUBE_TRAINING_USERS` | **`wrangler.toml`** var | Navidrome usernames allowed to add, renew, sync or remove the recommendation cookies and clear training data. Empty means nobody (fails closed) |
 | `TOMIFY_MEDIA_KEY` | Secret (already used by Tomify) | **Required.** TomTube media URLs carry only a 4-hour media token made with this key; the Navidrome login is never accepted in a TomTube URL. Without it, TomTube's media answers `503 media-tokens-not-configured` and the app says so |
 
 Deploy the site as usual (merge to `main`). Without the service variables, `/api/tomtube/*` answers `503 not-configured` and nothing else in Tomify changes.
@@ -234,6 +278,12 @@ All under `/v1/` need `Authorization: Bearer $TOMTUBE_TOKEN`; the Worker exposes
 | `POST /v1/videos/<id>/prefetch` | Downloads the audio to the cache in the background |
 | `GET /v1/queue.m3u8?ids=a,b`, `queue.json?ids=a,b` | Continuous audio stream of up to 20 videos, and each one's offset |
 | `GET /v1/thumbs/<id>/<mqdefault\|hqdefault\|maxresdefault\|…>.jpg` | Thumbnail |
+| `GET /v1/recommendations[?refresh=1]` | `{ source, cookies, topics, shelves: [{ id, title, videos: [{ …video, reason }] }] }` |
+| `POST /v1/watched` | The app reports a watch: `{ id, title, channel, channelId, duration, seconds, ended, skipped }` |
+| `POST /v1/feedback` | `{ id, kind: "not-interested", channelId }` |
+| `GET /v1/training`, `DELETE /v1/training` | Cookie state and what has been learned (never the cookies); DELETE forgets what was learned |
+| `PUT /v1/training/cookies`, `DELETE …` | A new cookies.txt as the body (max 256 KB), checked in the background; DELETE removes it |
+| `POST /v1/training/sync` | Read the account feeds now (at most every 15 minutes) |
 
 ## Security
 
@@ -242,4 +292,5 @@ All under `/v1/` need `Authorization: Bearer $TOMTUBE_TOKEN`; the Worker exposes
 - No arbitrary URL is ever fetched: clients send video ids; yt-dlp gets a URL built from the id; the proxy fetches only `https://*.googlevideo.com` (checked again on every redirect) and thumbnails only from `https://i.ytimg.com/vi/<id>/<fixed name>.jpg`. YouTube's URLs and request headers never reach the phone, and cookies are never forwarded upstream.
 - yt-dlp runs without a shell, with `--ignore-config`, a timeout, an output cap and a concurrency limit. A cookie file is copied privately for each run and deleted.
 - Secrets live only in `/etc/tomtube/tomtube.env`, `/opt/tomtube/secrets` and the Worker's secrets. Logs and error messages strip media URLs, signatures, PO tokens, cookies and paths.
+- The recommendation cookies are separate from playback, encrypted at rest, used only for three account feeds a few times a day, and never logged or returned (see [Recommendations](#recommendations)).
 - Disk use is bounded by `TOMTUBE_CACHE_MAX_BYTES`, `TOMTUBE_CACHE_MAX_AGE_HOURS` and `TOMTUBE_CACHE_MAX_FILE_BYTES`; partial downloads are removed at start-up and by the sweep every 10 minutes. Video is never written to disk.

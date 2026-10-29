@@ -149,3 +149,15 @@ svg { width: 22px; height: 22px; flex: none; }
 .tt-select { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--tt-line); }
 .tt-select select { max-width: 60%; height: 38px; border-radius: 10px; border: 1px solid var(--tt-line); background: var(--tt-panel2); padding: 0 8px; font-size: 16px; }
 .tt-sheet .tt-note { margin: 10px 0 0; word-break: break-word; }
+
+/* Recommendations */
+.tt-reason { font-size: .75rem; opacity: .85; }
+.tt-more { display: block; margin: 4px 16px 8px; }
+.tt-note .tt-link { display: inline; padding: 0; }
+.tt-group { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--tt-line); }
+.tt-group h3 { margin: 0; font-size: 1rem; }
+.tt-group ol.tt-note { padding-left: 20px; }
+.tt-cookies textarea { width: 100%; margin-top: 10px; padding: 10px; border-radius: 10px; border: 1px solid var(--tt-line); background: var(--tt-panel2); color: var(--tt-text); font: 13px/1.4 ui-monospace, monospace; resize: vertical; }
+.tt-cookies .tt-primary { margin-top: 10px; }
+.tt-file { position: relative; cursor: pointer; }
+.tt-file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }

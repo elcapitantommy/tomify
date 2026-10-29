@@ -97,6 +97,33 @@ test('the cookie file is copied for each run and the copy is removed', async () 
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
+test('account feeds use the training cookies, hand back the updated jar and keep warnings', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tomtube-feed-test-'))
+  try {
+    const training = '# training jar\n'
+    const playback = join(dir, 'playback.cookies')
+    await writeFile(playback, '# playback jar\n')
+    let copy = null
+    const spawner = fakeSpawn(async (child, args) => {
+      copy = args[args.indexOf('--cookies') + 1]
+      assert.match(await readFile(copy, 'utf8'), /training jar/)
+      assert.equal(args.at(-1), ':ythistory')
+      await writeFile(copy, '# rotated jar\n')
+      child.stderr.write(`WARNING: something about ${playback}\n`)
+      child.stdout.end('{"entries":[]}')
+      child.emit('close', 0)
+    })
+    const result = await createYtDlp({ ...config, cookies: playback }, { spawn: spawner.spawn }).feed(':ythistory', 10, training)
+    assert.deepEqual(result.data, { entries: [] })
+    assert.equal(result.jar, '# rotated jar\n')
+    assert.match(result.warnings, /WARNING/)
+    assert.doesNotMatch(result.warnings, /playback\.cookies/)
+    await assert.rejects(readFile(copy), { code: 'ENOENT' })
+    const failing = fakeSpawn((child) => { child.stderr.end('ERROR: This feed requires login. Use --cookies'); child.emit('close', 1) })
+    await assert.rejects(createYtDlp(config, { spawn: failing.spawn }).feed(':ytrec', 5, training), (error) => /requires login/.test(error.detail))
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
 test('the service refuses to start without a strong token', () => {
   assert.throws(() => loadConfig({}), /TOMTUBE_TOKEN is required/)
   assert.throws(() => loadConfig({ TOMTUBE_TOKEN: 'short' }), /at least 32/)
