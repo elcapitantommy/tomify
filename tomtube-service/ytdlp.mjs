@@ -5,7 +5,7 @@
 // shell, its output is capped, it has a timeout, and only a few run at once. Errors are reduced to a
 // code and a short message with paths, cookies and credentials removed.
 import { spawn as nodeSpawn } from 'node:child_process'
-import { copyFile, mkdtemp, rm } from 'node:fs/promises'
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { watchUrl } from './ids.mjs'
@@ -96,11 +96,23 @@ export function searchArguments(config, query, limit, cookieCopy = null) {
   return [...baseArguments(config, cookieCopy), '--flat-playlist', '--dump-single-json', '--', `ytsearch${limit}:${query}`]
 }
 
+// The signed-in account feeds used to learn what Tom watches (training.mjs). Only these names are run.
+export const FEEDS = Object.freeze({ history: ':ythistory', subscriptions: ':ytsubs', recommended: ':ytrec' })
+
+export function feedArguments(config, feed, limit, cookieCopy) {
+  if (!Object.values(FEEDS).includes(feed)) throw new TypeError('Unknown feed.')
+  const count = Math.max(1, Math.min(500, Math.floor(Number(limit)) || 1))
+  // Warnings stay on here: yt-dlp says in one when the account's cookies are no longer valid.
+  const args = baseArguments(config, cookieCopy).filter((arg) => arg !== '--no-warnings')
+  return [...args, '--flat-playlist', '--playlist-end', String(count), '--dump-single-json', '--', feed]
+}
+
 export function createYtDlp(config, { spawn = nodeSpawn, log = () => {} } = {}) {
   const limiter = createLimiter(config.maxConcurrent, config.maxQueued)
   let versionCache = null
 
-  function exec(args, timeoutMs) {
+  function exec(args, timeoutMs, { withStderr = false, secrets = [] } = {}) {
+    const hidden = [config.cookies, ...secrets]
     return new Promise((resolve, reject) => {
       let child
       try { child = spawn(config.binary, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONUNBUFFERED: '1' } }) }
@@ -115,10 +127,13 @@ export function createYtDlp(config, { spawn = nodeSpawn, log = () => {} } = {}) 
       child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-20_000) })
       child.on('error', (error) => finish(() => reject(error.code === 'ENOENT' ? new YtDlpError('ytdlp-missing', 'yt-dlp is not installed on the server (TOMTUBE_YTDLP_PATH).', 503) : new YtDlpError('extraction-failed', `yt-dlp could not run: ${error.code || 'error'}`, 502))))
       child.on('close', (code) => finish(() => {
-        if (code === 0) resolve(Buffer.concat(out).toString('utf8'))
-        else {
-          const failure = classifyFailure(stderr, [config.cookies])
-          log(`yt-dlp exited ${code}: ${failure.code}: ${sanitizeToolOutput(stderr, [config.cookies]).split('\n').pop()}`)
+        if (code === 0) {
+          const stdout = Buffer.concat(out).toString('utf8')
+          resolve(withStderr ? { stdout, stderr } : stdout)
+        } else {
+          const failure = classifyFailure(stderr, hidden)
+          failure.detail = sanitizeToolOutput(stderr, hidden)
+          log(`yt-dlp exited ${code}: ${failure.code}: ${failure.detail.split('\n').pop()}`)
           reject(failure)
         }
       }))
@@ -136,6 +151,19 @@ export function createYtDlp(config, { spawn = nodeSpawn, log = () => {} } = {}) 
     } finally { await rm(dir, { recursive: true, force: true }) }
   }
 
+  // The training cookies (never the playback ones) for one feed run, written in plain text only to a
+  // private temporary file (mode 600) that is removed afterwards. yt-dlp updates the copy as YouTube
+  // rotates the cookies; the updated jar is handed back so the caller can keep it fresh.
+  async function withTrainingCookies(cookieText, task) {
+    const dir = await mkdtemp(join(tmpdir(), 'tomtube-training-'))
+    const copy = join(dir, 'cookies.txt')
+    try {
+      await writeFile(copy, cookieText, { mode: 0o600 })
+      const result = await task(copy)
+      return { result, jar: await readFile(copy, 'utf8').catch(() => null) }
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  }
+
   function parse(stdout) {
     try { return JSON.parse(stdout) } catch { throw new YtDlpError('extraction-failed', 'yt-dlp returned unreadable output.', 502) }
   }
@@ -144,6 +172,13 @@ export function createYtDlp(config, { spawn = nodeSpawn, log = () => {} } = {}) 
     limiter,
     extract: (videoId) => limiter.run(() => withCookies((cookies) => exec(extractArguments(config, videoId, cookies), config.timeoutMs))).then(parse),
     search: (query, limit) => limiter.run(() => withCookies((cookies) => exec(searchArguments(config, query, limit, cookies), config.timeoutMs))).then(parse),
+    // An account feed (FEEDS), read with the given cookies. Used only by training.mjs.
+    async feed(feed, limit, cookieText) {
+      return limiter.run(async () => {
+        const { result, jar } = await withTrainingCookies(cookieText, (copy) => exec(feedArguments(config, feed, limit, copy), Math.max(config.timeoutMs, 120_000), { withStderr: true }))
+        return { data: parse(result.stdout), warnings: sanitizeToolOutput(result.stderr, [config.cookies]), jar }
+      })
+    },
     async version() {
       if (versionCache && Date.now() - versionCache.at < 3600_000) return versionCache.value
       let value = null

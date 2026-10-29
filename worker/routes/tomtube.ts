@@ -7,20 +7,44 @@ import { json } from '../lib/http.ts'
 // over the Cloudflare Tunnel at TOMTUBE_SERVICE_URL with a bearer token. Only signed-in Tomify
 // listeners get through, optionally only those in TOMTUBE_ALLOWED_USERS. Only the paths below are
 // passed on, so the service cannot be used as a general relay, and the phone never sees a YouTube URL.
-//   JSON (x-tomify-* headers): search, resolve, videos/<id>, videos/<id>/prefetch, queue.json, status
+//   JSON (x-tomify-* headers): search, resolve, videos/<id>, videos/<id>/prefetch, queue.json, status,
+//   and recommendations: recommendations, watched, feedback, training, training/cookies, training/sync.
+//   The cookie upload is passed on as a body of at most 256 KB; the service never sends cookies back.
+//   Changing cookies or training data is allowed only for TOMTUBE_TRAINING_USERS; unset means nobody.
 //   Media (playlists, streams, thumbnails): only a short-lived `mt` media token in the query, since
 //   players can't send headers. The Navidrome login is never accepted in a TomTube URL, so it can't
 //   end up in Cloudflare or browser logs; without TOMIFY_MEDIA_KEY media answers 503. Playlists are
 //   re-signed with a fresh token, so a long video outlives the old one.
 const ID = '[A-Za-z0-9_-]{11}'
-const JSON_PATH = new RegExp(`^/api/tomtube/(?:search|resolve|status|queue\\.json|videos/${ID}(?:/prefetch)?)$`)
+const JSON_PATH = new RegExp(`^/api/tomtube/(?:search|resolve|status|queue\\.json|recommendations|watched|feedback|training(?:/cookies|/sync)?|videos/${ID}(?:/prefetch)?)$`)
+// The methods each JSON path takes (GET unless listed), and the largest body passed on.
+const JSON_METHODS: Array<[RegExp, string[]]> = [
+  [/\/prefetch$/, ['POST']],
+  [/^watched$/, ['POST']],
+  [/^feedback$/, ['POST']],
+  [/^training$/, ['GET', 'DELETE']],
+  [/^training\/cookies$/, ['PUT', 'DELETE']],
+  [/^training\/sync$/, ['POST']],
+]
+const BODY_LIMITS: Record<string, number> = { watched: 4096, feedback: 4096, 'training/cookies': 256 * 1024 }
+// Changing the account cookies or the training log; limited to TOMTUBE_TRAINING_USERS when that is set.
+const MANAGE = (rest: string, method: string) => rest === 'training/cookies' || rest === 'training/sync' || (rest === 'training' && method === 'DELETE')
 const MEDIA_PATH = new RegExp(`^/api/tomtube/(?:queue\\.m3u8|videos/${ID}/(?:master|audio|[va]\\d{1,4})\\.m3u8|videos/${ID}/(?:\\d{1,4}\\.(?:mp4|m4a)|progressive\\.mp4|audio\\.m4a)|thumbs/${ID}/[a-z]{4,13}\\.jpg)$`)
 const FORWARDED = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']
-const QUERY_KEYS: Record<string, string[]> = { search: ['q', 'limit'], resolve: ['url'], 'queue.json': ['ids'], 'queue.m3u8': ['ids'] }
+const QUERY_KEYS: Record<string, string[]> = { search: ['q', 'limit'], resolve: ['url'], 'queue.json': ['ids'], 'queue.m3u8': ['ids'], recommendations: ['refresh'] }
 
-function allowed(env: Env, user: string) {
-  const list = String(env.TOMTUBE_ALLOWED_USERS || '').split(',').map((name) => name.trim().toLowerCase()).filter(Boolean)
+function listed(value: unknown, user: string) {
+  const list = String(value || '').split(',').map((name) => name.trim().toLowerCase()).filter(Boolean)
   return !list.length || list.includes(user.toLowerCase())
+}
+
+const allowed = (env: Env, user: string) => listed(env.TOMTUBE_ALLOWED_USERS, user)
+
+// Changing the account cookies or training data fails closed: only usernames named in
+// TOMTUBE_TRAINING_USERS (wrangler.toml), and nobody when it is empty or missing.
+function owner(env: Env, user: string) {
+  const list = String(env.TOMTUBE_TRAINING_USERS || '').split(',').map((name) => name.trim().toLowerCase()).filter(Boolean)
+  return list.includes(user.toLowerCase())
 }
 
 // Every URI in a playlist (lines and URI="…" attributes) gets the listener's media query.
@@ -39,8 +63,9 @@ export const tomtubeRoute: RouteHandler = async (request, env, url) => {
   const isJson = JSON_PATH.test(url.pathname)
   const isMedia = !isJson && MEDIA_PATH.test(url.pathname)
   if (!isJson && !isMedia) return json({ error: 'not-found' }, 404)
-  const post = url.pathname.endsWith('/prefetch')
-  if (request.method !== (post ? 'POST' : 'GET') && !(isMedia && request.method === 'HEAD')) return json({ error: 'method-not-allowed' }, 405)
+  const rest = url.pathname.slice('/api/tomtube/'.length)
+  const methods = isJson ? JSON_METHODS.find(([pattern]) => pattern.test(rest))?.[1] ?? ['GET'] : ['GET', 'HEAD']
+  if (!methods.includes(request.method)) return json({ error: 'method-not-allowed' }, 405)
 
   if (isMedia && !env.TOMIFY_MEDIA_KEY) return json({ error: 'media-tokens-not-configured', message: 'TomTube needs media tokens (TOMIFY_MEDIA_KEY) on this server.' }, 503)
   let user: string | null
@@ -52,17 +77,25 @@ export const tomtubeRoute: RouteHandler = async (request, env, url) => {
   }
   if (!user) return json({ error: 'unauthorized' }, 401)
   if (!allowed(env, user)) return json({ error: 'forbidden', message: 'TomTube is not enabled for this account.' }, 403)
+  if (MANAGE(rest, request.method) && !owner(env, user)) return json({ error: 'training-forbidden', message: String(env.TOMTUBE_TRAINING_USERS || '').trim() ? 'Only the account owner can change the YouTube cookies or training data.' : 'Changing the YouTube cookies is turned off until TOMTUBE_TRAINING_USERS is set in wrangler.toml.' }, 403)
   if (!env.TOMTUBE_SERVICE_URL || !env.TOMTUBE_SERVICE_TOKEN) return json({ error: 'not-configured', message: 'TomTube is not set up on this server yet.' }, 503)
 
-  const rest = url.pathname.slice('/api/tomtube/'.length)
   const target = new URL(`${String(env.TOMTUBE_SERVICE_URL).replace(/\/+$/, '')}/v1/${rest}`)
   for (const key of QUERY_KEYS[rest] || []) { const value = url.searchParams.get(key); if (value !== null) target.searchParams.set(key, value) }
   const headers: Record<string, string> = { authorization: `Bearer ${env.TOMTUBE_SERVICE_TOKEN}` }
   const range = request.headers.get('range')
   if (range && /^bytes=\d*-\d*$/.test(range)) headers.range = range
+  let body: string | undefined
+  const limit = BODY_LIMITS[rest]
+  if (limit && (request.method === 'POST' || request.method === 'PUT')) {
+    if (Number(request.headers.get('content-length')) > limit) return json({ error: 'too-large', message: 'That is too large.' }, 413)
+    body = await request.text()
+    if (new TextEncoder().encode(body).length > limit) return json({ error: 'too-large', message: 'That is too large.' }, 413)
+    headers['content-type'] = rest === 'training/cookies' ? 'text/plain; charset=utf-8' : 'application/json'
+  }
   let upstream: Response
   try {
-    upstream = await fetch(target.href, { method: request.method, headers, signal: request.signal })
+    upstream = await fetch(target.href, { method: request.method, headers, body, signal: request.signal })
   } catch {
     return json({ error: 'tomtube-unavailable', message: 'The TomTube service on the media server could not be reached.' }, 502)
   }

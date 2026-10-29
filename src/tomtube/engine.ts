@@ -40,6 +40,13 @@ const HLS_FAILURES_BEFORE_FILE = 2
 // Short, so a listener who pauses and then locks the phone stays paused; widen only on device evidence.
 export const LOCK_PAUSE_WINDOW_MS = 500
 const MAX_CONTINUOUS_TRACKS = 20
+// Watches are reported to the server's training log (recommendations) once a video has played this
+// long, again when it ends or another video starts, and when TomTube goes to the background. A video
+// left for another within SKIP_SECONDS of starting is reported as skipped (a weak negative signal).
+export const WATCH_REPORT_AFTER_S = 30
+export const SKIP_SECONDS = 10
+
+interface WatchSession { video: TomTubeVideo; seconds: number; lastTime: number | null; reported: number; ended: boolean }
 
 type Media = HTMLMediaElement
 
@@ -47,7 +54,7 @@ interface Deps {
   video: Media
   audio: Media
   session: () => AuthSession | null
-  api?: Pick<typeof tomtubeApi, 'prefetch' | 'queueTimeline'>
+  api?: Pick<typeof tomtubeApi, 'prefetch' | 'queueTimeline'> & { watched?: typeof tomtubeApi.watched }
   mediaSession?: MediaSession | null
   setTimeout?: (callback: () => void, ms: number) => number
   clearTimeout?: (id: number) => void
@@ -78,6 +85,7 @@ export class TomTubeEngine {
   private pendingSeek: number | null = null
   private retries = 0
   private retryTimer: number | null = null
+  private watch: WatchSession | null = null
   private stallTimer: number | null = null
   private stallFrom = 0
   private hlsFailures = new Map<string, number>()
@@ -114,6 +122,7 @@ export class TomTubeEngine {
   }
 
   destroy() {
+    this.reportWatch()
     this.cleanups.forEach((cleanup) => cleanup())
     this.clearTimers()
   }
@@ -474,6 +483,7 @@ export class TomTubeEngine {
     let duration = Number.isFinite(element.duration) ? element.duration : this.view.duration
     if (this.continuous) ({ time, duration } = this.followContinuous(time))
     this.set({ currentTime: time, duration })
+    this.countWatched(time)
     const now = this.now()
     if (now - this.lastLockScreenUpdate > 1000) {
       this.lastLockScreenUpdate = now
@@ -487,6 +497,7 @@ export class TomTubeEngine {
   }
 
   private ended() {
+    if (this.watch) { this.watch.ended = true; this.reportWatch() }
     const following = Q.next(this.store.queue)
     if (!following) {
       this.set({ playing: false, status: 'ended' })
@@ -546,6 +557,7 @@ export class TomTubeEngine {
   private visibilityChanged(state: DocumentVisibilityState) {
     const { settings } = this.store
     if (state === 'hidden') {
+      this.reportWatch()
       const now = this.now()
       // Playing, just started, or paused by iOS a moment ago as the phone locked.
       const wasPlaying = this.view.playing || now - this.playingSince < 1000 || now - this.videoInterruptedAt < LOCK_PAUSE_WINDOW_MS
@@ -569,8 +581,38 @@ export class TomTubeEngine {
 
   // --- history and lock screen ---------------------------------------------------------------------
 
+  // Seconds actually played: small forward steps of the playhead while playing (seeks don't count).
+  private countWatched(time: number) {
+    const watch = this.watch
+    if (!watch || !this.view.playing || watch.video.id !== this.current()?.id) return
+    if (watch.lastTime !== null) {
+      const step = time - watch.lastTime
+      if (step > 0 && step < 5) watch.seconds += step
+    }
+    watch.lastTime = time
+    if (watch.reported === 0 && watch.seconds >= WATCH_REPORT_AFTER_S) this.reportWatch()
+  }
+
+  // `leaving`: another video is starting in its place.
+  private reportWatch(leaving = false) {
+    const watch = this.watch
+    const session = this.deps.session()
+    if (!watch || !session || !this.deps.api?.watched || watch.reported === -1) return
+    let skipped = false
+    if (!watch.ended && watch.seconds < SKIP_SECONDS) {
+      // Left within a few seconds of actually playing: a skip. Otherwise too early to say anything.
+      if (!leaving || watch.reported !== 0 || watch.lastTime === null) return
+      skipped = true
+    } else if (!watch.ended && watch.seconds - watch.reported < 5) return
+    const { video } = watch
+    watch.reported = watch.ended || skipped ? -1 : watch.seconds
+    void this.deps.api.watched(session, { id: video.id, title: video.title, channel: video.channel, channelId: video.channelId ?? null, duration: video.duration ?? (this.view.duration || null), seconds: Math.round(watch.seconds), ended: watch.ended, skipped }).catch(() => undefined)
+  }
+
   private startedCurrent() {
     const video = this.current()
+    this.reportWatch(true)
+    this.watch = video ? { video, seconds: 0, lastTime: null, reported: 0, ended: false } : null
     if (!video) return
     this.retries = 0
     this.store.setHistory(Q.recordHistory(this.store.history, video, this.now()))

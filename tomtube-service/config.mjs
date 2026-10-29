@@ -51,6 +51,14 @@ export function loadConfig(env = process.env) {
     maxHeight: number(env, 'TOMTUBE_MAX_HEIGHT', 1080, { min: 144, max: 1080 }),
     maxStreams: number(env, 'TOMTUBE_MAX_STREAMS', 16, { max: 500 }),
     searchLimit: number(env, 'TOMTUBE_SEARCH_LIMIT', 20, { max: 50 }),
+    stateDir,
+    // Recommendations (training.mjs): how often the account feeds are read while the cookies work.
+    training: {
+      enabled: String(env.TOMTUBE_TRAINING || 'true').trim().toLowerCase() !== 'false',
+      syncIntervalMs: number(env, 'TOMTUBE_TRAINING_SYNC_HOURS', 6, { min: 2, max: 48 }) * 3600_000,
+      // Encrypts the stored cookies; without it a key is derived from TOMTUBE_TOKEN.
+      key: String(env.TOMTUBE_TRAINING_KEY || '').trim() || null,
+    },
     ytdlp: {
       binary: String(env.TOMTUBE_YTDLP_PATH || 'yt-dlp').trim(),
       cacheDir: join(stateDir, 'yt-dlp-cache'),

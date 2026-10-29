@@ -7,6 +7,7 @@ import { createYtDlp } from './ytdlp.mjs'
 import { createResolver } from './resolver.mjs'
 import { createAudioCache } from './cache.mjs'
 import { createDiagnostics, createHandler } from './server.mjs'
+import { createTraining } from './training.mjs'
 
 const log = (message) => process.stderr.write(`${message}\n`)
 
@@ -32,7 +33,11 @@ if (cache) {
 const ytdlp = createYtDlp(config.ytdlp, { log })
 const resolver = createResolver({ ytdlp, maxHeight: config.maxHeight, audioCache: cache })
 const diagnostics = createDiagnostics()
-const handler = createHandler({ config, ytdlp, resolver, cache, diagnostics, log, version })
+const training = config.training.enabled
+  ? createTraining({ stateDir: config.stateDir, ytdlp, secret: config.training.key || config.token || null, log, syncIntervalMs: config.training.syncIntervalMs, search: (query, limit) => ytdlp.search(query, limit) })
+  : null
+training?.start()
+const handler = createHandler({ config, ytdlp, resolver, cache, training, diagnostics, log, version })
 
 const ytdlpVersion = await ytdlp.version()
 if (!ytdlpVersion) log(`TomTube: yt-dlp was not found at ${config.ytdlp.binary}; extraction will fail until it is installed (docs/TOMTUBE.md).`)

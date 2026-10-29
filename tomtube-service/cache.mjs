@@ -60,7 +60,9 @@ export function createAudioCache({ dir, maxBytes, maxAgeMs, maxFileBytes, partMa
         await sweep()
         return { path: final, size }
       } catch (error) {
-        out.destroy()
+        // Wait for the stream to close: if its file was still being opened, removing it first would
+        // leave the .part behind once the open completes.
+        if (!out.closed) { const closed = once(out, 'close').catch(() => undefined); out.destroy(); await closed }
         await rm(part, { force: true })
         log(`Audio cache fill for ${videoId} failed: ${error instanceof Error ? error.message : error}`)
         return null

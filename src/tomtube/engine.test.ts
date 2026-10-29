@@ -581,3 +581,43 @@ describe('TomTube player', () => {
     })
   })
 })
+
+describe('TomTube watch reporting', () => {
+  const play = (element: FakeMedia, from: number, to: number) => {
+    for (let time = from; time <= to; time += 1) { element.currentTime = time; element.fire('timeupdate') }
+  }
+
+  it('reports a watch after 30 seconds, when it ends, and never counts seeking', () => {
+    const watched = vi.fn<(session: unknown, report: unknown) => Promise<{ ok: boolean }>>(async () => ({ ok: true }))
+    Object.assign(api, { watched })
+    create()
+    engine.playVideo({ ...video('a', 100), channelId: 'UCaaaaaaaaaaaaaaaaaaaaaa' })
+    videoEl.metadata(100)
+    play(videoEl, 0, 20)
+    expect(watched).not.toHaveBeenCalled()
+    play(videoEl, 21, 31)
+    expect(watched).toHaveBeenCalledTimes(1)
+    expect(watched.mock.calls[0][1]).toMatchObject({ id: 'aaaaaaaaaaa', channelId: 'UCaaaaaaaaaaaaaaaaaaaaaa', seconds: 30, ended: false })
+    // A seek to near the end is not watching.
+    play(videoEl, 95, 99)
+    videoEl.fire('ended')
+    expect(watched).toHaveBeenCalledTimes(2)
+    expect(watched.mock.calls[1][1]).toMatchObject({ seconds: 35, ended: true })
+  })
+
+  it('reports what was watched or skipped when another video starts or TomTube is hidden', () => {
+    const watched = vi.fn<(session: unknown, report: unknown) => Promise<{ ok: boolean }>>(async () => ({ ok: true }))
+    Object.assign(api, { watched })
+    create()
+    engine.playVideo(video('a'))
+    play(videoEl, 0, 5)
+    engine.playVideo(video('b'))
+    // Left after five seconds for another video: a skip.
+    expect(watched).toHaveBeenCalledTimes(1)
+    expect(watched.mock.calls[0][1]).toMatchObject({ id: 'aaaaaaaaaaa', seconds: 5, skipped: true })
+    play(videoEl, 0, 15)
+    doc.set('hidden')
+    expect(watched).toHaveBeenCalledTimes(2)
+    expect(watched.mock.calls[1][1]).toMatchObject({ id: 'bbbbbbbbbbb', seconds: 15, ended: false, skipped: false })
+  })
+})
