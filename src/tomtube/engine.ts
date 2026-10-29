@@ -37,6 +37,7 @@
 // the server, so nothing has to start at all between tracks. Neither can be proven from a desktop
 // browser; see docs/TOMTUBE.md for the device tests.
 import type { AuthSession } from '../lib/navidrome'
+import { createScriptedHls, type ScriptedHls } from './hlsPlayer'
 import { mediaUrl, queueStreamUrl, thumbnailUrl, tomtubeApi, type QueueTimeline, type TomTubeVideo } from './api'
 import { mediaTokenStatus, onMediaTokenChange } from './mediaToken'
 import * as Q from './queue'
@@ -84,12 +85,21 @@ interface Deps {
   // iPhone and iPad: audio defaults to the single M4A file, which keeps playing with the screen locked
   // (HLS audio was paused by iOS on lock in device testing).
   appleMobile?: boolean
+  // A phone or tablet (iOS or Android): going to the background there is the screen locking or another
+  // app, so a video carries on as audio. On a computer a hidden tab keeps playing the video as it is.
+  mobile?: boolean
+  // HLS through hls.js where the browser can't play it natively (Firefox, desktop Chrome, Android).
+  scriptedHls?: ScriptedHls | null
 }
 
 interface Continuous { ids: string[]; baseIndex: number; timeline: QueueTimeline['tracks'] | null }
 
 export function supportsNativeHls(element: Pick<Media, 'canPlayType'>) {
   try { return element.canPlayType('application/vnd.apple.mpegurl') !== '' } catch { return false }
+}
+
+export function isMobile(nav: Pick<Navigator, 'userAgent' | 'maxTouchPoints'> | undefined = typeof navigator !== 'undefined' ? navigator : undefined) {
+  return Boolean(nav) && (isAppleMobile(nav) || /Android|Mobi/i.test(nav!.userAgent))
 }
 
 export function isAppleMobile(nav: Pick<Navigator, 'userAgent' | 'maxTouchPoints'> & { platform?: string } | undefined = typeof navigator !== 'undefined' ? navigator : undefined) {
@@ -137,6 +147,8 @@ export class TomTubeEngine {
     this.listenPaired()
     for (const element of [this.video, this.audio]) this.listen(element)
     this.setupMediaSession()
+    // Start loading hls.js now where it is needed, so the first video already gets HLS.
+    if (!supportsNativeHls(this.video)) this.scriptedHls?.ready()
     const win = deps.window ?? (typeof window !== 'undefined' ? window : undefined)
     if (doc) {
       const visibility = () => this.visibilityChanged(doc.visibilityState)
@@ -154,6 +166,7 @@ export class TomTubeEngine {
     this.reportWatch()
     this.cleanups.forEach((cleanup) => cleanup())
     this.clearTimers()
+    for (const element of [this.video, this.audio]) this.scriptedHlsInstance?.detach(element)
   }
 
   // --- state -------------------------------------------------------------------------------------
@@ -165,6 +178,26 @@ export class TomTubeEngine {
   // in paired playback, otherwise the <video> element.
   private get element(): Media { return this.view.mode === 'audio' || this.paired ? this.audio : this.video }
   private get appleMobile() { return this.deps.appleMobile ?? isAppleMobile() }
+  private get mobile() { return this.deps.mobile ?? (this.appleMobile || isMobile()) }
+  private scriptedHlsInstance: ScriptedHls | null | undefined
+  private get scriptedHls() {
+    if (this.scriptedHlsInstance === undefined) this.scriptedHlsInstance = this.deps.scriptedHls !== undefined ? this.deps.scriptedHls : createScriptedHls()
+    return this.scriptedHlsInstance
+  }
+  // Video HLS in this browser: natively, or through hls.js once it has loaded (the first video while
+  // it loads plays the single file).
+  private canPlayVideoHls() { return supportsNativeHls(this.video) || Boolean(this.scriptedHls?.ready()) }
+
+  // Sets an element's source. HLS goes through hls.js where the browser can't play it natively.
+  private setSource(element: Media, url: string, hls: boolean, onFatal: () => void) {
+    this.scriptedHls?.detach(element)
+    if (hls && !supportsNativeHls(element) && this.scriptedHls?.ready()) {
+      this.scriptedHls.attach(element, url, onFatal)
+      return
+    }
+    element.setAttribute('src', url)
+    element.load()
+  }
   private get paired() { return this.appleMobile && this.store.settings.backgroundAudio }
   private get videoAttached() { return this.paired && this.view.mode === 'video' && Boolean(this.video.getAttribute('src')) }
   private visible() { return this.doc?.visibilityState !== 'hidden' }
@@ -183,7 +216,7 @@ export class TomTubeEngine {
     if (mode === 'video' && settings.videoQuality === 'compatible') return false
     if (mode === 'audio' && (settings.audioFormat === 'file' || (settings.audioFormat === 'auto' && this.appleMobile))) return false
     if ((this.hlsFailures.get(`${mode}:${id}`) ?? 0) >= HLS_FAILURES_BEFORE_FILE) return false
-    return supportsNativeHls(mode === 'audio' ? this.audio : this.video)
+    return mode === 'audio' ? supportsNativeHls(this.audio) : this.canPlayVideoHls()
   }
 
   private sourceFor(video: TomTubeVideo, mode: PlaybackMode) {
@@ -202,6 +235,7 @@ export class TomTubeEngine {
 
   private release(element: Media) {
     this.pauseElement(element)
+    this.scriptedHls?.detach(element)
     if (element.getAttribute('src')) {
       element.removeAttribute('src')
       element.load()
@@ -243,8 +277,7 @@ export class TomTubeEngine {
     } else this.continuous = null
     this.pendingSeek = position > 0.5 ? position : null
     if (element === this.video) this.video.muted = false
-    element.setAttribute('src', url)
-    element.load()
+    this.setSource(element, url, source === 'hls', () => { if (this.element === element) this.recover() })
     this.set({ status: 'loading', error: null, currentTime: position, duration: video.duration ?? 0, source, continuous: Boolean(continuous), playing: autoplay })
     this.updateMetadata(video)
     if (autoplay) this.start(element)
@@ -264,8 +297,7 @@ export class TomTubeEngine {
     this.cancelVideoTimers()
     this.video.muted = true
     this.videoSeekTarget = null
-    this.video.setAttribute('src', url)
-    this.video.load()
+    this.setSource(this.video, url, hls, () => { if (this.videoAttached) this.videoFailed() })
     if (play) this.startVideo()
   }
 
@@ -731,7 +763,7 @@ export class TomTubeEngine {
       const now = this.now()
       // Playing, just started, or paused by iOS a moment ago as the phone locked.
       const wasPlaying = this.view.playing || now - this.playingSince < 1000 || now - this.videoInterruptedAt < LOCK_PAUSE_WINDOW_MS
-      if (settings.backgroundAudio && this.view.mode === 'video' && wasPlaying && this.current()) {
+      if (settings.backgroundAudio && this.mobile && this.view.mode === 'video' && wasPlaying && this.current()) {
         this.set({ playing: true })
         this.setMode('audio', { auto: true })
       }

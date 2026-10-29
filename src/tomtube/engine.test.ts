@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DRIFT_LIMIT_S, TomTubeEngine, LOCK_PAUSE_WINDOW_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS, VIDEO_PAUSE_CONFIRM_MS, isAppleMobile } from './engine'
+import { DRIFT_LIMIT_S, TomTubeEngine, LOCK_PAUSE_WINDOW_MS, RETRY_DELAYS_MS, STALL_TIMEOUT_MS, VIDEO_PAUSE_CONFIRM_MS, isAppleMobile, isMobile } from './engine'
+import type { ScriptedHls } from './hlsPlayer'
 import { useTomTube, defaultSettings, initialPlayer } from './store'
 import { emptyQueue } from './queue'
 import type { TomTubeVideo } from './api'
@@ -71,10 +72,12 @@ let engine: TomTubeEngine
 let api: { prefetch: ReturnType<typeof vi.fn>; queueTimeline: ReturnType<typeof vi.fn> }
 let clock = 1_000_000
 
-function create(options: { appleMobile?: boolean } = {}) {
+function create(options: { appleMobile?: boolean; mobile?: boolean; scriptedHls?: ScriptedHls | null } = {}) {
   engine?.destroy()
   engine = new TomTubeEngine({
     appleMobile: options.appleMobile ?? false,
+    mobile: options.mobile ?? true,
+    scriptedHls: options.scriptedHls ?? null,
     video: videoEl as unknown as HTMLMediaElement,
     audio: audioEl as unknown as HTMLMediaElement,
     session: () => session,
@@ -257,6 +260,54 @@ describe('TomTube player', () => {
     useTomTube.getState().setQueue({ items: [video('a'), video('b')], index: 0 })
     engine.setMode('audio')
     expect(api.prefetch).toHaveBeenCalledWith(session, 'bbbbbbbbbbb')
+  })
+
+  it('on a computer, switching tabs leaves the video and its sound playing', () => {
+    create({ mobile: false })
+    engine.playVideo(video('a'))
+    videoEl.metadata(300)
+    videoEl.fire('playing')
+    doc.set('hidden')
+    doc.set('visible')
+    expect(player()).toMatchObject({ mode: 'video', playing: true })
+    expect(videoEl.paused).toBe(false)
+    expect(audioEl.src).toBe('')
+    expect(videoEl.loads).toBe(1)
+  })
+
+  it('plays HLS through hls.js where the browser cannot play it natively (Firefox)', () => {
+    const attached: string[] = []
+    const fatal: Array<() => void> = []
+    let detached = 0
+    const scripted: ScriptedHls = {
+      ready: () => true,
+      attach: (element, url, onFatal) => { attached.push(url); fatal.push(onFatal); element.setAttribute('src', 'blob:hls') },
+      detach: (element) => { if (!element.getAttribute('src')?.startsWith('blob:')) return false; detached += 1; element.removeAttribute('src'); return true },
+    }
+    videoEl.hls = false
+    audioEl.hls = false
+    let readyCalls = 0
+    const ready = scripted.ready
+    scripted.ready = () => { readyCalls += 1; return ready() }
+    create({ mobile: false, scriptedHls: scripted })
+    expect(readyCalls).toBe(1) // starts loading hls.js before the first video
+    engine.playVideo(video('a'))
+    expect(attached).toEqual([expect.stringMatching(/\/videos\/aaaaaaaaaaa\/master\.m3u8\?height=1080&mt=/)])
+    expect(player()).toMatchObject({ source: 'hls', playing: true })
+    expect(videoEl.playCalls).toBe(1)
+    // hls.js giving up goes through the usual retry, then the single file.
+    fatal[0]()
+    vi.advanceTimersByTime(RETRY_DELAYS_MS[0])
+    expect(attached).toHaveLength(2)
+    fatal[1]()
+    vi.advanceTimersByTime(RETRY_DELAYS_MS[1])
+    expect(videoEl.src).toMatch(/progressive\.mp4/)
+    expect(detached).toBeGreaterThanOrEqual(2)
+    // Audio only plays the M4A file, and the picture's hls.js is stopped.
+    engine.playVideo(video('b'))
+    engine.setMode('audio')
+    expect(audioEl.src).toMatch(/\/videos\/bbbbbbbbbbb\/audio\.m4a/)
+    expect(videoEl.src).toBe('')
   })
 
   it('locking the phone during a video carries on as audio, and coming back returns to video', () => {
@@ -689,6 +740,8 @@ describe('TomTube player', () => {
       expect(isAppleMobile({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', maxTouchPoints: 5 })).toBe(true)
       expect(isAppleMobile({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', maxTouchPoints: 5 })).toBe(true)
       expect(isAppleMobile({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', maxTouchPoints: 0 })).toBe(false)
+      expect(isMobile({ userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) Mobile Safari/537.36', maxTouchPoints: 5 })).toBe(true)
+      expect(isMobile({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0', maxTouchPoints: 0 })).toBe(false)
       expect(isAppleMobile({ userAgent: 'Mozilla/5.0 (Linux; Android 15)', maxTouchPoints: 5 })).toBe(false)
     })
   })
