@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { releaseTag, repository, signedInstaller, updateManifest, versionFromInstaller } from './desktop-update-manifest.mjs'
 
 // Tomify for Windows (desktop/) has its settings spread over Rust, JSON and the site; these keep them in step.
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
@@ -58,4 +61,64 @@ test('installer settings: version in step, icons present, Windows media keys on'
   // Setting browser arguments replaces wry's defaults, so they must be kept.
   assert.match(main, /--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection/)
   assert.match(main, /--enable-features=HardwareMediaKeyHandling/)
+})
+
+test('the app updates itself from GitHub releases, checked from Rust with nothing opened to the site', () => {
+  const updater = conf.plugins.updater
+  assert.deepEqual(updater.endpoints, [`https://github.com/${repository}/releases/latest/download/latest.json`])
+  // The public key comes from the build (repository variable), so a key is never committed here.
+  assert.equal(updater.pubkey, '')
+  assert.equal(updater.windows.installMode, 'passive')
+  assert.match(cargo, /^tauri-plugin-updater = /m)
+  assert.match(main, /^mod updates;/m)
+  assert.match(main, /\.plugin\(tauri_plugin_updater::Builder::new\(\)\.build\(\)\)/)
+  assert.match(main, /updates::start\(app\.handle\(\)\)/)
+  // The site can't trigger, skip or fake an update.
+  assert.ok(capability.permissions.every((permission) => !/updater|dialog/.test(permission)))
+  assert.doesNotMatch(read('src/stores/miniPlayer.ts') + read('src/lib/desktop-app.ts'), /updater/)
+})
+
+test('CI signs the installers with secrets and releases each new version once, from main', () => {
+  const workflow = read('.github/workflows/desktop.yml')
+  assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY: \$\{\{ secrets\.TAURI_SIGNING_PRIVATE_KEY \}\}/)
+  assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY_PASSWORD: \$\{\{ secrets\.TAURI_SIGNING_PRIVATE_KEY_PASSWORD \}\}/)
+  assert.match(workflow, /vars\.TAURI_UPDATER_PUBLIC_KEY/)
+  assert.match(workflow, /createUpdaterArtifacts = \$true/)
+  assert.match(workflow, /\*\.exe\.sig/)
+  assert.match(workflow, /github\.ref == 'refs\/heads\/main'/)
+  assert.match(workflow, /tag="desktop-v\$version"/)
+  assert.equal(releaseTag(conf.version), `desktop-v${conf.version}`)
+  assert.match(workflow, /gh release create "\$tag"[\s\S]*bundle\/latest\.json/)
+  // No private key next to the app (a Tauri key file starts with this, base64-encoded).
+  const keyStart = Buffer.from('untrusted comment: rsign encrypted secret key').toString('base64').slice(0, 40)
+  for (const text of [workflow, JSON.stringify(conf), main, read('desktop/src-tauri/src/updates.rs')]) {
+    assert.ok(!text.includes(keyStart) && !text.includes('rsign encrypted secret key'))
+  }
+})
+
+test('latest.json points each install type at its own signed installer', () => {
+  const folder = mkdtempSync(join(tmpdir(), 'tomify-bundle-'))
+  mkdirSync(join(folder, 'nsis'))
+  mkdirSync(join(folder, 'msi'))
+  writeFileSync(join(folder, 'nsis', 'Tomify_0.1.4_x64-setup.exe'), 'exe')
+  writeFileSync(join(folder, 'nsis', 'Tomify_0.1.4_x64-setup.exe.sig'), 'exe-signature\n')
+  writeFileSync(join(folder, 'msi', 'Tomify_0.1.4_x64_en-US.msi'), 'msi')
+  writeFileSync(join(folder, 'msi', 'Tomify_0.1.4_x64_en-US.msi.sig'), 'msi-signature')
+  const nsis = signedInstaller(join(folder, 'nsis'), '-setup.exe')
+  const msi = signedInstaller(join(folder, 'msi'), '.msi')
+  assert.equal(versionFromInstaller(nsis.name), '0.1.4')
+  const manifest = updateManifest({ version: '0.1.4', tag: 'desktop-v0.1.4', nsis, msi, pubDate: '2026-10-29T10:00:00.000Z' })
+  const base = `https://github.com/${repository}/releases/download/desktop-v0.1.4`
+  assert.deepEqual(manifest.platforms, {
+    'windows-x86_64': { signature: 'exe-signature', url: `${base}/Tomify_0.1.4_x64-setup.exe` },
+    'windows-x86_64-nsis': { signature: 'exe-signature', url: `${base}/Tomify_0.1.4_x64-setup.exe` },
+    'windows-x86_64-msi': { signature: 'msi-signature', url: `${base}/Tomify_0.1.4_x64_en-US.msi` },
+  })
+  assert.equal(manifest.version, '0.1.4')
+  assert.equal(manifest.pub_date, '2026-10-29T10:00:00.000Z')
+  // An unsigned installer is never published.
+  assert.throws(() => updateManifest({ version: '0.1.4', tag: 'desktop-v0.1.4', nsis: { ...nsis, signature: ' ' }, msi, pubDate: '' }), /no signature/)
+  writeFileSync(join(folder, 'msi', 'Tomify_0.1.4_x64_en-US.msi.sig'), '')
+  assert.throws(() => updateManifest({ version: '0.1.4', tag: 'desktop-v0.1.4', nsis, msi: signedInstaller(join(folder, 'msi'), '.msi'), pubDate: '' }), /no signature/)
+  assert.throws(() => versionFromInstaller('setup.exe'), /version/)
 })
