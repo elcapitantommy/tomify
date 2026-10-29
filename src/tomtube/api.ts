@@ -94,7 +94,7 @@ export function mediaQuery(session: AuthSession, now = Date.now()) {
   return token ? new URLSearchParams({ mt: token }).toString() : null
 }
 
-export type MediaFile = 'master.m3u8' | 'audio.m3u8' | 'progressive.mp4' | 'audio.m4a'
+export type MediaFile = 'master.m3u8' | 'video.m3u8' | 'audio.m3u8' | 'progressive.mp4' | 'audio.m4a'
 
 export function mediaUrl(session: AuthSession, id: string, file: MediaFile) {
   const query = mediaQuery(session)

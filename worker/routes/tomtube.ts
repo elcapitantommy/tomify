@@ -29,7 +29,7 @@ const JSON_METHODS: Array<[RegExp, string[]]> = [
 const BODY_LIMITS: Record<string, number> = { watched: 4096, feedback: 4096, 'training/cookies': 256 * 1024 }
 // Changing the account cookies or the training log; limited to TOMTUBE_TRAINING_USERS when that is set.
 const MANAGE = (rest: string, method: string) => rest === 'training/cookies' || rest === 'training/sync' || (rest === 'training' && method === 'DELETE')
-const MEDIA_PATH = new RegExp(`^/api/tomtube/(?:queue\\.m3u8|videos/${ID}/(?:master|audio|[va]\\d{1,4})\\.m3u8|videos/${ID}/(?:\\d{1,4}\\.(?:mp4|m4a)|progressive\\.mp4|audio\\.m4a)|thumbs/${ID}/[a-z]{4,13}\\.jpg)$`)
+const MEDIA_PATH = new RegExp(`^/api/tomtube/(?:queue\\.m3u8|videos/${ID}/(?:master|video|audio|[va]\\d{1,4})\\.m3u8|videos/${ID}/(?:\\d{1,4}\\.(?:mp4|m4a)|progressive\\.mp4|audio\\.m4a)|thumbs/${ID}/[a-z]{4,13}\\.jpg)$`)
 const FORWARDED = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']
 const QUERY_KEYS: Record<string, string[]> = { search: ['q', 'limit'], resolve: ['url'], 'queue.json': ['ids'], 'queue.m3u8': ['ids'], recommendations: ['refresh'] }
 

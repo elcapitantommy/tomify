@@ -125,6 +125,16 @@ test('the master playlist starts near 720p and shares one AAC rendition', () => 
   assert.match(lines[4], /CODECS="avc1\.4D401F,mp4a\.40\.2",RESOLUTION=1280x720,FRAME-RATE=25\.000,AUDIO="audio"/)
 })
 
+test('the video-only master playlist has the same variants and no audio', () => {
+  const selection = selectFormats(ytdlpInfo('dQw4w9WgXcQ').formats)
+  const playlist = masterPlaylist(selection.video, null)
+  assert.equal(playlist.includes('TYPE=AUDIO'), false)
+  assert.equal(playlist.includes('mp4a'), false)
+  assert.equal(playlist.includes('AUDIO='), false)
+  assert.deepEqual(playlist.split('\n').filter((line) => /^v\d+\.m3u8$/.test(line)), ['v136.m3u8', 'v134.m3u8', 'v137.m3u8'])
+  assert.match(playlist, /CODECS="avc1\.4D401F",RESOLUTION=1280x720/)
+})
+
 test('the queue playlist plays several tracks back to back with discontinuities', () => {
   const file = fragmentedMp4({ count: 2, seconds: 5 })
   const index = readIndex(file, file.length)

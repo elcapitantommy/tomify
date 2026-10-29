@@ -6,8 +6,18 @@
 // <audio> element playing with the screen locked and shows it on the lock screen through the Media
 // Session API, with play/pause, next/previous and seeking, from headphones and Bluetooth too.
 //
-// Locking the phone during a video switches to audio by itself (visibilitychange). Three things make
-// that handoff work, or at least fail visibly:
+// iPhone and iPad (paired playback): iOS will not start an audio element while the page is going to
+// the background (device testing, even with everything below in place), so on iOS the sound never
+// changes hands. With "Keep listening when the phone locks" on, the <audio> element plays the video's
+// M4A audio from the moment playback starts, and the <video> element shows the picture muted (a
+// video-only stream, so the audio isn't fetched twice), kept within DRIFT_LIMIT_S of the sound. Locking
+// the phone only pauses the picture; the sound carries on as it was. Unlocking moves the picture to
+// where the sound is. Audio only just removes the picture. The sound is never paused for the picture:
+// if the picture buffers it catches up afterwards, because pausing the sound could leave nothing
+// playing when the phone locks. If the sound buffers, the picture waits for it.
+//
+// Elsewhere, locking the phone during a video switches to audio by itself (visibilitychange). Three
+// things make that handoff work, or at least fail visibly:
 // - iOS starts a media element without a tap only once that element has been started from a tap. The
 //   <audio> element is otherwise only ever started from visibilitychange, so every tap that plays
 //   something also starts and immediately stops the empty <audio> element (primeAudio). No source is
@@ -40,6 +50,16 @@ const HLS_FAILURES_BEFORE_FILE = 2
 // Short, so a listener who pauses and then locks the phone stays paused; widen only on device evidence.
 export const LOCK_PAUSE_WINDOW_MS = 500
 const MAX_CONTINUOUS_TRACKS = 20
+// Paired playback: how far the muted picture may drift from the sound before it is moved, and how
+// often at most.
+export const DRIFT_LIMIT_S = 0.3
+const RESYNC_INTERVAL_MS = 2000
+// Paired playback: a pause of the picture while TomTube is showing counts as the listener's (iOS's
+// full-screen controls) only after this long, because iOS also pauses it as the phone locks, sometimes
+// just before the page reports being hidden.
+export const VIDEO_PAUSE_CONFIRM_MS = 1000
+// Paired playback: attempts at the picture (HLS, then the single file) before showing sound alone.
+const VIDEO_ATTEMPTS = HLS_FAILURES_BEFORE_FILE + 2
 // Watches are reported to the server's training log (recommendations) once a video has played this
 // long, again when it ends or another video starts, and when TomTube goes to the background. A video
 // left for another within SKIP_SECONDS of starting is reported as skipped (a weak negative signal).
@@ -100,14 +120,23 @@ export class TomTubeEngine {
   // When iOS (not the listener) last paused a playing video.
   private videoInterruptedAt = -Infinity
   private audioPrimed = false
+  private readonly doc: Deps['document'] | undefined
+  // Paired playback: where this player last moved the picture to, so iOS's own scrubbing can be told apart.
+  private videoSeekTarget: number | null = null
+  private lastResync = -Infinity
+  private videoPauseTimer: number | null = null
+  private videoRetryTimer: number | null = null
 
   constructor(deps: Deps) {
     this.deps = deps
     this.video = deps.video
     this.audio = deps.audio
+    const doc = deps.document ?? (typeof document !== 'undefined' ? document : undefined)
+    this.doc = doc
+    // Before listen(): the paired handlers see the picture's pauses before they are marked as handled.
+    this.listenPaired()
     for (const element of [this.video, this.audio]) this.listen(element)
     this.setupMediaSession()
-    const doc = deps.document ?? (typeof document !== 'undefined' ? document : undefined)
     const win = deps.window ?? (typeof window !== 'undefined' ? window : undefined)
     if (doc) {
       const visibility = () => this.visibilityChanged(doc.visibilityState)
@@ -132,8 +161,13 @@ export class TomTubeEngine {
   private get store() { return useTomTube.getState() }
   private get view() { return this.store.player }
   private set(view: Partial<PlayerView>) { this.store.setPlayer(view) }
-  private get element(): Media { return this.view.mode === 'audio' ? this.audio : this.video }
+  // The element that carries the sound and the player's state: the <audio> element in audio mode and
+  // in paired playback, otherwise the <video> element.
+  private get element(): Media { return this.view.mode === 'audio' || this.paired ? this.audio : this.video }
   private get appleMobile() { return this.deps.appleMobile ?? isAppleMobile() }
+  private get paired() { return this.appleMobile && this.store.settings.backgroundAudio }
+  private get videoAttached() { return this.paired && this.view.mode === 'video' && Boolean(this.video.getAttribute('src')) }
+  private visible() { return this.doc?.visibilityState !== 'hidden' }
   private now() { return this.deps.now?.() ?? Date.now() }
   private timeout(callback: () => void, ms: number) { return (this.deps.setTimeout ?? ((cb, delay) => window.setTimeout(cb, delay)))(callback, ms) }
   private cancel(id: number | null) { if (id !== null) (this.deps.clearTimeout ?? ((value) => window.clearTimeout(value)))(id) }
@@ -180,8 +214,10 @@ export class TomTubeEngine {
     const video = this.current()
     if (!video) return
     const mode = this.view.mode
-    const element = mode === 'audio' ? this.audio : this.video
-    this.release(mode === 'audio' ? this.video : this.audio)
+    const element = this.element
+    const sourceMode: PlaybackMode = element === this.audio ? 'audio' : 'video'
+    // In paired playback the picture is attached again below, once the sound is set up.
+    this.release(element === this.audio ? this.video : this.audio)
     this.clearTimers()
     const continuous = mode === 'audio' && this.continuousIds()
     const session = this.deps.session()
@@ -192,7 +228,7 @@ export class TomTubeEngine {
       url = queueStreamUrl(session, continuous)
       source = 'hls'
     } else {
-      const chosen = this.sourceFor(video, mode)
+      const chosen = this.sourceFor(video, sourceMode)
       if (!chosen) return
       url = chosen.url
       source = chosen.kind
@@ -204,12 +240,109 @@ export class TomTubeEngine {
       void this.loadTimeline(this.continuous)
     } else this.continuous = null
     this.pendingSeek = position > 0.5 ? position : null
+    if (element === this.video) this.video.muted = false
     element.setAttribute('src', url)
     element.load()
     this.set({ status: 'loading', error: null, currentTime: position, duration: video.duration ?? 0, source, continuous: Boolean(continuous), playing: autoplay })
     this.updateMetadata(video)
     if (autoplay) this.start(element)
-    if (mode === 'audio') this.prefetchAhead()
+    if (sourceMode === 'audio') this.prefetchAhead()
+    if (this.paired && mode === 'video') this.attachVideo(video, autoplay)
+  }
+
+  // --- paired playback (iPhone): the muted picture beside the sound ---------------------------------
+
+  // Not while hidden: iOS would only suspend it; it is attached when TomTube is showing again.
+  private attachVideo(item: TomTubeVideo, play: boolean) {
+    const session = this.deps.session()
+    if (!session || !this.visible()) return
+    const hls = this.useHls(item.id, 'video')
+    const url = mediaUrl(session, item.id, hls ? 'video.m3u8' : 'progressive.mp4')
+    if (!url) return
+    this.cancelVideoTimers()
+    this.video.muted = true
+    this.videoSeekTarget = null
+    this.video.setAttribute('src', url)
+    this.video.load()
+    if (play) this.startVideo()
+  }
+
+  private startVideo() {
+    this.requestedPauses.delete(this.video)
+    try { this.video.play()?.catch(() => undefined) } catch { /* the picture is optional; the sound carries on */ }
+  }
+
+  // Moves the picture to the sound when they are more than DRIFT_LIMIT_S apart.
+  private syncVideo(force = false) {
+    if (!this.videoAttached || this.video.readyState < 1) return
+    const target = this.audio.currentTime
+    if (!Number.isFinite(target) || Math.abs(this.video.currentTime - target) < DRIFT_LIMIT_S) return
+    const now = this.now()
+    if (!force && now - this.lastResync < RESYNC_INTERVAL_MS) return
+    this.lastResync = now
+    this.videoSeekTarget = target
+    try { this.video.currentTime = target } catch { /* tried again on the next timeupdate */ }
+  }
+
+  // A broken picture is loaded again (HLS twice, then the single file); after that the sound plays alone.
+  private videoFailed() {
+    const item = this.current()
+    if (!item) return
+    const key = `video:${item.id}`
+    const failures = (this.hlsFailures.get(key) ?? 0) + 1
+    this.hlsFailures.set(key, failures)
+    if (failures >= VIDEO_ATTEMPTS) return
+    this.cancel(this.videoRetryTimer)
+    this.videoRetryTimer = this.timeout(() => {
+      this.videoRetryTimer = null
+      if (this.paired && this.view.mode === 'video' && this.current()?.id === item.id && this.audio.getAttribute('src')) this.attachVideo(item, this.view.playing)
+    }, RETRY_DELAYS_MS[0])
+  }
+
+  private cancelVideoTimers() {
+    this.cancel(this.videoPauseTimer)
+    this.videoPauseTimer = null
+    this.cancel(this.videoRetryTimer)
+    this.videoRetryTimer = null
+  }
+
+  // The picture's own events, while it is paired with the sound. The sound's events go through listen().
+  private listenPaired() {
+    const video = this.video
+    const on = (type: string, handler: () => void) => {
+      const wrapped = () => { if (this.videoAttached) handler() }
+      video.addEventListener(type, wrapped)
+      this.cleanups.push(() => video.removeEventListener(type, wrapped))
+    }
+    on('loadedmetadata', () => this.syncVideo(true))
+    on('playing', () => {
+      this.cancel(this.videoPauseTimer)
+      this.videoPauseTimer = null
+      this.syncVideo(true)
+    })
+    on('seeking', () => {
+      const target = this.videoSeekTarget
+      this.videoSeekTarget = null
+      if (target !== null && Math.abs(video.currentTime - target) < 0.5) return
+      // Scrubbed in iOS's full-screen player: the sound follows.
+      try { this.audio.currentTime = video.currentTime } catch { /* not seekable yet */ }
+      this.set({ currentTime: video.currentTime })
+    })
+    on('pause', () => {
+      if (!video.paused || video.ended) return
+      if (this.requestedPauses.delete(video)) return
+      if (!this.view.playing || !this.visible()) return
+      // iOS's full-screen controls, or iOS pausing the picture as the phone locks: only the first
+      // leaves TomTube showing a second later.
+      this.cancel(this.videoPauseTimer)
+      this.videoPauseTimer = this.timeout(() => {
+        this.videoPauseTimer = null
+        if (this.videoAttached && this.visible() && video.paused && this.view.playing) this.pause()
+      }, VIDEO_PAUSE_CONFIRM_MS)
+    })
+    // Played from iOS's full-screen controls while TomTube was paused.
+    on('play', () => { if (!this.view.playing && this.visible()) this.resume() })
+    on('error', () => this.videoFailed())
   }
 
   private waitForToken(video: TomTubeVideo, mode: PlaybackMode, position: number, autoplay: boolean) {
@@ -305,6 +438,7 @@ export class TomTubeEngine {
     this.set({ playing: true })
     if (this.view.status === 'ended') this.seek(0)
     this.start(element)
+    if (this.videoAttached && this.visible()) this.startVideo()
   }
 
   pause() {
@@ -314,6 +448,7 @@ export class TomTubeEngine {
     this.set({ playing: false, status: this.current() ? 'paused' : 'idle' })
     this.clearTimers()
     this.pauseElement(this.element)
+    if (this.videoAttached) this.pauseElement(this.video)
     this.setSessionState('paused')
   }
 
@@ -326,6 +461,11 @@ export class TomTubeEngine {
     const offset = this.continuousOffset()
     if (element.readyState >= 1) element.currentTime = target + offset
     else this.pendingSeek = target + offset
+    if (this.videoAttached && this.video.readyState >= 1) {
+      this.videoSeekTarget = target
+      this.lastResync = this.now()
+      try { this.video.currentTime = target } catch { /* moved on the next timeupdate */ }
+    }
     this.set({ currentTime: target })
   }
 
@@ -352,6 +492,13 @@ export class TomTubeEngine {
 
   setMode(mode: PlaybackMode, { auto = false } = {}) {
     if (mode === this.view.mode) return
+    const item = this.current()
+    // Paired playback: the sound carries on untouched; only the picture comes or goes.
+    if (this.paired && item && this.audio.getAttribute('src') && !this.continuous && !(mode === 'audio' && this.continuousIds())) {
+      this.set({ mode, autoAudio: false })
+      if (mode === 'audio') { this.cancelVideoTimers(); this.release(this.video) } else this.attachVideo(item, this.view.playing)
+      return
+    }
     // The element's own position is the freshest; timeupdate can be up to a quarter of a second behind.
     const from = this.element
     const position = !this.continuous && from.getAttribute('src') && from.readyState >= 1 && Number.isFinite(from.currentTime) ? from.currentTime : this.view.currentTime
@@ -453,6 +600,8 @@ export class TomTubeEngine {
       this.clearStall()
       this.set({ status: 'playing', playing: true, error: null })
       this.setSessionState('playing')
+      // Paired: the picture waits for the sound (after buffering or an interruption).
+      if (element === this.audio && this.videoAttached && this.visible() && this.video.paused) { this.startVideo(); this.syncVideo(true) }
     })
     on('pause', () => {
       // Late: the element has been emptied or started again since (a switch, a reload, a new source).
@@ -466,6 +615,7 @@ export class TomTubeEngine {
       if (this.view.playing && this.view.mode === 'video' && !this.inFullScreen(element)) this.videoInterruptedAt = this.now()
       if (this.view.playing) this.set({ playing: false, status: 'paused' })
       this.setSessionState('paused')
+      if (element === this.audio && this.videoAttached) this.pauseElement(this.video)
     })
     on('waiting', () => this.buffering(element))
     on('stalled', () => { if (element.readyState < 3) this.buffering(element) })
@@ -483,6 +633,7 @@ export class TomTubeEngine {
     let duration = Number.isFinite(element.duration) ? element.duration : this.view.duration
     if (this.continuous) ({ time, duration } = this.followContinuous(time))
     this.set({ currentTime: time, duration })
+    if (element === this.audio) this.syncVideo()
     this.countWatched(time)
     const now = this.now()
     if (now - this.lastLockScreenUpdate > 1000) {
@@ -515,6 +666,7 @@ export class TomTubeEngine {
     if (!this.view.playing) return
     this.set({ status: 'buffering' })
     this.setSessionState('paused')
+    if (element === this.audio && this.videoAttached) this.pauseElement(this.video)
     if (this.stallTimer !== null) return
     this.stallFrom = element.currentTime
     this.stallTimer = this.timeout(() => {
@@ -529,7 +681,8 @@ export class TomTubeEngine {
     const video = this.current()
     if (!video || !this.view.playing || this.retryTimer !== null) return
     const mode = this.view.mode
-    if (this.view.source === 'hls' && !this.continuous) this.hlsFailures.set(`${mode}:${video.id}`, (this.hlsFailures.get(`${mode}:${video.id}`) ?? 0) + 1)
+    const kind: PlaybackMode = this.element === this.audio ? 'audio' : 'video'
+    if (this.view.source === 'hls' && !this.continuous) this.hlsFailures.set(`${kind}:${video.id}`, (this.hlsFailures.get(`${kind}:${video.id}`) ?? 0) + 1)
     if (this.retries >= RETRY_DELAYS_MS.length) {
       this.set({ playing: false, status: 'error', error: 'The video could not be played. Check your connection and try again.' })
       return
@@ -556,8 +709,23 @@ export class TomTubeEngine {
   // Locking the phone during a video: carry on as audio. Coming back: back to the video.
   private visibilityChanged(state: DocumentVisibilityState) {
     const { settings } = this.store
+    if (state === 'hidden') this.reportWatch()
+    if (this.paired) {
+      const item = this.current()
+      if (this.view.mode !== 'video' || !item) return
+      if (state === 'hidden') {
+        // Locked: only the picture stops; the sound is already playing and carries on.
+        this.cancelVideoTimers()
+        if (this.video.getAttribute('src')) this.pauseElement(this.video)
+      } else if (!this.video.getAttribute('src')) {
+        if (this.audio.getAttribute('src')) this.attachVideo(item, this.view.playing)
+      } else {
+        if (this.view.playing) this.startVideo()
+        this.syncVideo(true)
+      }
+      return
+    }
     if (state === 'hidden') {
-      this.reportWatch()
       const now = this.now()
       // Playing, just started, or paused by iOS a moment ago as the phone locked.
       const wasPlaying = this.view.playing || now - this.playingSince < 1000 || now - this.videoInterruptedAt < LOCK_PAUSE_WINDOW_MS
@@ -573,6 +741,7 @@ export class TomTubeEngine {
   private clearStall() { this.cancel(this.stallTimer); this.stallTimer = null }
   private clearTimers() {
     this.clearStall()
+    this.cancelVideoTimers()
     this.cancel(this.retryTimer)
     this.retryTimer = null
     this.stopWaitingForToken?.()

@@ -2342,6 +2342,9 @@ test('TomTube playlists are re-signed with a fresh media token', async () => {
     const signed = /v136\.m3u8\?mt=([^\n]+)/.exec(await playlist.text())[1]
     assert.deepEqual(openMediaToken(env.TOMIFY_MEDIA_KEY, decodeURIComponent(signed)), { user: 'tt-token', token: '0123456789abcdef0123456789abcdef', salt: 'salt7' })
     assert.equal((await worker.fetch(new Request('https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/master.m3u8?mt=forged'), env)).status, 401)
+    const videoOnly = await worker.fetch(new Request(`https://app.tomify.test/api/tomtube/videos/dQw4w9WgXcQ/video.m3u8?mt=${encodeURIComponent(token)}`), env)
+    assert.equal(videoOnly.status, 200, 'the muted picture stream for paired playback is proxied')
+    assert.match(await videoOnly.text(), /v136\.m3u8\?mt=/)
   } finally { globalThis.fetch = originalFetch }
 })
 
