@@ -19,6 +19,8 @@ export interface TomifinJob {
   canRetry?: boolean
   // What Retry does for this job, when it is not the downloader's own retry (a finished torrent Tomifin moves itself).
   retryHint?: string
+  // Shown when confirming Remove, when the agent checks something first (an older agent leaves this out).
+  removeNote?: string
   // A torrent More trackers can add trackers to (not a private one; an older agent leaves this out).
   canFindTrackers?: boolean
 }

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { link, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createTomifinController, tomifinConfig } from './tomifin.mjs'
@@ -372,4 +372,72 @@ test('only empty staging folders of known jobs that qBittorrent no longer has ar
   assert.equal(await readFile(join(holding.staging, 'partial.mkv'), 'utf8'), 'partial')
   assert.equal((await env.saved(empty.id)).stagingClear, true)
   assert.deepEqual(removes(env.client), [])
+})
+
+test('Remove publishes a finished download first, and refuses when it cannot', async () => {
+  const env = await setup()
+  // Finished in staging, not yet finished by a check: Remove moves it into the library first.
+  const first = await env.job('private')
+  await filmFolder(first.staging)
+  env.torrent(first)
+  assert.deepEqual(await env.controller.cancel({ id: first.id }), { cancelled: true, filesDeleted: false, torrentRemoved: true })
+  assert.equal(await readFile(join(env.private, 'Big Buck Bunny', 'Big Buck Bunny.mkv'), 'utf8'), 'video-bytes')
+  assert.deepEqual(removes(env.client), [['remove', first.hash, false]])
+  // Finished, but the library already has that name: refused, torrent and record kept.
+  const clash = await env.job('private')
+  await filmFolder(clash.staging)
+  env.torrent(clash)
+  await assert.rejects(env.controller.cancel({ id: clash.id }), { code: 'not-published', message: /not in the Private library yet: .*already has something called "Big Buck Bunny"/ })
+  assert.equal(env.client.torrents.length, 1)
+  assert.equal((await env.saved(clash.id)).finalise.state, 'held')
+  assert.equal(await exists(join(clash.staging, 'Big Buck Bunny', 'Big Buck Bunny.mkv')), true)
+})
+
+test('Remove of a download out of qBittorrent but not yet published publishes it first or refuses', async () => {
+  const env = await setup()
+  const job = await env.job('private', { finalise: { state: 'publish-failed', item: 'Big Buck Bunny', kind: 'folder', reason: 'clash', nextAttemptAt: new Date(START + 60 * 60_000).toISOString() } })
+  await filmFolder(job.staging)
+  await mkdir(join(env.private, 'Big Buck Bunny'))
+  await writeFile(join(env.private, 'Big Buck Bunny', 'other.mkv'), 'other')
+  await assert.rejects(env.controller.cancel({ id: job.id }), { code: 'not-published' })
+  assert.equal((await env.saved(job.id)).finalise.state, 'publish-failed', 'record kept')
+  await rm(join(env.private, 'Big Buck Bunny'), { recursive: true })
+  assert.equal((await env.controller.cancel({ id: job.id })).cancelled, true)
+  assert.equal(await readFile(join(env.private, 'Big Buck Bunny', 'Big Buck Bunny.mkv'), 'utf8'), 'video-bytes')
+  // Held for an unsafe path and then deleted from qBittorrent by hand: nothing for Tomifin to publish, so it can go.
+  const unsafe = await env.job('private', { finalise: { state: 'held', code: 'foreign-path', reason: 'outside' } })
+  assert.equal((await env.controller.cancel({ id: unsafe.id })).cancelled, true)
+})
+
+test('a finished Family torrent the importer has not published cannot be removed; once it has, it can', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'tomifin-import-remove-')))
+  const family = join(root, 'family')
+  const privateDir = join(root, 'private')
+  await mkdir(join(family, '.downloads', 'The Wizard of Oz (1939)'), { recursive: true })
+  await Promise.all([mkdir(privateDir), mkdir(join(family, 'Movies'))])
+  const config = tomifinConfig({ TOMIFY_TOMIFIN_FAMILY_DIR: family, TOMIFY_TOMIFIN_PRIVATE_DIR: privateDir, TOMIFY_TOMIFIN_FAMILY_IMPORT_SUBDIR: '.downloads' }, { torrentAvailable: true })
+  const client = fakeClient()
+  const stateRoot = join(root, 'state')
+  const controller = createTomifinController({ config, client, stateRoot, now: () => START })
+  const id = jobId()
+  await mkdir(join(stateRoot, 'tomifin'), { recursive: true })
+  await writeFile(join(stateRoot, 'tomifin', `${id}.json`), JSON.stringify({ id, version: 1, downloader: 'qbittorrent', createdAt: new Date(START - 60 * 60_000).toISOString(), destination: 'family', title: 'The Wizard of Oz', infoHash: hashFor(id) }))
+  const film = join(family, '.downloads', 'The Wizard of Oz (1939)', 'The.Wizard.of.Oz.1939.mkv')
+  await writeFile(film, 'oz')
+  // A hardlink kept only for review does not count as published.
+  await mkdir(join(family, '.review', hashFor(id)), { recursive: true })
+  await link(film, join(family, '.review', hashFor(id), 'The.Wizard.of.Oz.1939.mkv'))
+  client.torrents.push({ hash: hashFor(id), name: 'The Wizard of Oz (1939)', tags: `tomifin-${id}`, category: 'tomifin-family', state: 'stalledUP', progress: 1, amount_left: 0, save_path: join(family, '.downloads'), content_path: join(family, '.downloads', 'The Wizard of Oz (1939)') })
+  const [view] = (await controller.list()).jobs
+  assert.equal(view.status, 'completed')
+  assert.match(view.removeNote, /checks the Family importer/)
+  await assert.rejects(controller.cancel({ id }), { code: 'not-published', message: /Family importer has not added it yet/ })
+  assert.deepEqual(removes(client), [])
+  assert.equal(client.torrents.length, 1)
+  // Published by the importer (a hardlink in Movies): Remove now takes it out of qBittorrent, keeping the files.
+  await mkdir(join(family, 'Movies', 'The Wizard of Oz (1939)'))
+  await link(film, join(family, 'Movies', 'The Wizard of Oz (1939)', 'The Wizard of Oz (1939).mkv'))
+  assert.deepEqual(await controller.cancel({ id }), { cancelled: true, filesDeleted: false, torrentRemoved: true })
+  assert.deepEqual(removes(client), [['remove', hashFor(id), false]])
+  assert.equal(await readFile(film, 'utf8'), 'oz')
 })

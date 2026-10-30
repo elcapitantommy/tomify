@@ -131,7 +131,7 @@ function JobCard({ job, onAction, busy }: { job: TomifinJob; onAction: (job: Tom
         {!confirming && <button type="button" className="tf-button tf-ghost" disabled={busy} onClick={() => setConfirming(true)}><X aria-hidden/>{done || job.status === 'failed' ? 'Remove' : 'Cancel'}</button>}
         {confirming && (
           <div className="tf-confirm" role="group" aria-label="Confirm">
-            <span>{done ? 'Remove from this list? The files stay in the library.' : job.keepsFilesOnCancel ? `Remove from ${job.downloaderLabel || 'qBittorrent'}? Any files already saved are kept.` : 'Cancel and delete the partial download?'}</span>
+            <span>{done ? `Remove from this list? The files stay in the library.${job.removeNote ? ` ${job.removeNote}` : ''}` : job.keepsFilesOnCancel ? `Remove from ${job.downloaderLabel || 'qBittorrent'}? Any files already saved are kept.` : 'Cancel and delete the partial download?'}</span>
             <button type="button" className="tf-button tf-danger" disabled={busy} onClick={() => { setConfirming(false); onAction(job, 'cancel') }}>{done || job.status === 'failed' ? 'Yes, remove' : 'Yes, cancel'}</button>
             <button type="button" className="tf-button tf-ghost" onClick={() => setConfirming(false)}>Keep</button>
           </div>

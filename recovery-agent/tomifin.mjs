@@ -17,7 +17,7 @@ import { JellyfinAuthError } from './jellyfin.mjs'
 import { LinkError, createLinkFetcher, inspectSubmission } from './tomifin-links.mjs'
 import { TomifinUsenetError, publishRetryDelay } from './tomifin-usenet.mjs'
 import { magnetTrackers, newTrackers, torrentPrivacy } from './tomifin-trackers.mjs'
-import { FINISHED_STATES, FinaliseError, STAGING_FOLDER, inspectStaged, publishStagedItem, readyForFinalisation, removeEmptyStaging, stagedContent, stagingPath } from './tomifin-finalise.mjs'
+import { FINISHED_STATES, FinaliseError, STAGING_FOLDER, inspectStaged, publishStagedItem, publishedByImporter, readyForFinalisation, removeEmptyStaging, stagedContent, stagingPath } from './tomifin-finalise.mjs'
 
 export { STAGING_FOLDER, stagingPath }
 
@@ -525,6 +525,7 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
     return {
       id: job.id, name: (job.origin === 'link' ? job.title : text(torrent?.name)) || job.title || text(torrent?.name), destination: job.destination, destinationLabel: destination?.label || job.destination, downloader: 'qbittorrent', downloaderLabel: 'qBittorrent', type: 'torrent',
       status: state.status, message: state.status === 'completed' && destination?.imports ? 'Seeding; the Family importer adds it to the library' : state.message, progress,
+      ...(state.status === 'completed' && destination?.imports ? { removeNote: 'Tomifin first checks the Family importer has added it to the library, and keeps it if not.' } : {}),
       downloadSpeed: torrent ? nonNegative(torrent.dlspeed) : null, uploadSpeed: torrent ? nonNegative(torrent.upspeed) : null,
       downloaded: torrent ? nonNegative(torrent.completed ?? torrent.downloaded) : null, size,
       eta: ['downloading', 'stalled'].includes(state.status) && eta !== null && eta >= 0 && eta < 8640000 ? Math.round(eta) : null,
@@ -537,6 +538,32 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
       canFindTrackers: Boolean(torrent) && !oversized && torrent.private !== true && ['queued', 'downloading', 'stalled', 'paused'].includes(state.status),
       // Only an unfinished download still in its own staging folder has its data deleted on cancel.
       keepsFilesOnCancel: job.recovered === true || !partialDataDeletable(torrent, destination, job.id),
+    }
+  }
+
+  // A finished download must be in the library before Remove may take it out of qBittorrent and drop its record:
+  // otherwise nothing would ever publish it (the record is what Tomifin finishes from, and the Family importer needs
+  // the torrent in qBittorrent). Tomifin publishes it first where it can, and otherwise refuses. A download that is
+  // not in qBittorrent any more and that Tomifin has nothing to publish from can always be removed.
+  async function publishedBeforeRemoval(job, torrent) {
+    const destination = config.destinations[job.destination]
+    if (!destination) return
+    const unpublished = (reason) => new TomifinError('not-published', `This download has finished but is not in the ${destination.label} library yet${reason ? `: ${reason.replace(/\.$/, '')}` : ''}. Tomifin will not remove it until it is, so it cannot be lost. Fix that and press Retry, or, if you do not want it, delete the torrent in qBittorrent's Web UI first.`)
+    if (torrent && text(torrent.state) === 'moving' && Number(torrent.progress) >= 1) throw new TomifinError('busy', 'qBittorrent is moving this download right now. Try again in a moment.')
+    const ownFinish = !destination.imports && ((torrent && readyForFinalisation(torrent) && !finishedInLibrary(torrent, destination, job.id)) || (job.finalise && job.finalise.state !== 'published' && (torrent || job.finalise.item)))
+    if (ownFinish) {
+      if (torrent && readyForFinalisation(torrent)) await finaliseStaged(job, torrent, [torrent], { force: true })
+      else if (!torrent && job.finalise?.item) await publishFinalised(job, { force: true })
+      if (job.finalise?.state !== 'published') throw unpublished(job.finalise?.reason)
+      log(`Tomifin moved ${logName(job)} into ${destination.label} before removing it`)
+      return
+    }
+    if (torrent && destination.imports && readyForFinalisation(torrent)) {
+      const content = hostContentPath(torrent.content_path, destination)
+      let published = false
+      try { published = Boolean(content) && await publishedByImporter(content, destination.hostPath) }
+      catch (error) { throw unpublished(`Tomifin could not check (${error?.code || 'error'})`) }
+      if (!published) throw unpublished('the Family importer has not added it yet (it needs the torrent in qBittorrent to do so; if it is held for review, see .review in the Family library)')
     }
   }
 
@@ -906,7 +933,10 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
         return { cancelled: true, filesDeleted: outcome.filesDeleted, downloaderRemoved: outcome.removed }
       }
       if (finalising.has(job.id)) throw new TomifinError('busy', 'Tomifin is moving this download into the library right now. Try again in a moment.')
-      const torrent = await torrentFor(job)
+      const found = await torrentFor(job)
+      await publishedBeforeRemoval(job, found)
+      // Publishing first may itself have taken it out of qBittorrent.
+      const torrent = found ? await torrentFor(job) : null
       let filesDeleted = false
       if (torrent) {
         filesDeleted = job.recovered !== true && partialDataDeletable(torrent, config.destinations[job.destination], job.id)
@@ -914,7 +944,7 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
       }
       await deleteJob(job.id)
       log(`Tomifin removed ${logName(job)} (${filesDeleted ? 'partial download deleted' : 'files kept'})`)
-      return { cancelled: true, filesDeleted, torrentRemoved: Boolean(torrent) }
+      return { cancelled: true, filesDeleted, torrentRemoved: Boolean(found) }
     },
 
     // Runs every few seconds: keeps both downloaders and the records in step (see reconcile) and starts publishing

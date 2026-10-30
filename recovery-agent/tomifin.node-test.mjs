@@ -274,7 +274,6 @@ test('cancelling never deletes anything in the library, a finished download or a
   const cases = [
     { name: 'saved straight into the library (older qBittorrent)', torrent: { state: 'downloading', content_path: '/media/family/Big Buck Bunny', progress: 0.2 } },
     { name: 'finished and moved', torrent: { state: 'uploading', content_path: '/media/family/Big Buck Bunny', progress: 1 } },
-    { name: 'finished, still in staging', torrent: { state: 'stalledUP', content_path: `${staging}/Big Buck Bunny`, progress: 1 } },
     { name: 'being moved into the library', torrent: { state: 'moving', content_path: `${staging}/Big Buck Bunny`, progress: 0.99 } },
     { name: 'another job\'s staging folder', torrent: { state: 'downloading', content_path: '/media/family/.tomifin-incomplete/00000000-0000-4000-8000-000000000009/Big Buck Bunny', progress: 0.2 } },
     { name: 'the staging folder itself', torrent: { state: 'downloading', content_path: staging, progress: 0.2 } },
@@ -294,6 +293,15 @@ test('cancelling never deletes anything in the library, a finished download or a
     assert.equal(result.filesDeleted, false, entry.name)
     assert.deepEqual(client.calls.find(([name]) => name === 'remove'), ['remove', hash, false], entry.name)
   }
+  // Finished but still in staging, and Tomifin cannot publish it (here the library folder does not exist): Remove is
+  // refused, so the download is never stranded (see tomifin-finalise.node-test.mjs for publishing first).
+  const client = fakeClient({ searchResults })
+  const { controller } = await controllerWith(client)
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  const { job } = await controller.download({ resultId: best.id, destination: 'family' })
+  Object.assign(client.torrents[0], { state: 'stalledUP', content_path: `${staging}/Big Buck Bunny`, progress: 1 })
+  await assert.rejects(controller.cancel({ id: job.id }), { code: 'not-published' })
+  assert.equal(client.calls.some(([name]) => name === 'remove'), false)
   assert.equal(stagingPath(config.destinations.private, id), `/media/private/.tomifin-incomplete/${id}`)
   assert.equal(partialDataDeletable(null, config.destinations.family, id), false)
 })

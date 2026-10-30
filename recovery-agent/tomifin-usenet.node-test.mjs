@@ -678,3 +678,16 @@ test('deduplication keeps distinct non-Latin releases of the same size, and stil
   const titles = (await context.controller.search({ query: 'anime', kind: 'video' })).results.map((result) => result.title).sort()
   assert.deepEqual(titles, ['Брат 1997 1080p', 'もののけ姫 2001 1080p', '千と千尋の神隠し 2001 1080p', '★★★', '☆☆☆'].sort(), 'different Japanese titles are both kept; the Cyrillic repost is merged; names with no letters or digits never match')
 })
+
+test('a download finished in SABnzbd cannot be removed before it is published', async () => {
+  const context = await world()
+  await searchAndQueue(context, 'family')
+  await context.sab.finish('SABnzbd_nzo_1', context.completed, { 'Sintel.2010.1080p.mkv': film })
+  // Not yet published (the agent has not got to it): Remove is refused and SABnzbd is not touched.
+  await assert.rejects(context.controller.cancel({ id: id(1) }), { code: 'not-published', message: /not in the library yet/ })
+  assert.equal(context.sab.calls.some((call) => call[0] === 'deleteHistory'), false)
+  assert.equal((await context.controller.list()).jobs.length, 1)
+  const [view] = (await settle(context)).jobs
+  assert.equal(view.status, 'completed', view.message)
+  assert.equal((await context.controller.cancel({ id: id(1) })).cancelled, true)
+})
