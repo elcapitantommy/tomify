@@ -210,3 +210,39 @@ export async function removeEmptyStaging(destination, id) {
   for (const folder of folders) await rmdir(folder)
   return 'removed'
 }
+
+const VIDEO = /\.(?:mkv|mp4|m4v|avi|mov|wmv|ts|m2ts|webm|mpg|mpeg)$/i
+
+// Whether the Family importer has published a finished torrent it is responsible for. The importer publishes
+// hardlinks, so the torrent's main file (its largest video, or largest file) must have a second link somewhere in the
+// library outside the hidden folders (.downloads, .review, .publishing, .tomifin-*). content is the torrent's content
+// on the agent's side (a file or folder), library the library folder. Nothing is followed or changed.
+export async function publishedByImporter(content, library, { maxEntries = 500_000 } = {}) {
+  const files = []
+  let seen = 0
+  async function collect(path) {
+    if (++seen > 20_000) return
+    const info = await lstat(path)
+    if (info.isSymbolicLink()) return
+    if (info.isFile()) { files.push({ path, info }); return }
+    if (info.isDirectory()) for (const name of await readdir(path)) await collect(join(path, name))
+  }
+  await collect(content)
+  const videos = files.filter((file) => VIDEO.test(file.path))
+  const main = (videos.length ? videos : files).sort((a, b) => b.info.size - a.info.size)[0]
+  if (!main || main.info.nlink < 2) return false
+  const root = await realpath(library)
+  let entries = 0
+  async function find(folder) {
+    for (const name of await readdir(folder).catch(() => [])) {
+      if (name.startsWith('.') || ++entries > maxEntries) continue
+      const path = join(folder, name)
+      const info = await lstat(path).catch(() => null)
+      if (!info || info.isSymbolicLink()) continue
+      if (info.isFile() && info.ino === main.info.ino && info.dev === main.info.dev) return true
+      if (info.isDirectory() && await find(path)) return true
+    }
+    return false
+  }
+  return find(root)
+}

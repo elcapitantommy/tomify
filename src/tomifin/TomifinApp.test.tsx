@@ -211,6 +211,13 @@ describe('Tomifin Downloader', () => {
     expect(within(done).getByText('Remove from this list? The files stay in the library.')).toBeInTheDocument()
   })
 
+  it('says what Remove checks first when the agent reports it', async () => {
+    fakeApi({ jobs: [job({ status: 'completed', progress: 100, message: 'Seeding; the Family importer adds it to the library', removeNote: 'Tomifin first checks the Family importer has added it to the library, and keeps it if not.' })] })
+    render(<TomifinApp/>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
+    expect(screen.getByText('Remove from this list? The files stay in the library. Tomifin first checks the Family importer has added it to the library, and keeps it if not.')).toBeInTheDocument()
+  })
+
   it('shows Usenet results beside torrents, labelled, without seeders', async () => {
     fakeApi({ searchResults: [...results, usenetResult], searchExtra: { usenet: true, warnings: ['One Usenet indexer did not answer.'] } })
     await open()

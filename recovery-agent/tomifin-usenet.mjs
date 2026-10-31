@@ -509,6 +509,9 @@ export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.
       }
       const state = sabHistoryState(found.slot)
       if (state.status === 'post-processing') throw new TomifinUsenetError('busy', 'SABnzbd is unpacking this download. Cancel it once that has finished.')
+      // Finished in SABnzbd but not yet published: removing the record now would leave it unpublished for good, so it is
+      // refused until publication has happened (or ended in review or failure, which the list shows).
+      if (state.status === 'completed' && !['published', 'already-imported', 'review', 'failed'].includes(job.import?.state)) throw new TomifinUsenetError('not-published', `This download has finished but is not in the library yet${job.import?.reason ? `: ${cleanMessage(job.import.reason).replace(/\.$/, '')}` : ''}. Tomifin will not remove it until it is, so it cannot be lost. If you do not want it, delete it from SABnzbd's history first.`)
       // A failed job's own folder may be deleted; a completed one's never is (it may be the published copy's source).
       const mapped = mappedPath(found.slot.storage)
       const own = Boolean(mapped && SAB_NAME.exec(basename(mapped).replace(/^_(?:FAILED|UNPACK)_/, ''))?.[1]?.toLowerCase() === job.id)
