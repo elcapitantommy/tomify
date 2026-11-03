@@ -9,8 +9,8 @@ export const OUTPUT_CHANGE_GUARD_MS = 4000
 export const OUTPUT_DROP_AFTER_PLAY_MS = 10000
 
 export type AudioOutputWatcher = {
-  // True while a device change happened in the last OUTPUT_CHANGE_GUARD_MS.
-  changedRecently(now?: number): boolean
+  // True while a device change happened in the last OUTPUT_CHANGE_GUARD_MS (or `within` ms).
+  changedRecently(now?: number, within?: number): boolean
   stop(): void
 }
 
@@ -58,7 +58,7 @@ export function watchAudioOutputs(onChange: (removed: boolean) => void): AudioOu
   devices.addEventListener('devicechange', changed)
 
   return {
-    changedRecently: (now = Date.now()) => now - lastChangeAt < OUTPUT_CHANGE_GUARD_MS,
+    changedRecently: (now = Date.now(), within = OUTPUT_CHANGE_GUARD_MS) => now - lastChangeAt < within,
     stop: () => {
       stopped = true
       devices.removeEventListener('devicechange', changed)

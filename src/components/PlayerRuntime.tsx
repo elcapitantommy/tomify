@@ -88,6 +88,11 @@ export function PlayerRuntime() {
   const outputs = useRef<AudioOutputWatcher | null>(null)
   // When the lock screen, headphones or car last asked to play (see the media session handlers).
   const sessionPlayAt = useRef(-Infinity)
+  // When the music last went from playing to paused.
+  const pausedAt = useRef(-Infinity)
+  // Set when the music paused because headphones went away. Until the listener presses play in Tomify
+  // itself, plays from the media session (headphones, media keys, a Teams call ending) are ignored.
+  const outputHold = useRef(false)
   // The element playing on a speaker or TV (lib/cast.ts). While set, every song plays on it, as an original file.
   const castSlot = useRef<AudioSlot | null>(null)
   const api = useApi()
@@ -625,13 +630,22 @@ export function PlayerRuntime() {
     if (usePlayer.getState().playing) equaliser.current?.resume()
   }, [api, equaliserEnabled, equaliserGains, visualiserOn])
 
-  // True when the music is paused and an audio device has just connected or dropped out.
-  function outputJustChanged() {
-    return !usePlayer.getState().playing && Boolean(outputs.current?.changedRecently())
+  // Why a play or skip from the media session must be ignored right now, if it must.
+  function sessionPlayBlocked(): string | null {
+    if (usePlayer.getState().playing) return null
+    if (outputHold.current) return 'paused when an audio device went away; press play in Tomify to resume'
+    if (outputs.current?.changedRecently()) return 'an audio device had just come or gone'
+    return null
+  }
+
+  function holdForOutputChange(reason: string) {
+    if (!outputHold.current) logPlayback('Holding paused', reason)
+    outputHold.current = true
   }
 
   function skipFromSession(direction: 'next' | 'previous') {
-    if (outputJustChanged()) { logPlayback(`Ignored ${direction}`, 'an audio device had just come or gone'); return }
+    const blocked = sessionPlayBlocked()
+    if (blocked) { logPlayback(`Ignored ${direction}`, blocked); return }
     const wasPaused = !usePlayer.getState().playing
     logPlayback(direction === 'next' ? 'Next' : 'Previous', 'lock screen, headphones or car')
     if (direction === 'next') usePlayer.getState().next()
@@ -646,7 +660,8 @@ export function PlayerRuntime() {
       ['play', () => {
         // Headphones or a car dropping out can send a play of their own as they go: that would start the
         // music out of the speaker, so a play right as an audio device comes or goes is ignored.
-        if (outputJustChanged()) { logPlayback('Ignored play', 'an audio device had just come or gone'); return }
+        const blocked = sessionPlayBlocked()
+        if (blocked) { logPlayback('Ignored play', blocked); return }
         logPlayback('Play', 'lock screen, headphones or car')
         sessionPlayAt.current = Date.now()
         usePlayer.getState().setPlaying(true)
@@ -670,11 +685,17 @@ export function PlayerRuntime() {
     const watcher = watchAudioOutputs((removed) => {
       if (removed) logPlayback('Audio device removed')
       else logPlayback('Audio devices changed')
-      if (!usePlayer.getState().playing) return
+      if (!usePlayer.getState().playing) {
+        // Taking the earphones out paused the music and they then dropped out: keep it paused until the
+        // listener plays it in Tomify, whatever device takes over or later sends a play (a Teams call).
+        if (removed || Date.now() - pausedAt.current < OUTPUT_DROP_AFTER_PLAY_MS) holdForOutputChange('the music paused as an audio device went away')
+        return
+      }
       if (!removed && Date.now() - sessionPlayAt.current >= OUTPUT_DROP_AFTER_PLAY_MS) return
       logPlayback('Paused', removed ? 'an audio device went away' : 'the play came as an audio device came or went')
       useDj.getState().hush()
       usePlayer.getState().setPlaying(false)
+      holdForOutputChange('an audio device went away while playing')
     })
     outputs.current = watcher
     return () => {
@@ -682,6 +703,19 @@ export function PlayerRuntime() {
       watcher.stop()
     }
   }, [])
+
+  // Pausing just after a device change (the earphones dropping out first) holds the music too. Any play
+  // that gets through (Tomify's own buttons, another device) lifts the hold.
+  useEffect(() => usePlayer.subscribe((state, previous) => {
+    if (state.playing === previous.playing) return
+    if (state.playing) {
+      if (outputHold.current) logPlayback('Hold lifted', 'played from Tomify')
+      outputHold.current = false
+      return
+    }
+    pausedAt.current = Date.now()
+    if (outputs.current?.changedRecently(Date.now(), OUTPUT_DROP_AFTER_PLAY_MS)) holdForOutputChange('the music paused as an audio device came or went')
+  }), [])
 
   useEffect(() => {
     if (track && 'mediaSession' in navigator) setMediaMetadata(track, api)
