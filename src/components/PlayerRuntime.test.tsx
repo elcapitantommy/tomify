@@ -384,7 +384,7 @@ describe('PlayerRuntime', () => {
       await sessionAction('pause')
       await changeDevices([])
       await sessionAction('play')
-      expect(playbackLog().map((entry) => entry.event)).toEqual(['Pause', 'Audio devices changed', 'Ignored play'])
+      expect(playbackLog().map((entry) => entry.event)).toEqual(['Pause', 'Audio devices changed', 'Holding paused', 'Ignored play'])
     })
 
     it('pauses again when that play arrives just before the disconnect is reported', async () => {
@@ -416,14 +416,62 @@ describe('PlayerRuntime', () => {
       expect(usePlayer.getState().playing).toBe(true)
     })
 
-    it('still plays when the listener presses play later on', async () => {
+    it('still plays from the headphones when a device change has nothing to do with the pause', async () => {
       vi.useFakeTimers()
       await startPlaying()
       await sessionAction('pause')
-      await changeDevices([])
+      await act(async () => { vi.advanceTimersByTime(OUTPUT_DROP_AFTER_PLAY_MS) })
+      await changeDevices([{ kind: 'audiooutput', deviceId: '' }, { kind: 'audiooutput', deviceId: '' }])
       await act(async () => { vi.advanceTimersByTime(OUTPUT_CHANGE_GUARD_MS) })
       await sessionAction('play')
       expect(usePlayer.getState().playing).toBe(true)
+    })
+
+    it('stays paused after the earphones go, even when a Teams call on another headset later sends a play', async () => {
+      vi.useFakeTimers()
+      await startPlaying()
+      // Taking the earphones out pauses, then they drop out as they go in the case...
+      await sessionAction('pause')
+      await act(async () => { vi.advanceTimersByTime(3000) })
+      await changeDevices([])
+      // ...a USB headset takes over for the call, and the call sends a play when it starts or ends.
+      await act(async () => { vi.advanceTimersByTime(60_000) })
+      await changeDevices([{ kind: 'audiooutput', deviceId: '' }])
+      await act(async () => { vi.advanceTimersByTime(5 * 60_000) })
+      await sessionAction('play')
+      await sessionAction('nexttrack')
+      expect(usePlayer.getState()).toEqual(expect.objectContaining({ playing: false, currentIndex: 0 }))
+      // Pressing play in Tomify itself plays, and lifts the hold.
+      await act(async () => { usePlayer.getState().setPlaying(true) })
+      expect(usePlayer.getState().playing).toBe(true)
+      await sessionAction('pause')
+      await act(async () => { vi.advanceTimersByTime(OUTPUT_DROP_AFTER_PLAY_MS) })
+      await sessionAction('play')
+      expect(usePlayer.getState().playing).toBe(true)
+    })
+
+    it('holds the music when it pauses just after the earphones drop out', async () => {
+      vi.useFakeTimers()
+      await startPlaying()
+      await changeDevices([])
+      await act(async () => { vi.advanceTimersByTime(2000) })
+      await sessionAction('pause')
+      await act(async () => { vi.advanceTimersByTime(10 * 60_000) })
+      await sessionAction('play')
+      expect(usePlayer.getState().playing).toBe(false)
+    })
+
+    it('holds the music after undoing a play the earphones sent as they went', async () => {
+      vi.useFakeTimers()
+      await startPlaying()
+      await sessionAction('pause')
+      await act(async () => { vi.advanceTimersByTime(OUTPUT_DROP_AFTER_PLAY_MS) })
+      await sessionAction('play')
+      await changeDevices([])
+      expect(usePlayer.getState().playing).toBe(false)
+      await act(async () => { vi.advanceTimersByTime(10 * 60_000) })
+      await sessionAction('play')
+      expect(usePlayer.getState().playing).toBe(false)
     })
 
     it('keeps playing when a device change has nothing to do with a play request', async () => {
