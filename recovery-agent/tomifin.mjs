@@ -244,7 +244,7 @@ function torrentSize(torrent) { return Math.max(number(torrent?.total_size) || 0
 // refreshLibrary: asks Jellyfin to scan its libraries after Tomifin has published a finished torrent (see
 // createJellyfinLibraryRefresh in jellyfin.mjs), or null. publicTrackers: the public tracker lists for More trackers
 // (createPublicTrackerLists in tomifin-trackers.mjs), or null for none.
-export function createTomifinController({ config, client, stateRoot, usenet = null, fetchLink = createLinkFetcher(), now = () => Date.now(), randomId = randomUUID, log = () => {}, intervalMs = 10_000, vpnStatus = null, refreshLibrary = null, publicTrackers = null }) {
+export function createTomifinController({ config, client, stateRoot, usenet = null, fetchLink = createLinkFetcher(), now = () => Date.now(), randomId = randomUUID, log = () => {}, intervalMs = 10_000, vpnStatus = null, airvpnStatus = null, refreshLibrary = null, publicTrackers = null }) {
   const jobsRoot = resolve(stateRoot, 'tomifin')
   // Torrent jobs being finished right now, which cancel leaves alone until done.
   const finalising = new Set()
@@ -724,22 +724,25 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
       }
     },
 
-    // The VPN as Tomifin's page shows it: whether qBittorrent (which is bound to the VPN) has a connection, and what
-    // NordVPN reports when the agent can ask it. No addresses are returned.
+    // The VPN as Tomifin's page shows it: whether qBittorrent (which is bound to the VPN) has a connection, what
+    // NordVPN reports when the agent can ask it, and AirVPN's state when it is set up. No addresses are returned.
     async vpn() {
       requireEnabled()
-      const [qbittorrent, nordvpn] = await Promise.all([
+      const [qbittorrent, nordvpn, airvpnRaw] = await Promise.all([
         client.connection().catch(() => 'unknown'),
         vpnStatus ? vpnStatus().catch(() => null) : null,
+        airvpnStatus ? airvpnStatus().catch(() => ({ state: 'unknown' })) : null,
       ])
       const nord = nordvpn?.control === 'enabled' && nordvpn.state !== 'unavailable'
         ? { state: ['connected', 'disconnected', 'connecting'].includes(nordvpn.state) ? nordvpn.state : 'unknown', country: text(nordvpn.country).slice(0, 80) || null, city: text(nordvpn.city).slice(0, 80) || null, server: text(nordvpn.server).slice(0, 120) || null }
         : null
-      const state = qbittorrent === 'disconnected' || nord?.state === 'disconnected' ? 'down'
+      // AirVPN (airvpn.mjs) when qBittorrent is bound to it instead of NordVPN; null when it is not set up.
+      const airvpn = airvpnRaw ? { state: ['connected', 'disconnected'].includes(airvpnRaw.state) ? airvpnRaw.state : 'unknown', country: text(airvpnRaw.country).slice(0, 80) || null } : null
+      const state = qbittorrent === 'disconnected' || nord?.state === 'disconnected' || airvpn?.state === 'disconnected' ? 'down'
         : nord?.state === 'connecting' ? 'connecting'
-        : ['connected', 'firewalled'].includes(qbittorrent) && (!nord || nord.state === 'connected') ? 'connected'
+        : ['connected', 'firewalled'].includes(qbittorrent) && (!nord || nord.state === 'connected') && (!airvpn || airvpn.state === 'connected') ? 'connected'
         : 'unknown'
-      return { state, qbittorrent, nordvpn: nord }
+      return { state, qbittorrent, nordvpn: nord, airvpn }
     },
 
     // Torrents and (when set up) NZBs at once, in one list. Either source failing leaves the other's results, with a

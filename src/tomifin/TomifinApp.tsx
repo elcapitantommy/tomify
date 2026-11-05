@@ -223,6 +223,26 @@ function VpnStatus({ vpn }: { vpn: TomifinVpnStatus }) {
   return <span className={`tf-vpn tf-vpn-${tone}`} title={vpn.nordvpn?.server ? `NordVPN server ${vpn.nordvpn.server}` : `qBittorrent: ${vpn.qbittorrent}`}><Icon aria-hidden/>{label}</span>
 }
 
+// With AirVPN set up, torrents go through AirVPN and everything else on the box through NordVPN: one pill each.
+function VpnPill({ name, state, place, title, downNote }: { name: string; state: 'connected' | 'connecting' | 'disconnected' | 'unknown'; place: string; title: string; downNote: string }) {
+  const [tone, Icon, label] = state === 'connected' ? ['ok', ShieldCheck, `${name} connected${place ? ` · ${place}` : ''}`] as const
+    : state === 'connecting' ? ['warn', ShieldQuestion, `${name} connecting…`] as const
+    : state === 'disconnected' ? ['bad', ShieldAlert, `${name} down: ${downNote}`] as const
+    : ['warn', ShieldQuestion, `${name} status unknown`] as const
+  return <span className={`tf-vpn tf-vpn-${tone}`} title={title}><Icon aria-hidden/>{label}</span>
+}
+
+function VpnStatuses({ vpn }: { vpn: TomifinVpnStatus }) {
+  if (!vpn.airvpn) return <VpnStatus vpn={vpn}/>
+  const nord = vpn.nordvpn
+  return (
+    <span className="tf-vpns">
+      <VpnPill name="NordVPN" state={nord?.state ?? 'unknown'} place={[nord?.city, nord?.country].filter(Boolean).join(', ')} title={nord?.server ? `NordVPN server ${nord.server}. Searches and Usenet go through NordVPN.` : 'Searches and Usenet go through NordVPN.'} downNote="searches and Usenet leave without a VPN"/>
+      <VpnPill name="AirVPN" state={vpn.airvpn.state} place={vpn.airvpn.country ?? ''} title={`Torrents go through AirVPN. qBittorrent: ${vpn.qbittorrent}`} downNote="torrents are paused"/>
+    </span>
+  )
+}
+
 function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignOut: () => void; onExpired: () => void }) {
   const [status, setStatus] = useState<TomifinServiceStatus | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
@@ -350,7 +370,7 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
   return (
     <>
       <div className="tf-toolbar-user">
-        {vpn && <VpnStatus vpn={vpn}/>}
+        {vpn && <VpnStatuses vpn={vpn}/>}
         <span className="tf-muted">Signed in as <strong>{user.name}</strong></span>
         <button type="button" className="tf-link" onClick={onSignOut}><LogOut aria-hidden/>Sign out</button>
       </div>

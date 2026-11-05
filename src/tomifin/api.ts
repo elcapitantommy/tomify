@@ -28,6 +28,8 @@ export interface TomifinVpnStatus {
   state: 'connected' | 'connecting' | 'down' | 'unknown'
   qbittorrent: 'connected' | 'firewalled' | 'disconnected' | 'unknown'
   nordvpn: { state: 'connected' | 'disconnected' | 'connecting' | 'unknown'; country: string | null; city: string | null; server: string | null } | null
+  // Set when qBittorrent goes through AirVPN instead (null when not set up; an older agent leaves it out).
+  airvpn?: { state: 'connected' | 'disconnected' | 'unknown'; country: string | null } | null
 }
 export interface TomifinServiceStatus {
   available: boolean; problem: string | null; destinations: Array<{ id: TomifinDestination; label: string; available: boolean }>

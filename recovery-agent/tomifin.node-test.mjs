@@ -535,8 +535,24 @@ test('the VPN status combines qBittorrent\'s connection with NordVPN\'s, without
     assert.doesNotMatch(JSON.stringify(result), /203\.0\.113|NORDLYNX/)
   }
   const route = await handleTomifinRequest('/v1/tomifin/vpn', { session: 'good-session-token' }, (await controllerWith(fakeClient())).controller, fakeAuth)
-  assert.deepEqual(route, { status: 200, body: { state: 'connected', qbittorrent: 'connected', nordvpn: null } })
+  assert.deepEqual(route, { status: 200, body: { state: 'connected', qbittorrent: 'connected', nordvpn: null, airvpn: null } })
   assert.equal((await handleTomifinRequest('/v1/tomifin/vpn', {}, (await controllerWith(fakeClient())).controller, fakeAuth)).body.code, 'unauthorized')
+})
+
+test('the VPN status adds AirVPN when qBittorrent goes through it', async () => {
+  const nord = async () => ({ control: 'enabled', state: 'connected', server: 'uk2012.nordvpn.com', country: 'United Kingdom', city: 'London' })
+  const cases = [
+    [async () => ({ state: 'connected', country: 'Netherlands', reason: null }), { state: 'connected', airvpn: { state: 'connected', country: 'Netherlands' } }],
+    [async () => ({ state: 'disconnected', country: null, reason: 'no-traffic' }), { state: 'down', airvpn: { state: 'disconnected', country: null } }],
+    [async () => ({ state: 'weird' }), { state: 'unknown', airvpn: { state: 'unknown', country: null } }],
+    [async () => { throw new Error('boom') }, { state: 'unknown', airvpn: { state: 'unknown', country: null } }],
+    [async () => null, { state: 'connected', airvpn: null }],
+  ]
+  for (const [airvpnStatus, expected] of cases) {
+    const { controller } = await controllerWith(fakeClient(), { vpnStatus: nord, airvpnStatus })
+    const result = await controller.vpn()
+    for (const [key, value] of Object.entries(expected)) assert.deepEqual(result[key], value, `${JSON.stringify(expected)} ${key}`)
+  }
 })
 
 test('details links never carry credentials or point at private hosts', () => {
