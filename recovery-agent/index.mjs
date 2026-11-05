@@ -25,6 +25,7 @@ import { validateRecoveryAuthConfig } from './config.mjs'
 import { createUsenetJobPoller } from './usenet-job.mjs'
 import { createJobRunner, jobPollIntervalMs } from './jobs.mjs'
 import { rebootConfig, scheduleReboot } from './system.mjs'
+import { airvpnConfig, createAirvpnMonitor } from './airvpn.mjs'
 import { createVpnController, nordvpnEnvironment, nordvpnFailureMessage, vpnConfig } from './vpn.mjs'
 import { createQbittorrentClient, extractArchives, findArchives, qbittorrentJobState, torrentCandidate, torrentCapability, torrentConfig, torrentSearchCandidates } from './torrent.mjs'
 import { agentStatusResponse, healthResponse, recoveryAgentPackageVersion } from './health.mjs'
@@ -54,6 +55,7 @@ const token = authConfiguration.token
 const ytdlp = process.env.YT_DLP_PATH || 'yt-dlp'
 const reboot = rebootConfig()
 const vpnSettings = vpnConfig()
+const airvpn = createAirvpnMonitor({ config: airvpnConfig() })
 const ffprobe = process.env.FFPROBE_PATH || 'ffprobe'
 const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg'
 const configuredArchiveMaxBytes = Number(process.env.TOMIFY_ARCHIVE_MAX_BYTES || 1024 * 1024 * 1024)
@@ -105,7 +107,7 @@ const tomifinTrustedHosts = [...(torrentDownloader?.indexers || []), ...newznabI
 const tomifinLinkFetcher = createLinkFetcher({ trustedHosts: tomifinTrustedHosts })
 // More trackers' public lists are fetched like any added link: public hosts only (TOMIFY_TOMIFIN_TRACKER_LISTS).
 const tomifinPublicTrackers = createPublicTrackerLists({ lists: trackerListsConfig(process.env), fetchLink: createLinkFetcher() })
-const tomifin = createTomifinController({ config: tomifinSettings, client: tomifinSettings.enabled ? qbittorrent : null, usenet: tomifinUsenet, fetchLink: tomifinLinkFetcher, publicTrackers: tomifinPublicTrackers, stateRoot: usenetStateRoot, vpnStatus: () => vpn.status(), log: tomifinLog, refreshLibrary: createJellyfinLibraryRefresh(jellyfinSettings, { log: tomifinLog }) })
+const tomifin = createTomifinController({ config: tomifinSettings, client: tomifinSettings.enabled ? qbittorrent : null, usenet: tomifinUsenet, fetchLink: tomifinLinkFetcher, publicTrackers: tomifinPublicTrackers, stateRoot: usenetStateRoot, vpnStatus: () => vpn.status(), airvpnStatus: () => airvpn.status(), log: tomifinLog, refreshLibrary: createJellyfinLibraryRefresh(jellyfinSettings, { log: tomifinLog }) })
 
 function safeName(value, fallback) {
   const cleaned = String(value || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '').replace(/[. ]+$/g, '').trim().slice(0, 120)

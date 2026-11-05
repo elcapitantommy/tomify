@@ -352,6 +352,21 @@ describe('Tomifin Downloader', () => {
     expect(screen.getByText(/Signed in as/)).toBeInTheDocument()
   })
 
+  it('shows NordVPN and AirVPN side by side when torrents go through AirVPN', async () => {
+    fakeApi({ vpn: { state: 'connected', qbittorrent: 'connected', nordvpn: { state: 'connected', country: 'United Kingdom', city: 'London', server: 'uk2012.nordvpn.com' }, airvpn: { state: 'connected', country: 'Netherlands' } } })
+    await open()
+    expect(await screen.findByText('NordVPN connected · London, United Kingdom')).toBeInTheDocument()
+    expect(screen.getByText('AirVPN connected · Netherlands')).toBeInTheDocument()
+    expect(screen.queryByText(/^VPN /)).not.toBeInTheDocument()
+  })
+
+  it('says which VPN is down when AirVPN is set up', async () => {
+    fakeApi({ vpn: { state: 'down', qbittorrent: 'disconnected', nordvpn: { state: 'disconnected', country: null, city: null, server: null }, airvpn: { state: 'disconnected', country: null } } })
+    await open()
+    expect(await screen.findByText('AirVPN down: torrents are paused')).toBeInTheDocument()
+    expect(screen.getByText('NordVPN down: searches and Usenet leave without a VPN')).toBeInTheDocument()
+  })
+
   it('refreshes the downloads list on its own', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const calls = fakeApi({ jobs: [job()] })
