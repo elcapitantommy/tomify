@@ -6,6 +6,9 @@ export interface Env {
   NAVIDROME_ORIGIN?: string
   RECOVERY_AGENT_URL?: string
   RECOVERY_AGENT_TOKEN?: string
+  // Optional: a Cloudflare Access service token for RECOVERY_AGENT_URL (Access Service Auth policy). Sent as these headers.
+  'CF-Access-Client-Id'?: string
+  'CF-Access-Client-Secret'?: string
   SPOTIFY_CLIENT_ID?: string
   SPOTIFY_CLIENT_SECRET?: string
   SPOTIFY_REDIRECT_URI?: string

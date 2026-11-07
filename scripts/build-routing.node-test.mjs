@@ -1227,6 +1227,28 @@ test('Media server reboot requires a signed-in Navidrome administrator', async (
   })
 })
 
+test('agent requests carry the Cloudflare Access service token only when both secrets are set', async () => {
+  const originalFetch = globalThis.fetch
+  const agentHeaders = []
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/rest/ping.view') return Response.json({ 'subsonic-response': { status: 'ok' } })
+    if (url.pathname === '/rest/getUser.view') return Response.json({ 'subsonic-response': { status: 'ok', user: { username: url.searchParams.get('username'), adminRole: true } } })
+    agentHeaders.push(init?.headers || {})
+    return Response.json({ rebooting: true }, { status: 202 })
+  }
+  try {
+    await worker.fetch(rebootRequest({ confirm: 'reboot' }), { ...rebootEnv, 'CF-Access-Client-Id': 'access-id.access', 'CF-Access-Client-Secret': 'access-secret' })
+    await worker.fetch(rebootRequest({ confirm: 'reboot' }), { ...rebootEnv, 'CF-Access-Client-Id': 'access-id.access' })
+  } finally { globalThis.fetch = originalFetch }
+  assert.equal(agentHeaders.length, 2)
+  assert.equal(agentHeaders[0]['CF-Access-Client-Id'], 'access-id.access')
+  assert.equal(agentHeaders[0]['CF-Access-Client-Secret'], 'access-secret')
+  assert.equal(agentHeaders[0].authorization, 'Bearer agent-token')
+  assert.equal(agentHeaders[1]['CF-Access-Client-Id'], undefined)
+  assert.equal(agentHeaders[1]['CF-Access-Client-Secret'], undefined)
+})
+
 test('Media server reboot requires confirmation and forwards it to the agent', async () => {
   await withRebootFetch({ admin: true, agent: () => Response.json({ rebooting: true, scheduledAt: '2026-10-15T12:00:03.000Z' }, { status: 202 }) }, async (agentRequests) => {
     const unconfirmed = await worker.fetch(rebootRequest({}), rebootEnv)
@@ -1841,7 +1863,7 @@ test('adaptive streaming checks the Navidrome login in the query and signs every
     if (url.pathname.endsWith('/index.m3u8')) return new Response('#EXTM3U\n#EXTINF:6.000,\nseg00000.ts\n#EXT-X-ENDLIST\n')
     return new Response('chunk', { headers: { 'content-type': 'video/mp2t', 'content-length': '5' } })
   }
-  const env = { RECOVERY_AGENT_URL: 'https://agent-hls.tomify.test/', RECOVERY_AGENT_TOKEN: 'agent-secret' }
+  const env = { RECOVERY_AGENT_URL: 'https://agent-hls.tomify.test/', RECOVERY_AGENT_TOKEN: 'agent-secret', 'CF-Access-Client-Id': 'access-id.access', 'CF-Access-Client-Secret': 'access-secret' }
   const query = 'u=hls-listener&t=0123456789abcdef0123456789abcdef&s=salt1'
   try {
     const refused = await worker.fetch(new Request('https://app.tomify.test/api/hls/tr1/master.m3u8?u=someone&t=0123456789abcdef0123456789abcdef&s=salt1'), env)
@@ -1854,6 +1876,8 @@ test('adaptive streaming checks the Navidrome login in the query and signs every
     assert.equal(await master.text(), `#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=70400\nv0/index.m3u8?${query}\n`)
     assert.equal(agentCalls[0].url.href, 'https://agent-hls.tomify.test/v1/hls/tr1/master.m3u8')
     assert.equal(agentCalls[0].headers.authorization, 'Bearer agent-secret')
+    assert.equal(agentCalls[0].headers['CF-Access-Client-Id'], 'access-id.access')
+    assert.equal(agentCalls[0].headers['CF-Access-Client-Secret'], 'access-secret')
     assert.equal(agentCalls[0].headers['x-tomify-navidrome-user'], 'hls-listener')
     assert.equal(agentCalls[0].headers['x-tomify-navidrome-origin'], TEST_NAVIDROME_ORIGIN)
 
