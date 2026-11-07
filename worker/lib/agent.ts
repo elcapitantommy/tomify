@@ -2,10 +2,23 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { Env } from '../env.ts'
 
+// Headers for every request to RECOVERY_AGENT_URL: the agent's bearer token, plus the Cloudflare Access service
+// token when recovery.tomdixon.uk sits behind an Access Service Auth policy. The secrets are named after the headers.
+export function recoveryAgentHeaders(env: Env): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (env.RECOVERY_AGENT_TOKEN) headers.authorization = 'Bearer ' + env.RECOVERY_AGENT_TOKEN
+  const accessId = env['CF-Access-Client-Id']
+  const accessSecret = env['CF-Access-Client-Secret']
+  if (accessId && accessSecret) {
+    headers['CF-Access-Client-Id'] = accessId
+    headers['CF-Access-Client-Secret'] = accessSecret
+  }
+  return headers
+}
+
 export async function callRecoveryAgent(env: Env, path: string, body: unknown): Promise<any> {
   if (!env.RECOVERY_AGENT_URL) throw new Error('The recovery agent is not configured.')
-  const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json' }
-  if (env.RECOVERY_AGENT_TOKEN) headers.authorization = 'Bearer ' + env.RECOVERY_AGENT_TOKEN
+  const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json', ...recoveryAgentHeaders(env) }
   const baseUrl = String(env.RECOVERY_AGENT_URL)
   const response = await fetch((baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl) + path, {
     method: 'POST',

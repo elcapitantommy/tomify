@@ -1,6 +1,7 @@
 import type { RouteHandler } from '../env.ts'
 import { openMediaToken } from '../features/media-session.ts'
 import { authenticateCredentials } from '../lib/auth.ts'
+import { recoveryAgentHeaders } from '../lib/agent.ts'
 import { json } from '../lib/http.ts'
 import { navidromeOrigin } from '../lib/navidrome.ts'
 
@@ -38,8 +39,8 @@ export const hlsRoute: RouteHandler = async (request, env, url) => {
     'x-tomify-navidrome-token': token!,
     'x-tomify-navidrome-salt': salt!,
     'x-tomify-navidrome-origin': navidromeOrigin(env),
+    ...recoveryAgentHeaders(env),
   }
-  if (env.RECOVERY_AGENT_TOKEN) headers.authorization = 'Bearer ' + env.RECOVERY_AGENT_TOKEN
   let upstream: Response
   try {
     upstream = await fetch(`${base}/v1/hls/${match[1]}/${match[2]}`, { headers })
