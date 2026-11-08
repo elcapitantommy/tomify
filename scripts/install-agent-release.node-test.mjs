@@ -94,7 +94,8 @@ function setup({ legacyLayout = false } = {}) {
     encoding: 'utf8',
   })
   const serviceFile = join(root, 'etc', 'systemd', 'system', 'tomify-recovery.service')
-  return { temp, root, releases, envFile, serviceFile, log, run, baseEnv }
+  const versionFile = join(root, 'etc', 'tomify', 'agent-version.env')
+  return { temp, root, releases, envFile, versionFile, serviceFile, log, run, baseEnv }
 }
 
 test('dry-run installs a release, updates version, swaps the symlink, and retains five releases', { skip }, () => {
@@ -110,7 +111,8 @@ test('dry-run installs a release, updates version, swaps the symlink, and retain
   assert.equal(readdirSync(fixture.releases).filter((name) => !name.startsWith('.')).length, 5)
   assert.equal(existsSync(join(fixture.releases, '1111111')), false)
   assert.equal(existsSync(join(fixture.releases, sha)), true)
-  assert.equal(readFileSync(fixture.envFile, 'utf8'), 'TOMIFY_RECOVERY_TOKEN=keep-this-value\nTOMIFY_VERSION=abcdef1\nTOMIFY_RECOVERY_DIR=/srv/music-recovery\n')
+  assert.match(readFileSync(fixture.versionFile, 'utf8'), /^TOMIFY_VERSION=abcdef1$/m)
+  assert.equal(readFileSync(fixture.envFile, 'utf8'), 'TOMIFY_RECOVERY_TOKEN=keep-this-value\nTOMIFY_VERSION=6666666\nTOMIFY_RECOVERY_DIR=/srv/music-recovery\n', 'the settings file is never written')
   assert.match(readFileSync(fixture.log, 'utf8'), /systemctl daemon-reload\nsystemctl restart tomify-recovery/)
 })
 
@@ -128,7 +130,7 @@ test('a failed health check restores the previous symlink and version', { skip }
   assert.match(result.stderr, /did not become healthy.*restored the previous release/)
   assert.equal(realpathSync(join(fixture.root, 'opt', 'tomify', 'current')), join(fixture.releases, goodSha))
   assert.equal(realpathSync(join(fixture.root, 'opt', 'tomify', 'previous')), join(fixture.releases, '6666666'))
-  assert.match(readFileSync(fixture.envFile, 'utf8'), /^TOMIFY_VERSION=abcdef1$/m)
+  assert.match(readFileSync(fixture.versionFile, 'utf8'), /^TOMIFY_VERSION=abcdef1$/m)
 })
 
 test('first deployment preserves the mutable layout as a rollback release', { skip }, () => {
@@ -150,7 +152,7 @@ test('explicit rollback swaps current and previous releases', { skip }, () => {
   assert.equal(result.status, 0, result.stderr)
   assert.equal(realpathSync(join(fixture.root, 'opt', 'tomify', 'current')), join(fixture.releases, '5555555'))
   assert.equal(realpathSync(join(fixture.root, 'opt', 'tomify', 'previous')), join(fixture.releases, '6666666'))
-  assert.match(readFileSync(fixture.envFile, 'utf8'), /^TOMIFY_VERSION=5555555$/m)
+  assert.match(readFileSync(fixture.versionFile, 'utf8'), /^TOMIFY_VERSION=5555555$/m)
 })
 
 test('the service unit comes from the root helper, never from the release archive', { skip }, () => {
@@ -179,7 +181,7 @@ test('the root helper refuses test options under sudo', { skip }, () => {
   assert.match(result.stderr, /refused under sudo/)
 })
 
-test('the root helper writes the version through a symlinked env file and keeps the link', { skip }, () => {
+test('a deploy never writes the settings file, even when it is a symlink into a store the deploying user owns', { skip }, () => {
   const fixture = setup()
   const store = join(fixture.root, 'mnt', 'pool', 'secrets', 'tomify')
   mkdirSync(store, { recursive: true })
@@ -190,25 +192,28 @@ test('the root helper writes the version through a symlinked env file and keeps 
   const result = spawnSync('bash', [activate, '--dry-run', '--root', fixture.root, '--version', 'abcdef1'], { env: fixture.baseEnv, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   assert.equal(lstatSync(fixture.envFile).isSymbolicLink(), true)
-  assert.equal(readFileSync(target, 'utf8'), 'TOMIFY_RECOVERY_TOKEN=keep-this-value\nTOMIFY_VERSION=abcdef1\nTOMIFY_RECOVERY_DIR=/srv/music-recovery\n')
+  assert.equal(readFileSync(target, 'utf8'), 'TOMIFY_RECOVERY_TOKEN=keep-this-value\nTOMIFY_VERSION=6666666\nTOMIFY_RECOVERY_DIR=/srv/music-recovery\n')
   assert.deepEqual(readdirSync(store), ['recovery-agent.env'])
+  assert.match(readFileSync(fixture.versionFile, 'utf8'), /^TOMIFY_VERSION=abcdef1$/m)
+  // The unit reads the version file after the settings, so its value wins over the stale one above.
+  const unit = readFileSync(fixture.serviceFile, 'utf8')
+  assert.ok(unit.indexOf('EnvironmentFile=-/etc/tomify/agent-version.env') > unit.indexOf('EnvironmentFile=/etc/tomify/recovery-agent.env'))
 })
 
-test('the root helper refuses an env symlink that does not lead to a regular file', { skip }, () => {
-  for (const make of [(root) => join(root, 'missing.env'), (root) => { const dir = join(root, 'a-directory'); mkdirSync(dir); return dir }]) {
-    const fixture = setup()
-    rmSync(fixture.envFile)
-    symlinkSync(make(fixture.root), fixture.envFile)
-    const result = spawnSync('bash', [activate, '--dry-run', '--root', fixture.root, '--version', 'abcdef1'], { env: fixture.baseEnv, encoding: 'utf8' })
-    assert.equal(result.status, 1)
-    assert.match(result.stderr, /recovery-agent\.env (points to|is a symlink that does not resolve)/)
-    assert.equal(readFileSync(fixture.log, 'utf8'), '')
-  }
+test('the root helper refuses a symlinked version file', { skip }, () => {
+  const fixture = setup()
+  symlinkSync(join(fixture.root, 'elsewhere.env'), fixture.versionFile)
+  const result = spawnSync('bash', [activate, '--dry-run', '--root', fixture.root, '--version', 'abcdef1'], { env: fixture.baseEnv, encoding: 'utf8' })
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /agent-version\.env must not be a symlink/)
+  assert.equal(existsSync(join(fixture.root, 'elsewhere.env')), false)
+  assert.equal(readFileSync(fixture.log, 'utf8'), '')
 })
 
 test('the root helper clears the version and keeps every other setting', { skip }, () => {
   const fixture = setup()
   const result = spawnSync('bash', [activate, '--dry-run', '--root', fixture.root, '--clear-version'], { env: fixture.baseEnv, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
-  assert.equal(readFileSync(fixture.envFile, 'utf8'), 'TOMIFY_RECOVERY_TOKEN=keep-this-value\nTOMIFY_RECOVERY_DIR=/srv/music-recovery\n')
+  assert.match(readFileSync(fixture.versionFile, 'utf8'), /^TOMIFY_VERSION=$/m)
+  assert.equal(readFileSync(fixture.envFile, 'utf8'), 'TOMIFY_RECOVERY_TOKEN=keep-this-value\nTOMIFY_VERSION=6666666\nTOMIFY_RECOVERY_DIR=/srv/music-recovery\n')
 })

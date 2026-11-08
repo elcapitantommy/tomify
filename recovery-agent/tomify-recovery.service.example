@@ -8,6 +8,8 @@ Type=simple
 User=tom
 WorkingDirectory=/opt/tomify/current/recovery-agent
 EnvironmentFile=/etc/tomify/recovery-agent.env
+# The deployed version, written by tomify-agent-activate; read last so it wins.
+EnvironmentFile=-/etc/tomify/agent-version.env
 Environment=HOME=/var/lib/tomify-recovery
 ExecStart=/usr/bin/node /opt/tomify/current/recovery-agent/index.mjs
 Restart=on-failure
