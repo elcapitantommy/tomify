@@ -418,6 +418,13 @@ export function createQbittorrentClient(config, fetchImpl = fetch) {
     // qBittorrent 5 renamed pause and resume to stop and start; the old names answer 404 there, and the new ones on 4.x.
     async pause(hash) { await renamedCall(hash, 'torrents/stop', 'torrents/pause', 'qBittorrent pause') },
     async resume(hash) { await renamedCall(hash, 'torrents/start', 'torrents/resume', 'qBittorrent resume') },
+    // Force start: qBittorrent runs the torrent now, ignoring its queue limits (the same call in qBittorrent 4.x and
+    // 5.x). It starts a stopped torrent too. Pause, or Resume after it, gives it back to the queue.
+    async forceStart(hash) {
+      const cookie = await session()
+      const { response } = await call(cookie, 'torrents/setForceStart', { hashes: hash, value: 'true' }, 'qBittorrent force start')
+      if (!response.ok) throw new Error(`qBittorrent force start returned HTTP ${response.status}.`)
+    },
     // Checks the torrent's data on disk again (the same name in qBittorrent 4.x and 5.x): what a failed torrent needs
     // before it is started again, so a missing or damaged file is downloaded rather than reported as an error.
     async recheck(hash) {

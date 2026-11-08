@@ -32,6 +32,7 @@ function fakeClient({ searchResults = [], existing = [] } = {}) {
     async pause(value) { calls.push(['pause', value]); const torrent = torrents.find((entry) => entry.hash === value); if (torrent) torrent.state = 'stoppedDL' },
     async resume(value) { calls.push(['resume', value]) },
     async recheck(value) { calls.push(['recheck', value]) },
+    async forceStart(value) { calls.push(['forceStart', value]); const torrent = torrents.find((entry) => entry.hash === value); if (torrent) Object.assign(torrent, { force_start: true, state: 'forcedDL' }) },
     trackerList: [], propertiesValue: { is_private: false },
     async trackers(value) { calls.push(['trackers', value]); return this.trackerList },
     async properties(value) { calls.push(['properties', value]); return this.propertiesValue },
@@ -211,6 +212,31 @@ test('pause and resume act only on the job\'s own torrent', async () => {
   assert.deepEqual(client.calls.filter(([name]) => ['pause', 'resume'].includes(name)), [['pause', hash], ['resume', hash]])
   await assert.rejects(controller.pause({ id: '../../etc/passwd' }), /Unknown download/)
   await assert.rejects(controller.pause({ id: '00000000-0000-4000-8000-999999999999' }), /no longer listed/)
+})
+
+test('an unfinished torrent can be force started in qBittorrent, but not a forced, finished, failed or oversized one', async () => {
+  const client = fakeClient({ searchResults })
+  const { controller } = await controllerWith(client)
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  const { job } = await controller.download({ resultId: best.id, destination: 'family' })
+  for (const state of ['queuedDL', 'stalledDL', 'stoppedDL', 'downloading']) {
+    Object.assign(client.torrents[0], { state, force_start: false, progress: 0.4 })
+    assert.equal((await controller.list()).jobs[0].canForceStart, true, state)
+  }
+  client.torrents[0].state = 'queuedDL'
+  const started = await controller.forceStart({ id: job.id })
+  assert.deepEqual([started.job.status, started.job.message, started.job.canForceStart, started.job.canPause], ['downloading', 'Force started', false, true])
+  assert.deepEqual(client.calls.filter(([name]) => name === 'forceStart'), [['forceStart', hash]])
+  assert.equal((await controller.list()).jobs[0].canForceStart, false, 'already forced')
+  for (const [state, extra, code] of [['error', {}, 'not-startable'], ['uploading', { progress: 1, force_start: false }, 'not-startable'], ['queuedDL', { force_start: false, total_size: config.maxBytes + 1 }, 'too-large']]) {
+    Object.assign(client.torrents[0], { state, progress: 0.4, total_size: 1, ...extra })
+    assert.equal(Boolean((await controller.list()).jobs[0].canForceStart), false, state)
+    await assert.rejects(controller.forceStart({ id: job.id }), { code }, state)
+  }
+  client.torrents.length = 0
+  await assert.rejects(controller.forceStart({ id: job.id }), { code: 'not-in-qbittorrent' })
+  assert.equal(client.calls.filter(([name]) => name === 'forceStart').length, 1)
+  await assert.rejects(controller.forceStart({ id: '../../etc/passwd' }), /Unknown download/)
 })
 
 test('a failed torrent can be retried: qBittorrent rechecks and restarts it, in its own folders only', async () => {
@@ -661,6 +687,8 @@ test('the qBittorrent client lists a category, pauses with the 5.x names and fal
   assert.deepEqual(calls.filter((call) => /stop|start|pause|resume/.test(call.path)).map((call) => call.path), ['/api/v2/torrents/stop', '/api/v2/torrents/start', '/api/v2/torrents/resume'])
   await client.recheck(hash)
   assert.deepEqual(calls.filter((call) => call.path === '/api/v2/torrents/recheck').map((call) => call.body), [{ hashes: hash }])
+  await client.forceStart(hash)
+  assert.deepEqual(calls.filter((call) => call.path === '/api/v2/torrents/setForceStart').map((call) => call.body), [{ hashes: hash, value: 'true' }])
   assert.equal(await client.connection(), 'firewalled')
   await client.add(`magnet:?xt=urn:btih:${hash}`, { tag: 'tomifin-1', savePath: '/media/family', category: 'tomifin-family', subfolder: true })
   assert.deepEqual(calls.find((call) => call.path === '/api/v2/torrents/createCategory').body, { category: 'tomifin-family', savePath: '/media/family' })

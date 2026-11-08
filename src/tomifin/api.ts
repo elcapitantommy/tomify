@@ -23,6 +23,8 @@ export interface TomifinJob {
   removeNote?: string
   // A torrent More trackers can add trackers to (not a private one; an older agent leaves this out).
   canFindTrackers?: boolean
+  // An unfinished torrent qBittorrent can force start, past its queue limits (an older agent leaves this out).
+  canForceStart?: boolean
 }
 export interface TomifinVpnStatus {
   state: 'connected' | 'connecting' | 'down' | 'unknown'
@@ -43,7 +45,7 @@ export const DESTINATIONS: Record<TomifinDestination, { label: string; path: str
   private: { label: 'Private', path: '/media/private' },
 }
 
-export type TomifinJobAction = 'pause' | 'resume' | 'retry' | 'trackers' | 'cancel'
+export type TomifinJobAction = 'pause' | 'resume' | 'force-start' | 'retry' | 'trackers' | 'cancel'
 
 export class TomifinRequestError extends Error {
   status: number

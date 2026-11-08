@@ -37,6 +37,8 @@ A torrent whose real size only becomes known once its details arrive (a magnet, 
 - a **torrent** qBittorrent reports as failed (`error` or `missingFiles`, for example after the library was briefly unmounted or the disk filled up) is checked on disk again (`torrents/recheck`) and started, in the same folders. It is offered only while every folder qBittorrent reports for it (save path, download path and content path) is inside that library, and never for a torrent over the download limit or one that is no longer in qBittorrent (search for it again instead);
 - a **Usenet** download SABnzbd marked as failed for missing articles or a failed repair or unpack is retried in SABnzbd (`mode=retry`), which puts the same job back in its queue and reuses what it already downloaded. Tomifin follows SABnzbd's new id, keeps the job named `tomifin-<id>` (renaming it in SABnzbd if needed), and takes away its own failure note in the review folder. A password-protected download, one SABnzbd no longer has, and one that failed while being published (held for review) cannot be retried.
 
+**Force start** appears on an unfinished torrent (queued, downloading, stalled or paused) that qBittorrent is not already forcing. It calls qBittorrent's `torrents/setForceStart`, so the torrent runs now even when the queue limit is reached, and starts it if it was paused; the download then shows **Force started**. Pause stops it as usual, and Resume afterwards puts it back in the normal queue. A torrent over the download limit, a finished or failed one, and a Usenet download cannot be force started.
+
 **More trackers** appears on an unfinished torrent (queued, downloading, stalled or paused) that qBittorrent does not report as private. It is meant for a torrent stuck waiting for peers or for its details. It looks up more trackers for the torrent's info hash and adds the ones it does not have yet in qBittorrent (`torrents/addTrackers`, then `torrents/reannounce`), at most 60 per press:
 
 - **sites that list the same torrent:** the info hash is searched on Tomifin's own torrent sources (qBittorrent's search plugins and any Prowlarr or Jackett indexers; many plugins do not search by hash, so this often finds nothing), and the trackers of every magnet for exactly that hash are used first;
@@ -90,7 +92,7 @@ Every other Tomify API, the Navidrome proxy, Tomify's push worker and manifest a
 | `POST /api/tomifin/link` `{ link }` or `{ file: { name, data } }` | `/v1/tomifin/link` | Checks one added magnet, `.torrent` or `.nzb` and returns it as a result to queue (new) |
 | `POST /api/tomifin/download` `{ resultId, destination }` | `/v1/tomifin/download` | Queues one result in qBittorrent or SABnzbd (the agent decides which) |
 | `GET /api/tomifin/downloads` | `/v1/tomifin/downloads` | Tomifin's downloads with live qBittorrent and SABnzbd figures |
-| `POST /api/tomifin/downloads/<id>/pause` (`resume`, `retry`, `cancel`) | `/v1/tomifin/pause` (`resume`, `retry`, `cancel`) | Controls one download |
+| `POST /api/tomifin/downloads/<id>/pause` (`resume`, `force-start`, `retry`, `trackers`, `cancel`) | `/v1/tomifin/pause` (`resume`, `force-start`, `retry`, `trackers`, `cancel`) | Controls one download |
 
 ### Signing in
 
@@ -100,7 +102,7 @@ Tomifin uses Jellyfin accounts, and only Jellyfin administrators (`Policy.IsAdmi
 2. If the account is not an administrator, the agent closes the session Jellyfin just opened (`/Sessions/Logout`) and the page says Tomifin is for administrators (`403`). A wrong password gets `401`.
 3. Otherwise the Worker keeps Jellyfin's access token in a cookie, `tomifin_session` (`HttpOnly; Secure; SameSite=Strict; Path=/api/tomifin`, 30 days). Page scripts cannot read it.
 4. On every request the agent checks the token with Jellyfin's `/Users/Me` (cached for 30 seconds) and that the user is still an administrator. If Jellyfin no longer accepts it, the Worker clears the cookie and the page shows the sign-in form again.
-5. Every request that changes something (sign-in, sign-out, add link, queue, pause, resume, retry, cancel) must carry the `x-tomifin: 1` header, which another site cannot add, so a cross-site form cannot act with your cookie.
+5. Every request that changes something (sign-in, sign-out, add link, queue, pause, resume, force start, retry, More trackers, cancel) must carry the `x-tomifin: 1` header, which another site cannot add, so a cross-site form cannot act with your cookie.
 
 Without `TOMIFY_JELLYFIN_URL` on the agent, sign-in answers that Jellyfin sign-in is not set up.
 
