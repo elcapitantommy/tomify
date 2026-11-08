@@ -16,7 +16,8 @@ Environment=TOMIFIN_IMPORT_LIBRARY=/media/family
 Environment=TOMIFIN_IMPORT_MOVIES_SUBDIR=Movies
 # TV episodes and season packs go to /media/family/TV/<Series>/Season NN/.
 Environment=TOMIFIN_IMPORT_TV_SUBDIR=TV
-# Only the qBittorrent settings are needed: the agent's other secrets are dropped before the importer starts.
+# Only the qBittorrent and Jellyfin settings (TOMIFY_JELLYFIN_URL, TOMIFY_JELLYFIN_API_KEY, for the Movies and TV Shows
+# scans after a publication) are needed: the agent's other secrets are dropped before the importer starts.
 UnsetEnvironment=TOMIFY_RECOVERY_TOKEN TOMIFY_YOUTUBE_COOKIES TOMIFY_SABNZBD_API_KEY TOMIFY_LAN_TLS_KEY TOMIFY_MEDIA_KEY
 ExecStart=/usr/bin/node /opt/tomify/current/recovery-agent/family-import.mjs --scan
 StateDirectory=tomifin-import
@@ -48,6 +49,10 @@ SystemCallFilter=@system-service
 # @system-service leaves out; with EPERM it falls back to its thread pool. UV_USE_IO_URING=0 skips the attempt.
 SystemCallErrorNumber=EPERM
 Environment=UV_USE_IO_URING=0
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# AF_NETLINK only so Node can list this machine's own addresses, which is how a plain-HTTP TOMIFY_JELLYFIN_URL to
+# the box's LAN address is accepted; without it the Jellyfin scans are off.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 IPAddressDeny=any
-IPAddressAllow=localhost
+# qBittorrent on loopback, and Jellyfin, whose Docker container publishes its port on the box's own LAN address
+# (TOMIFY_JELLYFIN_URL=http://192.168.1.81:8096). Change the address if TOMIFY_JELLYFIN_URL changes.
+IPAddressAllow=localhost 192.168.1.81

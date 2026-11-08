@@ -686,12 +686,16 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
     }
   }
 
-  // Tomifin's jobs and both downloaders' current state, in step (reconciled) and ready to show.
-  function current() {
-    const run = reconciling.then(reconcileNow, reconcileNow)
+  // Run operations which read and write job records in one queue. In particular, Remove must not race a
+  // reconciliation which has already loaded the record and could otherwise write it back after it was deleted.
+  function serialised(operation) {
+    const run = reconciling.then(operation, operation)
     reconciling = run.catch(() => {})
     return run
   }
+
+  // Tomifin's jobs and both downloaders' current state, in step (reconciled) and ready to show.
+  function current() { return serialised(reconcileNow) }
 
   async function reconcileNow() {
     const jobs = await savedJobs()
@@ -928,26 +932,28 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
     // otherwise every file is left where it is. Published library files are never touched.
     async cancel(body) {
       requireEnabled()
-      const job = await loadJob(body?.id)
-      if (isUsenetJob(job)) {
-        const outcome = usenet ? await usenet.cancel(job).catch((error) => { throw asTomifinError(error) }) : { filesDeleted: false, removed: false }
+      return serialised(async () => {
+        const job = await loadJob(body?.id)
+        if (isUsenetJob(job)) {
+          const outcome = usenet ? await usenet.cancel(job).catch((error) => { throw asTomifinError(error) }) : { filesDeleted: false, removed: false }
+          await deleteJob(job.id)
+          log(`Tomifin removed ${logName(job)} from SABnzbd (${outcome.filesDeleted ? 'partial download deleted' : 'files kept'})`)
+          return { cancelled: true, filesDeleted: outcome.filesDeleted, downloaderRemoved: outcome.removed }
+        }
+        if (finalising.has(job.id)) throw new TomifinError('busy', 'Tomifin is moving this download into the library right now. Try again in a moment.')
+        const found = await torrentFor(job)
+        await publishedBeforeRemoval(job, found)
+        // Publishing first may itself have taken it out of qBittorrent.
+        const torrent = found ? await torrentFor(job) : null
+        let filesDeleted = false
+        if (torrent) {
+          filesDeleted = job.recovered !== true && partialDataDeletable(torrent, config.destinations[job.destination], job.id)
+          await client.remove(text(torrent.hash).toLowerCase(), filesDeleted)
+        }
         await deleteJob(job.id)
-        log(`Tomifin removed ${logName(job)} from SABnzbd (${outcome.filesDeleted ? 'partial download deleted' : 'files kept'})`)
-        return { cancelled: true, filesDeleted: outcome.filesDeleted, downloaderRemoved: outcome.removed }
-      }
-      if (finalising.has(job.id)) throw new TomifinError('busy', 'Tomifin is moving this download into the library right now. Try again in a moment.')
-      const found = await torrentFor(job)
-      await publishedBeforeRemoval(job, found)
-      // Publishing first may itself have taken it out of qBittorrent.
-      const torrent = found ? await torrentFor(job) : null
-      let filesDeleted = false
-      if (torrent) {
-        filesDeleted = job.recovered !== true && partialDataDeletable(torrent, config.destinations[job.destination], job.id)
-        await client.remove(text(torrent.hash).toLowerCase(), filesDeleted)
-      }
-      await deleteJob(job.id)
-      log(`Tomifin removed ${logName(job)} (${filesDeleted ? 'partial download deleted' : 'files kept'})`)
-      return { cancelled: true, filesDeleted, torrentRemoved: Boolean(found) }
+        log(`Tomifin removed ${logName(job)} (${filesDeleted ? 'partial download deleted' : 'files kept'})`)
+        return { cancelled: true, filesDeleted, torrentRemoved: Boolean(found) }
+      })
     },
 
     // Runs every few seconds: keeps both downloaders and the records in step (see reconcile) and starts publishing

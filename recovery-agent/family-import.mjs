@@ -9,6 +9,7 @@
 // Everything about a torrent (its name, file names, the hash a hook passes) is untrusted. Nothing is published unless
 // every check passes; anything doubtful goes to <library>/.review/<hash>/ (hardlinks plus reason.json) instead, and
 // nothing that already exists is ever overwritten. Run with --dry-run to see what would happen without writing.
+// A run that publishes something then asks Jellyfin to scan just the libraries it went into (Movies, TV Shows).
 //
 //   node family-import.mjs --hash <info hash> [--dry-run]   import one torrent
 //   node family-import.mjs --queue [--dry-run]              import every hash the qBittorrent hook queued
@@ -73,6 +74,8 @@ function words(name) {
     .replace(/\.(?:mkv|mp4|m4v|avi|mov|wmv|ts|m2ts|webm|mpg|mpeg)$/i, '')
     // Audio channels ("5.1", "AAC2.0") become one tag, so their digits never look like part of the title.
     .replace(/([0-9])\.([0-9])(?![0-9])/g, '$1$2ch')
+    // "Director's Cut" in any spelling is one tag, so "Director" never reads as a stray word after the year.
+    .replace(/\bdirector'?s?[ ._-]+cut\b/gi, 'directors-cut')
     .replace(/[\[\](){}]/g, ' ')
     .replace(/[._]+/g, ' ')
     .replace(/\s+-\s*|-\s+/g, ' - ')
@@ -86,44 +89,64 @@ function isTag(word) {
     || /^(?:aac|ac3|eac3|ddp?|dts|truehd|flac|opus|lpcm)\d*(?:ch)?$/.test(value) || /^[a-z0-9]+-[a-z0-9]+$/.test(value) && value.split('-').some((part) => RELEASE_TAGS.has(part) || /^[hx]26[45]$/.test(part))
 }
 
+function filmYear(value) {
+  const year = Number(value)
+  return year >= 1888 && year <= new Date().getUTCFullYear() + 1 ? year : null
+}
+
+function filmTitle(titleWords) {
+  if (!titleWords.length || titleWords.some(isTag)) return null
+  const title = titleWords.join(' ').replace(/\s+/g, ' ').replace(/^[\s-]+|[\s-]+$/g, '')
+  return !title || title.length > 150 || /[\u0000-\u001f\u007f/\\:*?"<>|]/.test(title) ? null : title
+}
+
+// A plausible release year, 1888 to next year, as a whole word.
+function releaseYear(word) { return YEAR.test(word) ? filmYear(word) : null }
+
+// The words before and after a name's release year: an explicit "(Year)", or else its one plausible year. The first
+// word is never the year, as in "1917.2019.1080p" and "2001.A.Space.Odyssey.1968".
+function splitAtYear(raw) {
+  const explicit = /^([^()[\]{}]+?)\s*\((\d{4})\)(.*)$/.exec(raw)
+  if (explicit && releaseYear(explicit[2])) return { before: words(explicit[1]), year: releaseYear(explicit[2]), after: words(explicit[3]) }
+  const list = words(raw)
+  const years = list.flatMap((word, index) => index > 0 && releaseYear(word) ? [index] : [])
+  return years.length === 1 ? { before: list.slice(0, years[0]), year: releaseYear(list[years[0]]), after: list.slice(years[0] + 1) } : null
+}
+
 // A Jellyfin-style "Title (Year)" from a release name such as "Toy.Story.2.1999.1080p.BluRay.x264-YIFY" or
-// "Toy Story 2 (1999) [1080p] [YTS.MX]". Returns null when the name does not say so unambiguously: no year, a title
-// that would be empty or contain release tags, a TV episode, or two different readings.
+// "Toy Story 2 (1999) [1080p] [YTS.MX]": the title is what comes before the release year, and whatever follows the
+// year (source, size, codec, language markers, group) is ignored, not interpreted. The explicit "(Year)" form lets a
+// title hold a number ("Blade Runner 2049 (2017)"). Returns null when the name is not clearly one film: a TV episode,
+// no release year or more than one (two films, or a re-release), or a title that would be empty, unsafe as a folder
+// name, or holds release tags.
 export function parseFilmName(name) {
   const raw = text(name)
   if (!raw || EPISODE.test(raw.replace(/[._]/g, ' '))) return null
-  const list = words(raw)
-  // The year is the last one that is followed only by release tags, a release group, or nothing.
-  const candidates = []
-  for (let index = 1; index < list.length; index += 1) {
-    if (!YEAR.test(list[index])) continue
-    const rest = list.slice(index + 1)
-    const firstOther = rest.findIndex((word) => word !== '-' && !isTag(word))
-    // After the year: tags, then at most a "- Group" suffix or one trailing group word after a tag.
-    const tail = firstOther === -1 ? [] : rest.slice(firstOther)
-    const groupOnly = tail.length === 0 || (tail.length === 1 && (rest[firstOther - 1] === '-' || firstOther > 0)) || (tail.length === 2 && tail[0] === '-')
-    if (groupOnly) candidates.push(index)
-  }
-  if (!candidates.length) return null
-  const yearIndex = candidates[candidates.length - 1]
-  const titleWords = list.slice(0, yearIndex).filter((word) => word !== '-')
-  if (!titleWords.length || titleWords.some(isTag)) return null
-  const year = Number(list[yearIndex])
-  if (year < 1888 || year > new Date().getUTCFullYear() + 1) return null
-  const title = titleWords.join(' ').replace(/\s+/g, ' ').replace(/^[\s-]+|[\s-]+$/g, '')
-  if (!title || title.length > 150 || /[\u0000-\u001f\u007f/\\:*?"<>|]/.test(title)) return null
-  return { title, year, name: `${title} (${year})` }
+  const parts = splitAtYear(raw)
+  if (!parts || parts.after.some(releaseYear)) return null
+  const title = filmTitle(parts.before.filter((word) => word !== '-'))
+  return title ? { title, year: parts.year, name: `${title} (${parts.year})` } : null
 }
 
-// The film named by the torrent and by its main file. They must agree when both name one; otherwise it is ambiguous.
+// Film titles compare without case or apostrophes, straight or curly, so "Ron's", "Ron’s" and "Rons" agree. Nothing
+// else is dropped: other punctuation, words and numbers must still match.
+function filmTitleKey(title) {
+  return String(title).normalize('NFC').toLowerCase().replace(/['‘’ʼ]/g, '')
+}
+
+// The film named by the torrent and by its main file, read separately. As what follows the year is ignored, the two
+// must both name a film and agree on it; otherwise it is ambiguous. When they agree, the torrent's spelling is kept,
+// as it usually has the title's own punctuation.
 export function filmIdentity(torrentName, mainFileName) {
   const fromTorrent = parseFilmName(torrentName)
   const fromFile = parseFilmName(basename(mainFileName))
-  if (fromTorrent && fromFile && (fromTorrent.year !== fromFile.year || fromTorrent.title.toLowerCase() !== fromFile.title.toLowerCase())) {
+  if (!fromTorrent && !fromFile) return { identity: null, reason: 'the title and year could not be read from the torrent or file name' }
+  if (!fromTorrent) return { identity: null, reason: `the video file says "${fromFile.name}" but the title and year could not be read from the torrent name` }
+  if (!fromFile) return { identity: null, reason: `the torrent name says "${fromTorrent.name}" but the title and year could not be read from the video file name` }
+  if (fromTorrent.year !== fromFile.year || filmTitleKey(fromTorrent.title) !== filmTitleKey(fromFile.title)) {
     return { identity: null, reason: `the torrent name says "${fromTorrent.name}" but the video file says "${fromFile.name}"` }
   }
-  const identity = fromTorrent || fromFile
-  return identity ? { identity, reason: null } : { identity: null, reason: 'the title and year could not be read from the torrent or file name' }
+  return { identity: fromTorrent, reason: null }
 }
 
 // Languages a subtitle file name can name. Two-letter codes count only as the last part of the name ("film.en.srt"),
@@ -282,7 +305,7 @@ const delay = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise,
 
 function ident(key) { return /^usenet-/.test(key) ? { key, downloader: 'sabnzbd' } : { hash: key } }
 
-export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_TV_DIR, stateDir, qbittorrent = null, probe = ffprobeReader(), log = (entry) => process.stdout.write(`${JSON.stringify(entry)}\n`), stableMs = 5000, queueRetries = 6, queueRetryMs = 10_000, dryRun = false, now = () => new Date() }) {
+export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_TV_DIR, stateDir, qbittorrent = null, probe = ffprobeReader(), log = (entry) => process.stdout.write(`${JSON.stringify(entry)}\n`), stableMs = 5000, queueRetries = 6, queueRetryMs = 10_000, dryRun = false, now = () => new Date(), onPublished = () => {} }) {
   if (!isAbsolute(text(library))) throw new Error('The Family library must be an absolute path.')
   if (text(moviesDir) && !MOVIES_DIR.test(text(moviesDir))) throw new Error('The films folder must be one plain folder name inside the Family library.')
   if (!MOVIES_DIR.test(text(tvDir))) throw new Error('The TV folder must be one plain folder name inside the Family library.')
@@ -661,6 +684,7 @@ export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_
     const entry = { ...base, result: 'published', published: publishedPaths, ignoredFiles: planned.ignored, skippedSubtitles: planned.skippedSubtitles.length ? planned.skippedSubtitles : undefined }
     log(entry)
     await writeState(key, { ...entry, sources: sources(outputs), at: now().toISOString() })
+    onPublished(entry)
     return entry
   }
 
@@ -742,6 +766,7 @@ export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_
     const entry = { ...base, result: 'published', published: publishedPaths, ignoredFiles: planned.ignored, skippedSubtitles: planned.skippedSubtitles.length ? planned.skippedSubtitles : undefined }
     log(entry)
     await writeState(key, { ...entry, sources: sources(outputs), at: now().toISOString() })
+    onPublished(entry)
     return entry
   }
 
@@ -867,6 +892,36 @@ export async function qbittorrentForImport(env = process.env) {
   }
 }
 
+// After a run that published something new, asks Jellyfin to scan just the libraries holding it (Movies, TV Shows),
+// once each however many downloads the run published, and never a global scan (which would also scan TXP1).
+// Dry runs, review, skipped and already-imported outcomes never reach onPublished, so they never cause a scan. A
+// failure is logged and leaves the publication and the run's result as they were.
+export async function refreshJellyfinAfterImport(publishedPaths, { refresh, roots, log }) {
+  const folders = [...new Set(publishedPaths.map((path) => dirname(path)))]
+  if (!folders.length) return null
+  if (!refresh) { log({ result: 'jellyfin-refresh-off', reason: 'TOMIFY_JELLYFIN_URL and TOMIFY_JELLYFIN_API_KEY are not both set; Jellyfin will find it on its own scan.' }); return null }
+  try {
+    const outcome = await refresh(folders, { roots })
+    const complete = !outcome.failed.length && !outcome.notScanned.length
+    log({ result: complete ? 'jellyfin-refresh' : 'jellyfin-refresh-failed', libraries: outcome.refreshed, skipped: outcome.skipped.length ? outcome.skipped : undefined, failed: outcome.failed.length ? outcome.failed : undefined, notScanned: outcome.notScanned.length ? outcome.notScanned : undefined })
+    return outcome
+  } catch (error) {
+    log({ result: 'jellyfin-refresh-failed', reason: error instanceof Error ? error.message : String(error) })
+    return null
+  }
+}
+
+// TOMIFY_JELLYFIN_URL and TOMIFY_JELLYFIN_API_KEY, as the agent uses them; a setting that is wrong only turns the scan off.
+async function jellyfinRefreshForImport(log, env = process.env) {
+  try {
+    const { createJellyfinFolderRefresh, jellyfinConfig } = await import('./jellyfin.mjs')
+    return createJellyfinFolderRefresh(jellyfinConfig(env), { apiKey: env.TOMIFY_JELLYFIN_API_KEY })
+  } catch (error) {
+    log({ result: 'jellyfin-refresh-off', reason: error instanceof Error ? error.message : String(error) })
+    return null
+  }
+}
+
 async function main(argv) {
   const args = argv.slice(2)
   const dryRun = args.includes('--dry-run')
@@ -875,13 +930,20 @@ async function main(argv) {
   const stateDir = text(process.env.TOMIFIN_IMPORT_STATE_DIR) || text(process.env.STATE_DIRECTORY) || '/var/lib/tomifin-import'
   const moviesDir = text(process.env.TOMIFIN_IMPORT_MOVIES_SUBDIR)
   const tvDir = text(process.env.TOMIFIN_IMPORT_TV_SUBDIR) || DEFAULT_TV_DIR
-  const importer = createFamilyImporter({ library, moviesDir, tvDir, stateDir, qbittorrent: await qbittorrentForImport(), dryRun, probe: ffprobeReader(text(process.env.TOMIFIN_IMPORT_FFPROBE) || 'ffprobe') })
+  const log = (entry) => process.stdout.write(`${JSON.stringify(entry)}\n`)
+  const published = []
+  const importer = createFamilyImporter({ library, moviesDir, tvDir, stateDir, qbittorrent: await qbittorrentForImport(), dryRun, log, probe: ffprobeReader(text(process.env.TOMIFIN_IMPORT_FFPROBE) || 'ffprobe'), onPublished: (entry) => published.push(...entry.published) })
   let mode
   let results
-  if (hashIndex >= 0) { mode = 'hash'; results = [await importer.importTorrent(args[hashIndex + 1])] }
-  else if (args.includes('--queue')) { mode = 'queue'; results = await importer.drainQueue() }
-  else if (args.includes('--scan')) { mode = 'scan'; results = await importer.scan() }
-  else throw new Error('Use --hash <info hash>, --queue or --scan, optionally with --dry-run.')
+  try {
+    if (hashIndex >= 0) { mode = 'hash'; results = [await importer.importTorrent(args[hashIndex + 1])] }
+    else if (args.includes('--queue')) { mode = 'queue'; results = await importer.drainQueue() }
+    else if (args.includes('--scan')) { mode = 'scan'; results = await importer.scan() }
+    else throw new Error('Use --hash <info hash>, --queue or --scan, optionally with --dry-run.')
+  } finally {
+    // Also after a run that failed part-way, so what it did publish is not left unseen.
+    if (published.length) await refreshJellyfinAfterImport(published, { refresh: await jellyfinRefreshForImport(log), roots: [resolve(library), await realpath(library).catch(() => resolve(library))], log })
+  }
   // Always one closing line, so a run that found nothing still shows in the journal.
   process.stdout.write(`${JSON.stringify({ result: 'done', mode, dryRun: dryRun || undefined, torrents: results.length })}\n`)
 }

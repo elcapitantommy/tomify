@@ -268,6 +268,35 @@ test('cancelling deletes partial data only while it is still in the job\'s own s
   assert.deepEqual((await controller.list()).jobs, [])
 })
 
+test('cancelling cannot race reconciliation and recreate a deleted job record', async () => {
+  let clock = Date.parse('2026-01-01T00:00:00Z')
+  const client = fakeClient({ searchResults })
+  const { controller, stateRoot } = await controllerWith(client, { now: () => clock })
+  const { results: [best] } = await controller.search({ query: 'Big Buck Bunny' })
+  const { job } = await controller.download({ resultId: best.id, destination: 'family' })
+  client.torrents.length = 0
+  clock += 10 * 60_000
+
+  let releaseList
+  let listStarted
+  const started = new Promise((resolve) => { listStarted = resolve })
+  const release = new Promise((resolve) => { releaseList = resolve })
+  client.list = async (category) => {
+    client.calls.push(['list', category])
+    listStarted()
+    await release
+    return []
+  }
+
+  const observing = controller.observe()
+  await started
+  const cancelling = controller.cancel({ id: job.id })
+  releaseList()
+  await observing
+  assert.deepEqual(await cancelling, { cancelled: true, filesDeleted: false, torrentRemoved: false })
+  assert.deepEqual(await readdir(join(stateRoot, 'tomifin')), [])
+})
+
 test('cancelling never deletes anything in the library, a finished download or another job\'s folder', async () => {
   const id = '00000000-0000-4000-8000-000000000001'
   const staging = `/media/family/.tomifin-incomplete/${id}`

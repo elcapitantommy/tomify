@@ -120,3 +120,73 @@ test('the library scan after a Tomifin download is opt-in, batched, and never lo
   await assert.rejects(failing(), /HTTP 401/)
   assert.equal(logs.join('\n').includes(key), false)
 })
+
+// Jellyfin's libraries as the media server has them: the Family Movies and TV Shows, and the large TXP1.
+function fakeLibraries({ libraries, refreshStatus = () => 204 } = {}) {
+  const calls = []
+  const fetchImpl = async (input, init = {}) => {
+    const url = new URL(input)
+    calls.push({ method: init.method, path: url.pathname, query: url.search, authorization: init.headers.authorization })
+    if (url.pathname === '/Library/VirtualFolders') return Response.json(libraries)
+    const refresh = url.pathname.match(/^\/Items\/([^/]+)\/Refresh$/)
+    if (refresh && init.method === 'POST') return new Response(null, { status: refreshStatus(refresh[1]) })
+    return new Response('', { status: 404 })
+  }
+  return { calls, fetchImpl, refreshes: () => calls.filter((call) => call.path.endsWith('/Refresh')).map((call) => call.path) }
+}
+const familyLibraries = [
+  { Name: 'TV Shows', CollectionType: 'tvshows', Locations: ['/media/family/TV'], ItemId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+  { Name: 'Movies', CollectionType: 'movies', Locations: ['/media/family/Movies/'], ItemId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+  { Name: 'TXP1', Locations: ['/media/private'], ItemId: 'cccccccccccccccccccccccccccccccc' },
+]
+
+test('the Family scan refreshes only the libraries holding new files, once each, never TXP1 or a global scan', async () => {
+  const { createJellyfinFolderRefresh } = await import('./jellyfin.mjs')
+  const config = { url: 'http://127.0.0.1:8096' }
+  const key = '0123456789abcdef0123456789abcdef'
+  assert.equal(createJellyfinFolderRefresh(config, { apiKey: '' }), null)
+  assert.equal(createJellyfinFolderRefresh(null, { apiKey: key }), null)
+  assert.throws(() => createJellyfinFolderRefresh(config, { apiKey: 'not a key!' }), (error) => !error.message.includes('not a key!'))
+
+  const jellyfin = fakeLibraries({ libraries: familyLibraries })
+  const refresh = createJellyfinFolderRefresh(config, { apiKey: key, fetchImpl: jellyfin.fetchImpl })
+  const films = await refresh(['/media/family/Movies/Robots (2005)', '/media/family/Movies/Toy Story 2 (1999)'], { roots: ['/media/family'] })
+  assert.deepEqual(films, { refreshed: ['Movies'], skipped: [], failed: [], notScanned: [] })
+  assert.deepEqual(jellyfin.refreshes(), ['/Items/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/Refresh'], 'two films, one Movies scan')
+  const scan = jellyfin.calls.find((call) => call.path.endsWith('/Refresh'))
+  assert.match(scan.query, /Recursive=true/)
+  assert.match(scan.query, /ReplaceAllMetadata=false/)
+  assert.match(scan.authorization, new RegExp(`Token="${key}"`))
+  assert.equal(jellyfin.calls.some((call) => call.path === '/Library/Refresh'), false)
+
+  const both = fakeLibraries({ libraries: familyLibraries })
+  const outcome = await createJellyfinFolderRefresh(config, { apiKey: key, fetchImpl: both.fetchImpl })(['/media/family/TV/MobLand/Season 01', '/media/family/TV/MobLand/Season 02', '/media/family/Movies/Robots (2005)'], { roots: ['/media/family'] })
+  assert.deepEqual(outcome.refreshed, ['TV Shows', 'Movies'])
+  assert.equal(both.refreshes().length, 2)
+  assert.equal(both.refreshes().some((path) => path.includes('cccc')), false)
+})
+
+test('a library that also reads folders outside Family is not scanned, and Jellyfin failures are reported without the key', async () => {
+  const { createJellyfinFolderRefresh } = await import('./jellyfin.mjs')
+  const config = { url: 'http://127.0.0.1:8096' }
+  const key = '0123456789abcdef0123456789abcdef'
+  const mixed = fakeLibraries({ libraries: [{ Name: 'Everything', Locations: ['/media/family/Movies', '/media/private'], ItemId: 'dddddddddddddddddddddddddddddddd' }, { Name: 'Root', Locations: ['/'], ItemId: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' }] })
+  const outcome = await createJellyfinFolderRefresh(config, { apiKey: key, fetchImpl: mixed.fetchImpl })(['/media/family/Movies/Robots (2005)'], { roots: ['/media/family'] })
+  assert.deepEqual(outcome.refreshed, [])
+  assert.deepEqual(outcome.skipped.map((entry) => entry.library), ['Everything', 'Root'])
+  assert.deepEqual(outcome.notScanned, ['/media/family/Movies/Robots (2005)'])
+  assert.deepEqual(mixed.refreshes(), [])
+
+  // One library refusing does not stop the other being scanned.
+  const partly = fakeLibraries({ libraries: familyLibraries, refreshStatus: (id) => (id.startsWith('a') ? 500 : 204) })
+  const result = await createJellyfinFolderRefresh(config, { apiKey: key, fetchImpl: partly.fetchImpl })(['/media/family/TV/MobLand/Season 01', '/media/family/Movies/Robots (2005)'], { roots: ['/media/family'] })
+  assert.deepEqual(result.refreshed, ['Movies'])
+  assert.deepEqual(result.failed.map((entry) => entry.library), ['TV Shows'])
+  assert.match(result.failed[0].reason, /HTTP 500/)
+  assert.deepEqual(result.notScanned, ['/media/family/TV/MobLand/Season 01'])
+
+  const down = createJellyfinFolderRefresh(config, { apiKey: key, fetchImpl: async () => { throw new TypeError(`fetch failed for ${key}`) } })
+  await assert.rejects(down(['/media/family/Movies/Robots (2005)'], { roots: ['/media/family'] }), (error) => error.message === 'Jellyfin could not be reached.')
+  const refused = createJellyfinFolderRefresh(config, { apiKey: key, fetchImpl: async () => new Response('', { status: 401 }) })
+  await assert.rejects(refused(['/media/family/Movies/Robots (2005)'], { roots: ['/media/family'] }), (error) => /HTTP 401/.test(error.message) && !error.message.includes(key))
+})

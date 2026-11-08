@@ -5,10 +5,12 @@
 // HttpOnly cookie, and checks that token with Jellyfin (cached for 30 seconds) on every Tomifin request.
 import { randomUUID } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
+import { resolve, sep } from 'node:path'
 
 const CHECK_CACHE_MS = 30_000
 const CACHE_LIMIT = 200
 const TOKEN = /^[A-Za-z0-9-]{16,128}$/
+const API_KEY = /^[A-Za-z0-9]{16,128}$/
 
 export class JellyfinAuthError extends Error {
   constructor(code, message) { super(message); this.name = 'JellyfinAuthError'; this.code = code }
@@ -117,7 +119,7 @@ export function createJellyfinAuth(config, { fetchImpl = fetch, now = () => Date
 export function createJellyfinLibraryRefresh(config, { apiKey = process.env.TOMIFY_JELLYFIN_API_KEY, fetchImpl = fetch, delayMs = 10_000, log = () => {} } = {}) {
   const key = text(apiKey)
   if (!config || !key) return null
-  if (!/^[A-Za-z0-9]{16,128}$/.test(key)) { log('Jellyfin library scans after Tomifin downloads are off: TOMIFY_JELLYFIN_API_KEY is not a Jellyfin API key.'); return null }
+  if (!API_KEY.test(key)) { log('Jellyfin library scans after Tomifin downloads are off: TOMIFY_JELLYFIN_API_KEY is not a Jellyfin API key.'); return null }
   let pending = null
   return function refreshLibrary() {
     if (pending) return pending
@@ -128,5 +130,56 @@ export function createJellyfinLibraryRefresh(config, { apiKey = process.env.TOMI
       log('Tomifin asked Jellyfin to scan its libraries')
     })
     return pending
+  }
+}
+
+// Asks Jellyfin to scan only the libraries that read the given folders (POST /Items/<library>/Refresh, what the
+// dashboard's "Scan library" does), for the Family importer: a global /Library/Refresh would also scan every other
+// library, however large. A library is matched when one of its folders, as Jellyfin lists them, holds one of the
+// paths, so Jellyfin must see the library at the same path as the importer. A library that also reads anything
+// outside roots is never scanned. Off (null) unless TOMIFY_JELLYFIN_URL and TOMIFY_JELLYFIN_API_KEY are set; the
+// key is sent only to TOMIFY_JELLYFIN_URL and never logged or put in an error. Each library is scanned at most once
+// per call, however many paths fall in it. A library Jellyfin refuses is reported in failed, not thrown, and
+// notScanned lists the paths no scanned library holds.
+export function createJellyfinFolderRefresh(config, { apiKey = process.env.TOMIFY_JELLYFIN_API_KEY, fetchImpl = fetch } = {}) {
+  const key = text(apiKey)
+  if (!config || !key) return null
+  if (!API_KEY.test(key)) throw new Error('TOMIFY_JELLYFIN_API_KEY is not a Jellyfin API key.')
+  const within = (child, parent) => child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
+
+  async function call(path, method) {
+    let response
+    try {
+      response = await fetchImpl(`${config.url}${path}`, { method, signal: AbortSignal.timeout(15_000), headers: { accept: 'application/json', authorization: header({ token: key }) } })
+    } catch { throw new Error('Jellyfin could not be reached.') }
+    if (!response.ok) throw new Error(`Jellyfin answered HTTP ${response.status} to ${method} ${path.split('?')[0]}.`)
+    return response
+  }
+
+  return async function refreshFolders(paths, { roots }) {
+    const wanted = [...new Set(paths.map((path) => resolve(text(path))))]
+    const allowed = [...new Set(roots.map((root) => resolve(text(root))))]
+    const folders = await (await call('/Library/VirtualFolders', 'GET')).json().catch(() => null)
+    if (!Array.isArray(folders)) throw new Error('Jellyfin did not list its libraries.')
+    const refreshed = []
+    const skipped = []
+    const failed = []
+    const scanned = new Set()
+    for (const folder of folders) {
+      const id = text(folder?.ItemId)
+      const name = text(folder?.Name).slice(0, 128)
+      const listed = (Array.isArray(folder?.Locations) ? folder.Locations : []).map((location) => text(location))
+      const locations = listed.filter((location) => location.startsWith('/')).map((location) => resolve(location))
+      const holds = wanted.filter((path) => locations.some((location) => within(path, location)))
+      if (!holds.length) continue
+      if (locations.length !== listed.length || !locations.every((location) => allowed.some((root) => within(location, root)))) { skipped.push({ library: name, reason: 'it also reads folders outside the library being imported into' }); continue }
+      if (!/^[A-Za-z0-9-]{1,64}$/.test(id)) { skipped.push({ library: name, reason: 'Jellyfin gave it no usable id' }); continue }
+      try {
+        await call(`/Items/${id}/Refresh?Recursive=true&MetadataRefreshMode=Default&ImageRefreshMode=Default&ReplaceAllMetadata=false&ReplaceAllImages=false`, 'POST')
+        refreshed.push(name)
+        for (const path of holds) scanned.add(path)
+      } catch (error) { failed.push({ library: name, reason: error.message }) }
+    }
+    return { refreshed, skipped, failed, notScanned: wanted.filter((path) => !scanned.has(path)) }
   }
 }
