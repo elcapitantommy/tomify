@@ -5,9 +5,10 @@ import { spawnSync } from 'node:child_process'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { createFamilyImporter, filmIdentity, parseEpisodeName, parseFilmName, parseSeriesRelease, subtitleLanguage } from './family-import.mjs'
+import { createFamilyImporter, filmIdentity, parseEpisodeName, parseFilmName, parseSeriesRelease, refreshJellyfinAfterImport, subtitleLanguage } from './family-import.mjs'
+import { createJellyfinFolderRefresh } from './jellyfin.mjs'
 
 const HASH = 'a'.repeat(40)
 const OTHER = 'b'.repeat(40)
@@ -56,12 +57,123 @@ test('release names become Title (Year), and anything unclear is refused', () =>
     ['Sintel.2010.720p.mkv', 'Sintel (2010)'],
   ]
   for (const [name, expected] of cases) assert.equal(parseFilmName(name)?.name, expected, name)
-  for (const name of ['Toy.Story.1080p.BluRay.x264', 'Breaking.Bad.S01E01.720p.HDTV', 'Some Show Season 2 1080p', '1999', '1080p.2019.BluRay', 'Movie 2019 Directors Cut Part Two Final']) {
+  for (const name of ['Toy.Story.1080p.BluRay.x264', 'Breaking.Bad.S01E01.720p.HDTV', 'Some Show Season 2 1080p', '1999', '1080p.2019.BluRay']) {
     assert.equal(parseFilmName(name), null, name)
   }
   assert.equal(filmIdentity('Toy.Story.2.1999.1080p', 'Toy.Story.2.1999.1080p.mkv').identity.name, 'Toy Story 2 (1999)')
-  assert.equal(filmIdentity('Some Pack of Films', 'Sintel.2010.720p.mkv').identity.name, 'Sintel (2010)')
   assert.match(filmIdentity('Toy.Story.2.1999.1080p', 'Toy.Story.3.2010.1080p.mkv').reason, /says/)
+})
+
+test('whatever follows the release year is ignored, not interpreted', () => {
+  for (const name of [
+    'Sintel 2010 WEB-DLRip 1 46Gb D MegaPeer',
+    'Sintel.2010.Whatever.Words.Q7.zz-Top.~42~.mkv',
+    'Sintel 2010 Directors Cut Part Two Final',
+    'Sintel (2010) Dub Rus Eng 700MB by Somebody',
+    'Sintel (2010)',
+    'Sintel 2010',
+  ]) assert.deepEqual(parseFilmName(name), { title: 'Sintel', year: 2010, name: 'Sintel (2010)' }, name)
+  // A title may hold a number; an impossible year is a title word, as in "Blade Runner 2049".
+  assert.equal(parseFilmName('Blade.Runner.2049.2017.Anything.Else')?.name, 'Blade Runner 2049 (2017)')
+  assert.equal(parseFilmName('Tenacious.D.in.The.Pick.of.Destiny.2006.1080p.BluRay.x264')?.name, 'Tenacious D in The Pick of Destiny (2006)')
+  for (const name of [
+    // A TV episode or season.
+    'Sintel.S01E02.2010.1080p', 'Sintel 2010 Season 1 1080p', 'Sintel.2010.1x02.720p',
+    // More than one plausible year: two films, or a re-release.
+    'Sintel 2010 Tears of Steel 2012 1080p', 'Sintel.2010.Remastered.2021.1080p', 'Sintel (2010) + Tears of Steel (2012)', 'Wonder.Woman.1984.2020.1080p',
+    // No credible title or year.
+    'Sintel 1080p WEB-DL', 'Sintel 2099 1080p', 'Sintel 1850 1080p', '2010 1080p', '(2010) 1080p',
+    // A release tag before the year, so where the title ends is not clear.
+    'Sintel 1080p 2010', 'Sintel.WEB-DL.2010', 'Sintel x264 (2010)', 'Sintel Remastered 2010',
+    // Not a safe folder name.
+    'Sin:tel 2010 1080p', 'Sin"tel (2010)',
+  ]) assert.equal(parseFilmName(name), null, name)
+  // The torrent and its main video are read separately, and both must name the same film.
+  assert.equal(filmIdentity('Sintel 2010 WEB-DLRip D MegaPeer', 'Sintel.2010.1080p.x264-Group.mkv').identity.name, 'Sintel (2010)')
+  for (const [torrent, file] of [
+    ['Sintel 2010 1080p', 'Tears.of.Steel.2012.1080p.mkv'],
+    ['Sintel 2010 1080p', 'Sintel.2011.1080p.mkv'],
+    ['Sintel 2010 1080p', 'Sintel.2.2010.1080p.mkv'],
+    ['Sintel 2010 1080p', 'movie.mkv'],
+    ['Some Pack of Films', 'Sintel.2010.720p.mkv'],
+    ['Sintel 2010 Tears of Steel 2012', 'Sintel.2010.720p.mkv'],
+    ['Sintel 2010 1080p', 'Sintel.S01E01.2010.mkv'],
+  ]) assert.equal(filmIdentity(torrent, file).identity, null, `${torrent} / ${file}`)
+  assert.match(filmIdentity('Sintel 2010 1080p', 'movie.mkv').reason, /torrent name says "Sintel \(2010\)" but the title and year could not be read from the video file name/)
+  assert.match(filmIdentity('Some Pack of Films', 'Sintel.2010.720p.mkv').reason, /video file says "Sintel \(2010\)" but the title and year could not be read from the torrent name/)
+})
+
+const IRON_GIANT = 'The Iron Giant (1999) DIRECTOR CUT REPACK 1080p BluRay 5 1-LAMA'
+const IRON_GIANT_FILE = 'The.Iron.Giant.1999.DIRECTOR.CUT.REPACK.1080p.BluRay.x264.AAC5.1-LAMA.mp4'
+
+test('an explicit Title (Year) prefix, and its dotted form, are read whatever release words follow', () => {
+  for (const name of [IRON_GIANT, IRON_GIANT_FILE, 'The.Iron.Giant.1999.Directors.Cut.1080p.BluRay.x264-LAMA', "The Iron Giant 1999 Director's Cut 1080p BluRay x264-LAMA"]) {
+    assert.deepEqual(parseFilmName(name), { title: 'The Iron Giant', year: 1999, name: 'The Iron Giant (1999)' }, name)
+  }
+  assert.equal(filmIdentity(IRON_GIANT, `${IRON_GIANT}/${IRON_GIANT_FILE}`).identity.name, 'The Iron Giant (1999)')
+  assert.match(filmIdentity(IRON_GIANT, 'The.Iron.Giant.2.2001.1080p.BluRay.x264-LAMA.mp4').reason, /says/)
+  // Still not guessed: two films, another year after the prefix, or a tag in the title.
+  for (const name of [
+    'Toy Story (1995) + Toy Story 2 (1999) 1080p',
+    'Toy.Story.(1995).Toy.Story.2.(1999).1080p',
+    'Dune (1984) Remastered 2021 1080p',
+    '1080p (2019) BluRay',
+    'The Iron Giant (1887) 1080p',
+    'The Iron Giant REPACK (1999) 1080p',
+  ]) assert.equal(parseFilmName(name), null, name)
+})
+
+const RONS = "Ron's Gone Wrong (2021) [1080p] [BluRay] [5.1]"
+const RONS_FILE = 'Rons Gone Wrong (2021) [1080p] [BluRay] [5.1] [YTS.MX]/Rons.Gone.Wrong.2021.1080p.BluRay.x264.AAC5.1-[YTS.MX].mp4'
+
+test('an apostrophe, straight, curly or left out, does not make the torrent and video disagree', () => {
+  const rons = filmIdentity(RONS, RONS_FILE)
+  assert.equal(rons.reason, null)
+  assert.deepEqual(rons.identity, { title: "Ron's Gone Wrong", year: 2021, name: "Ron's Gone Wrong (2021)" })
+  // The torrent's spelling is kept whichever side has the apostrophe.
+  assert.equal(filmIdentity('Ron’s Gone Wrong (2021) 1080p', 'Ron\'s.Gone.Wrong.2021.1080p.mkv').identity.name, 'Ron’s Gone Wrong (2021)')
+  assert.equal(filmIdentity("Ron's Gone Wrong (2021) 1080p", 'Ron’s.Gone.Wrong.2021.1080p.mkv').identity.name, "Ron's Gone Wrong (2021)")
+  assert.equal(filmIdentity('Rons.Gone.Wrong.2021.1080p', 'Ron’s.Gone.Wrong.2021.1080p.mkv').identity.name, 'Rons Gone Wrong (2021)')
+  assert.equal(filmIdentity("Schindler's List (1993) 1080p", 'Schindlers.List.1993.1080p.BluRay.x264.mkv').identity.name, "Schindler's List (1993)")
+  // Different titles still disagree: another word, a missing word, other punctuation, a sequel number or another year.
+  for (const [torrent, file] of [
+    [RONS, 'Rons.Going.Wrong.2021.1080p.mp4'],
+    [RONS, 'Ron.Gone.Wrong.2021.1080p.mp4'],
+    [RONS, 'Gone.Wrong.2021.1080p.mp4'],
+    [RONS, 'Rons.Gone.Wrong.2.2021.1080p.mp4'],
+    [RONS, 'Rons.Gone.Wrong.2022.1080p.mp4'],
+    ["Ocean's Eleven (2001) 1080p", "Ocean's.Twelve.2001.1080p.mkv"],
+    ["It's a Wonderful Life (1946) 1080p", 'Its.A.Wonderful.Night.1946.1080p.mkv'],
+    ['Spider-Man (2002) 1080p', 'Spider.Man.2002.1080p.mkv'],
+    ['Se7en (1995) 1080p', 'Seven.1995.1080p.mkv'],
+  ]) {
+    const result = filmIdentity(torrent, file)
+    assert.equal(result.identity, null, `${torrent} / ${file}`)
+  }
+  assert.match(filmIdentity(RONS, 'Rons.Going.Wrong.2021.1080p.mp4').reason, /says "Ron's Gone Wrong \(2021\)" but the video file says "Rons Going Wrong \(2021\)"/)
+})
+
+const NEXT_GEN = 'Next Gen 2018 WEB-DLRip 1 46Gb D MegaPeer'
+const NEXT_GEN_FILE = 'Next.Gen.2018.WEB-DLRip.1.46Gb.D.MegaPeer/Next.Gen.2018.WEB-DLRip.1.46Gb.D.MegaPeer.avi'
+
+test('the Next Gen release and its video name one film, whatever follows the year', () => {
+  for (const name of [NEXT_GEN, basename(NEXT_GEN_FILE)]) {
+    assert.deepEqual(parseFilmName(name), { title: 'Next Gen', year: 2018, name: 'Next Gen (2018)' }, name)
+  }
+  const nextGen = filmIdentity(NEXT_GEN, NEXT_GEN_FILE)
+  assert.equal(nextGen.reason, null)
+  assert.deepEqual(nextGen.identity, { title: 'Next Gen', year: 2018, name: 'Next Gen (2018)' })
+  // A second year, a release tag before the year, or an episode is still refused.
+  for (const name of [
+    'Next Gen 2018 WEB-DLRip 1 46Gb D 2019 MegaPeer',
+    'Next.Gen.2018.WEB-DLRip.1.46Gb.D.MegaPeer.2019.avi',
+    'Next Gen WEB-DLRip 2018 1 46Gb D MegaPeer',
+    'Next.Gen.S01E01.2018.WEB-DLRip.avi',
+  ]) assert.equal(parseFilmName(name), null, name)
+  // The torrent and its video must still agree.
+  assert.match(filmIdentity(NEXT_GEN, 'Next.Gen.2.2018.WEB-DLRip.1.46Gb.D.MegaPeer.avi').reason, /says/)
+  assert.match(filmIdentity(NEXT_GEN, 'Next.Gen.2019.WEB-DLRip.1.46Gb.D.MegaPeer.avi').reason, /says/)
+  assert.equal(filmIdentity(NEXT_GEN, 'MegaPeer.avi').identity, null)
 })
 
 test('subtitle languages are used only when certain', () => {
@@ -126,6 +238,37 @@ test('running again changes nothing, and a dry run writes nothing', async () => 
   assert.equal((await stat(join(context.library, 'Sintel (2010)', 'Sintel (2010).mkv'))).nlink, 2)
 })
 
+test('The Iron Giant Director\'s Cut repack is published as The Iron Giant (1999), not sent to review', async () => {
+  const context = await setup()
+  await addTorrent(context, HASH, IRON_GIANT, { [`${IRON_GIANT}/${IRON_GIANT_FILE}`]: film })
+  const result = await context.make().importTorrent(HASH)
+  assert.equal(result.result, 'published', result.reason)
+  assert.deepEqual(await readdir(join(context.library, 'The Iron Giant (1999)')), ['The Iron Giant (1999).mp4'])
+  assert.deepEqual(await readdir(join(context.staging, IRON_GIANT)), [IRON_GIANT_FILE], 'the download is left as it was')
+})
+
+test('Ron\'s Gone Wrong, whose video file drops the apostrophe, is published under the torrent\'s spelling', async () => {
+  const context = await setup()
+  await addTorrent(context, HASH, RONS, { [RONS_FILE]: film })
+  const result = await context.make().importTorrent(HASH)
+  assert.equal(result.result, 'published', result.reason)
+  assert.deepEqual(await readdir(join(context.library, "Ron's Gone Wrong (2021)")), ["Ron's Gone Wrong (2021).mp4"])
+  assert.equal(await lstat(join(context.library, '.review')).then(() => true, () => false), false, 'nothing sent to review')
+  assert.deepEqual(await readdir(join(context.staging, dirname(RONS_FILE))), [basename(RONS_FILE)], 'the download is left as it was')
+})
+
+test('Next Gen, a WEB-DLRip with its size, dub marker and group after the year, is published as Next Gen (2018)', async () => {
+  const context = await setup()
+  await addTorrent(context, HASH, NEXT_GEN, { [NEXT_GEN_FILE]: film })
+  const result = await context.make().importTorrent(HASH)
+  assert.equal(result.result, 'published', result.reason)
+  assert.deepEqual(await readdir(join(context.library, 'Next Gen (2018)')), ['Next Gen (2018).avi'])
+  const published = await stat(join(context.library, 'Next Gen (2018)', 'Next Gen (2018).avi'))
+  assert.equal(published.ino, (await stat(join(context.staging, NEXT_GEN_FILE))).ino, 'published as a hardlink')
+  assert.equal(await lstat(join(context.library, '.review')).then(() => true, () => false), false, 'nothing sent to review')
+  assert.deepEqual(await readdir(join(context.staging, dirname(NEXT_GEN_FILE))), [basename(NEXT_GEN_FILE)], 'the download is left as it was')
+})
+
 test('films can be published into a folder such as Movies, which must already exist inside the library', async () => {
   const context = await setup()
   await addTorrent(context, HASH, 'Sintel.2010.720p', { 'Sintel.2010.720p/Sintel.2010.720p.mkv': film })
@@ -176,8 +319,12 @@ test('ambiguous names, several large videos, TV, unreadable or short videos are 
   const cases = [
     ['no year', 'Toy.Story.1080p.BluRay', { 'Toy.Story.1080p.BluRay/Toy.Story.1080p.BluRay.mkv': film }, /title and year could not be read/],
     ['disagreeing names', 'Toy.Story.2.1999.1080p', { 'Toy.Story.2.1999.1080p/Toy.Story.3.2010.1080p.mkv': film }, /says/],
+    ['a video of another year', NEXT_GEN, { 'Next.Gen.2018.WEB-DLRip/Next.Gen.2019.WEB-DLRip.1.46Gb.D.MegaPeer.avi': film }, /torrent name says "Next Gen \(2018\)" but the video file says "Next Gen \(2019\)"/],
+    ['a video naming no film', NEXT_GEN, { 'Next.Gen.2018.WEB-DLRip/MegaPeer.avi': film }, /could not be read from the video file name/],
+    ['a second year after the first', 'Next Gen 2018 WEB-DLRip 2019 MegaPeer', { 'Next Gen 2018 WEB-DLRip 2019 MegaPeer/Next.Gen.2018.WEB-DLRip.avi': film }, /could not be read from the torrent name/],
     ['two parts', 'Film.2001.DVDRip', { 'Film.2001.DVDRip/CD1.avi': film, 'Film.2001.DVDRip/CD2.avi': film.slice(0, 2900) }, /More than one large video/],
     ['a season with no episode numbers', 'Some Show Season 2 1080p', { 'Some Show Season 2 1080p/Episode One.mkv': film }, /title and year/],
+    ['a pack of two films', 'Toy Story (1995) + Toy Story 2 (1999) 1080p', { 'Toy Story (1995) + Toy Story 2 (1999) 1080p/Toy.Story.1080p.mkv': film }, /title and year could not be read/],
     ['empty video', 'Empty.2001.1080p', { 'Empty.2001.1080p/Empty.2001.1080p.mkv': '' }, /Empty file/],
   ]
   for (const [label, name, files, reason] of cases) {
@@ -597,4 +744,109 @@ test('unsafe or unfinished Usenet output goes to review with a reason code, and 
   await writeTree(join(outside.root, 'elsewhere'), { 'Sintel.2010.1080p.mkv': film })
   assert.equal((await outside.make().importDirectory({ key: JOB, name: 'x', root: join(outside.root, 'elsewhere'), allowedRoot: outside.usenet })).code, 'unsafe-path')
   await assert.rejects(outside.make().importDirectory({ key: '../../etc', name: 'x', root: outside.completed, allowedRoot: outside.usenet }), /Not a Usenet download/)
+})
+
+// One run of the importer as main() wires it: what onPublished collects is what Jellyfin is asked to scan.
+async function familyRun(context, options = {}) {
+  const published = []
+  const importer = context.make({ moviesDir: 'Movies', onPublished: (entry) => published.push(...entry.published), ...options })
+  return { importer, published }
+}
+
+test('only newly published downloads are handed on for a Jellyfin scan; dry runs, review and repeats are not', async () => {
+  const context = await setup()
+  await mkdir(join(context.library, 'Movies'))
+  await addTorrent(context, HASH, 'Robots.2005.1080p.BluRay.x264', { 'Robots.2005.1080p.BluRay.x264/Robots.2005.1080p.BluRay.x264.mp4': film, 'Robots.2005.1080p.BluRay.x264/Robots.2005.en.srt': 'subtitle' })
+  await addTorrent(context, OTHER, 'Some.Film.1080p', { 'Some.Film.1080p/Some.Film.1080p.mkv': film })
+
+  const dry = await familyRun(context, { dryRun: true })
+  assert.deepEqual((await dry.importer.scan()).map((entry) => entry.result).sort(), ['review', 'would-publish'])
+  assert.deepEqual(dry.published, [], 'a dry run publishes nothing')
+
+  const first = await familyRun(context)
+  const results = await first.importer.scan()
+  assert.deepEqual(results.map((entry) => [entry.hash, entry.result]).sort(), [[HASH, 'published'], [OTHER, 'review']])
+  assert.deepEqual(first.published.sort(), [join(context.library, 'Movies', 'Robots (2005)', 'Robots (2005).en.srt'), join(context.library, 'Movies', 'Robots (2005)', 'Robots (2005).mp4')])
+
+  const again = await familyRun(context)
+  assert.equal((await again.importer.importTorrent(HASH)).result, 'unchanged')
+  await writeFile(join(context.stateDir, `${HASH}.json`), '{}')
+  assert.equal((await again.importer.importTorrent(HASH)).result, 'already-imported')
+  assert.deepEqual(await again.importer.scan(), [])
+  assert.deepEqual(again.published, [], 'nothing new, nothing to scan')
+})
+
+test('one importer run asks Jellyfin to scan Movies and TV Shows once each, and never TXP1', async () => {
+  const context = await setup()
+  await mkdir(join(context.library, 'Movies'))
+  await addTorrent(context, HASH, 'Robots.2005.1080p', { 'Robots.2005.1080p/Robots.2005.1080p.mp4': film })
+  await addTorrent(context, OTHER, 'Sintel.2010.720p', { 'Sintel.2010.720p/Sintel.2010.720p.mkv': film })
+  const THIRD = 'c'.repeat(40)
+  const name = 'MobLand (Season 2) WEB-DL 1080p'
+  await addTorrent(context, THIRD, name, Object.fromEntries([1, 2, 3].map((n) => [`${name}/MobLand.S02E0${n}.1080p.WEB-DL.mkv`, episode(n)])))
+  const { importer, published } = await familyRun(context)
+  assert.deepEqual((await importer.scan()).map((entry) => entry.result), ['published', 'published', 'published'])
+
+  const calls = []
+  const libraries = [
+    { Name: 'TV Shows', Locations: [join(context.library, 'TV')], ItemId: 'a'.repeat(32) },
+    { Name: 'Movies', Locations: [join(context.library, 'Movies')], ItemId: 'b'.repeat(32) },
+    { Name: 'TXP1', Locations: [join(context.root, 'private')], ItemId: 'c'.repeat(32) },
+  ]
+  const fetchImpl = async (url, init) => {
+    calls.push(`${init.method} ${new URL(url).pathname}`)
+    return new URL(url).pathname === '/Library/VirtualFolders' ? Response.json(libraries) : new Response(null, { status: 204 })
+  }
+  const key = '0123456789abcdef0123456789abcdef'
+  const refresh = createJellyfinFolderRefresh({ url: 'http://127.0.0.1:8096' }, { apiKey: key, fetchImpl })
+  const logs = []
+  const outcome = await refreshJellyfinAfterImport(published, { refresh, roots: [context.library], log: (entry) => logs.push(entry) })
+  assert.deepEqual(outcome.refreshed.sort(), ['Movies', 'TV Shows'])
+  assert.deepEqual(calls.sort(), ['GET /Library/VirtualFolders', `POST /Items/${'a'.repeat(32)}/Refresh`, `POST /Items/${'b'.repeat(32)}/Refresh`])
+  assert.deepEqual(logs, [{ result: 'jellyfin-refresh', libraries: outcome.refreshed, skipped: undefined, failed: undefined, notScanned: undefined }])
+  assert.equal(JSON.stringify(logs).includes(key), false)
+})
+
+test('no scan without new content or settings, and a Jellyfin failure never undoes or fails the import', async () => {
+  const logs = []
+  const log = (entry) => logs.push(entry)
+  let asked = 0
+  const refresh = async () => { asked += 1; throw new Error('Jellyfin could not be reached.') }
+  assert.equal(await refreshJellyfinAfterImport([], { refresh, roots: ['/media/family'], log }), null)
+  assert.equal(asked, 0)
+  assert.deepEqual(logs, [], 'a run with nothing new says nothing about Jellyfin')
+
+  assert.equal(await refreshJellyfinAfterImport(['/media/family/Movies/Robots (2005)/Robots (2005).mp4'], { refresh: null, roots: ['/media/family'], log }), null)
+  assert.equal(logs.at(-1).result, 'jellyfin-refresh-off')
+
+  const context = await setup()
+  await mkdir(join(context.library, 'Movies'))
+  await addTorrent(context, HASH, 'Robots.2005.1080p', { 'Robots.2005.1080p/Robots.2005.1080p.mp4': film, 'Robots.2005.1080p/Robots.2005.en.srt': 'subtitle' })
+  const { importer, published } = await familyRun(context)
+  const result = await importer.importTorrent(HASH)
+  assert.equal(result.result, 'published')
+  // Both files of the film are one folder, so one request reaches the refresher.
+  const folders = []
+  await refreshJellyfinAfterImport(published, { refresh: async (paths) => { folders.push(paths); throw new Error('Jellyfin could not be reached.') }, roots: [context.library], log })
+  assert.deepEqual(folders, [[join(context.library, 'Movies', 'Robots (2005)')]])
+  assert.deepEqual(logs.at(-1), { result: 'jellyfin-refresh-failed', reason: 'Jellyfin could not be reached.' })
+  assert.equal(result.result, 'published')
+  assert.equal(JSON.parse(await readFile(join(context.stateDir, `${HASH}.json`), 'utf8')).result, 'published')
+  assert.equal((await stat(join(context.library, 'Movies', 'Robots (2005)', 'Robots (2005).mp4'))).nlink, 2)
+
+  // A partial scan (one library refused) is reported as a failure too, naming what was not scanned.
+  await refreshJellyfinAfterImport(published, { refresh: async () => ({ refreshed: [], skipped: [], failed: [{ library: 'Movies', reason: 'HTTP 500' }], notScanned: ['x'] }), roots: [context.library], log })
+  assert.equal(logs.at(-1).result, 'jellyfin-refresh-failed')
+  assert.deepEqual(logs.at(-1).notScanned, ['x'])
+})
+
+test('both importer units can reach Jellyfin and check its plain-HTTP address is this machine', async () => {
+  for (const name of ['tomifin-family-import.service.example', 'tomifin-family-import-scan.service.example']) {
+    const unit = await readFile(new URL(`./family-import/${name}`, import.meta.url), 'utf8')
+    // jellyfinConfig() lists this machine's addresses (os.networkInterfaces(), over netlink) to accept http://<LAN address>.
+    assert.match(unit, /^RestrictAddressFamilies=.*\bAF_NETLINK\b/m, name)
+    assert.match(unit, /^IPAddressDeny=any$/m, name)
+    assert.match(unit, /^IPAddressAllow=localhost 192\.168\.1\.81$/m, name)
+    assert.match(unit, /^UnsetEnvironment=(?!.*TOMIFY_JELLYFIN).*TOMIFY_RECOVERY_TOKEN/m, name)
+  }
 })
