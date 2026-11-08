@@ -134,6 +134,7 @@ export function tomifinTorrentState(torrent, { createdAt, now = Date.now(), maxB
   if (state === 'queuedDL') return { status: 'queued', message: 'Queued in qBittorrent' }
   if (state === 'stalledDL') return { status: 'stalled', message: 'Waiting for peers' }
   if (state === 'metaDL' || state === 'forcedMetaDL') return { status: 'downloading', message: 'Fetching torrent details' }
+  if (state === 'forcedDL') return { status: 'downloading', message: 'Force started' }
   if (state.startsWith('checking')) return { status: 'downloading', message: 'Checking files' }
   if (state === 'moving') return { status: 'downloading', message: 'Moving files' }
   return { status: 'downloading', message: null }
@@ -534,6 +535,8 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
       canPause: Boolean(torrent) && !oversized && ['queued', 'downloading', 'stalled'].includes(state.status),
       canResume: Boolean(torrent) && !oversized && state.status === 'paused',
       canRetry: state.status === 'failed' && torrentRetryable(torrent, destination, config.maxBytes),
+      // Force start: an unfinished torrent qBittorrent is not already forcing (queued, waiting for peers or paused).
+      canForceStart: Boolean(torrent) && !oversized && torrent.force_start !== true && !text(torrent.state).startsWith('forced') && !readyForFinalisation(torrent) && ['queued', 'downloading', 'stalled', 'paused'].includes(state.status),
       // More trackers: an unfinished torrent qBittorrent does not report as private (checked again when pressed).
       canFindTrackers: Boolean(torrent) && !oversized && torrent.private !== true && ['queued', 'downloading', 'stalled', 'paused'].includes(state.status),
       // Only an unfinished download still in its own staging folder has its data deleted on cancel.
@@ -856,6 +859,22 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
       return { job: jobView(job, { ...torrent, state: 'queuedDL' }) }
     },
 
+    // Force start: asks qBittorrent to run this torrent now, past its queue limits (and to start it if it is paused).
+    // Only for an unfinished torrent within the download limit; Usenet downloads have no such thing.
+    async forceStart(body) {
+      requireEnabled()
+      const job = await loadJob(body?.id)
+      if (isUsenetJob(job)) throw new TomifinError('not-a-torrent', 'Only torrents can be force started.')
+      const torrent = await torrentFor(job)
+      if (!torrent) throw new TomifinError('not-in-qbittorrent', 'The torrent is no longer in qBittorrent.')
+      if (torrentSize(torrent) > config.maxBytes) throw new TomifinError('too-large', 'This torrent is larger than the download limit (TOMIFY_TOMIFIN_MAX_BYTES), so it cannot be started.')
+      const status = tomifinTorrentState(torrent, { createdAt: job.createdAt, now: now(), maxBytes: config.maxBytes }).status
+      if (readyForFinalisation(torrent) || !['queued', 'downloading', 'stalled', 'paused'].includes(status)) throw new TomifinError('not-startable', status === 'failed' ? 'This download has failed: press Retry instead.' : 'This download has already finished.')
+      await client.forceStart(text(torrent.hash).toLowerCase())
+      log(`Tomifin force started ${logName(job)}`)
+      return { job: jobView(job, { ...torrent, force_start: true, state: torrent.state === 'metaDL' ? 'forcedMetaDL' : 'forcedDL' }) }
+    },
+
     // Tries a failed download again in its own downloader. A torrent qBittorrent reports as failed (an error, or files
     // missing) is checked on disk again and started, in the same folders; SABnzbd retries a failed job from its
     // history (tomifin-usenet.mjs). Nothing is deleted, and nothing is added twice.
@@ -986,7 +1005,7 @@ export function createTomifinController({ config, client, stateRoot, usenet = nu
 // The agent's /v1/tomifin/* routes. Returns null for any other path. Every route but login needs the Jellyfin
 // session token (body.session) of a Jellyfin administrator, checked with Jellyfin (recovery-agent/jellyfin.mjs).
 export async function handleTomifinRequest(path, body, controller, auth) {
-  const route = String(path || '').match(/^\/v1\/tomifin\/(login|logout|session|status|vpn|search|link|download|downloads|pause|resume|retry|trackers|cancel)$/)
+  const route = String(path || '').match(/^\/v1\/tomifin\/(login|logout|session|status|vpn|search|link|download|downloads|pause|resume|force-start|retry|trackers|cancel)$/)
   if (!route) return null
   const action = route[1]
   try {
@@ -1000,6 +1019,7 @@ export async function handleTomifinRequest(path, body, controller, auth) {
     if (action === 'link') return { status: 200, body: await controller.link(body) }
     if (action === 'download') return { status: 202, body: await controller.download(body) }
     if (action === 'downloads') return { status: 200, body: await controller.list() }
+    if (action === 'force-start') return { status: 200, body: await controller.forceStart(body) }
     return { status: 200, body: await controller[action](body) }
   } catch (error) {
     if (error instanceof TomifinError || error instanceof JellyfinAuthError) return { status: 400, body: { error: 'tomifin-error', code: error.code, message: error.message } }

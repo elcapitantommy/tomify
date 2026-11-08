@@ -49,7 +49,7 @@ function fakeApi({ vpn = { state: 'connected', qbittorrent: 'connected', nordvpn
     if (url === '/api/tomifin/download') return download(body)
     if (url === '/api/tomifin/downloads') return Response.json({ jobs })
     if (url.endsWith('/trackers')) return Response.json({ job: job(), added: 3, fromSearch: 1, fromLists: 2, warnings: [] })
-    if (/\/api\/tomifin\/downloads\/.+\/(pause|resume|retry|cancel)$/.test(url)) return Response.json(url.endsWith('cancel') ? { cancelled: true, filesDeleted: true } : { job: job() })
+    if (/\/api\/tomifin\/downloads\/.+\/(pause|resume|force-start|retry|cancel)$/.test(url)) return Response.json(url.endsWith('cancel') ? { cancelled: true, filesDeleted: true } : { job: job() })
     return Response.json({ error: 'not-found' }, { status: 404 })
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -322,6 +322,21 @@ describe('Tomifin Downloader', () => {
     fireEvent.click(retry)
     await waitFor(() => expect(calls.some((call) => call.url === `/api/tomifin/downloads/${job().id}/retry` && call.method === 'POST' && call.headers['x-tomifin'] === '1')).toBe(true))
     expect(await screen.findByRole('status')).toHaveTextContent('Retrying “Big Buck Bunny (2008)” in qBittorrent.')
+  })
+
+  it('offers Force start only on torrents the agent allows it for', async () => {
+    const calls = fakeApi({ jobs: [
+      job({ status: 'queued', canForceStart: true }),
+      job({ id: '00000000-0000-4000-8000-000000000005', name: 'Tears of Steel' }),
+    ] })
+    await open()
+    const torrent = (await screen.findByText('Big Buck Bunny (2008)')).closest('li')!
+    expect(within(screen.getByText('Tears of Steel').closest('li')!).queryByRole('button', { name: 'Force start' })).toBeNull()
+    const force = within(torrent).getByRole('button', { name: 'Force start' })
+    expect(force).toHaveAttribute('title', 'Start this torrent now in qBittorrent, even if its queue is full')
+    fireEvent.click(force)
+    await waitFor(() => expect(calls.some((call) => call.url === `/api/tomifin/downloads/${job().id}/force-start` && call.method === 'POST' && call.headers['x-tomifin'] === '1')).toBe(true))
+    expect(await screen.findByRole('status')).toHaveTextContent('Force started “Big Buck Bunny (2008)” in qBittorrent.')
   })
 
   it('offers More trackers only on torrents the agent allows it for', async () => {
