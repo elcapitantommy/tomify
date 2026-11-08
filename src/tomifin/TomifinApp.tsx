@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CircleCheck, Clapperboard, ShieldAlert, ShieldCheck, ShieldQuestion, ExternalLink, FileDown, Link2, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Newspaper, Pause, Play, RadioTower, RefreshCw, RotateCcw, Search, TriangleAlert, Upload, UserRound, Users, X } from 'lucide-react'
+import { ChevronDown, CircleCheck, Clapperboard, ShieldAlert, ShieldCheck, ShieldQuestion, ExternalLink, FileDown, Link2, LoaderCircle, Lock, LockKeyhole, LogOut, Magnet, Newspaper, Pause, Play, RadioTower, RefreshCw, RotateCcw, Search, TriangleAlert, Upload, UserRound, Users, X } from 'lucide-react'
 import { DESTINATIONS, formatAge, formatEta, formatSize, formatSpeed, readFileBase64, tomifinApi, TomifinRequestError, type TomifinDestination, type TomifinDetected, type TomifinJob, type TomifinJobAction, type TomifinKind, type TomifinResult, type TomifinServiceStatus, type TomifinVpnStatus } from './api'
 import { sortResults, type SortKey } from './results'
 
@@ -14,6 +14,22 @@ const DETECTED_LABELS: Record<TomifinDetected, string> = { magnet: 'Torrent · M
 function TypeBadge({ result }: { result: TomifinResult }) {
   if (result.type === 'usenet') return <span className="tf-chip tf-chip-usenet" title="NZB, downloaded with SABnzbd"><Newspaper aria-hidden/>Usenet · NZB</span>
   return <span className="tf-chip tf-chip-type" title={result.linkType === 'magnet' ? 'Magnet link' : '.torrent file'}>{result.linkType === 'magnet' ? <Magnet aria-hidden/> : <FileDown aria-hidden/>}Torrent · {result.linkType === 'magnet' ? 'Magnet' : 'File'}</span>
+}
+
+// A section's collapsed state, remembered in this browser only.
+function useCollapsed(section: string) {
+  const key = `tomifin-collapsed-${section}`
+  const [collapsed, setCollapsed] = useState(() => { try { return window.localStorage.getItem(key) === '1' } catch { return false } })
+  const set = useCallback((value: boolean) => {
+    setCollapsed(value)
+    try { window.localStorage.setItem(key, value ? '1' : '0') } catch { /* storage unavailable */ }
+  }, [key])
+  return [collapsed, set] as const
+}
+
+function CollapseButton({ label, collapsed, controls, onToggle }: { label: string; collapsed: boolean; controls: string; onToggle: () => void }) {
+  const text = `${collapsed ? 'Show' : 'Hide'} ${label}`
+  return <button type="button" className={collapsed ? 'tf-collapse tf-collapse-closed' : 'tf-collapse'} onClick={onToggle} aria-expanded={!collapsed} aria-controls={controls} aria-label={text} title={text}><ChevronDown aria-hidden/></button>
 }
 
 function message(error: unknown) { return error instanceof Error ? error.message : 'Something went wrong.' }
@@ -189,16 +205,19 @@ function AddLink({ destination, disabled, onChecked, onQueue, needDestination }:
 }
 
 function Downloads({ jobs, loading, error, onRefresh, onAction, busyId }: { jobs: TomifinJob[] | null; loading: boolean; error: string | null; onRefresh: () => void; onAction: (job: TomifinJob, action: TomifinJobAction) => void; busyId: string | null }) {
+  const [collapsed, setCollapsed] = useCollapsed('downloads')
   return (
-    <section className="tf-panel" aria-labelledby="tf-downloads-title">
+    <section className={collapsed ? 'tf-panel tf-panel-collapsed' : 'tf-panel'} aria-labelledby="tf-downloads-title">
       <div className="tf-section-head">
-        <h2 id="tf-downloads-title">Downloads</h2>
+        <div className="tf-section-title"><CollapseButton label="downloads" collapsed={collapsed} controls="tf-downloads-body" onToggle={() => setCollapsed(!collapsed)}/><h2 id="tf-downloads-title">Downloads</h2>{collapsed && Boolean(jobs?.length) && <span className="tf-muted">{jobs!.length}</span>}</div>
         <button type="button" className="tf-button tf-ghost tf-small" onClick={onRefresh} disabled={loading} aria-label="Refresh downloads"><RefreshCw className={loading ? 'tf-spin' : ''} aria-hidden/>Refresh</button>
       </div>
-      {error && <div className="tf-alert tf-alert-error" role="alert"><TriangleAlert aria-hidden/>{error}</div>}
-      {jobs === null && !error && <p className="tf-empty"><LoaderCircle className="tf-spin" aria-hidden/>Loading downloads…</p>}
-      {jobs?.length === 0 && <p className="tf-empty">Nothing queued yet. Search above or add a link, pick Family or Private, then queue it.</p>}
-      {Boolean(jobs?.length) && <ul className="tf-jobs">{jobs!.map((job) => <JobCard key={job.id} job={job} busy={busyId === job.id} onAction={onAction}/>)}</ul>}
+      <div id="tf-downloads-body" hidden={collapsed}>
+        {error && <div className="tf-alert tf-alert-error" role="alert"><TriangleAlert aria-hidden/>{error}</div>}
+        {jobs === null && !error && <p className="tf-empty"><LoaderCircle className="tf-spin" aria-hidden/>Loading downloads…</p>}
+        {jobs?.length === 0 && <p className="tf-empty">Nothing queued yet. Search above or add a link, pick Family or Private, then queue it.</p>}
+        {Boolean(jobs?.length) && <ul className="tf-jobs">{jobs!.map((job) => <JobCard key={job.id} job={job} busy={busyId === job.id} onAction={onAction}/>)}</ul>}
+      </div>
     </section>
   )
 }
@@ -303,8 +322,13 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
     return () => { controller.abort(); window.clearInterval(timer) }
   }, [refresh, active, status])
 
+  const [searchCollapsed, setSearchCollapsed] = useCollapsed('search')
+  const [resultsCollapsed, setResultsCollapsed] = useCollapsed('results')
+
   const runSearch = async () => {
     const trimmed = query.trim()
+    // Show the results even if that section was collapsed, so a new search is never hidden.
+    setResultsCollapsed(false)
     if (trimmed.length < 2) { setSearchError('Type at least two characters to search.'); return }
     searchAbort.current?.abort()
     const controller = new AbortController()
@@ -377,8 +401,11 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
       {statusError && <div className="tf-alert tf-alert-error" role="alert"><TriangleAlert aria-hidden/>{statusError}</div>}
       {unavailable && <div className="tf-alert tf-alert-warn" role="alert"><TriangleAlert aria-hidden/>Tomifin Downloader is not available: {status.problem || 'the media server is not set up for it.'}</div>}
 
-      <section className="tf-panel tf-search-panel" aria-labelledby="tf-search-title">
-        <h2 id="tf-search-title" className="tf-visually-hidden">Search</h2>
+      <section className={searchCollapsed ? 'tf-panel tf-search-panel tf-panel-collapsed' : 'tf-panel tf-search-panel'} aria-labelledby="tf-search-title">
+        <div className="tf-section-head">
+          <div className="tf-section-title"><CollapseButton label="search" collapsed={searchCollapsed} controls="tf-search-body" onToggle={() => setSearchCollapsed(!searchCollapsed)}/><h2 id="tf-search-title">Search</h2></div>
+        </div>
+        <div id="tf-search-body" className="tf-search-body" hidden={searchCollapsed}>
         <form className="tf-search" role="search" onSubmit={(event) => { event.preventDefault(); void runSearch() }}>
           <div className="tf-input tf-search-input"><Search aria-hidden/><input type="search" placeholder="Search films and TV…" aria-label="Search for media" value={query} onChange={(event) => setQuery(event.target.value)} maxLength={200} enterKeyHint="search"/></div>
           <button className="tf-button tf-primary tf-search-button" disabled={searching || Boolean(unavailable)}>{searching ? <><LoaderCircle className="tf-spin" aria-hidden/>Searching…</> : <><Search aria-hidden/>Search</>}</button>
@@ -387,6 +414,7 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
           {KINDS.map((entry) => <button key={entry.id} type="button" role="radio" aria-checked={kind === entry.id} className={kind === entry.id ? 'tf-segment tf-segment-on' : 'tf-segment'} onClick={() => setKind(entry.id)}>{entry.label}</button>)}
         </div>
         {usenetStatus && <p className="tf-sources tf-muted">{usenetSources(usenetStatus)}</p>}
+        </div>
       </section>
 
       <div ref={destinationRef}><DestinationPicker value={destination} onChange={(value) => { setDestination(value); setNotice(null) }} status={status}/></div>
@@ -395,11 +423,12 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
 
       {notice && <div className={`tf-alert tf-alert-${notice.tone}`} role={notice.tone === 'success' ? 'status' : 'alert'}>{notice.tone === 'success' ? <CircleCheck aria-hidden/> : <TriangleAlert aria-hidden/>}{notice.text}</div>}
 
-      <section className="tf-panel" aria-labelledby="tf-results-title" aria-busy={searching}>
+      <section className={resultsCollapsed ? 'tf-panel tf-panel-collapsed' : 'tf-panel'} aria-labelledby="tf-results-title" aria-busy={searching}>
         <div className="tf-section-head">
-          <h2 id="tf-results-title">Results</h2>
+          <div className="tf-section-title"><CollapseButton label="results" collapsed={resultsCollapsed} controls="tf-results-body" onToggle={() => setResultsCollapsed(!resultsCollapsed)}/><h2 id="tf-results-title">Results</h2></div>
           {searched && <span className="tf-muted">{visible.length} of {searched.results.length} result{searched.results.length === 1 ? '' : 's'} for “{searched.query}”</span>}
         </div>
+        <div id="tf-results-body" hidden={resultsCollapsed}>
         {searched && searched.results.length > 0 && (
           <div className="tf-filters">
             <label><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value as SortKey)}><option value="relevance">Relevance</option><option value="seeders">Most seeders</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select></label>
@@ -415,6 +444,7 @@ function Downloader({ user, onSignOut, onExpired }: { user: TomifinUser; onSignO
         {!searching && searched && searched.results.length === 0 && <p className="tf-empty">Nothing found for “{searched.query}”. Try a shorter title or add the year.</p>}
         {!searching && searched && searched.results.length > 0 && visible.length === 0 && <p className="tf-empty">No results match these filters.</p>}
         {!searching && visible.length > 0 && <ul className="tf-results">{visible.map((result) => <ResultCard key={result.id} result={result} destination={destination} busy={queuing === result.id} queued={queued.has(result.id)} onQueue={(value) => { void queue(value) }}/>)}</ul>}
+        </div>
       </section>
 
       {!unavailable && <Downloads jobs={jobs} loading={jobsLoading} error={jobsError} onRefresh={() => void refresh()} onAction={(job, action) => void control(job, action)} busyId={busyJob}/>}

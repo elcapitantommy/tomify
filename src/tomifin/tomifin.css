@@ -25,6 +25,13 @@ svg { width: 18px; height: 18px; flex: none }
 .tf-panel h2 { margin: 0; font: 700 1.15rem/1.2 Manrope, sans-serif }
 .tf-panel p { color: #c1c7c1; line-height: 1.5 }
 .tf-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px }
+.tf-section-title { display: flex; align-items: center; gap: 8px }
+.tf-panel-collapsed { padding-top: 12px; padding-bottom: 12px }
+.tf-panel-collapsed .tf-section-head { margin-bottom: 0 }
+.tf-collapse { display: inline-grid; place-items: center; width: 36px; height: 36px; margin-left: -8px; border: 0; border-radius: 10px; background: none; color: var(--muted); cursor: pointer }
+.tf-collapse:hover { background: var(--line); color: var(--text) }
+.tf-collapse svg { transition: transform .15s ease }
+.tf-collapse-closed svg { transform: rotate(-90deg) }
 .tf-muted { color: var(--muted); font-size: .88rem }
 .tf-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap }
 .tf-toolbar-user { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: -8px }
