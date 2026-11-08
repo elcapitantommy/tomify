@@ -72,14 +72,32 @@ safe_directory() {
 
 safe_directory "$env_dir"
 safe_directory "$(dirname -- "$service_file")"
-[[ ! -L $env_file ]] || fail "$env_file must not be a symlink"
 [[ ! -L $service_file ]] || fail "$service_file must not be a symlink"
+
+# The env file may be a symlink into a hardened store (for example a root-only mount). It is followed only
+# when nobody but root could have made or redirected it: the link is owned by root, sits in the checked
+# directory above, and every directory on the path it resolves to passes the same checks. The version is
+# then written to the resolved file, so the link stays in place.
+env_target=$env_file
+if [[ -L $env_file ]]; then
+  if ((dry_run == 0)); then
+    [[ $(stat -c %u -- "$env_file") == 0 ]] || fail "$env_file is a symlink not owned by root"
+  fi
+  env_target=$(readlink -f -- "$env_file") || fail "$env_file is a symlink that does not resolve"
+  [[ -f $env_target && ! -L $env_target ]] || fail "$env_file points to $env_target, which is not a regular file"
+  directory=$(dirname -- "$env_target")
+  while :; do
+    safe_directory "$directory"
+    [[ $directory == / || $directory == "$root" ]] && break
+    directory=$(dirname -- "$directory")
+  done
+fi
 
 # Rewrites TOMIFY_VERSION in the agent's env file, keeping every other line, owner and mode.
 write_version() {
   local temp line found=0
-  temp=$(mktemp -- "$env_dir/.recovery-agent.env.XXXXXX")
-  if [[ -f $env_file ]]; then
+  temp=$(mktemp -- "$(dirname -- "$env_target")/.recovery-agent.env.XXXXXX")
+  if [[ -f $env_target ]]; then
     while IFS= read -r line || [[ -n $line ]]; do
       if [[ $line == TOMIFY_VERSION=* ]]; then
         if [[ -n $version && $found -eq 0 ]]; then printf 'TOMIFY_VERSION=%s\n' "$version" >> "$temp"; fi
@@ -87,14 +105,14 @@ write_version() {
       else
         printf '%s\n' "$line" >> "$temp"
       fi
-    done < "$env_file"
-    chmod --reference="$env_file" -- "$temp"
-    chown --reference="$env_file" -- "$temp"
+    done < "$env_target"
+    chmod --reference="$env_target" -- "$temp"
+    chown --reference="$env_target" -- "$temp"
   else
     chmod 600 -- "$temp"
   fi
   if [[ -n $version && $found -eq 0 ]]; then printf 'TOMIFY_VERSION=%s\n' "$version" >> "$temp"; fi
-  mv -f -- "$temp" "$env_file"
+  mv -f -- "$temp" "$env_target"
 }
 
 write_unit() {
