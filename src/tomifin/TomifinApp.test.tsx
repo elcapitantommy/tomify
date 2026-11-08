@@ -68,7 +68,30 @@ async function search(text = 'Big Buck Bunny') {
 }
 
 describe('Tomifin Downloader', () => {
-  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); localStorage.clear() })
+
+  it('collapses the search, results and downloads sections and remembers it', async () => {
+    fakeApi({ jobs: [job()] })
+    const view = render(<TomifinApp/>)
+    await screen.findByText(/Signed in as/)
+    expect(await screen.findByText('Big Buck Bunny (2008)')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Hide downloads' }))
+    expect(screen.getByText('Big Buck Bunny (2008)')).not.toBeVisible()
+    expect(screen.getByRole('button', { name: 'Show downloads' })).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(screen.getByRole('button', { name: 'Hide search' }))
+    expect(screen.queryByRole('searchbox', { name: 'Search for media' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Hide results' }))
+    expect(screen.getByText(/Search for a film or series/)).not.toBeVisible()
+
+    view.unmount()
+    render(<TomifinApp/>)
+    await screen.findByText(/Signed in as/)
+    expect(await screen.findByRole('button', { name: 'Show downloads' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show search' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show search' }))
+    expect(await search()).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Hide results' })).toHaveAttribute('aria-expanded', 'true')
+  })
 
   it('loads on its own and asks for a Jellyfin sign-in when signed out', async () => {
     const calls = fakeApi({ signedIn: false })
