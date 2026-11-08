@@ -11,6 +11,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -176,6 +177,33 @@ test('the root helper refuses test options under sudo', { skip }, () => {
   const result = spawnSync('bash', [activate, '--dry-run', '--root', fixture.root, '--version', 'abcdef1'], { env: { ...fixture.baseEnv, SUDO_USER: 'tom' }, encoding: 'utf8' })
   assert.equal(result.status, 1)
   assert.match(result.stderr, /refused under sudo/)
+})
+
+test('the root helper writes the version through a symlinked env file and keeps the link', { skip }, () => {
+  const fixture = setup()
+  const store = join(fixture.root, 'mnt', 'pool', 'secrets', 'tomify')
+  mkdirSync(store, { recursive: true })
+  const target = join(store, 'recovery-agent.env')
+  writeFileSync(target, readFileSync(fixture.envFile, 'utf8'))
+  rmSync(fixture.envFile)
+  symlinkSync(target, fixture.envFile)
+  const result = spawnSync('bash', [activate, '--dry-run', '--root', fixture.root, '--version', 'abcdef1'], { env: fixture.baseEnv, encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(lstatSync(fixture.envFile).isSymbolicLink(), true)
+  assert.equal(readFileSync(target, 'utf8'), 'TOMIFY_RECOVERY_TOKEN=keep-this-value\nTOMIFY_VERSION=abcdef1\nTOMIFY_RECOVERY_DIR=/srv/music-recovery\n')
+  assert.deepEqual(readdirSync(store), ['recovery-agent.env'])
+})
+
+test('the root helper refuses an env symlink that does not lead to a regular file', { skip }, () => {
+  for (const make of [(root) => join(root, 'missing.env'), (root) => { const dir = join(root, 'a-directory'); mkdirSync(dir); return dir }]) {
+    const fixture = setup()
+    rmSync(fixture.envFile)
+    symlinkSync(make(fixture.root), fixture.envFile)
+    const result = spawnSync('bash', [activate, '--dry-run', '--root', fixture.root, '--version', 'abcdef1'], { env: fixture.baseEnv, encoding: 'utf8' })
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /recovery-agent\.env (points to|is a symlink that does not resolve)/)
+    assert.equal(readFileSync(fixture.log, 'utf8'), '')
+  }
 })
 
 test('the root helper clears the version and keeps every other setting', { skip }, () => {
