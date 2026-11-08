@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The only part of an agent deploy that needs root, installed once as
 # /usr/local/sbin/tomify-agent-activate (root:root, 0755) by deploy-agent -Setup.
-# It records the release's version, writes the systemd unit from the template
+# It records the release's version (in /etc/tomify/agent-version.env), writes the systemd unit from the template
 # below (never from a release archive) and restarts the service. Everything else
 # (unpacking releases, swapping /opt/tomify/current) runs as the deploying user.
 # Safe to allow in sudoers without a password: whatever arguments it is given,
@@ -55,7 +55,7 @@ else
 fi
 
 env_dir="$root/etc/tomify"
-env_file="$env_dir/recovery-agent.env"
+version_file="$env_dir/agent-version.env"
 service_file="$root/etc/systemd/system/tomify-recovery.service"
 
 # Root writes only into directories that root owns and nobody else can write, and
@@ -72,47 +72,18 @@ safe_directory() {
 
 safe_directory "$env_dir"
 safe_directory "$(dirname -- "$service_file")"
+[[ ! -L $version_file ]] || fail "$version_file must not be a symlink"
 [[ ! -L $service_file ]] || fail "$service_file must not be a symlink"
 
-# The env file may be a symlink into a hardened store (for example a root-only mount). It is followed only
-# when nobody but root could have made or redirected it: the link is owned by root, sits in the checked
-# directory above, and every directory on the path it resolves to passes the same checks. The version is
-# then written to the resolved file, so the link stays in place.
-env_target=$env_file
-if [[ -L $env_file ]]; then
-  if ((dry_run == 0)); then
-    [[ $(stat -c %u -- "$env_file") == 0 ]] || fail "$env_file is a symlink not owned by root"
-  fi
-  env_target=$(readlink -f -- "$env_file") || fail "$env_file is a symlink that does not resolve"
-  [[ -f $env_target && ! -L $env_target ]] || fail "$env_file points to $env_target, which is not a regular file"
-  directory=$(dirname -- "$env_target")
-  while :; do
-    safe_directory "$directory"
-    [[ $directory == / || $directory == "$root" ]] && break
-    directory=$(dirname -- "$directory")
-  done
-fi
-
-# Rewrites TOMIFY_VERSION in the agent's env file, keeping every other line, owner and mode.
+# The deployed version goes in its own small file, which the unit reads after the agent's settings, so it wins
+# over any TOMIFY_VERSION left there. The settings file (/etc/tomify/recovery-agent.env, which may be a symlink
+# into a secrets store) is never written by a deploy. An empty value clears the version.
 write_version() {
-  local temp line found=0
-  temp=$(mktemp -- "$(dirname -- "$env_target")/.recovery-agent.env.XXXXXX")
-  if [[ -f $env_target ]]; then
-    while IFS= read -r line || [[ -n $line ]]; do
-      if [[ $line == TOMIFY_VERSION=* ]]; then
-        if [[ -n $version && $found -eq 0 ]]; then printf 'TOMIFY_VERSION=%s\n' "$version" >> "$temp"; fi
-        found=1
-      else
-        printf '%s\n' "$line" >> "$temp"
-      fi
-    done < "$env_target"
-    chmod --reference="$env_target" -- "$temp"
-    chown --reference="$env_target" -- "$temp"
-  else
-    chmod 600 -- "$temp"
-  fi
-  if [[ -n $version && $found -eq 0 ]]; then printf 'TOMIFY_VERSION=%s\n' "$version" >> "$temp"; fi
-  mv -f -- "$temp" "$env_target"
+  local temp
+  temp=$(mktemp -- "$env_dir/.agent-version.env.XXXXXX")
+  printf '# Written by tomify-agent-activate on each deploy.\nTOMIFY_VERSION=%s\n' "$version" > "$temp"
+  chmod 0644 -- "$temp"
+  mv -f -- "$temp" "$version_file"
 }
 
 write_unit() {
@@ -130,6 +101,8 @@ Type=simple
 User=tom
 WorkingDirectory=/opt/tomify/current/recovery-agent
 EnvironmentFile=/etc/tomify/recovery-agent.env
+# The deployed version, written by tomify-agent-activate; read last so it wins.
+EnvironmentFile=-/etc/tomify/agent-version.env
 Environment=HOME=/var/lib/tomify-recovery
 ExecStart=/usr/bin/node /opt/tomify/current/recovery-agent/index.mjs
 Restart=on-failure
