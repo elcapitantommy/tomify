@@ -39,7 +39,7 @@ jobs:
         run: pnpm typecheck
 
       - name: Build
-        run: pnpm build
+        run: pnpm build && pnpm build:tomifin
 
       - name: Test
         run: pnpm test

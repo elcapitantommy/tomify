@@ -41,13 +41,16 @@ if ((rollback)); then
   exit
 fi
 
-dirty=$(git status --porcelain -- recovery-agent shared)
-[[ -z $dirty ]] || { echo 'deploy-agent.sh: commit or discard changes under recovery-agent/ and shared/ before deploying' >&2; echo "$dirty" >&2; exit 1; }
+dirty=$(git status --porcelain -- recovery-agent shared tomifin src/tomifin vite.tomifin.config.ts)
+[[ -z $dirty ]] || { echo "deploy-agent.sh: commit or discard changes under recovery-agent/, shared/ and Tomifin's page before deploying" >&2; echo "$dirty" >&2; exit 1; }
+
+# Tomifin's page for the agent's local listener (docs/TOMIFIN.md, "On the tailnet"), built into dist/tomifin-web.
+pnpm run build:tomifin || { echo "deploy-agent.sh: could not build Tomifin's page (run pnpm install, then try again)" >&2; exit 1; }
 
 sha=$(git rev-parse --short HEAD)
 archive="${TMPDIR:-/tmp}/tomify-agent-$sha.tar.gz"
 remote_archive="/tmp/tomify-agent-$sha.tar.gz"
 trap 'rm -f -- "$archive"' EXIT
-tar -czf "$archive" recovery-agent shared package.json scripts/install-agent-release.sh
+tar -czf "$archive" recovery-agent shared package.json scripts/install-agent-release.sh -C dist tomifin-web
 scp "$archive" "$host:$remote_archive"
 ssh -t "$host" "bash -o pipefail -c 'tar -xOf $remote_archive scripts/install-agent-release.sh | bash -s -- --archive $remote_archive --sha $sha; status=\$?; rm -f $remote_archive; exit \$status'"

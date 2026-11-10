@@ -154,7 +154,7 @@ while IFS= read -r member; do
   [[ -n $member ]] || continue
   [[ $member != /* && $member != ../* && $member != */../* && $member != */.. ]] || fail "unsafe archive member: $member"
   case "$member" in
-    recovery-agent | recovery-agent/* | shared | shared/* | scripts | scripts/ | scripts/install-agent-release.sh | package.json) ;;
+    recovery-agent | recovery-agent/* | shared | shared/* | scripts | scripts/ | scripts/install-agent-release.sh | package.json | tomifin-web | tomifin-web/*) ;;
     *) fail "unexpected archive member: $member" ;;
   esac
 done < <(tar -tzf "$archive")
@@ -168,6 +168,8 @@ tar -xzf "$archive" -C "$staging"
 [[ -f $staging/shared/quality.mjs ]] || fail 'archive is missing shared/quality.mjs'
 [[ -f $staging/scripts/install-agent-release.sh ]] || fail 'archive is missing scripts/install-agent-release.sh'
 chmod 755 "$staging/scripts/install-agent-release.sh"
+# Tomifin's page is optional: without it the agent leaves its local listener off and Recovery runs as usual.
+[[ -f $staging/tomifin-web/index.html ]] || echo "install-agent-release.sh: this release has no tomifin-web/index.html, so Tomifin's local listener will stay off" >&2
 
 if [[ -e $release_dir ]]; then
   rm -rf -- "$staging"

@@ -28,15 +28,19 @@ try {
         return
     }
 
-    $dirty = (& git status --porcelain -- recovery-agent shared)
-    if ($dirty) { throw "Commit or discard changes under recovery-agent/ and shared/ before deploying:`n$($dirty -join "`n")" }
+    $dirty = (& git status --porcelain -- recovery-agent shared tomifin src/tomifin vite.tomifin.config.ts)
+    if ($dirty) { throw "Commit or discard changes under recovery-agent/, shared/ and Tomifin's page before deploying:`n$($dirty -join "`n")" }
+
+    # Tomifin's page for the agent's local listener (docs/TOMIFIN.md, "On the tailnet"), built into dist/tomifin-web.
+    & pnpm run build:tomifin
+    if ($LASTEXITCODE -ne 0) { throw 'Could not build Tomifin''s page (run pnpm install, then try again).' }
 
     $sha = (& git rev-parse --short HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Could not read the current Git revision.' }
     $archive = Join-Path ([IO.Path]::GetTempPath()) "tomify-agent-$sha.tar.gz"
     $remoteArchive = "/tmp/tomify-agent-$sha.tar.gz"
     try {
-        & tar -czf $archive recovery-agent shared package.json scripts/install-agent-release.sh
+        & tar -czf $archive recovery-agent shared package.json scripts/install-agent-release.sh -C dist tomifin-web
         if ($LASTEXITCODE -ne 0) { throw 'Could not create the agent release archive.' }
         & scp $archive "${HostName}:$remoteArchive"
         if ($LASTEXITCODE -ne 0) { throw 'Could not copy the agent release archive.' }
