@@ -78,11 +78,28 @@ async function withStaticAssetsWorker(callback) {
   }
 }
 
-test('generated service worker excludes API, Navidrome, Tomifin and TomTube navigations from the SPA fallback', () => {
-  assert.equal(serviceWorker.includes('denylist:[/^\\/api\\//,/^\\/navidrome\\//,/^\\/tomifin(\\/|$)/,/^\\/tomtube(\\/|$)/]'), true)
-  // Tomifin and TomTube are not precached, so the service worker never serves an old copy of them.
-  assert.equal(serviceWorker.includes('tomifin/index.html'), false)
+test('generated service worker excludes API, Navidrome and TomTube navigations from the SPA fallback', () => {
+  assert.equal(serviceWorker.includes('denylist:[/^\\/api\\//,/^\\/navidrome\\//,/^\\/tomtube(\\/|$)/]'), true)
+  // TomTube is not precached, so the service worker never serves an old copy of it; Tomifin is not in this build.
+  assert.equal(serviceWorker.includes('tomifin'), false)
   assert.equal(serviceWorker.includes('tomtube/'), false)
+})
+
+test('Worker has no Tomifin routes on any address, and never calls the agent for them', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (input) => { calls.push(String(input)); return Response.json({}) }
+  try {
+    const env = { TOMIFY_DB: mockDatabase(), RECOVERY_AGENT_URL: 'https://agent.tomify.test', RECOVERY_AGENT_TOKEN: 'agent-secret-token-that-is-long-enough' }
+    for (const host of ['tomifin.tomdixon.uk', 'app.tomify.test']) {
+      for (const [method, path] of [['GET', '/api/tomifin/session'], ['POST', '/api/tomifin/session'], ['GET', '/api/tomifin/downloads'], ['POST', '/api/tomifin/download']]) {
+        const response = await worker.fetch(new Request(`https://${host}${path}`, { method, headers: { 'x-tomifin': '1', cookie: 'tomifin_session=' + 'c'.repeat(32), ...(method === 'POST' ? { 'content-type': 'application/json' } : {}) }, body: method === 'POST' ? JSON.stringify({ username: 'tom', password: 'x' }) : undefined }), env)
+        assert.equal(response.status, 404, `${host} ${method} ${path}`)
+        assert.deepEqual(await response.json(), { error: 'not-found' })
+      }
+    }
+    assert.deepEqual(calls.filter((url) => url.includes('/v1/tomifin')), [])
+  } finally { globalThis.fetch = originalFetch }
 })
 
 test('Worker handles the Spotify callback as API and returns JSON for unknown API routes', async () => {
@@ -1090,7 +1107,7 @@ test('Workers Static Assets serves SPA deep links with the intended cache rules 
   const headerRules = await readFile(new URL('../dist/client/_headers', import.meta.url), 'utf8')
   assert.match(config, /directory = "\.\/dist\/client"/)
   assert.match(config, /not_found_handling = "single-page-application"/)
-  // Every path but hashed assets reaches the Worker first (API, Navidrome, and Tomifin's separate address).
+  // Every path but hashed assets reaches the Worker first (API and Navidrome).
   assert.match(config, /run_worker_first = \["\/\*", "!\/assets\/\*"\]/)
   assert.match(headerRules, /\/index\.html\s+Cache-Control: no-cache/)
   assert.match(headerRules, /\/sw\.js\s+Cache-Control: no-cache/)
@@ -1118,16 +1135,21 @@ test('Workers Static Assets serves SPA deep links with the intended cache rules 
     assert.deepEqual(await api.json(), { error: 'not-found' })
     const obsoleteServerAsset = await fetch(`${origin}/server/index.js`)
     assert.match(await obsoleteServerAsset.text(), /<div id="root"><\/div>/)
-    // Tomifin Downloader lives at its own address (TOMIFIN_HOSTNAME); Tomify's address sends its old path there,
-    // which also shows the Worker sees these paths before Static Assets does.
-    for (const path of ['/tomifin', '/tomifin/', '/tomifin/index.html']) {
-      const tomifin = await fetch(`${origin}${path}`, { redirect: 'manual', headers: { accept: 'text/html' } })
-      assert.equal(tomifin.status, 301, path)
-      assert.equal(tomifin.headers.get('location'), 'https://tomifin.tomdixon.uk/', path)
+    // Tomifin Downloader is served only on the tailnet by the recovery agent: this Worker has no Tomifin page or API,
+    // on Tomify's address or on Tomifin's old one (tomifin.tomdixon.uk).
+    for (const host of [null, 'tomifin.tomdixon.uk']) {
+      const headers = { accept: 'text/html', ...(host ? { 'x-forwarded-host': host, host } : {}) }
+      for (const path of ['/', '/tomifin', '/tomifin/', '/tomifin/index.html']) {
+        const page = await fetch(`${origin}${path}`, { redirect: 'manual', headers })
+        assert.notEqual(page.status, 301, path)
+        assert.doesNotMatch(await page.text(), /Tomifin/, `${host || 'Tomify'} ${path}`)
+      }
+      for (const method of ['GET', 'POST']) {
+        const api = await fetch(`${origin}/api/tomifin/session`, { method, headers: { ...headers, 'x-tomifin': '1' } })
+        assert.equal(api.status, 404, `${host} ${method}`)
+        assert.deepEqual(await api.json(), { error: 'not-found' })
+      }
     }
-    const tomifinApi = await fetch(`${origin}/api/tomifin/status`, { headers: { accept: 'text/html' } })
-    assert.equal(tomifinApi.status, 404)
-    assert.match(tomifinApi.headers.get('content-type') || '', /^application\/json/)
   })
 })
 

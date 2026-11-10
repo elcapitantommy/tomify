@@ -1,8 +1,10 @@
 // Tomifin Downloader's front door on the tailnet (docs/TOMIFIN.md, "On the tailnet"). A second HTTP listener on
 // 127.0.0.1 only, which Caddy on the box reaches as https://down.tn.tomdixon.uk. It serves the page built by
 // `pnpm build:tomifin` (the release's tomifin-web/ folder), signs in with Jellyfin administrator accounts and answers
-// /api/tomifin/* by calling the same Tomifin handlers as /v1/tomifin/*, in this process: no Recovery token, no
-// Cloudflare Access headers, no agent version check. Nothing but Tomifin is reachable through it.
+// /api/tomifin/* by calling the Tomifin handlers (handleTomifinRequest in recovery-agent/tomifin.mjs) in this process:
+// no Recovery token, no Cloudflare Access headers, no agent version check. Nothing but Tomifin is reachable through
+// it, and this is the only way to reach Tomifin: the Recovery listener, which the Cloudflare tunnel reaches, does not
+// serve /v1/tomifin/*.
 //
 // The session cookie holds the Jellyfin access token sealed with TOMIFY_TOMIFIN_SESSION_SECRET (AES-256-GCM) and an
 // expiry, so the page never sees the token, a cookie cannot be forged or extended, and sessions outlive a restart.
@@ -325,7 +327,12 @@ export async function startTomifinLocalServer(config, handler, { log = () => {} 
   server.headersTimeout = 30_000
   server.requestTimeout = 120_000
   return new Promise((done) => {
-    server.once('error', (error) => { log(`Tomifin local listener is off: ${error.message}`); done(null) })
+    server.once('error', (error) => {
+      log(error?.code === 'EADDRINUSE'
+        ? `Tomifin local listener is off: 127.0.0.1:${config.port} is already in use by another service. Set TOMIFY_TOMIFIN_LOCAL_PORT to a free port (8791 on the box), update Caddy's reverse_proxy to match, and restart tomify-recovery. Recovery keeps running.`
+        : `Tomifin local listener is off: ${error.message}`)
+      done(null)
+    })
     server.listen(config.port, LOCAL_HOST, () => { log(`Tomifin listening on http://${LOCAL_HOST}:${config.port} for ${config.origin}`); done(server) })
   })
 }

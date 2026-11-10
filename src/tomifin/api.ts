@@ -54,7 +54,7 @@ export class TomifinRequestError extends Error {
 }
 
 // The Jellyfin session lives in an HttpOnly cookie the page cannot read; the browser sends it with each request.
-// x-tomifin marks requests from this page, which the Worker requires for anything that changes state.
+// x-tomifin marks requests from this page, which the agent's Tomifin listener requires for anything that changes state.
 function headers(json: boolean): HeadersInit {
   return { 'x-tomifin': '1', ...(json ? { 'content-type': 'application/json' } : {}) }
 }

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { COOKIE, DEFAULT_LOCAL_ORIGIN, createLoginLimiter, createTomifinLocalHandler, openSession, sealSession, startTomifinLocalServer, tomifinLocalConfig } from './tomifin-local.mjs'
@@ -44,7 +45,7 @@ function fakeHandle(calls) {
 async function start({ now = () => Date.now(), handle } = {}) {
   const calls = []
   const logs = []
-  const config = { ...tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8790', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET, TOMIFY_TOMIFIN_WEB_DIR: webDir() }), port: 0 }
+  const config = { ...tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8791', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET, TOMIFY_TOMIFIN_WEB_DIR: webDir() }), port: 0 }
   const handler = createTomifinLocalHandler({ config, handle: handle || fakeHandle(calls), now, log: (line) => logs.push(line), cleanMessage: (message) => message.replace('secret-cookie-path', '[removed]') })
   const server = await startTomifinLocalServer(config, handler)
   const { address, port } = server.address()
@@ -65,12 +66,12 @@ async function start({ now = () => Date.now(), handle } = {}) {
 test('the listener is off unless a port is set, and refuses weak or reused secrets and odd origins', () => {
   assert.deepEqual([tomifinLocalConfig({}).enabled, tomifinLocalConfig({}).problem], [false, null])
   assert.match(tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: 'eighty' }).problem, /port number/)
-  assert.match(tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8790', TOMIFY_TOMIFIN_SESSION_SECRET: 'short' }).problem, /32 random bytes/)
-  assert.match(tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8790', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET }, { recoveryToken: SECRET }).problem, /not be the Recovery token/)
-  assert.match(tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8790', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET, TOMIFY_TOMIFIN_LOCAL_ORIGIN: 'http://down.tn.tomdixon.uk' }).problem, /https origin/)
-  assert.match(tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8790', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET, TOMIFY_TOMIFIN_LOCAL_ORIGIN: 'https://down.tn.tomdixon.uk/app' }).problem, /no path/)
-  const config = tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8790', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET }, { defaultWebDir: '/opt/tomify/current/tomifin-web' })
-  assert.deepEqual([config.enabled, config.host, config.port, config.origin, config.webDir], [true, '127.0.0.1', 8790, 'https://down.tn.tomdixon.uk', '/opt/tomify/current/tomifin-web'])
+  assert.match(tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8791', TOMIFY_TOMIFIN_SESSION_SECRET: 'short' }).problem, /32 random bytes/)
+  assert.match(tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8791', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET }, { recoveryToken: SECRET }).problem, /not be the Recovery token/)
+  assert.match(tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8791', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET, TOMIFY_TOMIFIN_LOCAL_ORIGIN: 'http://down.tn.tomdixon.uk' }).problem, /https origin/)
+  assert.match(tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8791', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET, TOMIFY_TOMIFIN_LOCAL_ORIGIN: 'https://down.tn.tomdixon.uk/app' }).problem, /no path/)
+  const config = tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8791', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET }, { defaultWebDir: '/opt/tomify/current/tomifin-web' })
+  assert.deepEqual([config.enabled, config.host, config.port, config.origin, config.webDir], [true, '127.0.0.1', 8791, 'https://down.tn.tomdixon.uk', '/opt/tomify/current/tomifin-web'])
 })
 
 test('a sealed session opens only with its secret, unchanged, and reports when it has expired', () => {
@@ -248,7 +249,20 @@ test('it serves the page with a fallback to index.html, and nothing outside the 
 
 test('without the built page the listener stays off and says why', async () => {
   const logs = []
-  const config = { ...tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8790', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET, TOMIFY_TOMIFIN_WEB_DIR: join(tmpdir(), 'no-such-tomifin-web') }), port: 0 }
+  const config = { ...tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8791', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET, TOMIFY_TOMIFIN_WEB_DIR: join(tmpdir(), 'no-such-tomifin-web') }), port: 0 }
   assert.equal(await startTomifinLocalServer(config, () => {}, { log: (line) => logs.push(line) }), null)
   assert.match(logs[0], /Tomifin local listener is off: .*index\.html is missing/)
+})
+
+test('a port already in use leaves the listener off with one line naming the port and the setting to change', async () => {
+  const taken = createServer()
+  await new Promise((done) => taken.listen(0, '127.0.0.1', done))
+  const port = taken.address().port
+  const logs = []
+  try {
+    const config = { ...tomifinLocalConfig({ TOMIFY_TOMIFIN_LOCAL_PORT: '8791', TOMIFY_TOMIFIN_SESSION_SECRET: SECRET, TOMIFY_TOMIFIN_WEB_DIR: webDir() }), port }
+    assert.equal(await startTomifinLocalServer(config, () => {}, { log: (line) => logs.push(line) }), null)
+    assert.equal(logs.length, 1)
+    assert.match(logs[0], new RegExp(`127\\.0\\.0\\.1:${port} is already in use.*TOMIFY_TOMIFIN_LOCAL_PORT.*Recovery keeps running`))
+  } finally { await new Promise((done) => taken.close(done)) }
 })
