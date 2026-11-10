@@ -174,7 +174,7 @@ async function withAnonymousFallback(operation) {
 // The library health report carries every cached MusicBrainz tracklist and every imported path from D1, so it may be
 // larger than any other request.
 // Tomifin's Add link can carry an uploaded .torrent or .nzb file (10 MiB at most, base64).
-const largeBodyRoutes = new Set(['/v1/inventory/report', '/v1/tomifin/link'])
+const largeBodyRoutes = new Set(['/v1/inventory/report'])
 
 async function parseBody(request) {
   const chunks = []
@@ -805,6 +805,8 @@ createServer(async (request, response) => {
     if (request.method === 'GET' && request.url === '/health') {
       return send(response, 200, health)
     }
+    // Tomifin is not served on this listener (see below), with or without the Recovery token.
+    if (/^\/v1\/tomifin(?:[/?]|$)/.test(String(request.url || ''))) return send(response, 404, { error: 'not-found' })
     if (!authorised(request)) return send(response, 401, { error: 'unauthorized' })
     const hlsTarget = request.method === 'GET' ? parseHlsPath(new URL(request.url, 'http://agent').pathname) : null
     if (hlsTarget) return await serveHls(request, response, hlsTarget)
@@ -856,8 +858,8 @@ createServer(async (request, response) => {
     if (request.url === '/v1/system/vpn/status') return send(response, 200, await vpn.status())
     if (request.url === '/v1/system/vpn') return send(response, 200, await vpn.change(body.action))
     if (request.url === '/v1/system/reboot') return send(response, 202, scheduleReboot(body, { config: reboot, spawn }))
-    const tomifinResult = await handleTomifinRequest(request.url, body, tomifin, jellyfinAuth)
-    if (tomifinResult) return send(response, tomifinResult.status, tomifinResult.body)
+    // Tomifin's /v1/tomifin/* handlers are not served here: this listener is what the Cloudflare tunnel reaches, and
+    // Tomifin is reachable only through its own listener on 127.0.0.1 (below), behind Caddy on the tailnet.
     return send(response, 404, { error: 'not-found' })
   } catch (error) {
     const message = sanitizeToolError(error instanceof Error ? error.message : 'Recovery agent failed.', [youtubeCookies])

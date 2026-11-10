@@ -15,8 +15,6 @@ NAVIDROME_ORIGIN = "https://tomify.tomdixon.uk"
 TOMIFY_DJ_VOICE_MODEL = "aura"
 # Players at home stream straight from the box here (docs/DEPLOYMENT.md). Plain dashboard variables are replaced on deploy, so it lives here.
 TOMIFY_LAN_ORIGIN = "https://lan.tomify.tomdixon.uk:8789"
-# Tomifin Downloader's own address: a second Custom Domain on this Worker (docs/TOMIFIN.md). Only Tomifin is served there.
-TOMIFIN_HOSTNAME = "tomifin.tomdixon.uk"
 # TomTube backend, reached through the recovery Cloudflare Tunnel.
 TOMTUBE_SERVICE_URL = "https://tomtube-service.tomdixon.uk"
 # Navidrome usernames allowed to add, renew or remove TomTube's YouTube recommendation cookies and clear
@@ -44,5 +42,5 @@ binding = "AI"
 directory = "./dist/client"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-# Everything but hashed assets reaches the Worker first, so it can tell Tomify's address from Tomifin's.
+# Everything but hashed assets reaches the Worker first (API and Navidrome routes, then Static Assets).
 run_worker_first = ["/*", "!/assets/*"]

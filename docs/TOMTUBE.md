@@ -145,7 +145,7 @@ The single shared log from before profiles (`training/log.json` and `secrets/you
 - **Through the existing Worker and its sign-in.** TomTube uses Tomify's Navidrome accounts, `x-tomify-*` headers for JSON and the existing short-lived media tokens (`TOMIFY_MEDIA_KEY`, `/api/media-session`) for media URLs. There is no new account system, and no public, unauthenticated relay.
 - **HLS byte ranges over YouTube's own files** instead of remuxing with ffmpeg: no CPU cost, no temporary video files, exact seeking, adaptive quality, and native on iOS and AVPlayer. The cost is a dependency on YouTube's files keeping their segment index; if they ever don't, the service reports `no-segment-index` and the app falls back to the single-file formats.
 - **Reuse versus Invidious/Piped.** Running Invidious or Piped would add a database, a Crystal or Java service and their own proxies, and they target desktop DASH rather than iOS HLS; public instances were ruled out. TomTube reuses the maintained piece that matters (yt-dlp, plus the PO token provider) and keeps the rest small.
-- **The TomTube page is part of Tomify's build** (`tomtube/index.html`, `src/tomtube/`, like Tomifin), at `/tomtube/` with its own manifest and icon so it installs as a separate home-screen app. Tomify's service worker leaves `/tomtube/` alone; TomTube has no service worker, so it is always current.
+- **The TomTube page is part of Tomify's build** (`tomtube/index.html`, `src/tomtube/`), at `/tomtube/` with its own manifest and icon so it installs as a separate home-screen app. Tomify's service worker leaves `/tomtube/` alone; TomTube has no service worker, so it is always current.
 
 ## Upstream dependencies and limitations
 
