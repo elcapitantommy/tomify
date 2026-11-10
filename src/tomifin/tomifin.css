@@ -1,10 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap');
+/* DM Sans and Manrope are bundled with the page (src/tomifin/main.tsx, @fontsource-variable), so nothing loads from Google. */
 
 /* Tomifin Downloader: Tomify's dark palette and type, in a page of its own (src/styles.css is not loaded here). */
 :root {
   --bg: #0d0f0e; --panel: #151816; --panel2: #1b1e1b; --line: #292d29; --muted: #979e97; --text: #f2f5ef;
   --accent: #d1fd61; --accent-ink: #12170b; --danger: #ff7d76; --warn: #ffc66b; --private: #b69cff; --private-ink: #170f2b;
-  color-scheme: dark; font-family: 'DM Sans', system-ui, sans-serif; color: var(--text); background: var(--bg); font-synthesis: none;
+  color-scheme: dark; font-family: 'DM Sans Variable', system-ui, sans-serif; color: var(--text); background: var(--bg); font-synthesis: none;
 }
 * { box-sizing: border-box }
 html { background: var(--bg) }
@@ -17,12 +17,12 @@ svg { width: 18px; height: 18px; flex: none }
 .tf-app { max-width: 1080px; margin: 0 auto; padding: max(20px, env(safe-area-inset-top)) 16px calc(40px + env(safe-area-inset-bottom)) }
 .tf-header { display: flex; align-items: center; gap: 14px; padding: 12px 0 22px }
 .tf-logo { width: 44px; height: 44px; border-radius: 12px }
-.tf-header h1 { margin: 0; font: 800 clamp(1.45rem, 4.5vw, 2.3rem)/1 Manrope, sans-serif; letter-spacing: .04em }
+.tf-header h1 { margin: 0; font: 800 clamp(1.45rem, 4.5vw, 2.3rem)/1 'Manrope Variable', sans-serif; letter-spacing: .04em }
 .tf-header h1 span { color: var(--accent) }
 .tf-main { display: grid; gap: 18px }
 
 .tf-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 20px }
-.tf-panel h2 { margin: 0; font: 700 1.15rem/1.2 Manrope, sans-serif }
+.tf-panel h2 { margin: 0; font: 700 1.15rem/1.2 'Manrope Variable', sans-serif }
 .tf-panel p { color: #c1c7c1; line-height: 1.5 }
 .tf-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px }
 .tf-section-title { display: flex; align-items: center; gap: 8px }
@@ -74,7 +74,7 @@ svg { width: 18px; height: 18px; flex: none }
 .tf-destination { position: relative; display: flex; align-items: center; gap: 14px; text-align: left; min-height: 84px; padding: 16px 18px; border-radius: 16px; border: 2px solid var(--line); background: var(--panel2); cursor: pointer; transition: border-color .15s, background .15s }
 .tf-destination svg { width: 28px; height: 28px }
 .tf-destination span { display: grid; gap: 4px; min-width: 0 }
-.tf-destination strong { font: 800 1.15rem/1 Manrope, sans-serif; letter-spacing: .08em }
+.tf-destination strong { font: 800 1.15rem/1 'Manrope Variable', sans-serif; letter-spacing: .08em }
 .tf-destination code { color: var(--muted); overflow-wrap: anywhere }
 .tf-destination:disabled { opacity: .45; cursor: not-allowed }
 .tf-destination-family:hover:not(:disabled) { border-color: #6f8a35 }

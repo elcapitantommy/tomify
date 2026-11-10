@@ -28,6 +28,7 @@ export default defineConfig({
   base: '/',
   // Only the icons above, not Tomify's service worker, manifest or anything else in public/.
   publicDir: false,
-  build: { outDir: OUT_DIR, emptyOutDir: true, rollupOptions: { input: { tomifin: 'tomifin/index.html' } } },
+  // assetsInlineLimit 0: small font files stay files rather than data: URLs, which the listener's CSP refuses.
+  build: { outDir: OUT_DIR, emptyOutDir: true, assetsInlineLimit: 0, rollupOptions: { input: { tomifin: 'tomifin/index.html' } } },
   plugins: [react(), tomifinOnly()],
 })

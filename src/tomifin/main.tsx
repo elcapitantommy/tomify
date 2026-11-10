@@ -1,6 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { TomifinApp } from './TomifinApp'
+import '@fontsource-variable/dm-sans/wght.css'
+import '@fontsource-variable/manrope/wght.css'
 import './tomifin.css'
 
 // Tomifin Downloader is its own app at its own address, with its own Jellyfin sign-in. It has no service worker, and
