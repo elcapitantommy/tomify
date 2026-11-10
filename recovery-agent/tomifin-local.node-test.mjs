@@ -222,6 +222,8 @@ test('it serves the page with a fallback to index.html, and nothing outside the 
     assert.equal(page.status, 200)
     assert.match(page.headers.get('content-type'), /^text\/html/)
     assert.match(page.headers.get('content-security-policy'), /default-src 'self'/)
+    assert.match(page.headers.get('content-security-policy'), /font-src 'self';/)
+    assert.doesNotMatch(page.headers.get('content-security-policy'), /google|gstatic/)
     assert.equal(page.headers.get('x-frame-options'), 'DENY')
     assert.equal(page.headers.get('cache-control'), 'no-cache')
     assert.equal(await page.text(), '<!doctype html><title>Tomifin</title>')
