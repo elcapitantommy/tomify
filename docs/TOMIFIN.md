@@ -4,6 +4,7 @@ Tomifin Downloader is its own web app at its own address, **`https://tomifin.tom
 
 - [Using it](#using-it)
 - [How it fits together](#how-it-fits-together)
+- [On the tailnet](#on-the-tailnet)
 - [Usenet downloads](#usenet-downloads)
 - [Add link](#add-link)
 - [Family and Private destinations](#family-and-private-destinations)
@@ -115,6 +116,48 @@ Without `TOMIFY_JELLYFIN_URL` on the agent, sign-in answers that Jellyfin sign-i
 5. The job record is written under `TOMIFY_RECOVERY_STATE_DIR/tomifin/` **before** qBittorrent is asked, so a torrent can never be downloading without Tomifin knowing. If the record cannot be written, nothing is added. Only a definite refusal (qBittorrent answered with an error or `Fails.`, or the torrent was never sent) removes the record again. If qBittorrent's answer is lost (a timeout or dropped connection), it may have taken the torrent without showing it yet, so the record is kept: the page says qBittorrent did not confirm it, the download shows as **Waiting for qBittorrent to confirm**, and the agent confirms it when the torrent appears or drops the record after 15 minutes if it never does. A second press of **Queue**, or a retry of the same result or info hash while one is being queued or once it is in the downloads, is refused as a duplicate.
 6. The downloads list reads each destination's category from qBittorrent once per refresh and matches torrents by their tag, so it shows Tomifin's own downloads and nothing else. Tomifin jobs live in their own folder, so Recovery's job runner never imports, moves or deletes them.
 7. When the agent starts, every 10 seconds after that, and on each refresh of the list, the agent also: gives a new record to any torrent in Tomifin's categories that carries a `tomifin-<id>` tag but has no record (it is listed again, and its files are never deleted on cancel); stops torrents over the download limit; takes finished torrents out of qBittorrent once qBittorrent has moved their files into the library (never while they are being moved); finishes torrents that qBittorrent reports complete but left in their staging folder ([Finishing torrents](#finishing-torrents)); and removes the empty staging folders of its own finished jobs.
+
+## On the tailnet
+
+Tomifin is moving off the public internet to **`https://down.tn.tomdixon.uk/`**, reachable only on the tailnet. The recovery agent serves it itself, on a second listener bound to `127.0.0.1` only, and Caddy on the box is the only way in:
+
+```text
+ browser on the tailnet ──https──▶ Caddy (down.tn.tomdixon.uk, tn wildcard cert)
+                                      │ reverse_proxy
+                                      ▼
+ tomify-recovery.service   127.0.0.1:8790   recovery-agent/tomifin-local.mjs
+                                      │ in-process, no Recovery token, no Cloudflare, no agent version check
+                                      ▼
+                           the same Tomifin handlers as /v1/tomifin/* (recovery-agent/tomifin.mjs)
+```
+
+The listener (`recovery-agent/tomifin-local.mjs`):
+
+- serves the page built by `pnpm build:tomifin` (`vite.tomifin.config.ts`, into `dist/tomifin-web/`). `deploy-agent` builds it and ships it in every release as `/opt/tomify/releases/<sha>/tomifin-web/`. Every path without a file extension is the page; a missing file is 404. Without the folder the listener stays off and says so in the log, and Recovery runs as usual;
+- signs in with Jellyfin administrator accounts, as before. The `tomifin_session` cookie holds Jellyfin's token sealed with `TOMIFY_TOMIFIN_SESSION_SECRET` (AES-256-GCM) and a 12-hour expiry: `HttpOnly; Secure; SameSite=Strict; Path=/api/tomifin`, with no `Domain`. Jellyfin still checks the token on every request. An expired session is signed out of Jellyfin too. Five failed sign-ins in a minute from one address (as Caddy reports it) lock that address out for the rest of the minute;
+- answers `/api/tomifin/*` with the same checks the Worker made, then calls the Tomifin handlers in the same process. Every call needs a valid session (401 `{"error":"unauthorized"}` otherwise). Anything that changes state needs `Origin: https://down.tn.tomdixon.uk` (`TOMIFY_TOMIFIN_LOCAL_ORIGIN`) and the `x-tomifin: 1` header;
+- never reaches Recovery: `/v1/*`, `/health`, `/navidrome/*` and every other `/api/*` path answer 404.
+
+Setting it up (once):
+
+1. Add to `/etc/tomify/recovery-agent.env` (it is a symlink into the secrets store; edit the file it points to, never replace the link):
+
+   ```sh
+   TOMIFY_TOMIFIN_LOCAL_PORT=8790
+   TOMIFY_TOMIFIN_SESSION_SECRET=<output of: openssl rand -base64 48>
+   ```
+
+2. Deploy the agent (`deploy-agent.ps1`). The log then says `Tomifin listening on http://127.0.0.1:8790 for https://down.tn.tomdixon.uk`, and `ss -ltnp | grep 8790` shows `127.0.0.1:8790` only.
+3. Add to `/etc/caddy/Caddyfile`, then `sudo systemctl reload caddy`:
+
+   ```caddyfile
+   https://down.tn.tomdixon.uk {
+   	import tn
+   	reverse_proxy 127.0.0.1:8790
+   }
+   ```
+
+To turn it off again before the cutover, remove the Caddy block and empty `TOMIFY_TOMIFIN_LOCAL_PORT`; the public address is unchanged until then. The public address (`tomifin.tomdixon.uk`, the Worker routes below and `/v1/tomifin/*` on the Recovery listener) is retired only after down.tn has passed its acceptance tests and been used for a few days.
 
 ## Finishing torrents
 

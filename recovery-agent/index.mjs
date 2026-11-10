@@ -3,7 +3,8 @@ import { spawn } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
 import { createReadStream, createWriteStream } from 'node:fs'
 import { access, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
-import { basename, extname, join, resolve, sep } from 'node:path'
+import { basename, dirname, extname, join, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -38,6 +39,7 @@ import { createLinkFetcher } from './tomifin-links.mjs'
 import { createPublicTrackerLists, trackerListsConfig } from './tomifin-trackers.mjs'
 import { ffprobeReader } from './family-import.mjs'
 import { createJellyfinAuth, createJellyfinLibraryRefresh, jellyfinConfig } from './jellyfin.mjs'
+import { createTomifinLocalHandler, startTomifinLocalServer, tomifinLocalConfig } from './tomifin-local.mjs'
 
 let authConfiguration
 try { authConfiguration = validateRecoveryAuthConfig() }
@@ -870,6 +872,20 @@ if (lanSettings.enabled) {
   const log = (message) => process.stderr.write(`${message}\n`)
   await startLanServer(lanSettings, createLanHandler({ config: lanSettings, hls, navidromeUrl: hlsSettings.navidromeUrl, log }), { log })
     .catch((error) => log(`LAN-direct streaming is off: ${error instanceof Error ? error.message : String(error)}`))
+}
+
+// Tomifin on the tailnet: a second listener on 127.0.0.1 that Caddy serves as down.tn.tomdixon.uk (off until
+// TOMIFY_TOMIFIN_LOCAL_PORT is set). It reaches only the Tomifin handlers, in this process (recovery-agent/tomifin-local.mjs).
+const tomifinLocalSettings = tomifinLocalConfig(process.env, { recoveryToken: token, defaultWebDir: resolve(dirname(fileURLToPath(import.meta.url)), '..', 'tomifin-web') })
+if (tomifinLocalSettings.problem) process.stderr.write(`Tomifin local listener is off: ${tomifinLocalSettings.problem}\n`)
+if (tomifinLocalSettings.enabled) {
+  const handler = createTomifinLocalHandler({
+    config: tomifinLocalSettings,
+    handle: (path, body) => handleTomifinRequest(path, body, tomifin, jellyfinAuth),
+    cleanMessage: (message) => sanitizeToolError(message, [youtubeCookies]),
+    log: tomifinLog,
+  })
+  await startTomifinLocalServer(tomifinLocalSettings, handler, { log: tomifinLog })
 }
 
 await jobRunner.start()

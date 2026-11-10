@@ -30,7 +30,7 @@ function writeExecutable(path, contents) {
   chmodSync(path, 0o755)
 }
 
-function createArchive(root, sha, { unit = null } = {}) {
+function createArchive(root, sha, { unit = null, tomifinWeb = false } = {}) {
   const payload = join(root, `payload-${sha}`)
   mkdirSync(join(payload, 'recovery-agent'), { recursive: true })
   mkdirSync(join(payload, 'shared'), { recursive: true })
@@ -41,8 +41,13 @@ function createArchive(root, sha, { unit = null } = {}) {
   writeFileSync(join(payload, 'shared', 'quality.mjs'), '// shared quality\n')
   cpSync(script, join(payload, 'scripts', 'install-agent-release.sh'))
   writeFileSync(join(payload, 'package.json'), '{"name":"tomify"}\n')
+  if (tomifinWeb) {
+    mkdirSync(join(payload, 'tomifin-web', 'assets'), { recursive: true })
+    writeFileSync(join(payload, 'tomifin-web', 'index.html'), '<!doctype html>\n')
+    writeFileSync(join(payload, 'tomifin-web', 'assets', 'tomifin.js'), '// page\n')
+  }
   const archive = join(root, `tomify-agent-${sha}.tar.gz`)
-  const result = spawnSync('tar', ['-czf', archive, '-C', payload, 'recovery-agent', 'shared', 'scripts', 'package.json'], { encoding: 'utf8' })
+  const result = spawnSync('tar', ['-czf', archive, '-C', payload, 'recovery-agent', 'shared', 'scripts', 'package.json', ...(tomifinWeb ? ['tomifin-web'] : [])], { encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   return archive
 }
@@ -114,6 +119,18 @@ test('dry-run installs a release, updates version, swaps the symlink, and retain
   assert.match(readFileSync(fixture.versionFile, 'utf8'), /^TOMIFY_VERSION=abcdef1$/m)
   assert.equal(readFileSync(fixture.envFile, 'utf8'), 'TOMIFY_RECOVERY_TOKEN=keep-this-value\nTOMIFY_VERSION=6666666\nTOMIFY_RECOVERY_DIR=/srv/music-recovery\n', 'the settings file is never written')
   assert.match(readFileSync(fixture.log, 'utf8'), /systemctl daemon-reload\nsystemctl restart tomify-recovery/)
+})
+
+test('a release carries Tomifin\'s page in tomifin-web/, and one without it still installs', { skip }, () => {
+  const fixture = setup()
+  let result = fixture.run(['--archive', createArchive(fixture.temp, 'abcdef1', { tomifinWeb: true }), '--sha', 'abcdef1'], 'abcdef1')
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(readFileSync(join(fixture.releases, 'abcdef1', 'tomifin-web', 'index.html'), 'utf8'), '<!doctype html>\n')
+  assert.equal(existsSync(join(fixture.releases, 'abcdef1', 'tomifin-web', 'assets', 'tomifin.js')), true)
+  assert.doesNotMatch(result.stderr, /tomifin-web/)
+  result = fixture.run(['--archive', createArchive(fixture.temp, 'abcdef2'), '--sha', 'abcdef2'], 'abcdef2')
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stderr, /no tomifin-web\/index\.html, so Tomifin's local listener will stay off/)
 })
 
 test('a failed health check restores the previous symlink and version', { skip }, () => {
