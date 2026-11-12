@@ -415,6 +415,44 @@ test('a finished Private download is published as its own folder of videos and s
   assert.deepEqual(await tree(context.family), [], 'Private never reaches Family')
 })
 
+test('a single-file download SABnzbd reports by its file path is published from its own folder', async () => {
+  const context = await world()
+  await searchAndQueue(context, 'private')
+  const storage = await context.sab.finish('SABnzbd_nzo_1', context.completed, { 'Sintel.2010.1080p.mp4': film })
+  context.sab.state.history[0].storage = join(storage, 'Sintel.2010.1080p.mp4')
+  const [view] = (await settle(context)).jobs
+  assert.equal(view.status, 'completed', view.message)
+  assert.equal(await readFile(join(context.privateLibrary, 'Sintel.2010.1080p.BluRay.x264-GRP', 'Sintel.2010.1080p.mp4'), 'utf8'), film)
+})
+
+test('a file inside another job\'s folder is still refused', async () => {
+  const context = await world()
+  await searchAndQueue(context, 'private')
+  const storage = await context.sab.finish('SABnzbd_nzo_1', context.completed, { 'Sintel.2010.1080p.mp4': film })
+  const other = join(dirname(storage), `tomifin-${id(9)}`)
+  await mkdir(other)
+  await writeFile(join(other, 'Other.mp4'), film)
+  context.sab.state.history[0].storage = join(other, 'Other.mp4')
+  await settle(context)
+  const held = JSON.parse(await readFile(join(context.stateRoot, 'tomifin', `${id(1)}.json`), 'utf8')).import
+  assert.equal(held.state, 'review')
+  assert.equal(held.code, 'unsafe-path')
+  assert.deepEqual((await tree(context.privateLibrary)).filter((entry) => !entry.startsWith('.')), [])
+})
+
+test('a single-file download held as unsafe-path under the old rules is checked again and published', async () => {
+  const context = await world()
+  await searchAndQueue(context, 'private')
+  const storage = await context.sab.finish('SABnzbd_nzo_1', context.completed, { 'Sintel.2010.1080p.mp4': film })
+  context.sab.state.history[0].storage = join(storage, 'Sintel.2010.1080p.mp4')
+  const record = join(context.stateRoot, 'tomifin', `${id(1)}.json`)
+  const job = JSON.parse(await readFile(record, 'utf8'))
+  job.import = { state: 'review', attempts: 1, at: '2026-11-10T23:48:00.000Z', code: 'unsafe-path', reason: 'SABnzbd reported a folder that is not this download\'s own folder inside the Usenet download folder.' }
+  await writeFile(record, JSON.stringify(job))
+  const [view] = (await settle(context)).jobs
+  assert.equal(view.status, 'completed', view.message)
+})
+
 test('failed, password-protected and unsafe downloads are held for review with a reason, and nothing is published', async () => {
   const cases = [
     ['unpack failed', async (context) => context.sab.finish('SABnzbd_nzo_1', context.completed, { 'a.rar': 'rar' }, { status: 'Failed', fail: 'Unpacking failed, CRC error' }), 'unpack-failed'],
