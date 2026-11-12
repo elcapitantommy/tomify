@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { createFamilyImporter, filmIdentity, parseEpisodeName, parseFilmName, parseSeriesRelease, refreshJellyfinAfterImport, subtitleLanguage } from './family-import.mjs'
+import { createFamilyImporter, filmIdentity, usenetReleaseName, parseEpisodeName, parseFilmName, parseSeriesRelease, refreshJellyfinAfterImport, subtitleLanguage } from './family-import.mjs'
 import { createJellyfinFolderRefresh } from './jellyfin.mjs'
 
 const HASH = 'a'.repeat(40)
@@ -719,6 +719,40 @@ test('a finished Usenet film is hardlinked when it can be, and copied otherwise'
   await writeTree(other, { 'Sintel.2010.1080p.BluRay.x264.mkv': film })
   assert.equal((await copied.make().importDirectory({ key: JOB, name: 'Sintel.2010.1080p.BluRay.x264', root: other, allowedRoot: copied.usenet, mode: 'copy' })).result, 'published')
   assert.equal((await stat(join(copied.library, 'Sintel (2010)', 'Sintel (2010).mkv'))).nlink, 1)
+})
+
+test('NZBIndex subjects are read as the release they name', () => {
+  assert.equal(usenetReleaseName('[01/58] - "The.Iron.Giant.1999.1080p.BluRay.x264-GRP.part01.rar" yEnc (1/101)'), 'The.Iron.Giant.1999.1080p.BluRay.x264-GRP')
+  assert.equal(usenetReleaseName('(poster) [092/284] - "Sintel (2010).vol00+01.par2" yEnc'), 'Sintel (2010)')
+  assert.equal(usenetReleaseName('[1/6] Sintel.2010.1080p yEnc'), 'Sintel.2010.1080p')
+  assert.equal(usenetReleaseName('Sintel.2010.1080p.BluRay.x264'), 'Sintel.2010.1080p.BluRay.x264')
+  assert.equal(usenetReleaseName('"Sintel.2010.1080p.mkv"'), 'Sintel.2010.1080p')
+})
+
+test('a Usenet film is published when only one of its release name and video name is readable, never when they differ', async () => {
+  assert.equal(filmIdentity('Sintel.2010.1080p', 'tomifin-00000000-0000-4000-8000-000000000001.mkv').identity, null, 'torrents still need both')
+  assert.equal(filmIdentity('Sintel.2010.1080p', 'a8f3c29d8e7b6a5c4d3e2f1a0b9c8d7e.mkv', { oneSideEnough: true }).identity.name, 'Sintel (2010)')
+  assert.equal(filmIdentity('3f9a2c1d8e', 'Sintel.2010.1080p.mkv', { oneSideEnough: true }).identity.name, 'Sintel (2010)')
+  assert.equal(filmIdentity('Sintel.2010.1080p', 'Big.Buck.Bunny.2008.mkv', { oneSideEnough: true }).identity, null)
+
+  const renamed = await usenetSetup()
+  const folder = join(renamed.completed, 'tomifin-00000000-0000-4000-8000-000000000001')
+  await writeTree(folder, { 'tomifin-00000000-0000-4000-8000-000000000001.mkv': film })
+  const result = await renamed.make().importDirectory({ key: JOB, name: '[01/58] - "Sintel.2010.1080p.BluRay.x264-GRP.part01.rar" yEnc (1/101)', root: folder, allowedRoot: renamed.usenet, mode: 'copy' })
+  assert.equal(result.result, 'published', result.reason)
+  assert.ok((await stat(join(renamed.library, 'Sintel (2010)', 'Sintel (2010).mkv'))).isFile())
+
+  const scrambled = await usenetSetup()
+  const other = join(scrambled.completed, 'tomifin-job')
+  await writeTree(other, { 'Sintel.2010.1080p.BluRay.x264.mkv': film })
+  assert.equal((await scrambled.make().importDirectory({ key: JOB, name: '[1/40] "a8f3c29d8e7b6a5c.part01.rar" yEnc', root: other, allowedRoot: scrambled.usenet, mode: 'copy' })).result, 'published')
+
+  const differ = await usenetSetup()
+  const third = join(differ.completed, 'tomifin-job')
+  await writeTree(third, { 'Big.Buck.Bunny.2008.1080p.mkv': film })
+  const held = await differ.make().importDirectory({ key: JOB, name: 'Sintel.2010.1080p', root: third, allowedRoot: differ.usenet, mode: 'copy' })
+  assert.equal(held.result, 'review')
+  assert.equal(held.code, 'ambiguous-name')
 })
 
 test('unsafe or unfinished Usenet output goes to review with a reason code, and nothing is published', async () => {

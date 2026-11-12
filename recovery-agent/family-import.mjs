@@ -128,6 +128,23 @@ export function parseFilmName(name) {
   return title ? { title, year: parts.year, name: `${title} (${parts.year})` } : null
 }
 
+// NZBIndex names a collection after a post's subject, such as
+// '[01/58] - "The.Iron.Giant.1999.1080p.BluRay.x264-GRP.part01.rar" yEnc (1/101)', which reads as no film at all. The
+// release name is the quoted file name without its archive, par2 or video extension; with nothing quoted, the yEnc
+// marker and part counters are taken out. Ordinary release names come back unchanged.
+const USENET_SUFFIX = /\.(?:part\d{1,4}\.rar|vol\d{1,5}[+-]\d{1,5}\.par2|par2|rar|r\d{2}|0\d{2}|zip|7z|nzb|nfo|sfv|srt|mkv|mp4|m4v|avi|mov|wmv|ts|m2ts|webm|mpg|mpeg)$/i
+// Raised when the Usenet name rules change, so a download held for review under older rules for its name alone
+// (ambiguous-name) is checked once more instead of staying held.
+export const USENET_NAME_RULES = 2
+export function usenetReleaseName(name) {
+  const raw = text(name)
+  const quoted = /"([^"]+)"/.exec(raw)
+  let value = quoted ? quoted[1] : raw.replace(/\byEnc\b/gi, ' ').replace(/[[(]\s*\d+\s*(?:\/|of)\s*\d+\s*[\])]/gi, ' ')
+  for (let step = 0; step < 3 && USENET_SUFFIX.test(value); step += 1) value = value.replace(USENET_SUFFIX, '')
+  value = value.replace(/\s+/g, ' ').replace(/^[\s-]+|[\s-]+$/g, '')
+  return value || raw
+}
+
 // Film titles compare without case or apostrophes, straight or curly, so "Ron's", "Ron’s" and "Rons" agree. Nothing
 // else is dropped: other punctuation, words and numbers must still match.
 function filmTitleKey(title) {
@@ -137,10 +154,14 @@ function filmTitleKey(title) {
 // The film named by the torrent and by its main file, read separately. As what follows the year is ignored, the two
 // must both name a film and agree on it; otherwise it is ambiguous. When they agree, the torrent's spelling is kept,
 // as it usually has the title's own punctuation.
-export function filmIdentity(torrentName, mainFileName) {
+// For a Usenet download (oneSideEnough), one readable side is enough: SABnzbd's output is often obfuscated
+// ("a8f3c2…e7.mkv") or renamed after the job ("tomifin-<id>.mkv"), and NZBIndex names some releases only by a
+// scrambled subject, so the other side carries no name at all. Two sides that name different films are still held.
+export function filmIdentity(torrentName, mainFileName, { oneSideEnough = false } = {}) {
   const fromTorrent = parseFilmName(torrentName)
   const fromFile = parseFilmName(basename(mainFileName))
   if (!fromTorrent && !fromFile) return { identity: null, reason: 'the title and year could not be read from the torrent or file name' }
+  if (oneSideEnough && (!fromTorrent || !fromFile)) return { identity: fromTorrent || fromFile, reason: null }
   if (!fromTorrent) return { identity: null, reason: `the video file says "${fromFile.name}" but the title and year could not be read from the torrent name` }
   if (!fromFile) return { identity: null, reason: `the torrent name says "${fromTorrent.name}" but the title and year could not be read from the video file name` }
   if (fromTorrent.year !== fromFile.year || filmTitleKey(fromTorrent.title) !== filmTitleKey(fromFile.title)) {
@@ -423,7 +444,7 @@ export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_
     if (!probed.ok) throw probeError(main, probed)
     if (probed.duration !== null && probed.duration < MIN_DURATION_SECONDS) throw new ImportError('too-short', `${basename(main.relative)} is only ${Math.round(probed.duration / 60)} minutes long: not a film.`, { review: true })
 
-    const { identity, reason } = filmIdentity(source.name, main.relative)
+    const { identity, reason } = filmIdentity(source.name, main.relative, { oneSideEnough: source.usenet === true })
     if (!identity) throw new ImportError('ambiguous-name', `Not published: ${reason}.`, { review: true })
 
     const extension = extname(main.relative).toLowerCase()
@@ -558,7 +579,7 @@ export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_
   // nothing is lost or guessed. Files that cannot be hardlinked there (another filesystem) stay where they are.
   async function sendToReview(key, name, error, details = {}) {
     const folder = join(paths.review, key)
-    const entry = { ...ident(key), name: text(name).slice(0, 300), result: 'review', code: error.code, reason: error.message, ...details }
+    const entry = { ...ident(key), name: text(name).slice(0, 300), result: 'review', code: error.code, reason: error.message, ...(key.startsWith('usenet-') ? { nameRules: USENET_NAME_RULES } : {}), ...details }
     if (dryRun) { log({ ...entry, dryRun: true }); return entry }
     await ensureIgnoredFolder(paths.review)
     const exists = await lstat(folder).then(() => true, () => false)
@@ -589,13 +610,15 @@ export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_
     return existing ? 'different' : 'other'
   }
 
+  function nameRulesChanged(key, previous) { return key.startsWith('usenet-') && previous.code === 'ambiguous-name' && (Number(previous.nameRules) || 1) < USENET_NAME_RULES }
+
   async function previousOutcome(key) {
     const previous = await readState(key)
     if (previous && ['published', 'already-imported'].includes(previous.result)) {
       const intact = await Promise.all((previous.published || []).map(async (path) => Boolean(await lstat(path).catch(() => null))))
       if (intact.every(Boolean)) { log({ ...ident(key), name: previous.name, result: 'unchanged', reason: `already ${previous.result}` }); return { result: 'unchanged', previous } }
     }
-    if (previous?.result === 'review') { log({ ...ident(key), name: previous.name, result: 'unchanged', reason: 'waiting for review' }); return { result: 'unchanged', previous } }
+    if (previous?.result === 'review' && !nameRulesChanged(key, previous)) { log({ ...ident(key), name: previous.name, result: 'unchanged', reason: 'waiting for review' }); return { result: 'unchanged', previous } }
     return null
   }
 
@@ -799,7 +822,7 @@ export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_
       const { files } = await walkCompleted(real, { maxBytes })
       walked = files
       if (files.some((file) => isArchiveName(file.relative))) throw new ImportError('archives-remain', 'The download still holds archives: SABnzbd did not unpack it fully.', { review: true })
-      return { key, name: text(name), root: real, allowedRoot: allowed, mode, entries: files.map((file) => ({ name: file.relative, size: file.size })) }
+      return { key, name: usenetReleaseName(name), usenet: true, root: real, allowedRoot: allowed, mode, entries: files.map((file) => ({ name: file.relative, size: file.size })) }
     }
     const reviewFiles = async () => walked.filter((file) => VIDEO.has(extname(file.relative).toLowerCase()) || SUBTITLE.has(extname(file.relative).toLowerCase())).map((file) => file.path)
     return importSource(key, name, makeSource, reviewFiles)

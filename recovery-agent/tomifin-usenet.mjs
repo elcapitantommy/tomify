@@ -13,7 +13,7 @@
 import { mkdir, readFile, rmdir, unlink, writeFile } from 'node:fs/promises'
 import { basename, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
 import { createSabnzbdClient, newznabDownloadUrl, nzbIndexDownloadUrl, searchNewznabVideo, searchNzbIndexVideo, validateCompletedPath } from './usenet.mjs'
-import { createFamilyImporter, DEFAULT_TV_DIR, ffprobeReader } from './family-import.mjs'
+import { createFamilyImporter, DEFAULT_TV_DIR, USENET_NAME_RULES, ffprobeReader } from './family-import.mjs'
 import { PublishError, ensureIgnoredFolder, publishPrivateDownload, strictlyWithin } from './media-publish.mjs'
 import { LinkError, createLinkFetcher, parseNzb } from './tomifin-links.mjs'
 
@@ -128,6 +128,9 @@ export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.
   }
 
   function requireUsenet() { if (!available) throw new TomifinUsenetError('usenet-unavailable', config?.problem || 'Usenet downloads are not set up on the media server.') }
+
+  // A Family job held only because its film name could not be read under older name rules gets one more check.
+  function heldUnderOldNameRules(job) { return job.destination === 'family' && job.import?.code === 'ambiguous-name' && (Number(job.import?.nameRules) || 1) < USENET_NAME_RULES }
 
   function categoryFor(destinationId) { return config.categories[destinationId] }
 
@@ -330,7 +333,8 @@ export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.
     process(jobs, snapshot, store) {
       if (!snapshot || snapshot.error) return
       for (const job of jobs) {
-        if (job.unconfirmedSince || job.failure || importing.has(job.id) || ['published', 'already-imported', 'review', 'failed'].includes(job.import?.state)) continue
+        if (job.unconfirmedSince || job.failure || importing.has(job.id) || ['published', 'already-imported', 'failed'].includes(job.import?.state)) continue
+        if (job.import?.state === 'review' && !heldUnderOldNameRules(job)) continue
         const found = find(snapshot, job)
         if (found?.where !== 'history' || sabHistoryState(found.slot).status !== 'completed') continue
         if (job.import?.nextAttemptAt && Date.parse(job.import.nextAttemptAt) > now()) continue
@@ -347,7 +351,7 @@ export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.
       job.import = { state: 'importing', attempts, at: new Date(now()).toISOString() }
       await store.saveJob(job)
       const finish = async (state, extra = {}) => {
-        job.import = { state, attempts, at: new Date(now()).toISOString(), ...extra }
+        job.import = { state, attempts, at: new Date(now()).toISOString(), nameRules: USENET_NAME_RULES, ...extra }
         if (['published', 'already-imported'].includes(state)) job.completedAt = job.import.at
         await store.saveJob(job)
       }
