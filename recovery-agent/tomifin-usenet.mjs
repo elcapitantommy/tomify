@@ -11,9 +11,9 @@
 //            copy of its videos and subtitles. Doubtful downloads go to a hidden review folder with reason.json.
 //   cleanup  SABnzbd's output is never deleted unless TOMIFY_TOMIFIN_USENET_CLEANUP=true and publication was verified.
 import { mkdir, readFile, rmdir, unlink, writeFile } from 'node:fs/promises'
-import { basename, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, normalize, posix, relative, resolve, sep } from 'node:path'
 import { createSabnzbdClient, newznabDownloadUrl, nzbIndexDownloadUrl, searchNewznabVideo, searchNzbIndexVideo, validateCompletedPath } from './usenet.mjs'
-import { createFamilyImporter, DEFAULT_TV_DIR, ffprobeReader } from './family-import.mjs'
+import { createFamilyImporter, DEFAULT_TV_DIR, USENET_NAME_RULES, ffprobeReader } from './family-import.mjs'
 import { PublishError, ensureIgnoredFolder, publishPrivateDownload, strictlyWithin } from './media-publish.mjs'
 import { LinkError, createLinkFetcher, parseNzb } from './tomifin-links.mjs'
 
@@ -113,6 +113,7 @@ export function sabHistoryState(slot) {
 function cleanMessage(value) { return text(value).replace(/https?:\/\/\S+/g, '[link]').replace(/(?:^|\s)\/[^\s'"]+/g, ' [path]').replace(/\s+/g, ' ').trim().slice(0, 240) }
 
 function jobName(id) { return `tomifin-${id}` }
+const OWN_FOLDER_REASON = 'SABnzbd reported a folder that is not this download\'s own folder inside the Usenet download folder.'
 const SAB_NAME = /^tomifin-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:\.\d{1,3})?$/i
 
 export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.available ? createSabnzbdClient(config.sab) : null, fetchImpl = fetch, fetchNzb = null, importer = null, publishPrivate = publishPrivateDownload, probe = ffprobeReader(), now = () => Date.now(), log = () => {}, stableMs = 5000 }) {
@@ -128,6 +129,25 @@ export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.
   }
 
   function requireUsenet() { if (!available) throw new TomifinUsenetError('usenet-unavailable', config?.problem || 'Usenet downloads are not set up on the media server.') }
+
+  // Jobs held under older rules for something those rules got wrong get one more check: a Family film whose name
+  // could not be read, and a single-file download whose own folder was not recognised (see ownFolder).
+  function heldUnderOldNameRules(job) {
+    if ((Number(job.import?.nameRules) || 1) >= USENET_NAME_RULES) return false
+    return (job.destination === 'family' && job.import?.code === 'ambiguous-name') || (job.import?.code === 'unsafe-path' && job.import?.reason === OWN_FOLDER_REASON)
+  }
+
+  // The job's own folder as SABnzbd reports it: storage itself when it is named tomifin-<job id>, or its parent when
+  // SABnzbd reports the one file of a single-file download ("…/tomifin-<id>/Film.mp4"). Anything else is null.
+  function ownFolder(storage, job) {
+    const reported = text(storage)
+    const mapped = mappedPath(reported)
+    if (!mapped) return null
+    const own = (path) => SAB_NAME.exec(basename(path))?.[1]?.toLowerCase() === job.id
+    if (own(mapped)) return reported
+    if (own(dirname(mapped)) && mappedPath(posix.dirname(reported)) === dirname(mapped)) return posix.dirname(reported)
+    return null
+  }
 
   function categoryFor(destinationId) { return config.categories[destinationId] }
 
@@ -330,7 +350,8 @@ export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.
     process(jobs, snapshot, store) {
       if (!snapshot || snapshot.error) return
       for (const job of jobs) {
-        if (job.unconfirmedSince || job.failure || importing.has(job.id) || ['published', 'already-imported', 'review', 'failed'].includes(job.import?.state)) continue
+        if (job.unconfirmedSince || job.failure || importing.has(job.id) || ['published', 'already-imported', 'failed'].includes(job.import?.state)) continue
+        if (job.import?.state === 'review' && !heldUnderOldNameRules(job)) continue
         const found = find(snapshot, job)
         if (found?.where !== 'history' || sabHistoryState(found.slot).status !== 'completed') continue
         if (job.import?.nextAttemptAt && Date.parse(job.import.nextAttemptAt) > now()) continue
@@ -347,17 +368,17 @@ export function createTomifinUsenet({ config, tomifin, stateRoot, sab = config?.
       job.import = { state: 'importing', attempts, at: new Date(now()).toISOString() }
       await store.saveJob(job)
       const finish = async (state, extra = {}) => {
-        job.import = { state, attempts, at: new Date(now()).toISOString(), ...extra }
+        job.import = { state, attempts, at: new Date(now()).toISOString(), nameRules: USENET_NAME_RULES, ...extra }
         if (['published', 'already-imported'].includes(state)) job.completedAt = job.import.at
         await store.saveJob(job)
       }
       const review = async (code, reason) => { await finish('review', { code, reason }); await writeReview(job, code, reason); log(`Tomifin held Usenet job ${job.id} for review (${code})`) }
       try {
         if (text(slot.category).toLowerCase() !== text(job.category).toLowerCase()) return review('wrong-category', 'SABnzbd finished the download in another category.')
-        const mapped = mappedPath(slot.storage)
-        if (!mapped || !SAB_NAME.test(basename(mapped)) || SAB_NAME.exec(basename(mapped))[1].toLowerCase() !== job.id) return review('unsafe-path', 'SABnzbd reported a folder that is not this download\'s own folder inside the Usenet download folder.')
+        const reported = ownFolder(slot.storage, job)
+        if (!reported) return review('unsafe-path', OWN_FOLDER_REASON)
         let completed
-        try { completed = await validateCompletedPath(slot.storage, config.root, config.sabRoot) }
+        try { completed = await validateCompletedPath(reported, config.root, config.sabRoot) }
         catch (error) { return error?.code === 'ENOENT' ? retry(new Error('The finished download folder is missing.')) : review('unsafe-path', 'SABnzbd reported a folder outside the Usenet download folder.') }
         const destination = tomifin.destinations[job.destination]
         if (job.destination === 'family') {

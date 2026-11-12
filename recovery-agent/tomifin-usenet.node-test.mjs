@@ -362,6 +362,38 @@ test('a finished Family film is published through the Family importer as a verif
   assert.equal(await readFile(published, 'utf8'), film, 'removing the job never touches the library')
 })
 
+test('an obfuscated or renamed film from an NZBIndex subject is published, and one held for that under old rules is checked again', async () => {
+  const context = await world({ env: { TOMIFY_TOMIFIN_USENET_PUBLISH: 'copy' } })
+  await searchAndQueue(context, 'family')
+  const record = join(context.stateRoot, 'tomifin', `${id(1)}.json`)
+  const job = JSON.parse(await readFile(record, 'utf8'))
+  // As the agent before this change left it: the title is NZBIndex's subject, and the job is held for its name.
+  job.title = '[01/58] - "Sintel.2010.1080p.BluRay.x264-GRP.part01.rar" yEnc (1/101)'
+  job.import = { state: 'review', attempts: 1, at: '2026-11-01T00:00:00.000Z', code: 'ambiguous-name', reason: 'Not published: the title and year could not be read from the torrent or file name.' }
+  await writeFile(record, JSON.stringify(job))
+  await mkdir(join(context.stateRoot, 'tomifin', 'family-import'), { recursive: true })
+  await writeFile(join(context.stateRoot, 'tomifin', 'family-import', `usenet-${id(1)}.json`), JSON.stringify({ key: `usenet-${id(1)}`, result: 'review', code: 'ambiguous-name', reason: 'old rules' }))
+  await context.sab.finish('SABnzbd_nzo_1', context.completed, { [`tomifin-${id(1)}.mkv`]: film })
+  const [view] = (await settle(context)).jobs
+  assert.equal(view.status, 'completed', view.message)
+  assert.equal(await readFile(join(context.family, 'Sintel (2010)', 'Sintel (2010).mkv'), 'utf8'), film)
+  assert.equal(JSON.parse(await readFile(record, 'utf8')).import.nameRules, 2)
+})
+
+test('a Usenet film held for its name under the current rules stays held', async () => {
+  const context = await world({ env: { TOMIFY_TOMIFIN_USENET_PUBLISH: 'copy' } })
+  await searchAndQueue(context, 'family')
+  await context.sab.finish('SABnzbd_nzo_1', context.completed, { 'Big.Buck.Bunny.2008.1080p.mkv': film })
+  const [view] = (await settle(context)).jobs
+  const held = JSON.parse(await readFile(join(context.stateRoot, 'tomifin', `${id(1)}.json`), 'utf8')).import
+  assert.equal(held.state, 'review', view.message)
+  assert.equal(held.code, 'ambiguous-name')
+  assert.equal(held.nameRules, 2)
+  await settle(context)
+  assert.equal(JSON.parse(await readFile(join(context.stateRoot, 'tomifin', `${id(1)}.json`), 'utf8')).import.at, held.at, 'not checked again')
+  assert.deepEqual(await tree(join(context.family, 'Sintel (2010)')), [])
+})
+
 test('a finished Family season pack lands in the TV folder; cleanup happens only when turned on and verified', async () => {
   const context = await world({ env: { TOMIFY_TOMIFIN_USENET_CLEANUP: 'true' }, searchXml: newznabXml([{ title: 'MobLand.S01.1080p.WEB-DL', guid: 'm1' }]) })
   await searchAndQueue(context, 'family', 'MobLand')
@@ -381,6 +413,44 @@ test('a finished Private download is published as its own folder of videos and s
   assert.equal(view.status, 'completed', view.message)
   assert.deepEqual(await tree(context.privateLibrary), ['.tomifin-publishing/', '.tomifin-publishing/.ignore', 'Sintel.2010.1080p.BluRay.x264-GRP/', 'Sintel.2010.1080p.BluRay.x264-GRP/Sintel.2010.1080p.en.srt', 'Sintel.2010.1080p.BluRay.x264-GRP/Sintel.2010.1080p.mkv'])
   assert.deepEqual(await tree(context.family), [], 'Private never reaches Family')
+})
+
+test('a single-file download SABnzbd reports by its file path is published from its own folder', async () => {
+  const context = await world()
+  await searchAndQueue(context, 'private')
+  const storage = await context.sab.finish('SABnzbd_nzo_1', context.completed, { 'Sintel.2010.1080p.mp4': film })
+  context.sab.state.history[0].storage = join(storage, 'Sintel.2010.1080p.mp4')
+  const [view] = (await settle(context)).jobs
+  assert.equal(view.status, 'completed', view.message)
+  assert.equal(await readFile(join(context.privateLibrary, 'Sintel.2010.1080p.BluRay.x264-GRP', 'Sintel.2010.1080p.mp4'), 'utf8'), film)
+})
+
+test('a file inside another job\'s folder is still refused', async () => {
+  const context = await world()
+  await searchAndQueue(context, 'private')
+  const storage = await context.sab.finish('SABnzbd_nzo_1', context.completed, { 'Sintel.2010.1080p.mp4': film })
+  const other = join(dirname(storage), `tomifin-${id(9)}`)
+  await mkdir(other)
+  await writeFile(join(other, 'Other.mp4'), film)
+  context.sab.state.history[0].storage = join(other, 'Other.mp4')
+  await settle(context)
+  const held = JSON.parse(await readFile(join(context.stateRoot, 'tomifin', `${id(1)}.json`), 'utf8')).import
+  assert.equal(held.state, 'review')
+  assert.equal(held.code, 'unsafe-path')
+  assert.deepEqual((await tree(context.privateLibrary)).filter((entry) => !entry.startsWith('.')), [])
+})
+
+test('a single-file download held as unsafe-path under the old rules is checked again and published', async () => {
+  const context = await world()
+  await searchAndQueue(context, 'private')
+  const storage = await context.sab.finish('SABnzbd_nzo_1', context.completed, { 'Sintel.2010.1080p.mp4': film })
+  context.sab.state.history[0].storage = join(storage, 'Sintel.2010.1080p.mp4')
+  const record = join(context.stateRoot, 'tomifin', `${id(1)}.json`)
+  const job = JSON.parse(await readFile(record, 'utf8'))
+  job.import = { state: 'review', attempts: 1, at: '2026-11-10T23:48:00.000Z', code: 'unsafe-path', reason: 'SABnzbd reported a folder that is not this download\'s own folder inside the Usenet download folder.' }
+  await writeFile(record, JSON.stringify(job))
+  const [view] = (await settle(context)).jobs
+  assert.equal(view.status, 'completed', view.message)
 })
 
 test('failed, password-protected and unsafe downloads are held for review with a reason, and nothing is published', async () => {
