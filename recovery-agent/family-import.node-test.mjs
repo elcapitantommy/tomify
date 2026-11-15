@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { createFamilyImporter, filmIdentity, usenetReleaseName, parseEpisodeName, parseFilmName, parseSeriesRelease, refreshJellyfinAfterImport, subtitleLanguage } from './family-import.mjs'
+import { createFamilyImporter, filmIdentity, usenetReleaseName, parseEpisodeName, parseFilmName, parseSeriesRelease, refreshJellyfinAfterImport, SERIES_NAME_RULES, subtitleLanguage } from './family-import.mjs'
 import { createJellyfinFolderRefresh } from './jellyfin.mjs'
 
 const HASH = 'a'.repeat(40)
@@ -486,6 +486,9 @@ test('episode and series names are read conservatively', () => {
   assert.equal(parseEpisodeName('Toy.Story.2.1999.1080p.mkv'), null)
   assert.deepEqual(parseSeriesRelease('MobLand (Season 2) WEB-DL 1080p'), { series: { title: 'MobLand', year: null, key: 'mobland', name: 'MobLand' }, season: 2 })
   assert.equal(parseSeriesRelease('Show S01-S03 Complete 1080p').season, null)
+  assert.deepEqual(parseSeriesRelease('Thunderbirds (1965) Season 1-2 S01-S02 (1080p BluRay x265 HEVC 10bit AAC 2.0 RCVR)'), { series: { title: 'Thunderbirds', year: 1965, key: 'thunderbirds', name: 'Thunderbirds (1965)' }, season: null })
+  assert.deepEqual(parseSeriesRelease('Show Seasons 1-3 1080p'), { series: { title: 'Show', year: null, key: 'show', name: 'Show' }, season: null })
+  assert.equal(parseSeriesRelease('Show Series 2 1080p').season, 2)
   assert.equal(parseSeriesRelease('The Office').series, null)
 })
 
@@ -552,6 +555,34 @@ test('a pack of several seasons is published when every name agrees, and refused
     assert.equal(outcome.code, 'season-mismatch', label)
     assert.deepEqual(await visible(refused), [], `${label}: nothing published`)
   }
+})
+
+test('a "Season 1-2" pack is published under its series, and one held under older name rules is checked again', async () => {
+  const name = 'Thunderbirds (1965) Season 1-2 S01-S02 (1080p BluRay x265 HEVC 10bit AAC 2.0 RCVR)'
+  const files = {
+    [`${name}/Season 1/Thunderbirds (1965) - S01E01 - Trapped in the Sky (1080p BluRay x265 RCVR).mkv`]: episode(1),
+    [`${name}/Season 2/Thunderbirds (1965) - S02E01 - Thunderbirds Are Go (1080p BluRay x265 RCVR).mkv`]: episode(2),
+  }
+  const context = await setup()
+  await addTorrent(context, HASH, name, files)
+  // Held for review by the old rules, which read the series as "Thunderbirds 1965 Season 1-2".
+  await mkdir(context.stateDir, { recursive: true })
+  await writeFile(join(context.stateDir, `${HASH}.json`), JSON.stringify({ hash: HASH, name, result: 'review', code: 'ambiguous-series', reason: 'old rules' }))
+  const [scanned] = await context.make().scan()
+  assert.equal(scanned.result, 'published', scanned.reason)
+  assert.equal(scanned.series, 'Thunderbirds (1965)')
+  assert.deepEqual(await readdir(tvFolder(context, 'Thunderbirds (1965)', 'Season 01')), ['Thunderbirds (1965) - S01E01 - Trapped in the Sky.mkv'])
+  assert.deepEqual(await readdir(tvFolder(context, 'Thunderbirds (1965)', 'Season 02')), ['Thunderbirds (1965) - S02E01 - Thunderbirds Are Go.mkv'])
+  assert.deepEqual(await context.make().scan(), [], 'published once')
+
+  // A review under the current rules stays held.
+  const held = await setup()
+  await addTorrent(held, HASH, 'Other Show S01 1080p', { 'Other Show S01 1080p/Show.S01E01.mkv': episode(1) })
+  const first = await held.make().importTorrent(HASH)
+  assert.equal(first.code, 'ambiguous-series')
+  assert.equal(first.seriesRules, SERIES_NAME_RULES)
+  assert.deepEqual(await held.make().scan(), [])
+  assert.equal((await held.make().importTorrent(HASH)).result, 'unchanged')
 })
 
 test('two different files claiming one episode go to review; byte-identical copies are published once', async () => {

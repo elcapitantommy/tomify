@@ -136,6 +136,10 @@ const USENET_SUFFIX = /\.(?:part\d{1,4}\.rar|vol\d{1,5}[+-]\d{1,5}\.par2|par2|ra
 // Raised when the Usenet name rules change, so a download held for review under older rules for its name alone
 // (ambiguous-name) is checked once more instead of staying held.
 export const USENET_NAME_RULES = 2
+// Raised when the series name rules change, so a download held for review under older rules because its name and its
+// files seemed to name different series (ambiguous-series) is checked once more instead of staying held. Rules 2 read
+// "Season 1-2" in a download's name as a season range rather than as part of the series name.
+export const SERIES_NAME_RULES = 2
 export function usenetReleaseName(name) {
   const raw = text(name)
   const quoted = /"([^"]+)"/.exec(raw)
@@ -272,10 +276,13 @@ export function parseSeriesRelease(name) {
     const word = list[index].replace(/^-+|-+$/g, '')
     const episode = episodeWord(word)
     const range = word.match(SEASON_RANGE)
-    const named = /^(?:season|series)$/i.test(word) && /^\d{1,2}$/.test(list[index + 1] || '')
+    const seasonWord = /^(?:seasons?|series)$/i.test(word)
+    const named = seasonWord && /^\d{1,2}$/.test(list[index + 1] || '')
+    // "Season 1-2", "Seasons 1-3", "Series 1-2": several seasons, like S01-S02.
+    const namedRange = seasonWord && /^\d{1,2}-\d{1,2}$/.test(list[index + 1] || '')
     if (episode && !episode.invalid) seasons.add(episode.season)
     else if (SEASON_WORD.test(word)) seasons.add(Number(word.match(SEASON_WORD)[1]))
-    else if (range) multiple = true
+    else if (range || namedRange) multiple = true
     else if (named) seasons.add(Number(list[index + 1]))
     else if (!/^complete$/i.test(word) && !isTag(word)) continue
     if (stop < 0) stop = index
@@ -579,7 +586,7 @@ export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_
   // nothing is lost or guessed. Files that cannot be hardlinked there (another filesystem) stay where they are.
   async function sendToReview(key, name, error, details = {}) {
     const folder = join(paths.review, key)
-    const entry = { ...ident(key), name: text(name).slice(0, 300), result: 'review', code: error.code, reason: error.message, ...(key.startsWith('usenet-') ? { nameRules: USENET_NAME_RULES } : {}), ...details }
+    const entry = { ...ident(key), name: text(name).slice(0, 300), result: 'review', code: error.code, reason: error.message, ...(key.startsWith('usenet-') ? { nameRules: USENET_NAME_RULES } : {}), seriesRules: SERIES_NAME_RULES, ...details }
     if (dryRun) { log({ ...entry, dryRun: true }); return entry }
     await ensureIgnoredFolder(paths.review)
     const exists = await lstat(folder).then(() => true, () => false)
@@ -610,7 +617,11 @@ export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_
     return existing ? 'different' : 'other'
   }
 
-  function nameRulesChanged(key, previous) { return key.startsWith('usenet-') && previous.code === 'ambiguous-name' && (Number(previous.nameRules) || 1) < USENET_NAME_RULES }
+  function nameRulesChanged(key, previous) {
+    if (previous?.result !== 'review') return false
+    if (key.startsWith('usenet-') && previous.code === 'ambiguous-name' && (Number(previous.nameRules) || 1) < USENET_NAME_RULES) return true
+    return previous.code === 'ambiguous-series' && (Number(previous.seriesRules) || 1) < SERIES_NAME_RULES
+  }
 
   async function previousOutcome(key) {
     const previous = await readState(key)
@@ -883,7 +894,8 @@ export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_
     return results
   }
 
-  // Every finished Family torrent that has no final outcome yet (published, already imported, review or skipped).
+  // Every finished Family torrent that has no final outcome yet (published, already imported, review or skipped), and
+  // any held for review under name rules that have changed since.
   async function scan() {
     await stagingRoot()
     const results = []
@@ -891,7 +903,7 @@ export function createFamilyImporter({ library, moviesDir = '', tvDir = DEFAULT_
       const hash = text(torrent.hash).toLowerCase()
       if (!HASH.test(hash) || !(Number(torrent.progress) >= 1)) continue
       const state = await readState(hash)
-      if (state && ['published', 'already-imported', 'review', 'skipped'].includes(state.result)) continue
+      if (state && ['published', 'already-imported', 'review', 'skipped'].includes(state.result) && !nameRulesChanged(hash, state)) continue
       try { results.push(await importTorrent(hash)) } catch (error) { log({ hash, result: 'failed', reason: error instanceof Error ? error.message : String(error) }); results.push({ hash, result: 'failed' }) }
     }
     return results
