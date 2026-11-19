@@ -1,7 +1,7 @@
 // "Made for you": mixes built from the account's own library and listening history.
 // Tomify gathers a pool of candidate songs (on repeat, favourites, similar songs, new and unplayed albums),
 // builds simple mixes from it, and, when an Anthropic API key is configured, asks Claude to pick, order and
-// name the mixes instead. Mixes are stored per account in D1 and rebuilt about once a day.
+// name the mixes instead. Mixes are stored per account in D1 and rebuilt about once a week.
 import type { Env, RouteHandler } from '../env.ts'
 import { authenticate } from '../lib/auth.ts'
 import { json } from '../lib/http.ts'
@@ -10,7 +10,7 @@ import { curateMixesWithClaude, type CuratorRequest, type CuratedMix } from './m
 
 const DAY_MS = 24 * 60 * 60 * 1000
 // Mixes older than this are rebuilt the next time Home opens.
-export const MIX_STALE_MS = 20 * 60 * 60 * 1000
+export const MIX_STALE_MS = 7 * 24 * 60 * 60 * 1000
 // A manual refresh is ignored if the mixes were built this recently.
 export const MIX_MANUAL_REFRESH_MS = 10 * 60 * 1000
 // A refresh that started this long ago is assumed to have died, so another can start.

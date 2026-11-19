@@ -19,7 +19,7 @@ export interface Env {
   SPOTIFY_ARTWORK_EMBEDDING_ENABLED?: string
   // Optional: lets Claude pick and name the "Made for you" mixes. Without it Tomify builds simpler mixes itself.
   ANTHROPIC_API_KEY?: string
-  // Optional: the Claude model for mixes and the DJ (default claude-sonnet-5-5).
+  // Optional: the Claude model for mixes and the DJ (default claude-haiku-5-5).
   TOMIFY_MIXES_MODEL?: string
   // Workers AI, used for the DJ's voice.
   AI?: Ai

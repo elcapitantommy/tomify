@@ -165,23 +165,24 @@ test('Claude only sees song references and only songs from the pool make it into
   assert.equal(mixes[0].kind, 'claude')
 })
 
-test('the Claude request uses structured output, low effort and the server-side fallback', async () => {
+test('the Claude request uses Haiku with structured output and low effort, and the server-side fallback on Sonnet', async () => {
   let sent
   const fetcher = async (url, init) => { sent = { url, headers: init.headers, body: JSON.parse(init.body) }; return new Response(JSON.stringify({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ mixes: [{ title: 'Mix', description: 'Nice.', trackRefs: ['t1', 2] }] }) }] })) }
   const mixes = await curateMixesWithClaude({ ANTHROPIC_API_KEY: 'key' }, { profile: 'p', candidates: 'c' }, fetcher)
   assert.deepEqual(mixes, [{ title: 'Mix', description: 'Nice.', trackRefs: ['t1'] }])
   assert.equal(sent.url, 'https://api.anthropic.com/v1/messages')
   assert.equal(sent.headers['x-api-key'], 'key')
-  assert.equal(sent.headers['anthropic-beta'], 'server-side-fallback-2026-07-01')
-  assert.equal(sent.body.model, DEFAULT_MIXES_MODEL)
-  assert.equal(sent.body.fallbacks, 'default')
-  assert.equal(sent.body.output_config.effort, 'low')
-  assert.equal(sent.body.output_config.format.type, 'json_schema')
-  const refusing = async (url, init) => { sent = { headers: init.headers, body: JSON.parse(init.body) }; return new Response(JSON.stringify({ stop_reason: 'refusal', content: [] })) }
-  await assert.rejects(curateMixesWithClaude({ TOMIFY_MIXES_MODEL: 'claude-haiku-5-5' }, { profile: 'p', candidates: 'c' }, refusing), /declined/)
+  assert.equal(DEFAULT_MIXES_MODEL, 'claude-haiku-5-5')
   assert.equal(sent.body.model, 'claude-haiku-5-5')
   assert.equal(sent.body.fallbacks, undefined, 'Haiku has no server-side fallback')
   assert.equal(sent.headers['anthropic-beta'], undefined)
+  assert.equal(sent.body.output_config.effort, 'low')
+  assert.equal(sent.body.output_config.format.type, 'json_schema')
+  const refusing = async (url, init) => { sent = { headers: init.headers, body: JSON.parse(init.body) }; return new Response(JSON.stringify({ stop_reason: 'refusal', content: [] })) }
+  await assert.rejects(curateMixesWithClaude({ TOMIFY_MIXES_MODEL: 'claude-sonnet-5-5' }, { profile: 'p', candidates: 'c' }, refusing), /declined/)
+  assert.equal(sent.body.model, 'claude-sonnet-5-5')
+  assert.equal(sent.body.fallbacks, 'default')
+  assert.equal(sent.headers['anthropic-beta'], 'server-side-fallback-2026-07-01')
   const overloaded = async () => new Response(JSON.stringify({ error: { message: 'Overloaded' } }), { status: 529 })
   await assert.rejects(curateMixesWithClaude({}, { profile: 'p', candidates: 'c' }, overloaded), /Claude API 529: Overloaded/)
   assert.throws(() => parseCuratedMixes('{"nope":1}'), /did not return any mixes/)
@@ -207,7 +208,7 @@ function navidromeFetch(calls) {
   }
 }
 
-test('mixes are built once a day, stored per account, and fall back to simple mixes when Claude fails', async (t) => {
+test('mixes are built once a week, stored per account, and fall back to simple mixes when Claude fails', async (t) => {
   const db = d1()
   const calls = []
   t.mock.method(globalThis, 'fetch', navidromeFetch(calls))
@@ -236,6 +237,16 @@ test('mixes are built once a day, stored per account, and fall back to simple mi
   const forcedTooSoon = await (await call('/api/mixes/refresh', { method: 'POST', body: '{"force":true}' })).json()
   assert.equal(curateCalls, 1, 'a manual refresh within ten minutes is ignored')
   assert.deepEqual(forcedTooSoon.mixes, built.mixes)
+
+  db.raw.prepare('UPDATE made_for_you SET generated_at = ?').run(NOW - 6 * DAY)
+  const sixDays = await (await call('/api/mixes/refresh', { method: 'POST', body: '{}' })).json()
+  assert.equal(sixDays.stale, false)
+  assert.equal(curateCalls, 1, 'six-day-old mixes are not rebuilt')
+
+  db.raw.prepare('UPDATE made_for_you SET generated_at = ?').run(NOW - 7 * DAY - 1000)
+  assert.equal((await (await call('/api/mixes')).json()).stale, true)
+  await call('/api/mixes/refresh', { method: 'POST', body: '{}' })
+  assert.equal(curateCalls, 2, 'week-old mixes are rebuilt')
 })
 
 test('Claude-picked mixes are stored and a second tab waits instead of building again', async (t) => {
