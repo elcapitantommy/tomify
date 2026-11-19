@@ -6,7 +6,8 @@ import type { Env } from '../env.ts'
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages'
 
-export const DEFAULT_MIXES_MODEL = 'claude-sonnet-5-5'
+// Haiku keeps the weekly mixes and the DJ cheap; set TOMIFY_MIXES_MODEL to claude-sonnet-5-5 for richer picks.
+export const DEFAULT_MIXES_MODEL = 'claude-haiku-5-5'
 
 export interface CuratorRequest { profile: string, candidates: string }
 export interface CuratedMix { title: string, description: string, trackRefs: string[] }

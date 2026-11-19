@@ -94,7 +94,7 @@ const seeAll: Record<string, string> = { 'Recently played': '/albums?type=all&so
 function SectionTitle({ title, subtitle, icon }: { title: string; subtitle?: string; icon?: React.ReactNode }) { return <div className="section-title"><div>{subtitle && <span className="eyebrow">{subtitle}</span>}<h2>{icon}{title}</h2></div><Link to={seeAll[title] ?? '/albums'} aria-label={`See all ${title.toLowerCase()}`}>See all <ArrowRight/></Link></div> }
 function LibrarySection({ title, subtitle, icon, albums, onPlay }: { title: string; subtitle?: string; icon?: React.ReactNode; albums: Parameters<typeof AlbumCard>[0]['album'][]; onPlay: (id: string) => Promise<void> }) { return <section><SectionTitle title={title} subtitle={subtitle} icon={icon}/><div className="card-grid">{albums.map((album) => <AlbumCard album={album} key={album.id} onPlay={() => void onPlay(album.id)}/>)}</div></section> }
 
-// Home loads the stored mixes straight away and, if they are a day old, asks the Worker to build new ones.
+// Home loads the stored mixes straight away and, if they are a week old, asks the Worker to build new ones.
 export function MadeForYou() {
   const [state, setState] = useState<MixesResponse | null>(() => cachedMixes())
   const [building, setBuilding] = useState(false)
